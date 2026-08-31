@@ -618,9 +618,11 @@ def _collect_qpdf(
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
-    # qpdf exit 3 means "warnings, but output is complete and usable" —
-    # do not degrade the scan for benign recoverable issues.
-    if proc.returncode not in (0, 3):
+    # Any nonzero exit degrades the scan — including 3. qpdf documents
+    # exit 3 as "warnings", but empirically a truncated input PDF exits 3
+    # while emitting only a partial QDF stream with tail objects silently
+    # absent, so exit-3 output cannot be certified complete.
+    if proc.returncode != 0:
         report.warnings.append(
             f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
             "binary scan may be incomplete"
