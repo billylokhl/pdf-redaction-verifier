@@ -25,6 +25,13 @@ casefolded, then reduced to alphanumerics — so dashes, slashes, spaces,
 newlines, and Unicode look-alikes cannot hide a match. Secrets are also
 searched across page boundaries.
 
+Rules come in three kinds: known 'value' secrets (normalized matching as
+above), custom 'pattern' regexes, and built-in pattern 'class' rules
+(ssn, credit-card, email, us-phone) with validators (Luhn, SSA area
+rules) that suppress structurally invalid matches. Pattern rules match
+raw extracted text per layer; matched samples are masked in the report
+(only the last 4 characters shown).
+
 Usage:
     python verify.py --target document.pdf --secrets secrets.json
 
@@ -186,10 +193,16 @@ class SecretMatcher:
     def __init__(self, secrets: Sequence[Secret]) -> None:
         self._secrets: list[Secret] = list(secrets)
         norms = sorted({s.normalized for s in self._secrets}, key=len, reverse=True)
-        self._pattern = re.compile("(?=(" + "|".join(map(re.escape, norms)) + "))")
-        self.max_len: int = max(map(len, norms))
+        # A rules file may hold only pattern rules — an empty matcher is
+        # valid and simply never matches.
+        self._pattern = (
+            re.compile("(?=(" + "|".join(map(re.escape, norms)) + "))") if norms else None
+        )
+        self.max_len: int = max(map(len, norms)) if norms else 1
 
     def search(self, normalized_haystack: str) -> list[Secret]:
+        if self._pattern is None:
+            return []
         hits = {m.group(1) for m in self._pattern.finditer(normalized_haystack)}
         return [s for s in self._secrets if s.normalized in hits]
 
@@ -212,6 +225,106 @@ class RollingScanner:
         self.found.update(self._matcher.search(window))
         keep = self._matcher.max_len - 1
         self._tail = window[-keep:] if keep > 0 else ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Pattern rules: match CLASSES of sensitive data, not just known values
+# ──────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class PatternRule:
+    """A rule that matches a class of sensitive data (e.g. "any SSN").
+
+    Patterns run against the *raw* extracted text of each layer (visual
+    reconstruction, OCR output, metadata JSON, decoded PDF literals), not
+    the normalized haystack — regexes carry their own separator handling.
+    """
+
+    name: str
+    regex: re.Pattern[str]
+    validator: Callable[[str], bool] | None = None
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
+def _valid_ssn(matched: str) -> bool:
+    """SSA-issued SSNs never use area 000/666/9xx, group 00, or serial 0000."""
+    d = re.sub(r"\D", "", matched)
+    return not (
+        d[:3] in ("000", "666") or d[0] == "9" or d[3:5] == "00" or d[5:] == "0000"
+    )
+
+
+def _valid_card(matched: str) -> bool:
+    d = re.sub(r"\D", "", matched)
+    return 13 <= len(d) <= 19 and len(set(d)) > 1 and _luhn_ok(d)
+
+
+# name -> (regex source, validator). Regexes tolerate common separators
+# and use digit-boundary guards so a match cannot start or end inside a
+# longer digit run.
+BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
+    "ssn": (r"(?<!\d)\d{3}[-\s.]?\d{2}[-\s.]?\d{4}(?!\d)", _valid_ssn),
+    "credit-card": (r"(?<!\d)(?:\d[-\s.]?){12,18}\d(?!\d)", _valid_card),
+    "email": (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", None),
+    "us-phone": (
+        r"(?<![\d.])(?:\+?1[-\s.]?)?\(?\d{3}\)?[-\s.]?\d{3}[-\s.]?\d{4}(?!\d)",
+        None,
+    ),
+}
+
+
+def mask(matched: str) -> str:
+    """Mask a matched sample for the report: only the last 4 chars survive."""
+    if len(matched) <= 4:
+        return "*" * len(matched)
+    return "*" * (len(matched) - 4) + matched[-4:]
+
+
+def match_patterns(
+    raw_text: str, patterns: Sequence[PatternRule]
+) -> dict[str, str]:
+    """First validated match per rule: {rule name: matched text}."""
+    hits: dict[str, str] = {}
+    for rule in patterns:
+        for m in rule.regex.finditer(raw_text):
+            matched = m.group(0)
+            if rule.validator is None or rule.validator(matched):
+                hits[rule.name] = matched
+                break
+    return hits
+
+
+class PatternScanner:
+    """Rolling raw-text pattern scanner with bounded memory.
+
+    The overlap tail lets a match span feed boundaries (adjacent PDF
+    string tokens, stream chunks) up to PATTERN_SCAN_OVERLAP chars.
+    """
+
+    OVERLAP = 512
+
+    def __init__(self, patterns: Sequence[PatternRule]) -> None:
+        self._patterns = list(patterns)
+        self._tail: str = ""
+        self.hits: dict[str, str] = {}
+
+    def feed(self, raw_text: str) -> None:
+        if not self._patterns:
+            return
+        window = self._tail + raw_text
+        for name, sample in match_patterns(window, self._patterns).items():
+            self.hits.setdefault(name, sample)
+        self._tail = window[-self.OVERLAP:]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -372,6 +485,7 @@ def scan_page_layer(
     layer: str,
     extractor: Callable[[fitz.Page], list[str]],
     note: str,
+    patterns: Sequence[PatternRule] = (),
     fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
@@ -379,7 +493,9 @@ def scan_page_layer(
     Every extracted variant is searched per page; *each* variant is
     additionally streamed through its own RollingScanner so secrets that
     span a page boundary are still caught — including secrets in vertical
-    or rotated text (reported without a page number).
+    or rotated text (reported without a page number). Pattern rules run
+    against each variant's raw text (per page; pattern matches spanning a
+    page boundary are not detected).
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
@@ -421,6 +537,16 @@ def scan_page_layer(
             while len(cross_page_scanners) <= vi:
                 cross_page_scanners.append(RollingScanner(matcher))
             cross_page_scanners[vi].feed(normalized_full)
+        # Pattern rules: one finding per rule per page (first sample).
+        page_pattern_hits: dict[str, str] = {}
+        for text in variants:
+            for name, sample in match_patterns(text, patterns).items():
+                page_pattern_hits.setdefault(name, sample)
+        for name, sample in sorted(page_pattern_hits.items()):
+            report.record(
+                layer, name,
+                f"page {page_index + 1} ({note}) — sample {mask(sample)}",
+            )
         if fail_fast and report.leaked:
             break
 
@@ -477,7 +603,10 @@ def kill_hidden_tools(procs: dict[str, subprocess.Popen[bytes] | None]) -> None:
 
 
 def _collect_exiftool(
-    proc: subprocess.Popen[bytes], matcher: SecretMatcher, report: ScanReport
+    proc: subprocess.Popen[bytes],
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
 ) -> None:
     try:
         out, _ = proc.communicate(timeout=SUBPROCESS_TIMEOUT_S)
@@ -518,16 +647,21 @@ def _collect_exiftool(
             }
         else:
             filtered = payload
-        haystack = normalize_string(json.dumps(filtered, ensure_ascii=False))
+        raw_meta_text = json.dumps(filtered, ensure_ascii=False)
     except json.JSONDecodeError:
         report.warnings.append(
             "Metadata: exiftool output was not valid JSON — scanned raw output, "
             "which includes filesystem fields (path collisions possible)"
         )
-        haystack = normalize_string(text)
+        raw_meta_text = text
 
-    for secret in matcher.search(haystack):
+    for secret in matcher.search(normalize_string(raw_meta_text)):
         report.record("Metadata", secret.name, "exiftool field sweep (XMP/Info/embedded)")
+    for name, sample in sorted(match_patterns(raw_meta_text, patterns).items()):
+        report.record(
+            "Metadata", name,
+            f"exiftool field sweep (XMP/Info/embedded) — sample {mask(sample)}",
+        )
 
 
 def _unescape_pdf_literal(body: str) -> str:
@@ -540,16 +674,19 @@ def _unescape_pdf_literal(body: str) -> str:
     return _LITERAL_ESCAPE_RE.sub(repl, body)
 
 
-def _feed_pdf_strings(buf: str, scanner: RollingScanner) -> str:
+def _feed_pdf_strings(
+    buf: str, scanner: RollingScanner, pattern_scanner: PatternScanner
+) -> str:
     """Extract PDF string/hex literals from buf, feed them (in order, so
-    adjacency across consecutive tokens is preserved), return the
+    adjacency across consecutive tokens is preserved) to both the
+    normalized secret scanner and the raw pattern scanner, and return the
     unconsumed tail as carry for the next chunk."""
     last_end = 0
     for match in _PDF_STRING_RE.finditer(buf):
         token = match.group(0)
         last_end = match.end()
         if token.startswith("("):
-            scanner.feed(normalize_string(_unescape_pdf_literal(token[1:-1])))
+            decoded = _unescape_pdf_literal(token[1:-1])
         else:
             hex_chars = re.sub(r"\s+", "", token[1:-1])
             if len(hex_chars) % 2:
@@ -562,12 +699,16 @@ def _feed_pdf_strings(buf: str, scanner: RollingScanner) -> str:
                 decoded = data[2:].decode("utf-16-be", errors="replace")
             else:
                 decoded = data.decode("latin-1")
-            scanner.feed(normalize_string(decoded))
+        scanner.feed(normalize_string(decoded))
+        pattern_scanner.feed(decoded)
     return buf[last_end:]
 
 
 def _collect_qpdf(
-    proc: subprocess.Popen[bytes], matcher: SecretMatcher, report: ScanReport
+    proc: subprocess.Popen[bytes],
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
 ) -> None:
     """Stream qpdf's QDF output with bounded memory.
 
@@ -576,9 +717,12 @@ def _collect_qpdf(
     backstop, but its matches can be coincidental collisions (adjacent
     numeric operands, compressed binary data), so raw-only matches are
     reported as manual-review warnings (exit 2), not hard findings.
+    Pattern rules run on decoded literals only — regexes over the raw
+    latin-1 byte soup would false-positive on compressed stream data.
     """
     raw = RollingScanner(matcher)
     literals = RollingScanner(matcher)
+    pattern_scanner = PatternScanner(patterns)
     carry = ""
     carry_truncated = False
     got_output = False
@@ -608,7 +752,7 @@ def _collect_qpdf(
         got_output = True
         text = chunk.decode("latin-1")  # 1:1 byte mapping, nothing lost
         raw.feed(normalize_string(text))
-        carry = _feed_pdf_strings(carry + text, literals)
+        carry = _feed_pdf_strings(carry + text, literals, pattern_scanner)
         if len(carry) > MAX_LITERAL_CARRY:
             carry = carry[-MAX_LITERAL_CARRY:]
             carry_truncated = True
@@ -639,6 +783,10 @@ def _collect_qpdf(
 
     for secret in sorted(literals.found, key=lambda s: s.name):
         report.record("Binary", secret.name, "qpdf QDF string/hex literals")
+    for name, sample in sorted(pattern_scanner.hits.items()):
+        report.record(
+            "Binary", name, f"qpdf QDF string/hex literals — sample {mask(sample)}"
+        )
     for secret in sorted(raw.found - literals.found, key=lambda s: s.name):
         report.warnings.append(
             f"Binary: raw byte stream contains a sequence matching secret "
@@ -650,54 +798,88 @@ def _collect_qpdf(
 def check_hidden_layers(
     procs: dict[str, subprocess.Popen[bytes] | None],
     matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
     report: ScanReport,
 ) -> None:
     """Phase 4 collector: reap the tools started by start_hidden_tools."""
     if procs["exiftool"] is not None:
-        _collect_exiftool(procs["exiftool"], matcher, report)
+        _collect_exiftool(procs["exiftool"], matcher, patterns, report)
     if procs["qpdf"] is not None:
-        _collect_qpdf(procs["qpdf"], matcher, report)
+        _collect_qpdf(procs["qpdf"], matcher, patterns, report)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-def load_secrets(secrets_path: Path) -> list[Secret]:
-    """Parse and normalize the secrets JSON file, validating its shape.
+def load_rules(rules_path: Path) -> tuple[list[Secret], list[PatternRule]]:
+    """Parse the rules JSON file, validating its shape.
+
+    Each entry carries a 'name' and exactly one of:
+      'value'   — a known secret string, matched via normalization;
+      'pattern' — a custom regex matched against raw extracted text;
+      'class'   — a built-in pattern class (see BUILTIN_PATTERN_CLASSES).
 
     Raises VerifyError for every operational problem so main can exit 2.
     """
     try:
-        payload: Any = json.loads(secrets_path.read_text(encoding="utf-8"))
+        payload: Any = json.loads(rules_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise VerifyError(f"Cannot read secrets file {secrets_path}: {exc}")
+        raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
 
     if not isinstance(payload, list):
-        raise VerifyError("secrets.json must be a JSON array of objects")
+        raise VerifyError("the rules file must be a JSON array of objects")
 
     secrets: list[Secret] = []
+    patterns: list[PatternRule] = []
     for i, entry in enumerate(payload):
-        if not isinstance(entry, dict) or "name" not in entry or "value" not in entry:
+        if not isinstance(entry, dict) or "name" not in entry:
+            raise VerifyError(f"rules entry {i} must be an object with 'name'")
+        name = str(entry["name"])
+        kind_keys = [k for k in ("value", "pattern", "class") if k in entry]
+        if len(kind_keys) != 1:
             raise VerifyError(
-                f"secrets.json entry {i} must be an object with 'name' and 'value'"
+                f"rules entry {i} ({name!r}) must have exactly one of "
+                f"'value', 'pattern', or 'class' (found: {kind_keys or 'none'})"
             )
-        value = entry["value"]
-        if not isinstance(value, str):
+        kind = kind_keys[0]
+        spec = entry[kind]
+        if not isinstance(spec, str):
             raise VerifyError(
-                f"secrets.json entry {i} ({entry['name']!r}): 'value' must be "
-                f"a string, got {type(value).__name__}"
+                f"rules entry {i} ({name!r}): {kind!r} must be a string, "
+                f"got {type(spec).__name__}"
             )
-        normalized = normalize_string(value)
-        if not normalized:
-            raise VerifyError(
-                f"secret {entry['name']!r} normalizes to an empty string — "
-                "it would match everything or nothing; refusing to scan"
-            )
-        secrets.append(Secret(str(entry["name"]), normalized))
 
-    if not secrets:
-        raise VerifyError("secrets.json contains no secrets")
-    return secrets
+        if kind == "value":
+            normalized = normalize_string(spec)
+            if not normalized:
+                raise VerifyError(
+                    f"secret {name!r} normalizes to an empty string — it "
+                    "would match everything or nothing; refusing to scan"
+                )
+            secrets.append(Secret(name, normalized))
+        elif kind == "pattern":
+            try:
+                regex = re.compile(spec)
+            except re.error as exc:
+                raise VerifyError(f"rule {name!r}: invalid regex: {exc}")
+            if regex.match(""):
+                raise VerifyError(
+                    f"rule {name!r}: pattern matches the empty string; "
+                    "refusing to scan"
+                )
+            patterns.append(PatternRule(name, regex))
+        else:
+            if spec not in BUILTIN_PATTERN_CLASSES:
+                raise VerifyError(
+                    f"rule {name!r}: unknown class {spec!r} — valid classes: "
+                    f"{', '.join(sorted(BUILTIN_PATTERN_CLASSES))}"
+                )
+            regex_src, validator = BUILTIN_PATTERN_CLASSES[spec]
+            patterns.append(PatternRule(name, re.compile(regex_src), validator))
+
+    if not secrets and not patterns:
+        raise VerifyError("the rules file contains no rules")
+    return secrets, patterns
 
 
 def print_report(report: ScanReport, pdf_path: Path) -> None:
@@ -708,7 +890,7 @@ def print_report(report: ScanReport, pdf_path: Path) -> None:
         print(f"  [FAIL]  SENSITIVE DATA DETECTED IN: {pdf_path.name}")
         print(bar)
         for f in report.findings:
-            print(f"  ✖ LAYER: {f.layer:<8} | SECRET: {f.secret_name!r:<24} | {f.location}")
+            print(f"  ✖ LAYER: {f.layer:<8} | RULE: {f.secret_name!r:<24} | {f.location}")
     else:
         print(f"  [PASS]  No target secrets detected in: {pdf_path.name}")
     print(bar)
@@ -738,7 +920,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "OCR, metadata, and binary-stream layers.",
     )
     parser.add_argument("--target", required=True, type=Path, help="PDF file to verify")
-    parser.add_argument("--secrets", required=True, type=Path, help="JSON array of secrets")
+    parser.add_argument(
+        "--secrets", required=True, type=Path,
+        help="JSON array of rules: known values, custom regex patterns, "
+        "and/or built-in pattern classes "
+        f"({', '.join(sorted(BUILTIN_PATTERN_CLASSES))})",
+    )
     parser.add_argument(
         "--fail-fast",
         action="store_true",
@@ -753,7 +940,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        secrets = load_secrets(args.secrets)
+        secrets, patterns = load_rules(args.secrets)
     except VerifyError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 2
@@ -785,14 +972,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         print(f"[*] Scanning {pdf_path.name} ({doc.page_count} page(s)) "
-              f"for {len(secrets)} secret(s)...")
+              f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
 
         print("[*] Phase 2: DOM layer (layout-aware visual text)...")
         try:
             scan_page_layer(
                 doc, matcher, report,
                 layer="DOM", extractor=extract_visual_text, note="visual text layer",
-                fail_fast=args.fail_fast,
+                patterns=patterns, fail_fast=args.fail_fast,
             )
         except Exception as exc:
             report.warnings.append(f"DOM: layer crashed ({exc}) — NOT fully scanned")
@@ -811,7 +998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     doc, matcher, report,
                     layer="OCR", extractor=extract_ocr_text,
                     note=f"Apple Vision @ {OCR_DPI} dpi",
-                    fail_fast=args.fail_fast,
+                    patterns=patterns, fail_fast=args.fail_fast,
                 )
             except Exception as exc:
                 report.warnings.append(f"OCR: layer crashed ({exc}) — NOT fully scanned")
@@ -826,7 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
         try:
-            check_hidden_layers(procs, matcher, report)
+            check_hidden_layers(procs, matcher, patterns, report)
         except Exception as exc:
             kill_hidden_tools(procs)
             report.warnings.append(
