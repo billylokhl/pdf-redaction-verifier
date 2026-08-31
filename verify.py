@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -289,37 +291,52 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 3: OCR Visual Fallback (Apple Vision)
 # ──────────────────────────────────────────────────────────────────────────
-def _vision_recognize(png_bytes: bytes, language_correction: bool) -> str:
-    """OCR a PNG with Apple Vision; raises on any Vision-level failure."""
+def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
+    """OCR a PNG with Apple Vision in one pass: correction on AND off.
+
+    Both requests share a single VNImageRequestHandler so the image is
+    decoded once instead of twice.  Raises on any Vision-level failure.
+    """
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
-    extracted_lines: list[str] = []
-    handler_errors: list[str] = []
+    results: dict[bool, list[str]] = {True: [], False: []}
+    errors: dict[bool, list[str]] = {True: [], False: []}
 
-    def recognize_text_handler(request: Any, error: Any) -> None:
-        if error:
-            handler_errors.append(str(error))
-            return
-        for observation in request.results() or []:
-            candidates = observation.topCandidates_(1)
-            if candidates:
-                extracted_lines.append(candidates[0].string())
+    def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
+        def handler(request: Any, error: Any) -> None:
+            if error:
+                errors[correction].append(str(error))
+                return
+            for observation in request.results() or []:
+                candidates = observation.topCandidates_(1)
+                if candidates:
+                    results[correction].append(candidates[0].string())
+        return handler
 
-    request = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
-        recognize_text_handler
+    request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
+        _make_handler(True)
     )
-    request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-    request.setUsesLanguageCorrection_(language_correction)
+    request_on.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+    request_on.setUsesLanguageCorrection_(True)
 
-    request_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
+    request_off = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
+        _make_handler(False)
+    )
+    request_off.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+    request_off.setUsesLanguageCorrection_(False)
+
+    image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
         ns_data, {}
     )
-    success, perform_error = request_handler.performRequests_error_([request], None)
+    success, perform_error = image_handler.performRequests_error_(
+        [request_on, request_off], None
+    )
     if not success:
         raise RuntimeError(f"Apple Vision request failed: {perform_error}")
-    if handler_errors:
-        raise RuntimeError(f"Apple Vision error: {'; '.join(handler_errors)}")
+    for correction in (True, False):
+        if errors[correction]:
+            raise RuntimeError(f"Apple Vision error: {'; '.join(errors[correction])}")
 
-    return "\n".join(extracted_lines)
+    return ("\n".join(results[True]), "\n".join(results[False]))
 
 
 def extract_ocr_text(page: fitz.Page) -> list[str]:
@@ -329,14 +346,15 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
     code/serial-number character sequences that the language model might
     otherwise "correct". Searching the union maximizes recall. Grayscale
     rendering: Vision does not need color and the pixmap is 3x smaller.
+
+    Both recognition passes share one image handler so the PNG is decoded
+    once (see _vision_recognize_batch).
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
     png_bytes: bytes = pix.tobytes("png")
     pix = None  # release the raster before Vision runs
-    return [
-        _vision_recognize(png_bytes, language_correction=True),
-        _vision_recognize(png_bytes, language_correction=False),
-    ]
+    text_on, text_off = _vision_recognize_batch(png_bytes)
+    return [text_on, text_off]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -350,14 +368,19 @@ def scan_page_layer(
     layer: str,
     extractor: Callable[[fitz.Page], list[str]],
     note: str,
+    fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
 
-    Every extracted variant is searched per page; the primary variant is
-    additionally streamed through a RollingScanner so secrets that span a
-    page boundary are still caught (reported without a page number).
+    Every extracted variant is searched per page; *each* variant is
+    additionally streamed through its own RollingScanner so secrets that
+    span a page boundary are still caught — including secrets in vertical
+    or rotated text (reported without a page number).
+
+    When *fail_fast* is True the scan stops after the first page that
+    produces a finding, so the tool exits quickly on large documents.
     """
-    cross_page = RollingScanner(matcher)
+    cross_page_scanners: list[RollingScanner] = []
     for page_index in range(doc.page_count):
         try:
             page = doc.load_page(page_index)
@@ -368,13 +391,21 @@ def scan_page_layer(
         for text in variants:
             for secret in matcher.search(normalize_string(text)):
                 report.record(layer, secret.name, f"page {page_index + 1} ({note})")
-        if variants:
-            cross_page.feed(normalize_string(variants[0]))
+        # Feed every variant into its own cross-page scanner so vertical/
+        # rotated text spanning a page boundary is caught, not just the
+        # primary horizontal variant.
+        for vi, text in enumerate(variants):
+            while len(cross_page_scanners) <= vi:
+                cross_page_scanners.append(RollingScanner(matcher))
+            cross_page_scanners[vi].feed(normalize_string(text))
+        if fail_fast and report.leaked:
+            break
 
     found_in_layer = {f.secret_name for f in report.findings if f.layer == layer}
-    for secret in cross_page.found:
-        if secret.name not in found_in_layer:
-            report.record(layer, secret.name, f"across page boundaries ({note})")
+    for scanner in cross_page_scanners:
+        for secret in scanner.found:
+            if secret.name not in found_in_layer:
+                report.record(layer, secret.name, f"across page boundaries ({note})")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -445,10 +476,19 @@ def _collect_exiftool(
         payload = json.loads(text)
         # Exclude filesystem-derived fields: the local path or timestamps
         # matching a secret is not a leak inside the document.
-        filtered = [
-            {k: v for k, v in entry.items() if k not in EXIFTOOL_FILESYSTEM_FIELDS}
-            for entry in payload
-        ] if isinstance(payload, list) else payload
+        if isinstance(payload, list):
+            filtered = [
+                {k: v for k, v in entry.items() if k not in EXIFTOOL_FILESYSTEM_FIELDS}
+                for entry in payload
+                if isinstance(entry, dict)
+            ]
+        elif isinstance(payload, dict):
+            filtered = {
+                k: v for k, v in payload.items()
+                if k not in EXIFTOOL_FILESYSTEM_FIELDS
+            }
+        else:
+            filtered = payload
         haystack = normalize_string(json.dumps(filtered, ensure_ascii=False))
     except json.JSONDecodeError:
         report.warnings.append(
@@ -511,17 +551,29 @@ def _collect_qpdf(
     raw = RollingScanner(matcher)
     literals = RollingScanner(matcher)
     carry = ""
+    carry_truncated = False
     got_output = False
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
-    assert proc.stdout is not None
+    if proc.stdout is None:
+        report.warnings.append("Binary: qpdf stdout unavailable — layer NOT scanned")
+        return
 
     while True:
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             proc.kill()
             proc.communicate()
             report.warnings.append("Binary: qpdf timed out — scan incomplete")
             break
-        chunk = proc.stdout.read(QPDF_CHUNK_BYTES)
+        # Use select() so the deadline is enforced even if qpdf stalls
+        # mid-stream — a plain read() would block indefinitely.
+        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        if not ready:
+            proc.kill()
+            proc.communicate()
+            report.warnings.append("Binary: qpdf timed out — scan incomplete")
+            break
+        chunk = os.read(proc.stdout.fileno(), QPDF_CHUNK_BYTES)
         if not chunk:
             break
         got_output = True
@@ -530,16 +582,25 @@ def _collect_qpdf(
         carry = _feed_pdf_strings(carry + text, literals)
         if len(carry) > MAX_LITERAL_CARRY:
             carry = carry[-MAX_LITERAL_CARRY:]
+            carry_truncated = True
 
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
-    if proc.returncode != 0:
+    # qpdf exit 3 means "warnings, but output is complete and usable" —
+    # do not degrade the scan for benign recoverable issues.
+    if proc.returncode not in (0, 3):
         report.warnings.append(
             f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
             "binary scan may be incomplete"
+        )
+    if carry_truncated:
+        report.warnings.append(
+            f"Binary: an unclosed PDF string literal exceeded "
+            f"{MAX_LITERAL_CARRY // 1024}KB — carry buffer was truncated, "
+            "some literal content may not have been scanned"
         )
     if not got_output:
         report.warnings.append("Binary: qpdf produced no output — layer NOT scanned")
@@ -688,6 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scan_page_layer(
                 doc, matcher, report,
                 layer="DOM", extractor=extract_visual_text, note="visual text layer",
+                fail_fast=args.fail_fast,
             )
         except Exception as exc:
             report.warnings.append(f"DOM: layer crashed ({exc}) — NOT fully scanned")
@@ -706,6 +768,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     doc, matcher, report,
                     layer="OCR", extractor=extract_ocr_text,
                     note=f"Apple Vision @ {OCR_DPI} dpi",
+                    fail_fast=args.fail_fast,
                 )
             except Exception as exc:
                 report.warnings.append(f"OCR: layer crashed ({exc}) — NOT fully scanned")
