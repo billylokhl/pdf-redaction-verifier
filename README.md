@@ -33,13 +33,21 @@ Each entry in the `--secrets` JSON array has a `name` and exactly one of:
   dashes, spaces, newlines, and Unicode look-alikes cannot hide it.
 - `"class"` — a built-in pattern class: `ssn`, `credit-card`, `email`,
   `us-phone`. Classes carry validators (Luhn for cards, SSA area/group
-  rules for SSNs) that suppress structurally invalid matches.
+  rules for SSNs, NANP for phones) that suppress structurally invalid
+  matches, and their inputs are folded (NFKC + dash/space variants) so
+  en-dashes or fullwidth digits cannot evade them.
 - `"pattern"` — a custom regex, matched against the raw extracted text
-  of each layer (write your own separator handling, e.g. `[-\s]?`).
+  of each layer, compiled with `re.MULTILINE` so `^`/`$` anchor per
+  line. Rule names must be unique.
 
-Pattern matches are reported with a masked sample (only the last 4
-characters shown). Pattern rules match per page — a pattern hit split
-across a page boundary is not detected (known-value secrets are).
+Pattern matching is **two-tier**: matches found on a single visual line
+(or inside a single decoded PDF literal, or a decoded metadata value)
+are hard findings (exit 1); matches that only appear when lines,
+columns, adjacent literals, or pages are fused together are demoted to
+manual-review warnings (exit 2) — coincidental digit fusion must never
+hard-fail a clean document, and a possible leak must never be silent.
+Samples in the report are masked (at most 4 trailing characters, never
+more than half the match) and control characters are sanitized.
 
 Exit codes: `0` certified clean, `1` secret detected, `2` operational
 error, incomplete scan, or a raw-stream match needing manual review — a
