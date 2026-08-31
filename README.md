@@ -10,6 +10,7 @@ four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 - `pip install pymupdf`
 - `uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz`
 - CLI tools: `exiftool`, `qpdf` (`brew install exiftool qpdf`)
+- `pip install pytest` (test runner)
 
 ## Usage
 
@@ -23,3 +24,15 @@ producing a complete forensic report.
 Exit codes: `0` certified clean, `1` secret detected, `2` operational
 error, incomplete scan, or a raw-stream match needing manual review — a
 `2` must never be treated as a clean result.
+
+## Tests
+
+```
+python -m pytest tests/
+```
+
+Every test pins a previously confirmed bug (detection gaps, false
+positives, exit-code contract violations). PDF fixtures are generated on
+the fly — nothing binary is committed. Tests needing Apple Vision,
+`exiftool`, or `qpdf` skip with a reason when the tool is unavailable,
+so the suite runs (partially) on any platform.
