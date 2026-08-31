@@ -10,6 +10,7 @@ four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 - `pip install pymupdf`
 - `uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz`
 - CLI tools: `exiftool`, `qpdf` (`brew install exiftool qpdf`)
+- `pip install pytest` (test runner)
 
 ## Usage
 

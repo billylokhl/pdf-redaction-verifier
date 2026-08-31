@@ -43,10 +43,11 @@ class TestNormalizer:
 class TestVisualOrder:
     def test_shuffled_form_box_digits(self, leaky_pdf) -> None:
         # Digits drawn out of order at one baseline must reconstruct
-        # in visual left-to-right order.
+        # in visual left-to-right order (horizontal variant specifically).
         doc = fitz.open(leaky_pdf)
         try:
-            assert _dom_finds(doc[0], SSN.replace("-", ""))
+            horizontal = verify.extract_visual_text(doc[0])[0]
+            assert SSN.replace("-", "") in verify.normalize_string(horizontal)
         finally:
             doc.close()
 
@@ -58,7 +59,8 @@ class TestVisualOrder:
         for i, digit in enumerate("123456789"):
             page.insert_text((72 + i * 40, 200 + (6 if i % 2 else 0)), digit, fontsize=30)
         try:
-            assert _dom_finds(page, "123456789")
+            horizontal = verify.extract_visual_text(page)[0]
+            assert "123456789" in verify.normalize_string(horizontal)
         finally:
             doc.close()
 

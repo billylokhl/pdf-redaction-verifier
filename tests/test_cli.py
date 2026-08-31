@@ -56,8 +56,8 @@ class TestBaselines:
     def test_leaky_pdf_flags_all_four_layers(self, leaky_pdf, secrets_file) -> None:
         result = run_verify(leaky_pdf, secrets_file)
         assert result.returncode == 1
-        for layer in ("DOM", "OCR", "Metadata", "Binary"):
-            assert layer in result.stdout
+        for layer in ("LAYER: DOM", "LAYER: OCR", "LAYER: Metadata", "LAYER: Binary"):
+            assert layer in result.stdout, f"expected a Finding for {layer}"
 
     def test_clean_pdf_certified(self, clean_pdf, secrets_file) -> None:
         result = run_verify(clean_pdf, secrets_file)
