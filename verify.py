@@ -79,6 +79,10 @@ OCR_DPI: int = 300
 # scales with the median glyph size on the page so large form-box digits
 # with baseline jitter still cluster into one line.
 MIN_LINE_TOLERANCE_PT: float = 4.0
+# Ceiling: prevents a page dominated by large glyphs (watermarks,
+# headers) from inflating the tolerance so much that fine-print lines
+# get merged, scrambling their text and causing false negatives.
+MAX_LINE_TOLERANCE_PT: float = 12.0
 QPDF_CHUNK_BYTES: int = 4 << 20
 # A PDF string literal left unclosed by damaged output must not grow the
 # carry buffer without bound.
@@ -231,7 +235,7 @@ def _reconstruct(
 
     extents = sorted(g[3] if cluster_axis == 1 else g[2] for g in glyphs)
     median_extent = extents[len(extents) // 2]
-    tolerance = max(MIN_LINE_TOLERANCE_PT, 0.5 * median_extent)
+    tolerance = max(MIN_LINE_TOLERANCE_PT, min(MAX_LINE_TOLERANCE_PT, 0.5 * median_extent))
     order_axis = 1 - cluster_axis
 
     ordered = sorted(glyphs, key=lambda g: g[cluster_axis])
@@ -388,16 +392,35 @@ def scan_page_layer(
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warnings.append(f"{layer}: page {page_index + 1} failed ({exc})")
             continue
-        for text in variants:
-            for secret in matcher.search(normalize_string(text)):
-                report.record(layer, secret.name, f"page {page_index + 1} ({note})")
-        # Feed every variant into its own cross-page scanner so vertical/
-        # rotated text spanning a page boundary is caught, not just the
-        # primary horizontal variant.
         for vi, text in enumerate(variants):
+            normalized_full = normalize_string(text)
+            # High-confidence: match each visual line individually.
+            per_line_hits: set[str] = set()
+            for line in text.split("\n"):
+                norm_line = normalize_string(line)
+                if norm_line:
+                    for secret in matcher.search(norm_line):
+                        per_line_hits.add(secret.name)
+                        report.record(layer, secret.name,
+                                      f"page {page_index + 1} ({note})")
+            # Cross-line: the full normalized text fuses all lines into
+            # one string.  A match that appears only here (not within
+            # any single line) may be a coincidental concatenation of
+            # adjacent tokens — the same collision class the Binary
+            # layer explicitly demotes to a manual-review warning.
+            for secret in matcher.search(normalized_full):
+                if secret.name not in per_line_hits:
+                    report.warnings.append(
+                        f"{layer}: page {page_index + 1} contains a cross-line "
+                        f"sequence matching secret {secret.name!r} — possibly "
+                        "a coincidental concatenation of adjacent tokens; "
+                        "manual review recommended"
+                    )
+            # Feed every variant into its own cross-page scanner so
+            # vertical/rotated text spanning a page boundary is caught.
             while len(cross_page_scanners) <= vi:
                 cross_page_scanners.append(RollingScanner(matcher))
-            cross_page_scanners[vi].feed(normalize_string(text))
+            cross_page_scanners[vi].feed(normalized_full)
         if fail_fast and report.leaked:
             break
 
@@ -477,6 +500,12 @@ def _collect_exiftool(
         # Exclude filesystem-derived fields: the local path or timestamps
         # matching a secret is not a leak inside the document.
         if isinstance(payload, list):
+            non_dict_count = sum(1 for e in payload if not isinstance(e, dict))
+            if non_dict_count:
+                report.warnings.append(
+                    f"Metadata: exiftool JSON contained {non_dict_count} "
+                    "non-object entry(ies) — skipped; results may be incomplete"
+                )
             filtered = [
                 {k: v for k, v in entry.items() if k not in EXIFTOOL_FILESYSTEM_FIELDS}
                 for entry in payload
@@ -650,7 +679,13 @@ def load_secrets(secrets_path: Path) -> list[Secret]:
             raise VerifyError(
                 f"secrets.json entry {i} must be an object with 'name' and 'value'"
             )
-        normalized = normalize_string(str(entry["value"]))
+        value = entry["value"]
+        if not isinstance(value, str):
+            raise VerifyError(
+                f"secrets.json entry {i} ({entry['name']!r}): 'value' must be "
+                f"a string, got {type(value).__name__}"
+            )
+        normalized = normalize_string(value)
         if not normalized:
             raise VerifyError(
                 f"secret {entry['name']!r} normalizes to an empty string — "
@@ -740,6 +775,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             kill_hidden_tools(procs)
             print(f"[ERROR] PDF is password-protected: {pdf_path}", file=sys.stderr)
             return 2
+
+        if doc.page_count == 0:
+            report.warnings.append(
+                "PDF contains zero pages — DOM/OCR content layers cannot "
+                "scan an empty document"
+            )
 
         print(f"[*] Scanning {pdf_path.name} ({doc.page_count} page(s)) "
               f"for {len(secrets)} secret(s)...")
