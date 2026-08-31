@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Full suite: Apple Vision OCR + exiftool + qpdf all available, so the
+  # environment-gated tests (baselines, detection gaps, false positives)
+  # actually run instead of skipping.
+  full-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CLI tools
+        run: brew install exiftool qpdf
+      - name: Install Python dependencies
+        run: python -m pip install pymupdf pytest pyobjc-framework-Vision pyobjc-framework-Quartz
+      - name: Run test suite
+        run: python -m pytest tests/ -v -rs
+
+  # Partial suite on Linux: OCR-dependent tests skip with a reason; the
+  # normalizer, DOM extraction, exit-code contract, and qpdf degradation
+  # tests still run. Guards the cross-platform degrade-loudly behavior.
+  partial-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CLI tools
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl qpdf
+      - name: Install Python dependencies
+        run: python -m pip install pymupdf pytest
+      - name: Run test suite
+        run: python -m pytest tests/ -v -rs

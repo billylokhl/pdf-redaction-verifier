@@ -1,5 +1,7 @@
 # PDF Redaction Verifier
 
+[![tests](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml/badge.svg)](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
+
 Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
 four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 (exiftool), and decompressed binary streams (qpdf).
