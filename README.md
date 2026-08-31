@@ -1,6 +1,8 @@
 # PDF Redaction Verifier
 
-[![tests](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml/badge.svg)](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
+CI: [tests workflow](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
+(status badges cannot render while this repository is private; restore
+the `badge.svg` image if it goes public)
 
 Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
 four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
@@ -8,11 +10,11 @@ four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 
 ## Requirements
 
-- Python 3.10+, macOS (Apple Silicon)
-- `pip install pymupdf`
-- `uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz`
+- Python 3.10+ (CI tests 3.10 and 3.12)
+- `pip install -r requirements.txt` (PyMuPDF + pytest, all platforms)
+- macOS only, for the Apple Vision OCR layer:
+  `pip install -r requirements-macos.txt`
 - CLI tools: `exiftool`, `qpdf` (`brew install exiftool qpdf`)
-- `pip install pytest` (test runner)
 
 ## Usage
 
