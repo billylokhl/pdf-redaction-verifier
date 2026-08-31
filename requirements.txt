@@ -1,0 +1,4 @@
+# Core dependencies (all platforms). Pinned for reproducible CI;
+# referenced by README, and both CI jobs.
+pymupdf==1.27.2.3
+pytest==9.0.3

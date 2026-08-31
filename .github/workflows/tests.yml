@@ -1,0 +1,67 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+# Cancel superseded runs on PR branches (each stacks a 10x-billed macOS
+# job); runs on main always complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # Full suite: REQUIRE_FULL_ENV=1 makes conftest.py hard-fail collection
+  # if the Vision bridge, exiftool, or qpdf is unavailable — so the
+  # environment-gated tests can never silently skip on this job.
+  full-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      REQUIRE_FULL_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install CLI tools
+        run: brew install exiftool qpdf
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt -r requirements-macos.txt
+      - name: Run test suite
+        run: python -m pytest tests/ -rs
+
+  # Partial suite on Linux across the supported Python range (README
+  # promises 3.10+): OCR-dependent tests skip with a reason; the
+  # normalizer, DOM extraction, exit-code contract, and qpdf degradation
+  # tests still run. Guards the cross-platform degrade-loudly behavior.
+  partial-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install CLI tools
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl qpdf
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run test suite
+        run: python -m pytest tests/ -rs
+
+  # Single stable check name to mark as required once branch protection
+  # becomes available for this repo.
+  ci-ok:
+    needs: [full-macos, partial-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "all test jobs passed"

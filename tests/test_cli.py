@@ -40,12 +40,19 @@ class TestExitCodeContract:
     def test_missing_target_exits_2(self, secrets_file, tmp_path) -> None:
         assert run_verify(tmp_path / "nope.pdf", secrets_file).returncode == 2
 
-    def test_ascii_stdout_degraded_path_exits_2(self, clean_pdf, secrets_file) -> None:
+    def test_ascii_stdout_degraded_path_exits_2(
+        self, clean_pdf, secrets_file, tmp_path
+    ) -> None:
         # Regression: the ⚠/✖ report glyphs crashed on ASCII stdout and
         # the traceback turned a degraded PASS into exit 1.
+        # PATH points at an empty directory so exiftool/qpdf are missing
+        # on every platform (apt installs them into /usr/bin, so a
+        # /usr/bin:/bin override would not strip them on Linux).
+        empty_path_dir = tmp_path / "empty-path"
+        empty_path_dir.mkdir()
         result = run_verify(
             clean_pdf, secrets_file,
-            env_overrides={"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "ascii"},
+            env_overrides={"PATH": str(empty_path_dir), "PYTHONIOENCODING": "ascii"},
         )
         assert result.returncode == 2
         assert "Traceback" not in result.stderr

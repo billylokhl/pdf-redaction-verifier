@@ -33,6 +33,22 @@ HAS_QPDF = shutil.which("qpdf") is not None
 # A clean document can only exit 0 when every layer can actually run.
 FULL_ENV = HAS_OCR and HAS_EXIFTOOL and HAS_QPDF
 
+# CI's full-environment job sets REQUIRE_FULL_ENV=1 so a broken Vision
+# import or missing tool fails collection loudly instead of letting the
+# environment-gated tests silently skip while the job stays green.
+if os.environ.get("REQUIRE_FULL_ENV") == "1" and not FULL_ENV:
+    _missing = [
+        name for name, ok in [
+            ("PyObjC Vision bridge", HAS_OCR),
+            ("exiftool", HAS_EXIFTOOL),
+            ("qpdf", HAS_QPDF),
+        ] if not ok
+    ]
+    raise RuntimeError(
+        f"REQUIRE_FULL_ENV=1 but the full environment is unavailable: "
+        f"missing {', '.join(_missing)}"
+    )
+
 requires_full_env = pytest.mark.skipif(
     not FULL_ENV,
     reason="needs Apple Vision (macOS), exiftool, and qpdf for a certifiable scan",

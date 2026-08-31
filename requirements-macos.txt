@@ -1,0 +1,6 @@
+# Apple Vision OCR bridge (macOS only). Cocoa provides Foundation, which
+# verify.py imports directly — declared explicitly instead of relying on
+# a transitive install via the Vision package.
+pyobjc-framework-Vision==12.2.2
+pyobjc-framework-Quartz==12.2.2
+pyobjc-framework-Cocoa==12.2.2
