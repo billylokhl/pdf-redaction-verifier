@@ -17,4 +17,9 @@ four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 python verify.py --target document.pdf --secrets secrets.json
 ```
 
-Exit codes: `0` clean, `1` secret detected, `2` operational error / incomplete scan.
+Pass `--fail-fast` to stop at the first confirmed finding instead of
+producing a complete forensic report.
+
+Exit codes: `0` certified clean, `1` secret detected, `2` operational
+error, incomplete scan, or a raw-stream match needing manual review — a
+`2` must never be treated as a clean result.
