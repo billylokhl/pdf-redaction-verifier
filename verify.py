@@ -1342,7 +1342,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
-    """Entry point: compute the verdict, then leave without teardown.
+    """Process entry point: compute the verdict, then leave immediately.
+
+    **This kills the interpreter and never returns.** Call it only as a
+    process entry point; in-process callers (tests, embedding code) want
+    main(), which returns the exit code normally.
 
     By the time main() returns, the verdict is decided and the report is
     written — the only thing left is for the process to carry the exit
@@ -1360,10 +1364,15 @@ def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
     code = main(argv)
     # os._exit skips buffer flushing, and stdout is block-buffered when
     # piped — which is exactly how CI and shell pipelines run this.
+    # AttributeError matters as much as the I/O errors: sys.stdout can be
+    # None or a minimal substitute with no flush(), and if that escaped
+    # here we would skip os._exit and land back in the teardown this
+    # function exists to avoid. main() guards its own stream loop the
+    # same way.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
-        except (ValueError, OSError):  # pragma: no cover - already closed
+        except (AttributeError, ValueError, OSError):  # pragma: no cover
             pass
     os._exit(code)
 

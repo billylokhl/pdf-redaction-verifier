@@ -40,6 +40,9 @@ class TestProcessExit:
         result = run_verify(clean_pdf, secrets_file)
         assert result.returncode in (0, 2)
         assert "[*] Scanning" in result.stdout          # head intact
+        # Assert the marker before indexing, so a regressed verdict fails
+        # readably instead of raising ValueError from str.index.
+        assert "[PASS]" in result.stdout, result.stdout
         # The closing rule is printed after the verdict, so finding it
         # later in the stream proves the tail was flushed, not truncated.
         assert result.stdout.rindex("=" * 70) > result.stdout.index("[PASS]")
@@ -65,6 +68,7 @@ class TestProcessExit:
             capture_output=True, text=True, timeout=300,
         )
         assert result.returncode == 1
+        assert "[FAIL]" in result.stdout, result.stdout
         assert result.stdout.rindex("=" * 70) > result.stdout.index("[FAIL]")
 
 
