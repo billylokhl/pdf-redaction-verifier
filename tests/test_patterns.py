@@ -238,6 +238,81 @@ class TestTiering:
         assert result.returncode != 0, result.stdout
         assert "manual review" in result.stdout or "LAYER:" in result.stdout
 
+    def test_same_line_table_cells_not_a_hard_finding(self, tmp_path) -> None:
+        # Regression: extract_visual_text drops whitespace glyphs, so
+        # three numeric cells in one table ROW concatenated into
+        # '123456789' and hard-failed a clean invoice.
+        path = tmp_path / "table.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 130), "123")
+        page.insert_text((200, 130), "45")
+        page.insert_text((330, 130), "6789")
+        doc.save(path)
+        doc.close()
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        result = run_verify(path, rules)
+        assert result.returncode != 1, result.stdout
+        assert "manual review" in result.stdout  # surfaced, not silenced
+
+    def test_wide_uniform_form_boxes_still_hard(self, tmp_path) -> None:
+        # Guard against over-fencing: per-character form boxes are spaced
+        # widely but UNIFORMLY, so the run must stay intact and hard.
+        path = tmp_path / "boxes.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, digit in enumerate("123456789"):
+            page.insert_text((72 + i * 30, 140), digit, fontsize=14)
+        doc.save(path)
+        doc.close()
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        result = run_verify(path, rules)
+        assert result.returncode == 1, result.stdout
+        assert "LAYER: DOM" in result.stdout
+
+    def test_space_separated_ssn_on_one_line_still_hard(self, tmp_path) -> None:
+        # Guard against over-fencing: ordinary word spaces are narrower
+        # than a character and must not break the run.
+        pdf = _pdf_with_text(tmp_path, "Applicant SSN 123 45 6789 on file")
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        result = run_verify(pdf, rules)
+        assert result.returncode == 1, result.stdout
+        assert "LAYER: DOM" in result.stdout
+
+    def test_adjacent_metadata_values_do_not_fuse(self, tmp_path) -> None:
+        # Regression: metadata string values were joined with a single
+        # '\n', which fits the class regexes' separator slot, so two
+        # unrelated fields fused into a hard credit-card finding.
+        path = tmp_path / "meta_fuse.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean body")
+        doc.set_metadata({"author": "4111 1111 1111", "subject": "1111 batch note"})
+        doc.save(path)
+        doc.close()
+        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
+        result = run_verify(path, rules)
+        assert result.returncode != 1, result.stdout
+
+    def test_second_ocr_variant_yields_hard_finding(self, tmp_path) -> None:
+        # Regression: tier was chosen by variant index, so a leak read
+        # cleanly only by the correction-OFF Vision pass (variants[1] —
+        # the more digit-accurate read) could never be a hard finding.
+        rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        _, patterns = verify.load_rules(rules)
+        doc = fitz.open()
+        doc.new_page()
+        try:
+            report = verify.ScanReport()
+            verify.scan_page_layer(
+                doc, verify.SecretMatcher([verify.Secret("unused", "zzzz")]), report,
+                layer="OCR",
+                extractor=lambda page: [f"SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
+                note="test", patterns=patterns, hard_variants=2,
+            )
+            assert [f.secret_name for f in report.findings] == ["ssn"]
+        finally:
+            doc.close()
+
     def test_adjacent_lines_fusion_not_a_hard_finding(self, tmp_path) -> None:
         # Regression: '\n' satisfied the \s separator slot, fusing digits
         # from unrelated lines into hard findings.

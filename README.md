@@ -40,12 +40,15 @@ Each entry in the `--secrets` JSON array has a `name` and exactly one of:
   of each layer, compiled with `re.MULTILINE` so `^`/`$` anchor per
   line. Rule names must be unique.
 
-Pattern matching is **two-tier**: matches found on a single visual line
-(or inside a single decoded PDF literal, or a decoded metadata value)
-are hard findings (exit 1); matches that only appear when lines,
-columns, adjacent literals, or pages are fused together are demoted to
-manual-review warnings (exit 2) — coincidental digit fusion must never
-hard-fail a clean document, and a possible leak must never be silent.
+Pattern matching is **two-tier**. Hard findings (exit 1) come only from
+surfaces where the matched characters are genuinely adjacent: a single
+visual line (column gaps split a line, so the cells of a table row are
+never treated as adjacent), a single decoded PDF literal, one decoded
+metadata value, or either Apple Vision reading pass. Matches that appear
+only once lines, columns, adjacent literals, or pages are fused together
+are demoted to manual-review warnings (exit 2) — coincidental digit
+fusion must never hard-fail a clean document, and a possible leak must
+never be silent.
 Samples in the report are masked (at most 4 trailing characters, never
 more than half the match) and control characters are sanitized.
 

@@ -477,8 +477,47 @@ def _reconstruct(
     lines: list[str] = []
     for cluster in clusters:
         cluster.sort(key=lambda g: g[order_axis])
-        lines.append("".join(g[4] for g in cluster))
+        lines.append(_join_cluster(cluster, order_axis))
     return "\n".join(lines)
+
+
+def _join_cluster(
+    cluster: list[tuple[float, float, float, float, str]], order_axis: int
+) -> str:
+    """Join one visual line's glyphs, breaking it at column gaps.
+
+    Whitespace glyphs are dropped during extraction, so without this a
+    table ROW ('123' | '45' | '6789' in three columns) would concatenate
+    into '123456789' and read as one contiguous number. A gap is treated
+    as a column break — emitted as a newline, which no single [-\\s.]
+    separator slot can cross — when it is BOTH a large outlier against the
+    other gaps on this line AND wider than a character. Both conditions
+    matter: form boxes space every glyph widely but *uniformly* (no
+    outlier, so the run stays intact), while ordinary word spaces are
+    narrower than a character (so 'SSN 123 45 6789' stays intact too).
+    """
+    if len(cluster) < 2:
+        return "".join(g[4] for g in cluster)
+
+    extent_index = 2 if order_axis == 0 else 3
+    gaps: list[float] = []
+    for prev, nxt in zip(cluster, cluster[1:]):
+        prev_end = prev[order_axis] + prev[extent_index] / 2.0
+        next_start = nxt[order_axis] - nxt[extent_index] / 2.0
+        gaps.append(max(0.0, next_start - prev_end))
+
+    ordered_gaps = sorted(gaps)
+    median_gap = ordered_gaps[len(ordered_gaps) // 2]
+    extents = sorted(g[extent_index] for g in cluster)
+    median_extent = extents[len(extents) // 2]
+    threshold = max(3.0 * median_gap, 1.5 * median_extent)
+
+    out = [cluster[0][4]]
+    for gap, glyph in zip(gaps, cluster[1:]):
+        if gap > threshold:
+            out.append("\n")
+        out.append(glyph[4])
+    return "".join(out)
 
 
 def extract_visual_text(page: fitz.Page) -> list[str]:
@@ -594,6 +633,7 @@ def scan_page_layer(
     extractor: Callable[[fitz.Page], list[str]],
     note: str,
     patterns: Sequence[PatternRule] = (),
+    hard_variants: int = 1,
     fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
@@ -601,11 +641,16 @@ def scan_page_layer(
     Every extracted variant is searched per page; *each* variant is
     additionally streamed through its own RollingScanner so secrets that
     span a page boundary are still caught — including secrets in vertical
-    or rotated text (reported without a page number). Pattern rules match
-    per visual line of the primary variant (hard findings, aggregated per
-    rule across pages); matches that appear only in fused multi-line
-    text, secondary variants, or across page boundaries are demoted to
-    manual-review warnings.
+    or rotated text (reported without a page number).
+
+    Pattern rules match per visual line of the first *hard_variants*
+    variants — those the extractor produces in natural reading order —
+    giving hard findings aggregated per rule across pages. Matches that
+    appear only in fused multi-line text, in reconstruction-derived
+    variants (DOM's vertical column orders), or across page boundaries
+    are demoted to manual-review warnings. Callers set *hard_variants* to
+    the number of leading variants that are genuine reads rather than
+    reconstructions: 1 for DOM, all of them for OCR.
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
@@ -659,8 +704,9 @@ def scan_page_layer(
         page_hard: dict[str, str] = {}
         page_soft: dict[str, str] = {}
         if variants:
-            for line in variants[0].split("\n"):
-                page_hard.update(match_patterns(line, patterns, page_hard))
+            for text in variants[:hard_variants]:
+                for line in text.split("\n"):
+                    page_hard.update(match_patterns(line, patterns, page_hard))
             for text in variants:
                 seen = set(page_hard) | set(page_soft)
                 if len(seen) == len(patterns):
@@ -702,9 +748,9 @@ def scan_page_layer(
             continue
         where = _pages_label(pages) if pages else "across page boundaries"
         report.warnings.append(
-            f"{layer}: {where}: sequence matching pattern rule {name!r} only "
-            f"appears in fused lines/columns (sample {mask(sample)}) — possibly "
-            "coincidental digit fusion; manual review recommended"
+            f"{layer}: {where}: sequence matching pattern rule {name!r} appears "
+            f"only when lines, columns or pages are fused (sample {mask(sample)})"
+            " — possibly coincidental concatenation; manual review recommended"
         )
 
 
@@ -838,7 +884,11 @@ def _collect_exiftool(
         # escaping); patterns need DECODED values — json.dumps escapes
         # \n/\t inside values, which would break \s separator slots — and
         # string values only, so numeric fields can't false-positive.
-        value_text = "\n".join(_iter_json_strings(filtered))
+        # Fence values with a blank line: a single newline would satisfy
+        # the class regexes' [-\s.] separator slot and let two unrelated
+        # fields fuse into a hard finding (as the literal fence in
+        # _feed_pdf_strings already guards against).
+        value_text = "\n\n".join(_iter_json_strings(filtered))
         for secret in matcher.search(
             normalize_string(json.dumps(filtered, ensure_ascii=False))
         ):
@@ -1251,7 +1301,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     doc, matcher, report,
                     layer="OCR", extractor=extract_ocr_text,
                     note=f"Apple Vision @ {OCR_DPI} dpi",
-                    patterns=patterns, fail_fast=args.fail_fast,
+                    patterns=patterns,
+                    # Both Vision passes (language correction on and off)
+                    # are independent natural-order reads of the same
+                    # pixels, not reconstructions — correction-off is in
+                    # fact the more reliable read for digit strings — so
+                    # both are eligible for hard findings.
+                    hard_variants=2,
+                    fail_fast=args.fail_fast,
                 )
             except Exception as exc:
                 report.warnings.append(f"OCR: layer crashed ({exc}) — NOT fully scanned")
