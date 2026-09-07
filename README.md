@@ -8,6 +8,9 @@ Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
 four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 (exiftool), and decompressed binary streams (qpdf).
 
+[DESIGN.md](DESIGN.md) explains why it is built this way — the exit-code
+contract, the two-tier matching model, and the known limitations.
+
 ## Installation
 
 Python 3.10+ (CI tests 3.10 and 3.12). All dependencies — including the

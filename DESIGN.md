@@ -1,0 +1,188 @@
+# Design
+
+Why this tool is built the way it is. For *how to use it*, see the
+[README](README.md); for *what it does*, read `verify.py`.
+
+## Problem
+
+A redaction tool draws a black box. It does not necessarily remove the
+text underneath, the copy in the metadata, or the copy in an orphaned
+object left by an incremental save. Someone then has to answer: **is this
+document actually safe to release?**
+
+Answering it by opening the PDF and looking is exactly the method that
+fails, because the failure modes are invisible to a reader. This tool
+answers it mechanically, and its verdict is meant to gate a release.
+
+## The central invariant: fail closed
+
+Everything else follows from this. Three exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Certified clean — every layer ran, nothing found |
+| `1` | A secret or pattern was found |
+| `2` | Cannot certify — an error, a layer that could not run, or a match needing human review |
+
+**A `2` is not a pass.** If `qpdf` is missing, if the OCR bridge fails to
+import, if qpdf exits non-zero and may have truncated its output, if a
+match is plausible but might be coincidence — the answer is `2`, never
+`0`. A scanner that silently downgrades coverage and still says "clean"
+is worse than no scanner, because it converts an unknown into a false
+assurance.
+
+The corollary is that `1` must be trustworthy too. A tool that cries wolf
+on clean documents gets ignored, and then it may as well not exist. Most
+of the design below is about keeping `1` and `0` both honest, with `2` as
+the pressure valve for everything uncertain.
+
+## Four independent layers
+
+No single extraction method sees everything, so four run and any one can
+raise a finding.
+
+| Layer | Sees | Catches what the others miss |
+| --- | --- | --- |
+| **DOM** | Text objects, positioned | Text under a redaction box; glyphs drawn out of order |
+| **OCR** | Rendered pixels (Apple Vision) | Text with no text objects: scans, vector outlines |
+| **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
+| **Binary** | Decompressed object streams (qpdf) | Orphaned objects, incremental-update leftovers |
+
+They are independent on purpose: a leak that defeats extraction usually
+does not also defeat rasterization, and vice versa. The metadata and
+binary subprocesses start before the in-process layers so they run
+concurrently.
+
+## Matching: two kinds of rule
+
+### Value rules — a known secret
+
+Both the secret and the extracted text are **normalized** before
+comparison: NFKD decomposition, combining marks stripped, casefolded,
+then reduced to alphanumerics. `123-45-6789`, `123 45 6789`, and
+`１２３－４５－６７８９` all become `123456789`.
+
+This is aggressive on purpose. The threat is a *known* string appearing
+in *any* rendering, and a specific 9-digit sequence appearing by accident
+is vanishingly unlikely — so recall is worth far more than precision
+here.
+
+### Pattern rules — a class of secret
+
+Built-in classes (`ssn`, `credit-card`, `email`, `us-phone`) and custom
+regexes answer "is there *any* SSN in here", where the value is not known
+in advance.
+
+Normalization cannot be reused here, because it destroys the very
+structure the pattern depends on. So patterns match raw text, with two
+compensations: input is folded (NFKC plus a dash/space table) so Unicode
+look-alikes cannot evade an ASCII regex, and each class carries a
+**validator** — Luhn for cards, SSA area/group/serial rules for SSNs,
+NANP for phones — that rejects structurally impossible matches.
+
+Validators matter more than they might seem. `\d{9}` matches roughly
+0.0000001% of random text but ~89% of it passes naive SSN shape checks;
+the validators are what keeps the false-positive rate survivable.
+
+## The two-tier model
+
+This is the least obvious part of the design, and the part that took the
+most iteration.
+
+A class regex matches *shape*, so it fires on any coincidence with that
+shape. Extraction manufactures coincidences: whitespace glyphs are
+dropped during reconstruction, lines get joined, adjacent PDF string
+literals sit back to back, pages concatenate. Fuse enough unrelated
+digits and you can synthesize a Luhn-valid card out of a timestamp and an
+invoice column.
+
+The resolution is that **not all matches are equally trustworthy**:
+
+- **Hard findings (exit 1)** come only from surfaces where the matched
+  characters were genuinely adjacent in the document: one visual line,
+  one decoded PDF literal, one metadata value, one OCR reading pass.
+- **Soft findings (exit 2, manual-review warnings)** come from anything
+  that required fusing separate things: multi-line text, vertical column
+  reconstructions, adjacent literals, page boundaries.
+
+Neither tier is silent. A real leak split across a page break still
+surfaces — as a `2` demanding review rather than a `1` asserting a
+breach. That is the correct confidence level for the evidence.
+
+**Fences** are how the hard tier stays honest. The class regexes allow at
+most one separator character between digit groups, so inserting *two*
+newlines between two pieces of text makes it impossible for one match to
+span both. Decoded literals are fenced this way; so are metadata values;
+and reconstructed lines are split at column gaps.
+
+Detecting a column gap is subtle, because "wide gap" alone is wrong: a
+per-character form box spaces every glyph widely, and its digits *are*
+one number. The distinguishing signal is that form-box gaps are wide but
+**uniform**, while table columns are wide **outliers** against tight
+intra-cell spacing. So a gap breaks a line only when it is both a large
+outlier on that line and wider than a character. Ordinary word spaces are
+narrower than a character and never break.
+
+## Layout reconstruction
+
+Content-stream order is not reading order. Form-box digits are frequently
+drawn out of sequence, so naive extraction returns `478593612` for a
+document that plainly reads `123456789`.
+
+Reconstruction sorts glyphs geometrically: cluster into lines by
+perpendicular position, then order along the line. The clustering
+tolerance **scales with glyph size** rather than being a fixed constant —
+a fixed 4pt tolerance split 30pt digits with 6pt baseline jitter into
+interleaved pseudo-lines — with a ceiling so a large watermark cannot
+inflate the tolerance enough to merge body text.
+
+Because rotated text produces vertical glyph runs that a horizontal sort
+scrambles, three variants are produced: horizontal, vertical top-down,
+and vertical bottom-up. Only the horizontal one is a genuine reading
+order, so only it feeds the hard tier; the vertical ones are
+reconstructions and their matches are soft.
+
+OCR is different: both Apple Vision passes (language correction on and
+off) are genuine full-page reads of the same pixels, not reconstructions,
+so both feed the hard tier. Correction-off is run precisely because the
+language model can "correct" digits in codes and serial numbers.
+
+## Bounded resources
+
+The tool must survive documents that are hostile or merely huge. qpdf
+output is streamed in chunks rather than buffered, with rolling scanners
+that keep only enough tail to catch matches spanning a boundary. Pattern
+feeds are batched (per-literal regex sweeps measured ~100x slower), rules
+already matched are skipped, and every subprocess has a deadline enforced
+with `select` so a stalled tool cannot hang the run. Report samples are
+masked — at most four trailing characters, never more than half — and
+control characters are stripped, so a crafted PDF cannot inject escape
+sequences into the terminal and the report cannot re-leak what it found.
+
+## Known limitations
+
+- **OCR is macOS-only.** Apple Vision has no portable equivalent here;
+  elsewhere that layer reports unavailable and the run exits `2`.
+- **Encrypted PDFs are rejected** rather than scanned.
+- **Pattern rules cannot span pages as hard findings** — they surface as
+  review warnings. Value rules do span pages.
+- **Custom regexes are trusted.** A pathological pattern can be slow; the
+  built-in classes are anchored to avoid quadratic backtracking, but a
+  user-supplied one is the user's responsibility.
+- **A pattern class is a heuristic, not a proof.** `us-phone` will match
+  a 10-digit order number that satisfies NANP rules. Tune the rules file
+  to the document set.
+
+## Testing
+
+Every test pins a bug that was once real, and its comment says which. The
+suite is the accumulated memory of the failure modes above — cross-page
+splits, jittered form boxes, rotated text, fullwidth digits, truncated
+qpdf output, path-based false positives, table-column fusion, PDF date
+stamps passing Luhn.
+
+Two properties are enforced structurally rather than by convention:
+fixtures are generated at runtime so no sensitive binary is ever
+committed, and CI's macOS job sets `REQUIRE_FULL_ENV=1` so a broken OCR
+bridge fails the build instead of quietly skipping the tests that depend
+on it. A green run means the tests actually ran.
