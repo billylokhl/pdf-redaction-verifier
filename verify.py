@@ -1216,7 +1216,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             pass
 
     parser = argparse.ArgumentParser(
-        prog="verify.py",
+        # prog is left to argparse so --help names however it was
+        # invoked: "verify.py" as a script, "pdf-verify" as the
+        # installed console script.
         description="Forensic PDF verification: detect secrets across DOM, "
         "OCR, metadata, and binary-stream layers.",
     )

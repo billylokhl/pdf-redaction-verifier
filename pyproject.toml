@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-redaction-verifier"
+version = "0.1.0"
+description = "Forensic CLI that detects sensitive strings and pattern classes inside a PDF across DOM, OCR, metadata, and binary-stream layers"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# Pinned for reproducibility: this is a verification tool whose verdict
+# gates releases, so a silent upstream change must not change a verdict.
+dependencies = [
+    "pymupdf==1.27.2.3",
+    # Apple Vision OCR bridge. The marker is the whole point: these are
+    # required on macOS (without them the OCR layer degrades and the run
+    # exits 2, never a certified clean) and impossible anywhere else, so
+    # the platform split is declared here instead of living in a second
+    # requirements file someone has to remember to install.
+    # Cocoa is listed explicitly because verify.py imports Foundation
+    # directly rather than relying on a transitive pull.
+    "pyobjc-framework-Vision==12.2.2; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz==12.2.2; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.0.3"]
+
+[project.scripts]
+pdf-verify = "verify:main"
+
+[tool.setuptools]
+py-modules = ["verify"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

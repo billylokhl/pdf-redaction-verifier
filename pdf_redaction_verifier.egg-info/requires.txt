@@ -1,0 +1,9 @@
+pymupdf==1.27.2.3
+
+[:sys_platform == "darwin"]
+pyobjc-framework-Vision==12.2.2
+pyobjc-framework-Quartz==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+
+[test]
+pytest==9.0.3

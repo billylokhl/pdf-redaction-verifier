@@ -1,3 +1,16 @@
+Metadata-Version: 2.4
+Name: pdf-redaction-verifier
+Version: 0.1.0
+Summary: Forensic CLI that detects sensitive strings and pattern classes inside a PDF across DOM, OCR, metadata, and binary-stream layers
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pymupdf==1.27.2.3
+Requires-Dist: pyobjc-framework-Vision==12.2.2; sys_platform == "darwin"
+Requires-Dist: pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
+Requires-Dist: pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
+Provides-Extra: test
+Requires-Dist: pytest==9.0.3; extra == "test"
+
 # PDF Redaction Verifier
 
 CI: [tests workflow](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
@@ -8,48 +21,19 @@ Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
 four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
 (exiftool), and decompressed binary streams (qpdf).
 
-## Installation
+## Requirements
 
-Python 3.10+ (CI tests 3.10 and 3.12). All dependencies — including the
-macOS-only Apple Vision OCR bridge, selected automatically by a platform
-marker — are declared in `pyproject.toml`.
-
-The tool also shells out to two **external binaries**, `exiftool` and
-`qpdf`, for the Metadata and Binary layers. pip and uv cannot install
-those; without them the scan degrades and exits 2 rather than certifying
-a document clean. Pick whichever install route suits you:
-
-**conda** — the only single-command route, because conda-forge ships the
-two binaries as well as Python:
-
-```bash
-conda env create -f environment.yml && conda activate pdf-redaction-verifier
-```
-
-**uv** — fast, but install the binaries separately:
-
-```bash
-brew install exiftool qpdf && uv pip install -e '.[test]'
-```
-
-**pip** — same, with pip:
-
-```bash
-brew install exiftool qpdf && pip install -e '.[test]'
-```
-
-On Debian/Ubuntu the binaries are `sudo apt-get install libimage-exiftool-perl qpdf`.
-Drop `[test]` if you do not need the test suite. The Apple Vision OCR
-layer is macOS-only; elsewhere that layer reports itself as unavailable
-and the run exits 2.
+- Python 3.10+ (CI tests 3.10 and 3.12)
+- `pip install -r requirements.txt` (PyMuPDF + pytest, all platforms)
+- macOS only, for the Apple Vision OCR layer:
+  `pip install -r requirements-macos.txt`
+- CLI tools: `exiftool`, `qpdf` (`brew install exiftool qpdf`)
 
 ## Usage
 
 ```
-pdf-verify --target document.pdf --secrets secrets.json
+python verify.py --target document.pdf --secrets secrets.json
 ```
-
-`python verify.py --target ... --secrets ...` works too, installed or not.
 
 Pass `--fail-fast` to stop at the first confirmed finding instead of
 producing a complete forensic report.
@@ -88,7 +72,7 @@ error, incomplete scan, or a raw-stream match needing manual review — a
 ## Tests
 
 ```
-pytest
+python -m pytest tests/
 ```
 
 Every test pins a previously confirmed bug (detection gaps, false
