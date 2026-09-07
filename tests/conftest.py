@@ -25,6 +25,8 @@ sys.path.insert(0, str(REPO_ROOT))
 import verify  # noqa: E402
 
 SSN = "123-45-6789"
+# Placeholder values only — never a real person's data. 123-45-6789 is
+# the canonical example SSN; the DOB is the Unix epoch.
 DOB = "01/01/1970"
 
 HAS_OCR = verify._OCR_IMPORTS_OK
