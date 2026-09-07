@@ -1,6 +1,8 @@
 # PDF Redaction Verifier
 
-[![tests](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
+CI: [tests workflow](https://github.com/billylokhl/pdf-redaction-verifier/actions/workflows/tests.yml)
+(status badges cannot render while this repository is private; restore
+the `badge.svg` image if it goes public)
 
 Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
 four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
