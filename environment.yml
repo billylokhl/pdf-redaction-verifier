@@ -1,0 +1,24 @@
+# Conda environment for the verifier.
+#
+# Conda's advantage here is not the Python packages — it is that
+# conda-forge ships `exiftool` and `qpdf`, the two external binaries the
+# Metadata and Binary layers shell out to. pip and uv cannot install
+# those at all, so on a machine without Homebrew (or on Windows/Linux
+# without root) this is the only one-command install of the full tool.
+#
+#   conda env create -f environment.yml
+#   conda activate pdf-redaction-verifier
+#
+# Python dependencies deliberately come from pyproject.toml via the pip
+# section below rather than being listed here a second time: one source
+# of truth, and the platform markers (macOS-only Vision OCR) still apply.
+name: pdf-redaction-verifier
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10,<3.14
+  - qpdf
+  - exiftool
+  - pip
+  - pip:
+      - -e .[test]

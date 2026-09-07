@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+verify.py
+pdf_redaction_verifier.egg-info/PKG-INFO
+pdf_redaction_verifier.egg-info/SOURCES.txt
+pdf_redaction_verifier.egg-info/dependency_links.txt
+pdf_redaction_verifier.egg-info/entry_points.txt
+pdf_redaction_verifier.egg-info/requires.txt
+pdf_redaction_verifier.egg-info/top_level.txt
+tests/test_cli.py
+tests/test_extraction.py
+tests/test_patterns.py
