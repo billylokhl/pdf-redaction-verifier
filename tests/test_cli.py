@@ -13,12 +13,59 @@ from pathlib import Path
 import fitz
 import pytest
 
+import subprocess
+import sys
+
 from .conftest import (
+    REPO_ROOT,
     SSN,
     requires_full_env,
     requires_qpdf,
     run_verify,
 )
+
+
+class TestProcessExit:
+    """The exit code is the contract; teardown must not be able to eat it.
+
+    run_cli calls os._exit so Apple Vision's native teardown cannot
+    SIGKILL the process after the verdict is decided (seen in CI as a
+    full report on stdout followed by -9). That skips buffer flushing,
+    so these tests pin the two things it could break.
+    """
+
+    def test_whole_report_reaches_a_pipe(self, clean_pdf, secrets_file) -> None:
+        # stdout is block-buffered when piped — exactly how CI runs this
+        # — so an unflushed os._exit would truncate the tail.
+        result = run_verify(clean_pdf, secrets_file)
+        assert result.returncode in (0, 2)
+        assert "[*] Scanning" in result.stdout          # head intact
+        # The closing rule is printed after the verdict, so finding it
+        # later in the stream proves the tail was flushed, not truncated.
+        assert result.stdout.rindex("=" * 70) > result.stdout.index("[PASS]")
+
+    def test_exit_code_survives_for_each_verdict(
+        self, clean_pdf, leaky_pdf, secrets_file, tmp_path
+    ) -> None:
+        assert run_verify(leaky_pdf, secrets_file).returncode == 1
+        assert run_verify(tmp_path / "nope.pdf", secrets_file).returncode == 2
+        # A negative return code means killed by a signal — the exact
+        # failure this hardening exists to prevent.
+        assert run_verify(clean_pdf, secrets_file).returncode >= 0
+
+    def test_console_script_path_is_hardened(self, leaky_pdf, secrets_file) -> None:
+        # The pdf-verify console script calls verify:run_cli, not main(),
+        # so it must carry the same exit code and flush behaviour.
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); "
+             "import verify; verify.run_cli(sys.argv[2:])",
+             str(REPO_ROOT), "--target", str(leaky_pdf),
+             "--secrets", str(secrets_file)],
+            capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 1
+        assert result.stdout.rindex("=" * 70) > result.stdout.index("[FAIL]")
 
 
 class TestExitCodeContract:

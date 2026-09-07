@@ -60,7 +60,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Collection, Iterator, Sequence
+from typing import Any, Callable, Collection, Iterator, NoReturn, Sequence
 
 # ──────────────────────────────────────────────────────────────────────────
 # Third-party imports (fail with a clear message, not a traceback)
@@ -1341,5 +1341,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
+    """Entry point: compute the verdict, then leave without teardown.
+
+    By the time main() returns, the verdict is decided and the report is
+    written — the only thing left is for the process to carry the exit
+    code out. Interpreter shutdown is a surprisingly risky place to do
+    that here: Apple Vision's native teardown can SIGKILL the process on
+    virtualized macOS (observed in CI as a complete report on stdout
+    followed by -9), which would hand a release gate a crash instead of
+    the "cannot certify" answer the tool had already reached.
+
+    So flush explicitly and call os._exit, which skips atexit handlers,
+    garbage collection, and native teardown. That trade is only safe
+    because nothing here needs cleanup: findings are already printed and
+    the PDF and subprocesses are closed by the time main() returns.
+    """
+    code = main(argv)
+    # os._exit skips buffer flushing, and stdout is block-buffered when
+    # piped — which is exactly how CI and shell pipelines run this.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (ValueError, OSError):  # pragma: no cover - already closed
+            pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_cli()
