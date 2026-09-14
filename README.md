@@ -59,6 +59,49 @@ producing a complete forensic report.
 
 ## Rules file
 
+The `--secrets` argument accepts either this tool's JSON rules array or a
+a redaction tool's `redact_config.yaml`
+(selected by the `.yaml`/`.yml` suffix), so one file can drive both
+redaction and verification without the two drifting apart.
+
+### Shared YAML config
+
+| YAML key | Becomes |
+| --- | --- |
+| `exact_values` | value rules (normalized matching) |
+| `patterns` | pattern rules, compiled `IGNORECASE` — exactly the flags the redactor uses, so a shared rule means the same thing in both tools |
+| `entity_types` | **this tool's own** built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card` |
+| `backend`, `model`, `llm_url`, `scrub_metadata` | ignored |
+
+The remaining entity types — `person_name`, `address`, `date_of_birth`,
+`account_number`, `drivers_license`, `passport` — are found by LLM
+judgement and have no regex equivalent. They are **not silently
+dropped**: the run warns that it cannot verify them and exits `2`, never
+`0`, so a shared config cannot imply coverage it does not have. `phone`
+is only *partly* verifiable (this tool checks NANP numbers only) and says
+so. An entity type outside the redactor's ten is a **hard error**, not a
+coverage gap — a typo must be fixed, not waved through.
+
+Two YAML details the shared workflow depends on:
+
+- **Omitting `entity_types` means all ten**, matching the redactor's own
+  default — so an omitted key produces the same scope warning a full
+  list would, rather than quietly scanning for nothing.
+- **Quote your values and patterns.** YAML reads unquoted `00123456` as
+  octal `42798` and `Invoice #[0-9]{6}` as just `Invoice`. This tool
+  keeps the literal text and warns, but the redactor reading the same
+  file does not — it removes the coerced string. An unquoted value
+  therefore forces exit `2` until you quote it in the config.
+
+Verification stays independent where it matters: `entity_types` map to
+this tool's regexes and validators, never the redactor's, and the four
+layers search places the redactor may never have touched. What a shared
+file *cannot* tell you is whether the rule set itself was complete — it
+proves the redactor did what it was told, not that it was told enough.
+
+### JSON rules file
+
+
 Each entry in the `--secrets` JSON array has a `name` and exactly one of:
 
 - `"value"` — a known secret string. Matched through normalization, so

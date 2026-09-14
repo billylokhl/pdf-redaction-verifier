@@ -4,6 +4,7 @@ per-layer detection, tiering, masking, and evasion resistance."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import fitz
@@ -74,8 +75,8 @@ class TestLoader:
             {"name": "any ssn", "class": "ssn"},
             {"name": "case id", "pattern": r"CASE-\d{4}"},
         ])
-        secrets, patterns = verify.load_rules(path)
-        assert len(secrets) == 1 and len(patterns) == 2
+        rules = verify.load_rules(path)
+        assert len(rules.secrets) == 1 and len(rules.patterns) == 2
 
 
 class TestValidators:
@@ -120,8 +121,7 @@ class TestMatchSemantics:
     SSN_RULES = None  # built per test via load
 
     def _patterns(self, tmp_path, rules):
-        _, patterns = verify.load_rules(_rules_file(tmp_path, rules))
-        return patterns
+        return verify.load_rules(_rules_file(tmp_path, rules)).patterns
 
     def test_greedy_rejection_retries_embedded_match(self, tmp_path) -> None:
         # Regression: validator-rejected greedy superspan swallowed the
@@ -298,7 +298,7 @@ class TestTiering:
         # cleanly only by the correction-OFF Vision pass (variants[1] —
         # the more digit-accurate read) could never be a hard finding.
         rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        _, patterns = verify.load_rules(rules)
+        patterns = verify.load_rules(rules).patterns
         doc = fitz.open()
         doc.new_page()
         try:
@@ -337,3 +337,219 @@ class TestPatternCleanPass:
         rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
         result = run_verify(clean_pdf, rules)
         assert result.returncode == 0, result.stdout
+
+
+class TestSharedYamlConfig:
+    """A redactor redact_config.yaml doubles as a rules file, so the
+    redactor and the verifier cannot drift out of sync."""
+
+    def _yaml(self, tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "redact_config.yaml"
+        path.write_text(body)
+        return path
+
+    def test_maps_all_three_sections(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, """
+entity_types:
+  - ssn
+  - email
+  - person_name
+  - address
+exact_values:
+  - "Jane Doe"
+  - "123-45-6789"
+patterns:
+  - '\\d{3}-\\d{2}-\\d{4}'
+backend: lmstudio
+model: gemma-4-26b-a4b-qat
+scrub_metadata: true
+""")
+        rules = verify.load_rules(path)
+        assert len(rules.secrets) == 2                      # exact_values
+        assert len(rules.patterns) == 3                     # 1 regex + ssn + email
+        # Unmappable entity types are recorded, never silently dropped.
+        assert sorted(rules.unverifiable) == ["address", "person_name"]
+
+    def test_entity_types_use_our_own_classes(self, tmp_path) -> None:
+        # Independence: an entity_type maps to THIS tool's regex and
+        # validator, not to the redactor's pattern for the same concept.
+        path = self._yaml(tmp_path, "entity_types: [ssn]\n")
+        patterns = verify.load_rules(path).patterns
+        assert len(patterns) == 1
+        assert patterns[0].validator is verify._valid_ssn
+        assert patterns[0].regex.pattern == verify.BUILTIN_PATTERN_CLASSES["ssn"][0]
+
+    def test_unverifiable_types_force_exit_2(self, tmp_path) -> None:
+        # A clean document must NOT certify as 0 when the config asked
+        # for categories this tool cannot search for.
+        pdf = _pdf_with_text(tmp_path, "nothing sensitive here")
+        path = self._yaml(tmp_path, "entity_types: [person_name]\nexact_values: []\n")
+        result = run_verify(pdf, path)
+        assert result.returncode == 2, result.stdout
+        assert "CANNOT verify" in result.stdout
+        assert "person_name" in result.stdout
+
+    def test_exact_values_still_normalize(self, tmp_path) -> None:
+        # YAML-sourced value rules get the same normalization as JSON
+        # ones, so separator variants still match.
+        pdf = _pdf_with_text(tmp_path, "SSN on file: 123 45 6789")
+        path = self._yaml(tmp_path, 'exact_values:\n  - "123-45-6789"\n')
+        result = run_verify(pdf, path)
+        assert result.returncode == 1
+        assert "LAYER: DOM" in result.stdout
+
+    def test_yaml_patterns_are_case_insensitive(self, tmp_path) -> None:
+        # The redactor compiles its patterns IGNORECASE; a shared file
+        # must not match differently in the two tools.
+        path = self._yaml(tmp_path, "patterns:\n  - 'case-[0-9]{4}'\n")
+        patterns = verify.load_rules(path).patterns
+        assert "patterns[0]" in verify.match_patterns("Ref CASE-8912", patterns)
+
+    def test_malformed_yaml_exits_2_not_1(self, tmp_path) -> None:
+        pdf = _pdf_with_text(tmp_path, "clean")
+        path = self._yaml(tmp_path, "exact_values: 'not-a-list'\n")
+        assert run_verify(pdf, path).returncode == 2
+
+    def test_invalid_regex_in_yaml_rejected(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, "patterns:\n  - '(unclosed'\n")
+        with pytest.raises(verify.VerifyError, match="invalid regex"):
+            verify.load_rules(path)
+
+
+class TestYamlScalarCoercion:
+    """YAML implicit typing must never change what gets searched for."""
+
+    def _yaml(self, tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "cfg.yaml"
+        path.write_text(body)
+        return path
+
+    def test_unquoted_leading_zero_is_not_octal(self, tmp_path) -> None:
+        # Regression: `00123456` parsed as octal int 42798, so the tool
+        # searched for "42798" and CERTIFIED CLEAN a document containing
+        # the real account number.
+        path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
+        assert [s.normalized for s in verify.load_rules(path).secrets] == ["00123456"]
+
+    def test_scalars_keep_their_literal_text(self, tmp_path) -> None:
+        path = self._yaml(
+            tmp_path, "exact_values:\n  - 1.50\n  - yes\n  - 0123\n"
+        )
+        # 1.50 must not become "1.5", yes must not become "True".
+        assert [s.normalized for s in verify.load_rules(path).secrets] == [
+            "150", "yes", "0123",
+        ]
+
+    def test_coercion_divergence_is_warned(self, tmp_path) -> None:
+        # A redactor sharing the file reads it with a plain safe_load and
+        # would remove a different string — say so, and never exit 0.
+        path = self._yaml(tmp_path, "exact_values:\n  - 0123\n")
+        rules = verify.load_rules(path)
+        assert any("unquoted" in w for w in rules.warnings)
+
+    def test_quoted_values_raise_no_warning(self, tmp_path) -> None:
+        # Other warnings are expected here (an absent entity_types key
+        # means the full upstream roster); only the coercion one must go.
+        path = self._yaml(tmp_path, 'exact_values:\n  - "0123"\n')
+        assert not any("unquoted" in w for w in verify.load_rules(path).warnings)
+
+    def test_unquoted_secret_is_still_detected(self, tmp_path) -> None:
+        pdf = _pdf_with_text(tmp_path, "Account: 00123456 on file")
+        path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
+        result = run_verify(pdf, path)
+        assert result.returncode == 1, result.stdout
+        assert "LAYER: DOM" in result.stdout
+
+
+class TestYamlAdapterFidelity:
+    """The shared config must never make the verifier scan for less than
+    the redactor was told to remove."""
+
+    def _yaml(self, tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "redact_config.yaml"
+        path.write_text(body)
+        return path
+
+    def test_merge_keys_are_honored(self, tmp_path) -> None:
+        # Regression: stripping YAML's implicit resolvers to stop scalar
+        # coercion also removed the merge resolver, so `<<: *anchor`
+        # silently dropped whole sections the redactor did see.
+        path = self._yaml(tmp_path, 'base: &b\n  exact_values: ["SECRET-A"]\n'
+                                    "<<: *b\nentity_types: [ssn]\n")
+        assert [s.normalized for s in verify.load_rules(path).secrets] == ["secreta"]
+
+    def test_absent_entity_types_means_the_full_roster(self, tmp_path) -> None:
+        # Upstream defaults to every type when the key is absent; reading
+        # it as "none" certified clean what was never scanned.
+        rules = verify.load_rules(self._yaml(tmp_path, 'exact_values: ["x1"]\n'))
+        assert len(rules.unverifiable) == 6
+        assert len(rules.patterns) == len(verify.ENTITY_TYPE_TO_CLASS)
+
+    def test_unknown_top_level_key_is_warned(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, 'exact_value: ["x"]\nentity_types: [email]\n')
+        assert any("unrecognized" in w for w in verify.load_rules(path).warnings)
+
+    def test_duplicate_key_rejected(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, 'exact_values: ["a1"]\nexact_values: ["b2"]\n')
+        with pytest.raises(verify.VerifyError, match="duplicate key"):
+            verify.load_rules(path)
+
+    def test_falsy_non_list_section_rejected(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, "entity_types: [ssn]\nexact_values: {}\n")
+        with pytest.raises(verify.VerifyError, match="must be a list"):
+            verify.load_rules(path)
+
+    def test_non_string_entries_rejected(self, tmp_path) -> None:
+        # A JSON-shaped entry, or an explicit !!int tag, would otherwise
+        # stringify into a search key the user never wrote.
+        path = self._yaml(tmp_path, 'exact_values:\n  - name: x\n    value: "1"\n')
+        with pytest.raises(verify.VerifyError, match="quoted string"):
+            verify.load_rules(path)
+        path = self._yaml(tmp_path, "exact_values:\n  - !!int 00123456\n")
+        with pytest.raises(verify.VerifyError, match="quoted string"):
+            verify.load_rules(path)
+
+    def test_unknown_entity_type_is_an_error(self, tmp_path) -> None:
+        # A typo or case variant must be fixed, not reported as an
+        # inherent LLM-only coverage gap.
+        for bad in ("SSN", "credit-card", "emial"):
+            path = self._yaml(tmp_path, f"entity_types: [{bad}]\n")
+            with pytest.raises(verify.VerifyError, match="unknown entity type"):
+                verify.load_rules(path)
+
+    def test_partial_coverage_is_declared(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, "entity_types: [phone]\n")
+        assert any("partly verifiable" in w for w in verify.load_rules(path).warnings)
+
+    def test_capture_group_pattern_warns(self, tmp_path) -> None:
+        # The redactor removes only group text, so the rule verifies more
+        # than it removed.
+        path = self._yaml(tmp_path, "patterns:\n  - '(AB|CD)[0-9]{6}'\n")
+        assert any("capturing group" in w for w in verify.load_rules(path).warnings)
+
+    def test_yaml_flags_match_the_redactor(self, tmp_path) -> None:
+        # IGNORECASE only: adding MULTILINE would make a shared rule mean
+        # different things in the two tools.
+        path = self._yaml(tmp_path, "patterns:\n  - 'case-[0-9]{4}'\n")
+        flags = verify.load_rules(path).patterns[0].regex.flags
+        assert flags & re.IGNORECASE and not flags & re.MULTILINE
+
+    def test_entity_types_are_deduped(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, "entity_types: [ssn, ssn]\n")
+        assert len(verify.load_rules(path).patterns) == 1
+
+    def test_divergence_warning_masks_the_secret(self, tmp_path) -> None:
+        # The warning must not re-leak the value it warns about.
+        path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
+        joined = " ".join(verify.load_rules(path).warnings)
+        assert "unquoted" in joined
+        assert "00123456" not in joined and "42798" not in joined
+
+    def test_non_utf8_config_exits_2(self, tmp_path) -> None:
+        # Operational error, never the leak code, and never a traceback.
+        path = tmp_path / "latin.yaml"
+        path.write_bytes('exact_values:\n  - "Jos\xe9"\n'.encode("latin-1"))
+        pdf = _pdf_with_text(tmp_path, "clean")
+        result = run_verify(pdf, path)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
