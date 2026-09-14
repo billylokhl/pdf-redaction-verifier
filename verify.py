@@ -103,6 +103,11 @@ QPDF_CHUNK_BYTES: int = 4 << 20
 # A PDF string literal left unclosed by damaged output must not grow the
 # carry buffer without bound.
 MAX_LITERAL_CARRY: int = 64 << 10
+# Content the raw byte sweep cannot decode, and therefore the only thing
+# whose loss from the literal pass costs real coverage: hex strings and
+# UTF-16 text. A plain (literal) is covered either way, because
+# normalize_string reduces the raw bytes to the same key.
+_UNDECODABLE_BY_RAW_RE = re.compile(r"<[0-9A-Fa-f\s]{8,}>|\xfe\xff")
 # Pattern scanning: matches may span feed boundaries up to the overlap;
 # feeds are batched before regex sweeps (per-tiny-literal sweeps measure
 # ~100x slower than batched ones).
@@ -1274,7 +1279,7 @@ def _collect_qpdf(
     hard_patterns = PatternScanner(patterns)
     soft_patterns = PatternScanner(patterns, collapse_separators=True)
     carry = ""
-    carry_truncated = False
+    dropped_undecodable = 0
     got_output = False
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
     if proc.stdout is None:
@@ -1304,8 +1309,9 @@ def _collect_qpdf(
         raw.feed(normalize_string(text))
         carry = _feed_pdf_strings(carry + text, literals, hard_patterns, soft_patterns)
         if len(carry) > MAX_LITERAL_CARRY:
+            dropped = carry[:-MAX_LITERAL_CARRY]
+            dropped_undecodable += len(_UNDECODABLE_BY_RAW_RE.findall(dropped))
             carry = carry[-MAX_LITERAL_CARRY:]
-            carry_truncated = True
 
     try:
         proc.wait(timeout=10)
@@ -1321,11 +1327,17 @@ def _collect_qpdf(
             f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
             "binary scan may be incomplete"
         )
-    if carry_truncated:
+    if dropped_undecodable:
+        # Silent when only plain text was dropped: the raw sweep reads
+        # every chunk regardless of this buffer and normalizes to the
+        # same key, so plain literals are covered either way. Hex and
+        # UTF-16 strings are not — only the literal pass decodes those.
         report.warnings.append(
-            f"Binary: an unclosed PDF string literal exceeded "
-            f"{MAX_LITERAL_CARRY // 1024}KB — carry buffer was truncated, "
-            "some literal content may not have been scanned"
+            f"Binary: {dropped_undecodable} hex/UTF-16 string(s) were skipped "
+            "by the string-literal pass (an unclosed '(' exceeded the "
+            f"{MAX_LITERAL_CARRY // 1024}KB carry limit) — the raw byte sweep "
+            "cannot decode those encodings, so this region was not fully "
+            "covered; manual review recommended"
         )
     if not got_output:
         report.warnings.append("Binary: qpdf produced no output — layer NOT scanned")

@@ -204,3 +204,56 @@ class TestDegradation:
         assert result.returncode == 2, (
             "truncated input must never be certified clean"
         )
+
+
+class TestLiteralCarryWarning:
+    """The carry cap must only speak when coverage is genuinely lost.
+
+    The raw byte sweep is fed every chunk regardless of this buffer, and
+    normalize_string reduces raw bytes to the same key a decoded plain
+    literal produces — so dropping plain text costs nothing. And because
+    finditer locates literals independently of a preceding unclosed '(',
+    the dropped region is by construction the remainder that holds no
+    complete literal. What is left to lose is UTF-16 text outside any
+    literal, which neither pass can decode.
+    """
+
+    class _FakeProc:
+        returncode = 0
+
+        def __init__(self, data: bytes, tmp_path) -> None:
+            path = tmp_path / "qdf.bin"
+            path.write_bytes(data)
+            self.stdout = path.open("rb", buffering=0)
+
+        def wait(self, timeout=None): return 0
+        def kill(self): pass
+        def communicate(self, timeout=None): return (b"", b"")
+
+    def _carry_warnings(self, data: bytes, tmp_path) -> list[str]:
+        import verify
+        report = verify.ScanReport()
+        verify._collect_qpdf(
+            self._FakeProc(data, tmp_path),
+            verify.SecretMatcher([verify.Secret("x", "zzzz")]), (), report)
+        return [w for w in report.warnings if "carry limit" in w]
+
+    def _pad(self) -> bytes:
+        import verify
+        return b"A" * (verify.MAX_LITERAL_CARRY + 8192)
+
+    def test_plain_dropped_text_is_silent(self, tmp_path) -> None:
+        # Regression: this warned on every image-bearing PDF, implying
+        # lost coverage that had not occurred.
+        assert self._carry_warnings(b"(unclosed " + self._pad(), tmp_path) == []
+
+    def test_complete_literals_are_never_dropped(self, tmp_path) -> None:
+        data = b"(unclosed <48656c6c6f20776f726c64> " + self._pad()
+        assert self._carry_warnings(data, tmp_path) == []
+
+    def test_undecodable_utf16_warns(self, tmp_path) -> None:
+        warnings = self._carry_warnings(b"(unclosed \xfe\xff" + self._pad(), tmp_path)
+        assert warnings and "not fully covered" in warnings[0]
+
+    def test_no_unclosed_literal_is_silent(self, tmp_path) -> None:
+        assert self._carry_warnings(b"(closed) " + self._pad(), tmp_path) == []
