@@ -187,18 +187,7 @@ output is streamed in chunks rather than buffered, with rolling scanners
 that keep only enough tail to catch matches spanning a boundary. Pattern
 feeds are batched (per-literal regex sweeps measured ~100x slower), rules
 already matched are skipped, and every subprocess has a deadline enforced
-with `select` so a stalled tool cannot hang the run. The literal-carry cap is reported only when it costs something. An
-unclosed `(` inside image data stalls the string-literal scanner exactly
-as a real one would, and that fired on every image-bearing PDF. But the
-raw byte scanner is fed every chunk regardless of that buffer, and
-normalization reduces raw bytes to the same key a decoded plain literal
-produces — so dropping plain text loses nothing. Nor can a complete
-literal be dropped: matches are found independently of a preceding
-unclosed `(`, so the discarded region is by construction the remainder
-holding none. What remains is UTF-16 text sitting outside any literal,
-which neither pass can decode, and that is what now warns.
-
-Report samples are
+with `select` so a stalled tool cannot hang the run. Report samples are
 masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.

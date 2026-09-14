@@ -207,53 +207,85 @@ class TestDegradation:
 
 
 class TestLiteralCarryWarning:
-    """The carry cap must only speak when coverage is genuinely lost.
+    """The carry-cap warning must stay unconditional.
 
-    The raw byte sweep is fed every chunk regardless of this buffer, and
-    normalize_string reduces raw bytes to the same key a decoded plain
-    literal produces — so dropping plain text costs nothing. And because
-    finditer locates literals independently of a preceding unclosed '(',
-    the dropped region is by construction the remainder that holds no
-    complete literal. What is left to lose is UTF-16 text outside any
-    literal, which neither pass can decode.
+    It is noisy — an unclosed '(' inside image data stalls the literal
+    scanner exactly as a real one would, so it fires on most
+    image-bearing PDFs. An attempt to suppress it argued the raw byte
+    sweep covers anything dropped. These tests exist because that
+    argument is false in two independent ways, each of which turned a
+    correct exit 2 into a silent exit 0.
     """
 
     class _FakeProc:
-        returncode = 0
+        """Stands in for the qpdf Popen, faithfully enough to exercise
+        the nonzero-exit branch as well."""
 
         def __init__(self, data: bytes, tmp_path) -> None:
+            self.returncode = None
             path = tmp_path / "qdf.bin"
             path.write_bytes(data)
             self.stdout = path.open("rb", buffering=0)
 
-        def wait(self, timeout=None): return 0
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
         def kill(self): pass
         def communicate(self, timeout=None): return (b"", b"")
 
-    def _carry_warnings(self, data: bytes, tmp_path) -> list[str]:
+    def _scan(self, data, tmp_path, secrets=(), patterns=()):
         import verify
+        proc = self._FakeProc(data, tmp_path)
         report = verify.ScanReport()
-        verify._collect_qpdf(
-            self._FakeProc(data, tmp_path),
-            verify.SecretMatcher([verify.Secret("x", "zzzz")]), (), report)
-        return [w for w in report.warnings if "carry limit" in w]
+        try:
+            verify._collect_qpdf(
+                proc,
+                verify.SecretMatcher(list(secrets) or [verify.Secret("z", "zzzz")]),
+                patterns, report)
+        finally:
+            proc.stdout.close()
+        return report
 
-    def _pad(self) -> bytes:
+    def test_raw_sweep_does_not_cover_escaped_literals(self) -> None:
+        """The invariant a suppression would have to rely on, asserted
+        directly so nobody re-derives it from the code."""
         import verify
-        return b"A" * (verify.MAX_LITERAL_CARRY + 8192)
+        source = r"(123\05545\0556789)"          # \055 is '-'
+        decoded = verify._unescape_pdf_literal(source[1:-1])
+        key = verify.normalize_string("123-45-6789")
+        assert verify.normalize_string(decoded) == key       # literal pass finds it
+        assert key not in verify.normalize_string(source)    # raw sweep does NOT
 
-    def test_plain_dropped_text_is_silent(self, tmp_path) -> None:
-        # Regression: this warned on every image-bearing PDF, implying
-        # lost coverage that had not occurred.
-        assert self._carry_warnings(b"(unclosed " + self._pad(), tmp_path) == []
+    def test_escaped_secret_in_oversize_literal_is_not_silent(self, tmp_path) -> None:
+        # QDF writes every non-ASCII byte as an octal escape, so this is
+        # the ordinary case for an accented name, not an exotic one.
+        import verify
+        secret = verify.Secret("target", verify.normalize_string("123-45-6789"))
+        data = (b"(unclosed 123\05545\0556789 "
+                + b"A" * (verify.MAX_LITERAL_CARRY + 4096))
+        report = self._scan(data, tmp_path, secrets=[secret])
+        assert report.findings == []          # the literal pass never saw it
+        assert report.degraded, "a dropped literal must never be silent"
 
-    def test_complete_literals_are_never_dropped(self, tmp_path) -> None:
-        data = b"(unclosed <48656c6c6f20776f726c64> " + self._pad()
-        assert self._carry_warnings(data, tmp_path) == []
+    def test_pattern_rules_have_no_raw_fallback(self, tmp_path) -> None:
+        # Patterns are fed only from decoded literals — the raw sweep is
+        # deliberately never given them — so truncation costs 100% of
+        # pattern coverage with no backstop at all.
+        import re
 
-    def test_undecodable_utf16_warns(self, tmp_path) -> None:
-        warnings = self._carry_warnings(b"(unclosed \xfe\xff" + self._pad(), tmp_path)
-        assert warnings and "not fully covered" in warnings[0]
+        import verify
+        rule = verify.PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))
+        small = self._scan(b"(SSN 123-45-6789)", tmp_path, patterns=[rule])
+        assert [f.secret_name for f in small.findings] == ["ssn"]
 
-    def test_no_unclosed_literal_is_silent(self, tmp_path) -> None:
-        assert self._carry_warnings(b"(closed) " + self._pad(), tmp_path) == []
+        big = self._scan(
+            b"(unclosed SSN 123-45-6789 " + b"A" * (verify.MAX_LITERAL_CARRY + 4096),
+            tmp_path, patterns=[rule])
+        assert big.findings == []
+        assert big.degraded, "lost pattern coverage must never be silent"
+
+    def test_no_truncation_means_no_warning(self, tmp_path) -> None:
+        import verify
+        report = self._scan(b"(closed) " + b"A" * 4096, tmp_path)
+        assert not any("carry" in w for w in report.warnings)
