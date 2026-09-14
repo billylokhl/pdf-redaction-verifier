@@ -5,8 +5,10 @@ CI: [tests workflow](https://github.com/billylokhl/pdf-redaction-verifier/action
 the `badge.svg` image if it goes public)
 
 Forensic CLI tool that detects sensitive strings (secrets) inside a PDF across
-four independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
-(exiftool), and decompressed binary streams (qpdf).
+five independent layers: layout-aware DOM text, OCR (Apple Vision), metadata
+(exiftool), decompressed binary streams (qpdf), and hidden objects —
+attachments, annotations, form fields, links, scripts and layer names — that
+no page renders.
 
 [DESIGN.md](DESIGN.md) explains why it is built this way — the exit-code
 contract, the two-tier matching model, and the known limitations.

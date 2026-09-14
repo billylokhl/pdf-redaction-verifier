@@ -2,7 +2,7 @@
 """
 verify.py — Forensic PDF Redaction Verification Suite.
 
-Detects sensitive strings (secrets) inside a PDF across four independent
+Detects sensitive strings (secrets) inside a PDF across five independent
 layers:
 
   1. DOM      — layout-aware text extraction in horizontal AND vertical
@@ -13,6 +13,11 @@ layers:
                 vector/outlined/image text.
   3. Metadata — exiftool sweep of XMP/Info/embedded metadata (filesystem-
                 derived fields excluded so the local path cannot match).
+  5. Hidden   — attachments, annotations, form-field values, link
+                targets, JavaScript and optional-content group names via
+                PyMuPDF: content no page renders, needing no external
+                binary. An attachment's stream is compressed, so it is
+                invisible to the byte sweep below.
   4. Binary   — qpdf QDF normalization streamed with bounded memory;
                 string/hex literals are decoded for high-confidence
                 findings, and raw-byte-stream matches are surfaced as
@@ -836,6 +841,122 @@ def scan_xmp_metadata(
         report.record("Metadata", name, "XMP packet (in-document)", sample)
 
 
+def _hidden_objects(doc: fitz.Document) -> Iterator[tuple[str, str]]:
+    """Yield (location, text) for content no page renders.
+
+    These are the categories Acrobat removes in its separate "Remove
+    Hidden Information" pass rather than in redaction proper. Some are
+    visible to the qpdf sweep when their text happens to be a plain
+    string literal, but that depends on an external tool being installed
+    and reports them as anonymous literals; an attachment's content is
+    compressed and is not visible there at all.
+    """
+    for i, name in enumerate(doc.embfile_names()):
+        where = f"embedded file {name!r}"
+        try:
+            info = doc.embfile_info(i)
+            content = doc.embfile_get(i)
+        except Exception as exc:
+            yield where, f"<unreadable: {exc}>"
+            continue
+        # PyMuPDF decompresses the stream, so this sees text the raw
+        # byte sweep cannot.
+        yield where, content.decode("utf-8", errors="replace")
+        for key in ("filename", "desc", "ufilename"):
+            value = info.get(key)
+            if value:
+                yield f"{where} ({key})", str(value)
+
+    for page_index in range(doc.page_count):
+        page = doc.load_page(page_index)
+        human_page = page_index + 1
+        try:
+            annots = list(page.annots())
+        except Exception:
+            annots = []
+        for annot in annots:
+            kind = annot.type[1] if annot.type else "annotation"
+            for key in ("content", "title", "subject"):
+                value = annot.info.get(key)
+                if value:
+                    yield f"{kind} annotation on page {human_page} ({key})", str(value)
+        try:
+            widgets = list(page.widgets())
+        except Exception:
+            widgets = []
+        for widget in widgets:
+            # A field value survives even with no appearance stream, so
+            # nothing renders it and no visual layer can see it.
+            for label, value in (
+                ("value", widget.field_value), ("name", widget.field_name),
+            ):
+                if value:
+                    yield f"form field on page {human_page} ({label})", str(value)
+        try:
+            links = page.get_links()
+        except Exception:
+            links = []
+        for link in links:
+            for key in ("uri", "file"):
+                value = link.get(key)
+                if value:
+                    yield f"link target on page {human_page}", str(value)
+
+    # Document-level JavaScript can carry data and is a category Acrobat
+    # sanitizes; object source is text, so scanning it needs no stream
+    # decoding.
+    try:
+        xref_count = doc.xref_length()
+    except Exception:
+        xref_count = 0
+    for xref in range(1, xref_count):
+        try:
+            source = doc.xref_object(xref, compressed=True)
+        except Exception:
+            continue
+        if "/JS" in source:
+            yield f"JavaScript in object {xref}", source
+
+    try:
+        ocgs = doc.get_ocgs()
+    except Exception:
+        ocgs = {}
+    for xref, ocg in (ocgs or {}).items():
+        name = ocg.get("name") if isinstance(ocg, dict) else None
+        if name:
+            yield f"optional-content group {xref}", str(name)
+
+
+def scan_hidden_objects(
+    doc: fitz.Document,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+) -> None:
+    """Scan attachments, annotations, form fields, links, scripts and
+    layer names — content no page renders.
+
+    Each item is a discrete field value rather than a run of adjacent
+    page tokens, so a match cannot be a fusion of unrelated text and
+    these are hard findings. Items are still matched individually so one
+    field's tail cannot join the next field's head.
+    """
+    try:
+        items = list(_hidden_objects(doc))
+    except Exception as exc:
+        report.warnings.append(
+            f"Hidden: object sweep failed ({exc}) — layer NOT scanned"
+        )
+        return
+    for where, text in items:
+        if not text:
+            continue
+        for secret in matcher.search(normalize_string(text)):
+            report.record("Hidden", secret.name, where)
+        for name, sample in match_patterns(text, patterns).items():
+            report.record("Hidden", name, where, sample)
+
+
 def _collect_exiftool(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
@@ -1556,6 +1677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
 
         scan_xmp_metadata(doc, matcher, patterns, report)
+        scan_hidden_objects(doc, matcher, patterns, report)
 
         print("[*] Phase 2: DOM layer (layout-aware visual text)...")
         try:
