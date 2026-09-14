@@ -38,7 +38,7 @@ the pressure valve for everything uncertain.
 
 ## Five independent layers
 
-No single extraction method sees everything, so five run and any one can
+No single extraction method sees everything, so six run and any one can
 raise a finding.
 
 | Layer | Sees | Catches what the others miss |
@@ -46,7 +46,8 @@ raise a finding.
 | **DOM** | Text objects, positioned | Text under a redaction box; glyphs drawn out of order |
 | **OCR** | Rendered pixels (Apple Vision) | Text with no text objects: scans, vector outlines |
 | **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
-| **Binary** | Decompressed object streams (qpdf) | Orphaned objects, incremental-update leftovers |
+| **Objects** | PDF objects walked structurally (PyMuPDF) | Orphaned content streams, dictionary strings |
+| **Binary** | Decompressed byte stream (qpdf) | Content absent from the xref table entirely |
 | **Hidden** | Attachments, annotations, form fields, links, scripts, layer names (PyMuPDF) | Content no page renders at all |
 
 They are independent on purpose: a leak that defeats extraction usually
@@ -85,6 +86,39 @@ text: an attachment named after the secret printed it in cleartext,
 because locations are never masked. The metadata and
 binary subprocesses start before the in-process layers so they run
 concurrently.
+
+## Why literals are decoded structurally
+
+The Binary layer originally found PDF string literals by running a
+PDF-syntax regex across qpdf's whole byte stream. That stream interleaves
+structure with image data, and a text parser cannot tell them apart:
+roughly one byte in 256 of a JPEG is `(`, which stalls a literal scanner
+exactly as a real unclosed string would. A 64KB carry cap contained the
+stall, and a warning reported it — so most image-bearing PDFs could never
+reach a certified-clean verdict.
+
+Two attempts to silence that warning by inspecting the dropped bytes both
+failed, in opposite directions, and are worth recording. The raw sweep is
+not an equivalent backstop: it is never given pattern rules at all, and
+`normalize_string` keeps an octal escape's digits, so `(Jos\351 M\374ller)`
+reduces to `jos351m374ller` rather than `josemuller`. And no content-class
+heuristic separated signal from noise — `\xfe\xff` fires on image bytes
+about once per 64KB while the real UTF-16 form qpdf emits, `\376\377`, is
+never matched.
+
+Walking objects removes the category error instead of compensating for
+it. Every unit is bounded and typed: a dictionary is always text, a stream
+body arrives decompressed, and a body marked as image data is never
+parsed as text. No carry, no cap, no truncation warning.
+
+qpdf still runs, reduced to what an object walk cannot see: the xref table
+lists only what the file currently references, so content orphaned by an
+incremental save exists in the bytes and not the table. Its matches stay
+manual-review warnings, because a byte-level match can be coincidence.
+
+A finding names its carrier and says whether any page reaches it. An
+object no page reaches is the document's founding failure mode — a
+redactor that drew a box and left the original content stream behind.
 
 ## Matching: two kinds of rule
 

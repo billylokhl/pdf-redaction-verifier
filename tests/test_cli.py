@@ -13,6 +13,8 @@ from pathlib import Path
 import fitz
 import pytest
 
+import verify
+
 import subprocess
 import sys
 
@@ -111,10 +113,13 @@ class TestExitCodeContract:
 
 @requires_full_env
 class TestBaselines:
-    def test_leaky_pdf_flags_all_four_layers(self, leaky_pdf, secrets_file) -> None:
+    def test_leaky_pdf_flags_every_finding_layer(self, leaky_pdf, secrets_file) -> None:
+        # Binary is no longer a finding layer: literal decoding moved to
+        # the structural Objects pass, and qpdf is now the orphan
+        # backstop, which can only raise manual-review warnings.
         result = run_verify(leaky_pdf, secrets_file)
         assert result.returncode == 1
-        for layer in ("LAYER: DOM", "LAYER: OCR", "LAYER: Metadata", "LAYER: Binary"):
+        for layer in ("LAYER: DOM", "LAYER: OCR", "LAYER: Metadata", "LAYER: Objects"):
             assert layer in result.stdout, f"expected a Finding for {layer}"
 
     def test_clean_pdf_certified(self, clean_pdf, secrets_file) -> None:
@@ -206,86 +211,42 @@ class TestDegradation:
         )
 
 
-class TestLiteralCarryWarning:
-    """The carry-cap warning must stay unconditional.
+class TestRawSweepIsNotAnEquivalentBackstop:
+    """Why literal decoding must exist as its own pass.
 
-    It is noisy — an unclosed '(' inside image data stalls the literal
-    scanner exactly as a real one would, so it fires on most
-    image-bearing PDFs. An attempt to suppress it argued the raw byte
-    sweep covers anything dropped. These tests exist because that
-    argument is false in two independent ways, each of which turned a
-    correct exit 2 into a silent exit 0.
+    A previous change tried to treat the raw byte sweep as a substitute
+    for decoding literals. It is not, and these assert the two reasons
+    directly so the argument cannot be re-derived from the code.
     """
 
-    class _FakeProc:
-        """Stands in for the qpdf Popen, faithfully enough to exercise
-        the nonzero-exit branch as well."""
-
-        def __init__(self, data: bytes, tmp_path) -> None:
-            self.returncode = None
-            path = tmp_path / "qdf.bin"
-            path.write_bytes(data)
-            self.stdout = path.open("rb", buffering=0)
-
-        def wait(self, timeout=None):
-            self.returncode = 0
-            return 0
-
-        def kill(self): pass
-        def communicate(self, timeout=None): return (b"", b"")
-
-    def _scan(self, data, tmp_path, secrets=(), patterns=()):
-        import verify
-        proc = self._FakeProc(data, tmp_path)
-        report = verify.ScanReport()
-        try:
-            verify._collect_qpdf(
-                proc,
-                verify.SecretMatcher(list(secrets) or [verify.Secret("z", "zzzz")]),
-                patterns, report)
-        finally:
-            proc.stdout.close()
-        return report
-
     def test_raw_sweep_does_not_cover_escaped_literals(self) -> None:
-        """The invariant a suppression would have to rely on, asserted
-        directly so nobody re-derives it from the code."""
-        import verify
+        # QDF writes every non-ASCII byte as an octal escape, and
+        # normalize_string keeps the escape's digits.
         source = r"(123\05545\0556789)"          # \055 is '-'
         decoded = verify._unescape_pdf_literal(source[1:-1])
         key = verify.normalize_string("123-45-6789")
-        assert verify.normalize_string(decoded) == key       # literal pass finds it
-        assert key not in verify.normalize_string(source)    # raw sweep does NOT
+        assert verify.normalize_string(decoded) == key       # decoded: found
+        assert key not in verify.normalize_string(source)    # raw: not found
 
-    def test_escaped_secret_in_oversize_literal_is_not_silent(self, tmp_path) -> None:
-        # QDF writes every non-ASCII byte as an octal escape, so this is
-        # the ordinary case for an accented name, not an exotic one.
-        import verify
-        secret = verify.Secret("target", verify.normalize_string("123-45-6789"))
-        data = (b"(unclosed 123\05545\0556789 "
-                + b"A" * (verify.MAX_LITERAL_CARRY + 4096))
-        report = self._scan(data, tmp_path, secrets=[secret])
-        assert report.findings == []          # the literal pass never saw it
-        assert report.degraded, "a dropped literal must never be silent"
-
-    def test_pattern_rules_have_no_raw_fallback(self, tmp_path) -> None:
-        # Patterns are fed only from decoded literals — the raw sweep is
-        # deliberately never given them — so truncation costs 100% of
-        # pattern coverage with no backstop at all.
+    def test_raw_sweep_is_never_given_pattern_rules(self, tmp_path) -> None:
+        # Patterns over raw latin-1 byte soup would false-positive on
+        # compressed data, so the raw sweep never receives them — which
+        # is why it cannot stand in for the structural pass.
         import re
 
-        import verify
-        rule = verify.PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))
-        small = self._scan(b"(SSN 123-45-6789)", tmp_path, patterns=[rule])
-        assert [f.secret_name for f in small.findings] == ["ssn"]
-
-        big = self._scan(
-            b"(unclosed SSN 123-45-6789 " + b"A" * (verify.MAX_LITERAL_CARRY + 4096),
-            tmp_path, patterns=[rule])
-        assert big.findings == []
-        assert big.degraded, "lost pattern coverage must never be silent"
-
-    def test_no_truncation_means_no_warning(self, tmp_path) -> None:
-        import verify
-        report = self._scan(b"(closed) " + b"A" * 4096, tmp_path)
-        assert not any("carry" in w for w in report.warnings)
+        path = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "Applicant SSN: 123-45-6789")
+        doc.save(path)
+        doc.close()
+        report = verify.ScanReport()
+        doc = fitz.open(path)
+        try:
+            verify.scan_pdf_objects(
+                doc, verify.SecretMatcher([verify.Secret("z", "zzzz")]),
+                [verify.PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))],
+                report)
+        finally:
+            doc.close()
+        # The structural pass is the only thing that can produce this.
+        assert [f.secret_name for f in report.findings] == ["ssn"]

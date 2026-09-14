@@ -100,9 +100,13 @@ MIN_LINE_TOLERANCE_PT: float = 4.0
 # get merged, scrambling their text and causing false negatives.
 MAX_LINE_TOLERANCE_PT: float = 12.0
 QPDF_CHUNK_BYTES: int = 4 << 20
-# A PDF string literal left unclosed by damaged output must not grow the
-# carry buffer without bound.
-MAX_LITERAL_CARRY: int = 64 << 10
+# Stream bodies qpdf leaves encoded. Feeding these to a text parser is
+# the category error the structural pass exists to avoid: roughly 1 byte
+# in 256 of a JPEG is "(", which stalls a literal scanner exactly as a
+# real unclosed string would.
+_BINARY_STREAM_MARKERS: tuple[str, ...] = (
+    "/Image", "/DCTDecode", "/JPXDecode", "/JBIG2Decode", "/CCITTFaxDecode",
+)
 # Pattern scanning: matches may span feed boundaries up to the overlap;
 # feeds are batched before regex sweeps (per-tiny-literal sweeps measure
 # ~100x slower than batched ones).
@@ -1253,28 +1257,131 @@ def _feed_pdf_strings(
     return buf[last_end:]
 
 
+def _page_reachable_xrefs(doc: fitz.Document) -> set[int]:
+    """Objects any page points at, so a finding can say whether the
+    carrier is live content or an orphan nothing renders."""
+    reachable: set[int] = set()
+    for page_index in range(doc.page_count):
+        try:
+            reachable.add(doc.page_xref(page_index))
+            reachable.update(doc[page_index].get_contents())
+            reachable.update(x[0] for x in doc.get_page_xobjects(page_index))
+        except Exception:
+            continue
+    return reachable
+
+
+def scan_pdf_objects(
+    doc: fitz.Document,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+) -> None:
+    """Decode PDF string literals object by object.
+
+    The Binary layer used to find literals by running a PDF-syntax regex
+    over qpdf's whole byte stream. That stream interleaves structure with
+    image data, and a text parser cannot tell them apart — so a "(" byte
+    inside a JPEG stalled the scanner, which is what the 64KB carry cap
+    and its warning existed to contain.
+
+    Walking objects removes the category error rather than compensating
+    for it. Every unit here is bounded and typed: a dictionary is always
+    text, a stream body arrives already decompressed, and a body marked
+    as image data is never parsed as text at all. No carry, no cap, no
+    truncation.
+
+    This replaces only the literal pass. The raw byte sweep in
+    _collect_qpdf still runs, because the xref table lists only what the
+    file currently references — content orphaned by an incremental save
+    exists in the bytes but not the table, and that is a real redaction
+    failure mode.
+    """
+    # Per object, so a finding names the carrier and two objects holding
+    # the same secret cannot dedup into one report line.
+    unreadable = 0
+
+    try:
+        xref_count = doc.xref_length()
+    except Exception as exc:
+        report.warnings.append(
+            f"Objects: xref table unreadable ({exc}) — layer NOT scanned"
+        )
+        return
+    reachable = _page_reachable_xrefs(doc)
+
+    for xref in range(1, xref_count):
+        try:
+            source = doc.xref_object(xref, compressed=True)
+        except Exception:
+            unreadable += 1
+            continue
+        texts = [source]
+        try:
+            is_stream = doc.xref_is_stream(xref)
+        except Exception:
+            unreadable += 1
+            is_stream = False
+        if is_stream and not any(m in source for m in _BINARY_STREAM_MARKERS):
+            try:
+                texts.append(doc.xref_stream(xref).decode("latin-1"))
+            except Exception:
+                unreadable += 1
+
+        literals = RollingScanner(matcher)
+        hard_patterns = PatternScanner(patterns)
+        soft_patterns = PatternScanner(patterns, collapse_separators=True)
+        for text in texts:
+            # Fence so one object's tail cannot fuse with the next.
+            _feed_pdf_strings(text + "\n\n", literals, hard_patterns, soft_patterns)
+        hard_patterns.flush()
+        soft_patterns.flush()
+        if not (literals.found or hard_patterns.hits or soft_patterns.hits):
+            continue
+
+        # An object no page reaches is content a reader never sees but a
+        # parser still can — DESIGN.md's founding example of a redaction
+        # that drew a box without removing the text.
+        kind = "object" if xref in reachable else "ORPHANED object"
+        where = f"{kind} {xref}"
+        for secret in sorted(literals.found, key=lambda s: s.name):
+            report.record("Objects", secret.name, where)
+        for name, sample in hard_patterns.hits.items():
+            report.record("Objects", name, where, sample)
+        for name, sample in soft_patterns.hits.items():
+            if name in hard_patterns.hits:
+                continue
+            report.warnings.append(
+                f"Objects: {where}: adjacent literals fuse into a sequence "
+                f"matching pattern rule {name!r} (sample {mask(sample)}) — "
+                "possibly a coincidental concatenation; manual review recommended"
+            )
+
+    if unreadable:
+        report.warnings.append(
+            f"Objects: {unreadable} object(s) could not be read — NOT fully scanned"
+        )
+
+
 def _collect_qpdf(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
     patterns: Sequence[PatternRule],
     report: ScanReport,
 ) -> None:
-    """Stream qpdf's QDF output with bounded memory.
+    """Sweep qpdf's QDF byte stream as the orphan backstop.
 
-    Two scanners run over the stream: decoded string/hex literals give
-    high-confidence findings; the raw fused byte stream is the recall
-    backstop, but its matches can be coincidental collisions (adjacent
-    numeric operands, compressed binary data), so raw-only matches are
-    reported as manual-review warnings (exit 2), not hard findings.
-    Pattern rules run on decoded literals only — regexes over the raw
-    latin-1 byte soup would false-positive on compressed stream data.
+    Literal decoding now happens structurally in scan_pdf_objects; this
+    pass exists for what an object walk cannot see. The xref table lists
+    only what the file currently references, so content orphaned by an
+    incremental save is present in the bytes and absent from the table.
+
+    Matches here are always manual-review warnings, never hard findings:
+    the stream fuses adjacent numeric operands and compressed binary, so
+    a match can be coincidence. Pattern rules are deliberately not run
+    over it at all, for the same reason.
     """
     raw = RollingScanner(matcher)
-    literals = RollingScanner(matcher)
-    hard_patterns = PatternScanner(patterns)
-    soft_patterns = PatternScanner(patterns, collapse_separators=True)
-    carry = ""
-    carry_truncated = False
     got_output = False
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
     if proc.stdout is None:
@@ -1302,10 +1409,6 @@ def _collect_qpdf(
         got_output = True
         text = chunk.decode("latin-1")  # 1:1 byte mapping, nothing lost
         raw.feed(normalize_string(text))
-        carry = _feed_pdf_strings(carry + text, literals, hard_patterns, soft_patterns)
-        if len(carry) > MAX_LITERAL_CARRY:
-            carry = carry[-MAX_LITERAL_CARRY:]
-            carry_truncated = True
 
     try:
         proc.wait(timeout=10)
@@ -1321,32 +1424,13 @@ def _collect_qpdf(
             f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
             "binary scan may be incomplete"
         )
-    if carry_truncated:
-        report.warnings.append(
-            f"Binary: an unclosed PDF string literal exceeded "
-            f"{MAX_LITERAL_CARRY // 1024}KB — carry buffer was truncated, "
-            "some literal content may not have been scanned"
-        )
     if not got_output:
         report.warnings.append("Binary: qpdf produced no output — layer NOT scanned")
         return
 
-    hard_patterns.flush()
-    soft_patterns.flush()
-    for secret in sorted(literals.found, key=lambda s: s.name):
-        report.record("Binary", secret.name, "qpdf QDF string/hex literals")
-    for name, sample in hard_patterns.hits.items():
-        report.record("Binary", name, "qpdf QDF string/hex literals", sample)
-    for name, sample in soft_patterns.hits.items():
-        if name in hard_patterns.hits:
-            continue
-        report.warnings.append(
-            f"Binary: adjacent decoded literals fuse into a sequence matching "
-            f"pattern rule {name!r} (sample {mask(sample)}) — possibly a "
-            "coincidental concatenation of unrelated tokens; manual review "
-            "recommended"
-        )
-    for secret in sorted(raw.found - literals.found, key=lambda s: s.name):
+    # Every raw-stream match is a warning: the structural pass owns hard
+    # findings, and a match here may be a byte-level coincidence.
+    for secret in sorted(raw.found, key=lambda s: s.name):
         report.warnings.append(
             f"Binary: raw byte stream contains a sequence matching secret "
             f"{secret.name!r} — possibly a coincidental collision of numeric "
@@ -1836,6 +1920,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         scan_xmp_metadata(doc, matcher, patterns, report)
         scan_hidden_objects(doc, matcher, patterns, report)
+        scan_pdf_objects(doc, matcher, patterns, report)
 
         print("[*] Phase 2: DOM layer (layout-aware visual text)...")
         try:
