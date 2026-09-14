@@ -36,9 +36,9 @@ on clean documents gets ignored, and then it may as well not exist. Most
 of the design below is about keeping `1` and `0` both honest, with `2` as
 the pressure valve for everything uncertain.
 
-## Four independent layers
+## Five independent layers
 
-No single extraction method sees everything, so four run and any one can
+No single extraction method sees everything, so five run and any one can
 raise a finding.
 
 | Layer | Sees | Catches what the others miss |
@@ -47,9 +47,42 @@ raise a finding.
 | **OCR** | Rendered pixels (Apple Vision) | Text with no text objects: scans, vector outlines |
 | **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
 | **Binary** | Decompressed object streams (qpdf) | Orphaned objects, incremental-update leftovers |
+| **Hidden** | Attachments, annotations, form fields, links, scripts, layer names (PyMuPDF) | Content no page renders at all |
 
 They are independent on purpose: a leak that defeats extraction usually
-does not also defeat rasterization, and vice versa. The metadata and
+does not also defeat rasterization, and vice versa.
+
+The Hidden layer exists because a PDF carries more than its pages.
+Acrobat splits its own tooling the same way — redaction removes visible
+content, and a *separate* "Remove Hidden Information" pass handles
+attachments, annotations, form data, scripts and layers — and its
+documentation notes that users routinely assume the first step did the
+second. An attachment is the case that forces a dedicated layer rather
+than trusting the qpdf sweep: its stream is compressed, so the secret is
+not present in the file's bytes in any form a byte scan can match.
+Annotations and link targets often *are* visible to qpdf as plain string
+literals, but only when qpdf is installed, and they surface as anonymous
+literals rather than naming the carrier. This layer needs no external
+binary and says exactly where the leak lives.
+
+It honours the two-tier model rather than claiming exemption from it.
+Discrete field values — a filename, an annotation's text, a form field,
+a link target, a script body — are hard findings, and each is matched on
+its own so one carrier's tail cannot join the next one's head. Attachment
+*bodies* are not discrete: they are runs of arbitrary text whose lines
+fuse exactly like page text, and a binary attachment decoded as text is
+mojibake that reliably synthesizes e-mail-shaped matches. Those are
+demoted to manual review, like every other fusion-prone surface.
+
+Two mistakes here are worth recording because both produced confident
+wrong answers. Scanning object *source* for the substring `/JS` fed whole
+object dictionaries to the matchers, so an ordinary widget `/Rect`
+normalized into a Luhn-valid digit run and hard-FAILed clean Acrobat
+forms — while missing scripts stored as streams, which is how producers
+store anything non-trivial. The fix is to walk the action graph and take
+only the `/JS` value. And locations must carry identity, never document
+text: an attachment named after the secret printed it in cleartext,
+because locations are never masked. The metadata and
 binary subprocesses start before the in-process layers so they run
 concurrently.
 
@@ -168,7 +201,7 @@ That removes a drift risk, and introduces a subtler one worth naming.
 Independence of *method* survives: `entity_types` are mapped onto this
 tool's own class regexes and validators, never the redactor's patterns,
 so a flaw in the redactor's detection cannot hide itself from the check,
-and the four layers still look where the redactor may not have.
+and the five layers still look where the redactor may not have.
 
 Independence of *scope* does not. A category the config omits is one this
 tool never searches for, so verification proves the redactor executed its

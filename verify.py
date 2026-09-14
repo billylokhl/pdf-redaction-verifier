@@ -2,7 +2,7 @@
 """
 verify.py — Forensic PDF Redaction Verification Suite.
 
-Detects sensitive strings (secrets) inside a PDF across four independent
+Detects sensitive strings (secrets) inside a PDF across five independent
 layers:
 
   1. DOM      — layout-aware text extraction in horizontal AND vertical
@@ -18,6 +18,11 @@ layers:
                 findings, and raw-byte-stream matches are surfaced as
                 manual-review warnings (they can be numeric-operand or
                 binary-data collisions).
+  5. Hidden   — attachments, annotations, form-field values, link
+                targets, JavaScript and optional-content group names via
+                PyMuPDF: content no page renders, needing no external
+                binary. An attachment's stream is compressed, so it is
+                invisible to the byte sweep above.
 
 All comparisons happen on *normalized* strings: NFKD-decomposed (folding
 fullwidth and compatibility forms to ASCII), combining marks stripped,
@@ -152,7 +157,7 @@ class Finding:
     excluded from equality so dedup keys on (layer, rule, location).
     """
 
-    layer: str          # "DOM" | "OCR" | "Metadata" | "Binary"
+    layer: str          # "DOM" | "OCR" | "Metadata" | "Binary" | "Hidden"
     secret_name: str
     location: str
     sample: str = field(default="", compare=False)
@@ -836,6 +841,280 @@ def scan_xmp_metadata(
         report.record("Metadata", name, "XMP packet (in-document)", sample)
 
 
+# One attachment must not be able to exhaust memory: a small PDF can
+# declare gigabytes of highly-compressible payload. Checked against the
+# UNCOMPRESSED size before reading, since reading is what allocates.
+MAX_ATTACHMENT_BYTES: int = 16 << 20
+
+
+@dataclass(frozen=True)
+class HiddenItem:
+    """One piece of non-page content, with where it came from.
+
+    *location* identifies the carrier by index or xref and never embeds
+    document text — a filename can itself be the secret, and locations
+    are printed unmasked.
+
+    *hard* is False for content that is a run of arbitrary text rather
+    than a discrete field value: an attachment body has lines that fuse
+    across newlines exactly like page text, and a binary attachment
+    decoded as text is mojibake that can synthesize matches. Those get
+    the manual-review tier the rest of the tool uses for fusion-prone
+    surfaces.
+    """
+
+    location: str
+    text: str
+    hard: bool = True
+
+
+def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
+    """Yield JavaScript bodies by walking the action graph.
+
+    Scanning object *source* for the substring "/JS" is wrong in both
+    directions: it feeds whole object dictionaries to the matchers (a
+    widget's /Rect fuses into a Luhn-valid digit run), and it misses the
+    common case where a producer stores the script as a stream, because
+    xref_object returns only the dictionary.
+    """
+    def script_text(xref: int, key: str) -> str | None:
+        try:
+            kind, value = doc.xref_get_key(xref, key)
+        except Exception:
+            return None
+        if kind == "string":
+            return value
+        if kind == "xref":
+            try:
+                target = int(str(value).split()[0])
+                if doc.xref_is_stream(target):
+                    return doc.xref_stream(target).decode("utf-8", errors="replace")
+                kind2, value2 = doc.xref_get_key(target, "JS")
+                return value2 if kind2 == "string" else None
+            except Exception:
+                return None
+        return None
+
+    def walk(xref: int) -> Iterator[HiddenItem]:
+        for key in ("JS", "A/JS", "AA/K/JS", "AA/F/JS", "AA/V/JS", "AA/C/JS",
+                    "OpenAction/JS", "A/A/JS"):
+            body = script_text(xref, key)
+            if body:
+                yield HiddenItem(f"JavaScript in object {xref} (/{key})", body)
+
+    try:
+        catalog = doc.pdf_catalog()
+    except Exception:
+        return
+    yield from walk(catalog)
+    # The document-level name tree, where Acrobat registers doc scripts.
+    try:
+        kind, value = doc.xref_get_key(catalog, "Names/JavaScript/Names")
+    except Exception:
+        kind, value = "null", None
+    if kind == "array" and value:
+        # Entries are name/reference pairs and a name string can abut its
+        # reference with no space ("[(s)6 0 R]"), so match references
+        # rather than splitting on whitespace.
+        for ref in re.findall(r"(\d+)\s+\d+\s+R", str(value)):
+            yield from walk(int(ref))
+
+
+def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
+    """Yield HiddenItem for content no page renders, or a str warning.
+
+    Warnings are yielded rather than raised so one unreadable carrier
+    cannot discard everything already found — the caller consumes items
+    lazily and records each as it arrives.
+    """
+    try:
+        names = doc.embfile_names()
+    except Exception as exc:
+        yield f"Hidden: embedded-file index unreadable ({exc}) — attachments NOT scanned"
+        names = []
+    for i, _name in enumerate(names):
+        where = f"embedded file #{i}"
+        try:
+            info = doc.embfile_info(i)
+        except Exception as exc:
+            yield f"Hidden: {where} metadata unreadable ({exc}) — NOT scanned"
+            info = {}
+        # Identity fields are discrete values, so they stay hard.
+        for key in ("filename", "ufilename", "description"):
+            value = info.get(key)
+            if value:
+                yield HiddenItem(f"{where} ({key})", str(value))
+        # 'size' is the uncompressed length; 'length' is the compressed
+        # stream, so only 'size' bounds what reading will allocate.
+        declared = info.get("size") or 0
+        if declared > MAX_ATTACHMENT_BYTES:
+            yield (f"Hidden: {where} declares {declared} bytes, over the "
+                   f"{MAX_ATTACHMENT_BYTES}-byte scan limit — content NOT "
+                   "scanned")
+            continue
+        try:
+            content = doc.embfile_get(i)
+        except Exception as exc:
+            yield f"Hidden: {where} unreadable ({exc}) — content NOT scanned"
+            continue
+        if not content and declared:
+            # embfile_get returns b"" instead of raising on a stream it
+            # cannot decompress; an unread attachment must never pass.
+            yield f"Hidden: {where} declares {declared} bytes but decoded empty — content NOT scanned"
+            continue
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            yield (f"Hidden: {where} is {len(content)} bytes; only the first "
+                   f"{MAX_ATTACHMENT_BYTES} were scanned")
+            content = content[:MAX_ATTACHMENT_BYTES]
+        if content:
+            yield HiddenItem(
+                f"{where} (content)",
+                content.decode("utf-8", errors="replace"),
+                hard=False,
+            )
+
+    for page_index in range(doc.page_count):
+        human_page = page_index + 1
+        try:
+            page = doc.load_page(page_index)
+        except Exception as exc:
+            yield f"Hidden: page {human_page} failed ({exc}) — NOT scanned"
+            continue
+        try:
+            annots = list(page.annots())
+        except Exception as exc:
+            yield f"Hidden: page {human_page} annotations failed ({exc}) — NOT scanned"
+            annots = []
+        for annot in annots:
+            try:
+                xref = annot.xref
+                info = annot.info
+            except Exception as exc:
+                yield f"Hidden: an annotation on page {human_page} failed ({exc}) — NOT scanned"
+                continue
+            for key in ("content", "title", "subject"):
+                value = info.get(key)
+                if value:
+                    yield HiddenItem(
+                        f"annotation {xref} on page {human_page} ({key})", str(value)
+                    )
+            # A /FileAttachment annotation carries its payload on the
+            # page, outside the document-level EmbeddedFiles tree.
+            try:
+                payload = annot.get_file()
+            except Exception:
+                payload = None
+            if payload:
+                if len(payload) > MAX_ATTACHMENT_BYTES:
+                    yield (f"Hidden: attachment on annotation {xref} is "
+                           f"{len(payload)} bytes; only the first "
+                           f"{MAX_ATTACHMENT_BYTES} were scanned")
+                    payload = payload[:MAX_ATTACHMENT_BYTES]
+                yield HiddenItem(
+                    f"file attached to annotation {xref} on page {human_page}",
+                    payload.decode("utf-8", errors="replace"),
+                    hard=False,
+                )
+        try:
+            widgets = list(page.widgets())
+        except Exception as exc:
+            yield f"Hidden: page {human_page} form fields failed ({exc}) — NOT scanned"
+            widgets = []
+        for widget in widgets:
+            try:
+                xref = widget.xref
+                pairs = (("value", widget.field_value), ("name", widget.field_name))
+            except Exception as exc:
+                yield f"Hidden: a form field on page {human_page} failed ({exc}) — NOT scanned"
+                continue
+            for label, value in pairs:
+                if value:
+                    yield HiddenItem(
+                        f"form field {xref} on page {human_page} ({label})", str(value)
+                    )
+        try:
+            links = page.get_links()
+        except Exception as exc:
+            yield f"Hidden: page {human_page} links failed ({exc}) — NOT scanned"
+            links = []
+        for n, link in enumerate(links):
+            for key in ("uri", "file"):
+                value = link.get(key)
+                if value:
+                    yield HiddenItem(
+                        f"link #{n} on page {human_page} ({key})", str(value)
+                    )
+
+    try:
+        yield from _js_sources(doc)
+    except Exception as exc:
+        yield f"Hidden: JavaScript sweep failed ({exc}) — NOT scanned"
+
+    try:
+        ocgs = doc.get_ocgs()
+    except Exception as exc:
+        yield f"Hidden: optional-content groups failed ({exc}) — NOT scanned"
+        ocgs = {}
+    for xref, ocg in ocgs.items():
+        name = ocg.get("name") if isinstance(ocg, dict) else None
+        if name:
+            yield HiddenItem(f"optional-content group {xref}", str(name))
+
+
+def scan_hidden_objects(
+    doc: fitz.Document,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+) -> None:
+    """Scan attachments, annotations, form fields, links, scripts and
+    layer names — content no page renders.
+
+    Items are consumed lazily and recorded as they arrive, so a carrier
+    that fails later cannot discard what was already found. Discrete
+    field values are hard findings; attachment bodies are fusion-prone
+    runs of text and are demoted to manual-review warnings, like every
+    other fusion-prone surface in the tool.
+    """
+    items = _hidden_objects(doc)
+    while True:
+        try:
+            item = next(items)
+        except StopIteration:
+            break
+        except Exception as exc:
+            report.warnings.append(
+                f"Hidden: object sweep failed ({exc}) — layer NOT fully scanned"
+            )
+            break
+        if isinstance(item, str):
+            report.warnings.append(item)
+            continue
+        if not item.text:
+            continue
+        hits = [s.name for s in matcher.search(normalize_string(item.text))]
+        samples = match_patterns(item.text, patterns)
+        if item.hard:
+            for name in hits:
+                report.record("Hidden", name, item.location)
+            for name, sample in samples.items():
+                report.record("Hidden", name, item.location, sample)
+        else:
+            for name in hits:
+                report.warnings.append(
+                    f"Hidden: {item.location} contains a sequence matching "
+                    f"{name!r} — this content is a run of arbitrary text, so the "
+                    "match may be a coincidental fusion; manual review recommended"
+                )
+            for name, sample in samples.items():
+                report.warnings.append(
+                    f"Hidden: {item.location} contains a sequence matching "
+                    f"pattern rule {name!r} (sample {mask(sample)}) — this content "
+                    "is a run of arbitrary text, so the match may be a "
+                    "coincidental fusion; manual review recommended"
+                )
+
+
 def _collect_exiftool(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
@@ -1482,7 +1761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # invoked: "verify.py" as a script, "pdf-verify" as the
         # installed console script.
         description="Forensic PDF verification: detect secrets across DOM, "
-        "OCR, metadata, and binary-stream layers.",
+        "OCR, metadata, binary-stream and hidden-object layers.",
     )
     parser.add_argument("--target", required=True, type=Path, help="PDF file to verify")
     parser.add_argument(
@@ -1556,6 +1835,7 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
 
         scan_xmp_metadata(doc, matcher, patterns, report)
+        scan_hidden_objects(doc, matcher, patterns, report)
 
         print("[*] Phase 2: DOM layer (layout-aware visual text)...")
         try:
