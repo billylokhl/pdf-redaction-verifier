@@ -204,3 +204,88 @@ class TestDegradation:
         assert result.returncode == 2, (
             "truncated input must never be certified clean"
         )
+
+
+class TestLiteralCarryWarning:
+    """The carry-cap warning must stay unconditional.
+
+    It is noisy — an unclosed '(' inside image data stalls the literal
+    scanner exactly as a real one would, so it fires on most
+    image-bearing PDFs. An attempt to suppress it argued the raw byte
+    sweep covers anything dropped. These tests exist because that
+    argument is false in two independent ways, each of which turned a
+    correct exit 2 into a silent exit 0.
+    """
+
+    class _FakeProc:
+        """Stands in for the qpdf Popen, faithfully enough to exercise
+        the nonzero-exit branch as well."""
+
+        def __init__(self, data: bytes, tmp_path) -> None:
+            self.returncode = None
+            path = tmp_path / "qdf.bin"
+            path.write_bytes(data)
+            self.stdout = path.open("rb", buffering=0)
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def kill(self): pass
+        def communicate(self, timeout=None): return (b"", b"")
+
+    def _scan(self, data, tmp_path, secrets=(), patterns=()):
+        import verify
+        proc = self._FakeProc(data, tmp_path)
+        report = verify.ScanReport()
+        try:
+            verify._collect_qpdf(
+                proc,
+                verify.SecretMatcher(list(secrets) or [verify.Secret("z", "zzzz")]),
+                patterns, report)
+        finally:
+            proc.stdout.close()
+        return report
+
+    def test_raw_sweep_does_not_cover_escaped_literals(self) -> None:
+        """The invariant a suppression would have to rely on, asserted
+        directly so nobody re-derives it from the code."""
+        import verify
+        source = r"(123\05545\0556789)"          # \055 is '-'
+        decoded = verify._unescape_pdf_literal(source[1:-1])
+        key = verify.normalize_string("123-45-6789")
+        assert verify.normalize_string(decoded) == key       # literal pass finds it
+        assert key not in verify.normalize_string(source)    # raw sweep does NOT
+
+    def test_escaped_secret_in_oversize_literal_is_not_silent(self, tmp_path) -> None:
+        # QDF writes every non-ASCII byte as an octal escape, so this is
+        # the ordinary case for an accented name, not an exotic one.
+        import verify
+        secret = verify.Secret("target", verify.normalize_string("123-45-6789"))
+        data = (b"(unclosed 123\05545\0556789 "
+                + b"A" * (verify.MAX_LITERAL_CARRY + 4096))
+        report = self._scan(data, tmp_path, secrets=[secret])
+        assert report.findings == []          # the literal pass never saw it
+        assert report.degraded, "a dropped literal must never be silent"
+
+    def test_pattern_rules_have_no_raw_fallback(self, tmp_path) -> None:
+        # Patterns are fed only from decoded literals — the raw sweep is
+        # deliberately never given them — so truncation costs 100% of
+        # pattern coverage with no backstop at all.
+        import re
+
+        import verify
+        rule = verify.PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))
+        small = self._scan(b"(SSN 123-45-6789)", tmp_path, patterns=[rule])
+        assert [f.secret_name for f in small.findings] == ["ssn"]
+
+        big = self._scan(
+            b"(unclosed SSN 123-45-6789 " + b"A" * (verify.MAX_LITERAL_CARRY + 4096),
+            tmp_path, patterns=[rule])
+        assert big.findings == []
+        assert big.degraded, "lost pattern coverage must never be silent"
+
+    def test_no_truncation_means_no_warning(self, tmp_path) -> None:
+        import verify
+        report = self._scan(b"(closed) " + b"A" * 4096, tmp_path)
+        assert not any("carry" in w for w in report.warnings)
