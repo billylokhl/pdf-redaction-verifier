@@ -107,18 +107,45 @@ about once per 64KB while the real UTF-16 form qpdf emits, `\376\377`, is
 never matched.
 
 Walking objects removes the category error instead of compensating for
-it. Every unit is bounded and typed: a dictionary is always text, a stream
-body arrives decompressed, and a body marked as image data is never
-parsed as text. No carry, no cap, no truncation warning.
+it. Every unit is bounded and typed: a dictionary is always text, a
+stream body arrives decompressed, and a body that holds program data is
+never parsed as text. No carry, no cap, no truncation warning.
+
+What counts as program data is read from the object's own `/Subtype`,
+`/Type`, `/Length1` and `/Filter` keys, never by searching its dictionary
+source for a marker. `/Image` occurs as a substring of the
+`/ProcSet [/PDF /Text /ImageB /ImageC /ImageI]` array that countless
+producers emit on ordinary text-bearing Form XObjects, so a substring
+test skipped those and lost their text silently. Three families are
+excluded: image samples, font programs — a TrueType `glyf` table
+tokenizes into literals whose bytes normalize into digit runs, which
+decoded two hard SSN findings out of a clean real-world document — and embedded
+files, which the Hidden layer already scans at the manual-review tier
+that arbitrary binary deserves.
+
+Literals are read the way a PDF parser reads them, tracking nesting
+depth. `(SSN (mine): 123-45-6789)` is one string whose text contains
+parentheses; the spec requires escaping only unbalanced ones. A regex
+that forbade `(` inside the body matched the inner `(mine)` instead and
+dropped everything after it, so a legal content stream could hide a
+secret in plain sight. An unterminated literal still yields nothing:
+its extent is unknowable, and guessing one would fuse the rest of the
+object into a token that hard pattern rules could match across.
 
 qpdf still runs, reduced to what an object walk cannot see: the xref table
 lists only what the file currently references, so content orphaned by an
 incremental save exists in the bytes and not the table. Its matches stay
 manual-review warnings, because a byte-level match can be coincidence.
 
-A finding names its carrier and says whether any page reaches it. An
-object no page reaches is the document's founding failure mode — a
-redactor that drew a box and left the original content stream behind.
+A finding names its carrier and says whether the document still
+references it. An object nothing references is the founding failure mode
+— a redactor that drew a box and left the original content stream
+behind — so the `ORPHANED` label has to be earned. Reachability is
+walked from the trailer, not guessed from the page tree: annotations,
+form fields, appearance streams, `/Info` and the name tree hang off the
+catalog rather than off a page, and a page-only walk called 61 of 73
+findings on a real document orphaned. When the walk fails, the label is
+dropped rather than applied to everything.
 
 ## Matching: two kinds of rule
 

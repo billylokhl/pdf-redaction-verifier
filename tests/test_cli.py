@@ -211,6 +211,23 @@ class TestDegradation:
         )
 
 
+class TestLayerCrashesDegrade:
+    def test_an_in_process_layer_crash_never_escapes(
+        self, clean_pdf, secrets_file, monkeypatch, capsys
+    ) -> None:
+        # Regression: the Metadata/Hidden/Objects calls were unguarded
+        # while DOM and OCR were not, so a crash there printed a
+        # traceback and exited 1 — the leak code — on a clean document.
+        monkeypatch.setattr(verify, "scan_pdf_objects", _boom)
+        code = verify.main(["--target", str(clean_pdf), "--secrets", str(secrets_file)])
+        assert code == 2
+        assert "Objects: layer crashed (boom)" in capsys.readouterr().out
+
+
+def _boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
 class TestRawSweepIsNotAnEquivalentBackstop:
     """Why literal decoding must exist as its own pass.
 

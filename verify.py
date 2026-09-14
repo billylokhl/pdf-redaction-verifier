@@ -100,13 +100,21 @@ MIN_LINE_TOLERANCE_PT: float = 4.0
 # get merged, scrambling their text and causing false negatives.
 MAX_LINE_TOLERANCE_PT: float = 12.0
 QPDF_CHUNK_BYTES: int = 4 << 20
-# Stream bodies qpdf leaves encoded. Feeding these to a text parser is
-# the category error the structural pass exists to avoid: roughly 1 byte
-# in 256 of a JPEG is "(", which stalls a literal scanner exactly as a
-# real unclosed string would.
-_BINARY_STREAM_MARKERS: tuple[str, ...] = (
-    "/Image", "/DCTDecode", "/JPXDecode", "/JBIG2Decode", "/CCITTFaxDecode",
-)
+# Image codecs PyMuPDF does not decode to text. Feeding their bytes to a
+# text parser is the category error the structural pass exists to avoid:
+# roughly 1 byte in 256 of a JPEG is "(", which stalls a literal scanner
+# exactly as a real unclosed string would.
+_BINARY_STREAM_FILTERS: frozenset[str] = frozenset({
+    "/DCTDecode", "/JPXDecode", "/JBIG2Decode", "/CCITTFaxDecode",
+})
+# Payloads that are program data, not text. A font program's tables are
+# full of bytes that tokenize as string literals and normalize into
+# digit runs, which produced hard findings on clean documents; embedded
+# files are arbitrary binaries the Hidden layer already scans (as
+# manual-review warnings, which is the honest tier for them).
+_OPAQUE_STREAM_SUBTYPES: frozenset[str] = frozenset({
+    "/Image", "/Type1C", "/CIDFontType0C", "/OpenType",
+})
 # Pattern scanning: matches may span feed boundaries up to the overlap;
 # feeds are batched before regex sweeps (per-tiny-literal sweeps measure
 # ~100x slower than batched ones).
@@ -115,10 +123,9 @@ PATTERN_SCAN_BATCH: int = 64 << 10
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # PDF string objects in QDF output: (literal with \-escapes) or <hex>.
-# Balanced *unescaped* nested parens are legal PDF but rare in qpdf
-# output (it escapes them); such a literal would be truncated here — the
-# raw-stream sweep remains as the recall backstop.
-_PDF_STRING_RE = re.compile(r"\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]+>", re.S)
+# Hex strings only. Literal strings nest, so they are tokenized by
+# _iter_pdf_strings rather than by a regex.
+_PDF_HEX_STRING_RE = re.compile(r"<[0-9A-Fa-f\s]+>", re.S)
 _LITERAL_ESCAPE_RE = re.compile(r"\\([0-7]{1,3}|.)", re.S)
 
 # exiftool fields that describe the local filesystem or tool, not the
@@ -1212,12 +1219,60 @@ def _unescape_pdf_literal(body: str) -> str:
     return _LITERAL_ESCAPE_RE.sub(repl, body)
 
 
+def _iter_pdf_strings(buf: str) -> Iterator[tuple[str, int]]:
+    """Yield (token, end_offset) for each PDF string literal in buf.
+
+    Literal strings nest: "(SSN (mine): 123-45-6789)" is ONE string
+    whose text includes the inner parentheses, and the spec only
+    requires escaping unbalanced ones. A regex that forbade "(" in the
+    body matched the inner "(mine)" instead and dropped everything after
+    it, so a legal content stream could hide a secret in plain sight.
+    Depth tracking reads it the way a PDF parser does.
+
+    An unterminated literal yields nothing, as before: its extent is
+    unknowable, and guessing one would fuse the rest of the object into
+    a single token that hard pattern rules could match across.
+    """
+    i, n = 0, len(buf)
+    while i < n:
+        char = buf[i]
+        if char == "<":
+            match = _PDF_HEX_STRING_RE.match(buf, i)
+            if match:
+                yield match.group(0), match.end()
+                i = match.end()
+                continue
+            i += 1
+            continue
+        if char != "(":
+            i += 1
+            continue
+        start, depth, j = i, 0, i
+        while j < n:
+            c = buf[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j >= n:            # unterminated — skip the "(" and move on
+            i = start + 1
+            continue
+        yield buf[start:j + 1], j + 1
+        i = j + 1
+
+
 def _feed_pdf_strings(
     buf: str,
     scanner: RollingScanner,
     hard_patterns: PatternScanner,
     soft_patterns: PatternScanner,
-) -> str:
+) -> None:
     """Extract PDF string/hex literals from buf and feed all scanners.
 
     The normalized secret scanner and the *soft* pattern scanner see
@@ -1225,12 +1280,8 @@ def _feed_pdf_strings(
     caught); the *hard* pattern scanner gets a two-newline fence between
     literals — a single [-\\s.] separator slot cannot cross it — so a
     hard pattern finding can never be a fusion of unrelated tokens.
-    Returns the unconsumed tail as carry for the next chunk.
     """
-    last_end = 0
-    for match in _PDF_STRING_RE.finditer(buf):
-        token = match.group(0)
-        last_end = match.end()
+    for token, _ in _iter_pdf_strings(buf):
         if token.startswith("("):
             decoded = _unescape_pdf_literal(token[1:-1])
             # A literal may itself hold UTF-16BE text (BOM-prefixed).
@@ -1254,21 +1305,86 @@ def _feed_pdf_strings(
         scanner.feed(normalize_string(decoded))
         hard_patterns.feed(decoded + "\n\n")
         soft_patterns.feed(decoded)
-    return buf[last_end:]
 
 
-def _page_reachable_xrefs(doc: fitz.Document) -> set[int]:
-    """Objects any page points at, so a finding can say whether the
-    carrier is live content or an orphan nothing renders."""
-    reachable: set[int] = set()
-    for page_index in range(doc.page_count):
+def _is_opaque_stream(doc: fitz.Document, xref: int) -> bool:
+    """Whether a stream body is program data rather than text.
+
+    Decided from the object's own keys, never by searching the
+    dictionary source: "/Image" occurs as a substring in the
+    /ProcSet[/PDF/Text/ImageB/ImageC/ImageI] array that countless
+    producers emit on ordinary text-bearing Form XObjects, and skipping
+    those loses their text silently.
+
+    Three families are excluded. Image samples are the original reason —
+    roughly 1 byte in 256 of a JPEG is "(", so a text parser reads them
+    as an endless string literal. Font programs are the second: their
+    tables tokenize into literals whose bytes normalize to digit runs,
+    which decoded two hard SSN findings out of a clean real-world document's
+    TrueType glyf table. Embedded files are the third, and stay covered
+    — the Hidden layer scans them as manual-review warnings, the honest
+    tier for arbitrary binary.
+    """
+    def key(name: str) -> tuple[str, str]:
         try:
-            reachable.add(doc.page_xref(page_index))
-            reachable.update(doc[page_index].get_contents())
-            reachable.update(x[0] for x in doc.get_page_xobjects(page_index))
+            return doc.xref_get_key(xref, name)
+        except Exception:
+            return "null", "null"
+
+    kind, subtype = key("Subtype")
+    if kind == "name" and subtype in _OPAQUE_STREAM_SUBTYPES:
+        return True
+    kind, type_ = key("Type")
+    if kind == "name" and type_ == "/EmbeddedFile":
+        return True
+    # /Length1 is the uncompressed length of a Type1 or TrueType font
+    # program, and appears on nothing else.
+    if key("Length1")[0] != "null":
+        return True
+    kind, value = key("Filter")
+    if kind == "name":
+        return value in _BINARY_STREAM_FILTERS
+    if kind == "array":
+        # /Filter can be a pipeline. PyMuPDF renders arrays without
+        # separators ("[/ASCII85Decode/DCTDecode]"), so split on the name
+        # delimiter rather than on whitespace.
+        return any(name in _BINARY_STREAM_FILTERS
+                   for name in re.findall(r"/[^\s/\[\]<>(){}%]+", value))
+    return False
+
+
+_XREF_REF_RE = re.compile(r"\b(\d+)\s+\d+\s+R\b")
+
+
+def _reachable_xrefs(doc: fitz.Document) -> set[int]:
+    """Every object the document graph still references.
+
+    Reachability is walked from the trailer, not guessed from the page
+    tree: annotations, form fields, appearance streams, /Info and the
+    name tree hang off the catalog, not off a page, so a page-only walk
+    labelled 61 of 73 findings on a real document "ORPHANED" — a claim
+    that means "left behind by a redaction" and so must be earned.
+
+    A failure here degrades the label, never the finding: it returns an
+    empty set, which callers read as "unknown" and fall back to the
+    plain "object N" label rather than accusing every hit.
+    """
+    try:
+        pending = [int(m) for m in _XREF_REF_RE.findall(doc.pdf_trailer())]
+    except Exception:
+        return set()
+    seen: set[int] = set()
+    while pending:
+        xref = pending.pop()
+        if xref in seen or xref < 1:
+            continue
+        seen.add(xref)
+        try:
+            source = doc.xref_object(xref, compressed=True)
         except Exception:
             continue
-    return reachable
+        pending.extend(int(m) for m in _XREF_REF_RE.findall(source))
+    return seen
 
 
 def scan_pdf_objects(
@@ -1308,7 +1424,7 @@ def scan_pdf_objects(
             f"Objects: xref table unreadable ({exc}) — layer NOT scanned"
         )
         return
-    reachable = _page_reachable_xrefs(doc)
+    reachable = _reachable_xrefs(doc)
 
     for xref in range(1, xref_count):
         try:
@@ -1322,7 +1438,7 @@ def scan_pdf_objects(
         except Exception:
             unreadable += 1
             is_stream = False
-        if is_stream and not any(m in source for m in _BINARY_STREAM_MARKERS):
+        if is_stream and not _is_opaque_stream(doc, xref):
             try:
                 texts.append(doc.xref_stream(xref).decode("latin-1"))
             except Exception:
@@ -1339,11 +1455,13 @@ def scan_pdf_objects(
         if not (literals.found or hard_patterns.hits or soft_patterns.hits):
             continue
 
-        # An object no page reaches is content a reader never sees but a
-        # parser still can — DESIGN.md's founding example of a redaction
-        # that drew a box without removing the text.
-        kind = "object" if xref in reachable else "ORPHANED object"
-        where = f"{kind} {xref}"
+        # An object nothing references is content a reader never sees but
+        # a parser still can — DESIGN.md's founding example of a
+        # redaction that drew a box without removing the text. An empty
+        # set means reachability could not be determined, not that
+        # everything is orphaned.
+        orphaned = bool(reachable) and xref not in reachable
+        where = f"{'ORPHANED object' if orphaned else 'object'} {xref}"
         for secret in sorted(literals.found, key=lambda s: s.name):
             report.record("Objects", secret.name, where)
         for name, sample in hard_patterns.hits.items():
@@ -1918,9 +2036,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[*] Scanning {pdf_path.name} ({doc.page_count} page(s)) "
               f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
 
-        scan_xmp_metadata(doc, matcher, patterns, report)
-        scan_hidden_objects(doc, matcher, patterns, report)
-        scan_pdf_objects(doc, matcher, patterns, report)
+        # Each layer is independent, so one crashing must cost only its
+        # own coverage — as a warning, which forces exit 2. Letting it
+        # propagate printed a traceback and exited 1, the leak code, on
+        # a document nothing had been found in.
+        for layer, scan in (
+            ("Metadata", scan_xmp_metadata),
+            ("Hidden", scan_hidden_objects),
+            ("Objects", scan_pdf_objects),
+        ):
+            try:
+                scan(doc, matcher, patterns, report)
+            except Exception as exc:
+                report.warnings.append(
+                    f"{layer}: layer crashed ({exc}) — NOT fully scanned"
+                )
 
         print("[*] Phase 2: DOM layer (layout-aware visual text)...")
         try:

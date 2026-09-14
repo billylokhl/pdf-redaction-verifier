@@ -123,6 +123,141 @@ class TestStructuralScan:
         report = _scan(path)
         assert "Any SSN" not in {f.secret_name for f in report.findings}
 
+    def test_procset_image_names_do_not_hide_a_form_xobject(self, tmp_path) -> None:
+        # /ProcSet[/PDF/Text/ImageB/ImageC/ImageI] is boilerplate on
+        # ordinary text-bearing Form XObjects. A substring test for
+        # "/Image" against the dictionary source classified those as
+        # image data and skipped their streams — a silent miss.
+        path = tmp_path / "form.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "cover page only")
+        xref = doc.get_new_xref()
+        doc.update_object(xref, (
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 200 100]"
+            " /Resources << /ProcSet [/PDF /Text /ImageB /ImageC /ImageI] >> >>"
+        ))
+        doc.update_stream(xref, f"BT 10 50 Td (SSN {SSN}) Tj ET".encode())
+        doc.save(path)
+        doc.close()
+
+        assert "/Image" in fitz.open(path).xref_object(xref)   # the trap
+        assert {f.secret_name for f in _scan(path).findings} == {"Target SSN", "Any SSN"}
+
+    def test_stream_kind_is_read_from_the_object_keys(self, tmp_path) -> None:
+        # Both halves of the structural test, including a /Filter
+        # pipeline — PyMuPDF renders those with no separators, so a
+        # whitespace split would miss the codec.
+        path = tmp_path / "kinds.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean")
+        image = doc.get_new_xref()
+        doc.update_object(image, "<< /Subtype /Image /Width 1 /Height 1 >>")
+        pipeline = doc.get_new_xref()
+        doc.update_object(pipeline, "<< /Filter [/ASCII85Decode /DCTDecode] >>")
+        form = doc.get_new_xref()
+        doc.update_object(form, "<< /Subtype /Form /Filter /FlateDecode >>")
+
+        assert verify._is_opaque_stream(doc, image)
+        assert verify._is_opaque_stream(doc, pipeline)
+        assert not verify._is_opaque_stream(doc, form)
+        assert not verify._is_opaque_stream(doc, doc[0].get_contents()[0])
+        doc.close()
+
+    def test_nested_parens_do_not_truncate_a_literal(self, tmp_path) -> None:
+        # "(SSN (mine): 123-45-6789)" is ONE literal — the spec only
+        # requires escaping unbalanced parens. A regex that forbade "("
+        # in the body matched the inner "(mine)" and silently dropped
+        # everything after it, secret included.
+        path = tmp_path / "nested.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "cover")
+        doc.update_stream(
+            page.get_contents()[0],
+            f"BT /F1 12 Tf 50 700 Td (SSN (mine): {SSN} done) Tj ET".encode())
+        doc.save(path)
+        doc.close()
+        assert {f.secret_name for f in _scan(path).findings} == {"Target SSN", "Any SSN"}
+
+    def test_unterminated_literal_yields_nothing(self) -> None:
+        # Its extent is unknowable; guessing one would fuse the rest of
+        # the object into a token hard pattern rules could match across.
+        assert list(verify._iter_pdf_strings("(closed) (dangling")) == [("(closed)", 8)]
+
+    def test_font_programs_are_not_parsed_as_text(self, tmp_path) -> None:
+        # A TrueType glyf table tokenizes into literals whose bytes
+        # normalize to digit runs — that produced two hard SSN findings
+        # on a clean document. /Length1 marks a font program and
+        # nothing else.
+        path = tmp_path / "font.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean")
+        xref = doc.get_new_xref()
+        doc.update_object(xref, "<< /Length1 64 >>")
+        doc.update_stream(xref, f"({SSN})".encode())
+        doc.save(path)
+        doc.close()
+        assert _scan(path).findings == []
+
+    def test_attachments_are_left_to_the_hidden_layer(self, tmp_path) -> None:
+        # The Hidden layer scans embedded files as manual-review
+        # warnings, the honest tier for arbitrary binary. Reporting them
+        # here as confirmed leaks would both duplicate and overstate.
+        path = tmp_path / "attach.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean")
+        doc.embfile_add("note.bin", f"SSN {SSN}".encode())
+        doc.save(path)
+        doc.close()
+        assert [f.layer for f in _scan(path).findings] == []
+
+
+class TestOrphanLabel:
+    """"ORPHANED" means "left behind by a redaction" — it must be earned."""
+
+    def test_annotations_are_reachable(self, tmp_path) -> None:
+        # Annotations, form fields and appearance streams hang off the
+        # catalog, not the page tree. A page-only walk called them all
+        # orphaned — 61 of 73 findings on a real document.
+        path = tmp_path / "annot.pdf"
+        doc = fitz.open()
+        doc.new_page().add_freetext_annot(fitz.Rect(50, 50, 300, 90), f"SSN {SSN}")
+        doc.save(path)
+        doc.close()
+        locations = {f.location for f in _scan(path).findings}
+        assert locations and not any("ORPHANED" in loc for loc in locations)
+
+    def test_a_real_orphan_is_still_named(self, tmp_path) -> None:
+        path = tmp_path / "orphan.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean")
+        xref = doc.get_new_xref()                      # referenced by nothing
+        doc.update_object(xref, f"<< /T ({SSN}) >>")
+        doc.save(path)
+        doc.close()
+        assert all("ORPHANED" in f.location for f in _scan(path).findings)
+
+    def test_unknown_reachability_does_not_accuse(self, tmp_path) -> None:
+        # An unreadable trailer means "unknown", not "everything is
+        # orphaned" — fall back to the plain label.
+        path = tmp_path / "plain.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+        doc.save(path)
+        doc.close()
+        doc = fitz.open(path)
+        doc.pdf_trailer = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope"))
+        report = verify.ScanReport()
+        verify.scan_pdf_objects(
+            doc, verify.SecretMatcher([verify.Secret("Target SSN",
+                                                     verify.normalize_string(SSN))]),
+            (), report)
+        doc.close()
+        assert report.findings
+        assert not any("ORPHANED" in f.location for f in report.findings)
+
+
+class TestStructuralScanErrors:
     def test_unreadable_objects_degrade_loudly(self) -> None:
         report = verify.ScanReport()
 
