@@ -159,6 +159,24 @@ masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 
+## Sharing a config with the redactor
+
+`--secrets` also accepts a redactor's `redact_config.yaml`, so the file
+that tells the redactor what to remove tells this tool what to look for.
+That removes a drift risk, and introduces a subtler one worth naming.
+
+Independence of *method* survives: `entity_types` are mapped onto this
+tool's own class regexes and validators, never the redactor's patterns,
+so a flaw in the redactor's detection cannot hide itself from the check,
+and the four layers still look where the redactor may not have.
+
+Independence of *scope* does not. A category the config omits is one this
+tool never searches for, so verification proves the redactor executed its
+instructions — not that the instructions were sufficient. Six of the ten
+entity types are LLM-detected with no regex equivalent at all. Following
+the fail-closed rule, those are reported as unverifiable and force a `2`:
+the gap is stated rather than implied away.
+
 ## Known limitations
 
 - **OCR is macOS-only.** Apple Vision has no portable equivalent here;

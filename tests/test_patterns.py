@@ -74,8 +74,8 @@ class TestLoader:
             {"name": "any ssn", "class": "ssn"},
             {"name": "case id", "pattern": r"CASE-\d{4}"},
         ])
-        secrets, patterns = verify.load_rules(path)
-        assert len(secrets) == 1 and len(patterns) == 2
+        rules = verify.load_rules(path)
+        assert len(rules.secrets) == 1 and len(rules.patterns) == 2
 
 
 class TestValidators:
@@ -120,8 +120,7 @@ class TestMatchSemantics:
     SSN_RULES = None  # built per test via load
 
     def _patterns(self, tmp_path, rules):
-        _, patterns = verify.load_rules(_rules_file(tmp_path, rules))
-        return patterns
+        return verify.load_rules(_rules_file(tmp_path, rules)).patterns
 
     def test_greedy_rejection_retries_embedded_match(self, tmp_path) -> None:
         # Regression: validator-rejected greedy superspan swallowed the
@@ -298,7 +297,7 @@ class TestTiering:
         # cleanly only by the correction-OFF Vision pass (variants[1] —
         # the more digit-accurate read) could never be a hard finding.
         rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        _, patterns = verify.load_rules(rules)
+        patterns = verify.load_rules(rules).patterns
         doc = fitz.open()
         doc.new_page()
         try:
@@ -337,3 +336,80 @@ class TestPatternCleanPass:
         rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
         result = run_verify(clean_pdf, rules)
         assert result.returncode == 0, result.stdout
+
+
+class TestSharedYamlConfig:
+    """A redactor redact_config.yaml doubles as a rules file, so the
+    redactor and the verifier cannot drift out of sync."""
+
+    def _yaml(self, tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "redact_config.yaml"
+        path.write_text(body)
+        return path
+
+    def test_maps_all_three_sections(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, """
+entity_types:
+  - ssn
+  - email
+  - person_name
+  - address
+exact_values:
+  - "Jane Doe"
+  - "123-45-6789"
+patterns:
+  - '\\d{3}-\\d{2}-\\d{4}'
+backend: lmstudio
+model: gemma-4-26b-a4b-qat
+scrub_metadata: true
+""")
+        rules = verify.load_rules(path)
+        assert len(rules.secrets) == 2                      # exact_values
+        assert len(rules.patterns) == 3                     # 1 regex + ssn + email
+        # Unmappable entity types are recorded, never silently dropped.
+        assert sorted(rules.unverifiable) == ["address", "person_name"]
+
+    def test_entity_types_use_our_own_classes(self, tmp_path) -> None:
+        # Independence: an entity_type maps to THIS tool's regex and
+        # validator, not to the redactor's pattern for the same concept.
+        path = self._yaml(tmp_path, "entity_types: [ssn]\n")
+        patterns = verify.load_rules(path).patterns
+        assert len(patterns) == 1
+        assert patterns[0].validator is verify._valid_ssn
+        assert patterns[0].regex.pattern == verify.BUILTIN_PATTERN_CLASSES["ssn"][0]
+
+    def test_unverifiable_types_force_exit_2(self, tmp_path) -> None:
+        # A clean document must NOT certify as 0 when the config asked
+        # for categories this tool cannot search for.
+        pdf = _pdf_with_text(tmp_path, "nothing sensitive here")
+        path = self._yaml(tmp_path, "entity_types: [person_name]\nexact_values: []\n")
+        result = run_verify(pdf, path)
+        assert result.returncode == 2, result.stdout
+        assert "CANNOT verify" in result.stdout
+        assert "person_name" in result.stdout
+
+    def test_exact_values_still_normalize(self, tmp_path) -> None:
+        # YAML-sourced value rules get the same normalization as JSON
+        # ones, so separator variants still match.
+        pdf = _pdf_with_text(tmp_path, "SSN on file: 123 45 6789")
+        path = self._yaml(tmp_path, 'exact_values:\n  - "123-45-6789"\n')
+        result = run_verify(pdf, path)
+        assert result.returncode == 1
+        assert "LAYER: DOM" in result.stdout
+
+    def test_yaml_patterns_are_case_insensitive(self, tmp_path) -> None:
+        # The redactor compiles its patterns IGNORECASE; a shared file
+        # must not match differently in the two tools.
+        path = self._yaml(tmp_path, "patterns:\n  - 'case-[0-9]{4}'\n")
+        patterns = verify.load_rules(path).patterns
+        assert "patterns[0]" in verify.match_patterns("Ref CASE-8912", patterns)
+
+    def test_malformed_yaml_exits_2_not_1(self, tmp_path) -> None:
+        pdf = _pdf_with_text(tmp_path, "clean")
+        path = self._yaml(tmp_path, "exact_values: 'not-a-list'\n")
+        assert run_verify(pdf, path).returncode == 2
+
+    def test_invalid_regex_in_yaml_rejected(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, "patterns:\n  - '(unclosed'\n")
+        with pytest.raises(verify.VerifyError, match="invalid regex"):
+            verify.load_rules(path)

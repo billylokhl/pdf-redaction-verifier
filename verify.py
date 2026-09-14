@@ -1090,7 +1090,131 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-def load_rules(rules_path: Path) -> tuple[list[Secret], list[PatternRule]]:
+# redactor entity types that have a regex equivalent here. The value
+# is one of THIS tool's built-in classes: verification deliberately uses
+# its own regexes and validators rather than importing the redactor's, so
+# a flaw in the redactor's detection cannot hide itself from the check.
+ENTITY_TYPE_TO_CLASS: dict[str, str] = {
+    "ssn": "ssn",
+    "email": "email",
+    "phone": "us-phone",
+    "credit_card": "credit-card",
+}
+
+
+@dataclass
+class RuleSet:
+    """Rules to scan for, plus what the source config asked for that
+    cannot be scanned for at all."""
+
+    secrets: list[Secret] = field(default_factory=list)
+    patterns: list[PatternRule] = field(default_factory=list)
+    # Entity types a redactor was told to remove that have no regex
+    # equivalent (LLM-detected categories). Recorded, never dropped:
+    # they are a hole in verification scope and must be reported.
+    unverifiable: list[str] = field(default_factory=list)
+
+
+def load_rules(rules_path: Path) -> RuleSet:
+    """Load verification rules from a JSON rules file or a YAML config.
+
+    A '.yaml'/'.yml' suffix selects the redactor's redact_config format,
+    so one file can drive both redaction and verification; anything else
+    is parsed as this tool's native JSON rules array.
+    """
+    if rules_path.suffix.lower() in (".yaml", ".yml"):
+        return _load_rules_yaml(rules_path)
+    return _load_rules_json(rules_path)
+
+
+def _load_rules_yaml(rules_path: Path) -> RuleSet:
+    """Load a redactor's redact_config.yaml as verification rules.
+
+    Mapping:
+      exact_values -> value rules (normalized matching)
+      patterns     -> pattern rules, compiled IGNORECASE as the redactor
+                      compiles them, plus MULTILINE for anchor sanity
+      entity_types -> this tool's own built-in classes; types with no
+                      regex equivalent land in RuleSet.unverifiable
+
+    Keys the redactor needs but verification does not (backend, model,
+    llm_url, scrub_metadata) are ignored.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - declared dependency
+        raise VerifyError("reading a YAML config needs PyYAML: pip install pyyaml")
+    try:
+        raw: Any = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
+    if not isinstance(raw, dict):
+        raise VerifyError("a YAML rules file must be a mapping")
+
+    rules = RuleSet()
+    seen: set[str] = set()
+
+    def claim(name: str) -> str:
+        """Names are rule identity and must be unique; YAML lists carry
+        none, so synthesize stable ones from the source location."""
+        candidate, n = name, 2
+        while candidate in seen:
+            candidate, n = f"{name} ({n})", n + 1
+        seen.add(candidate)
+        return candidate
+
+    values = raw.get("exact_values") or []
+    if not isinstance(values, list):
+        raise VerifyError("exact_values must be a list")
+    for i, value in enumerate(values):
+        normalized = normalize_string(str(value))
+        if not normalized:
+            raise VerifyError(
+                f"exact_values[{i}] normalizes to an empty string — it would "
+                "match everything or nothing; refusing to scan"
+            )
+        rules.secrets.append(Secret(claim(f"exact_values[{i}]"), normalized))
+
+    raw_patterns = raw.get("patterns") or []
+    if not isinstance(raw_patterns, list):
+        raise VerifyError("patterns must be a list")
+    for i, spec in enumerate(raw_patterns):
+        if not isinstance(spec, str):
+            raise VerifyError(
+                f"patterns[{i}] must be a string, got {type(spec).__name__}"
+            )
+        try:
+            regex = re.compile(spec, re.IGNORECASE | re.MULTILINE)
+        except re.error as exc:
+            raise VerifyError(f"patterns[{i}]: invalid regex: {exc}")
+        if regex.match(""):
+            raise VerifyError(
+                f"patterns[{i}]: matches the empty string; refusing to scan"
+            )
+        rules.patterns.append(PatternRule(claim(f"patterns[{i}]"), regex))
+
+    entity_types = raw.get("entity_types") or []
+    if not isinstance(entity_types, list):
+        raise VerifyError("entity_types must be a list")
+    for entity in entity_types:
+        key = str(entity)
+        mapped = ENTITY_TYPE_TO_CLASS.get(key)
+        if mapped is None:
+            rules.unverifiable.append(key)
+            continue
+        regex_src, validator = BUILTIN_PATTERN_CLASSES[mapped]
+        rules.patterns.append(
+            PatternRule(claim(f"entity_types:{key}"), re.compile(regex_src), validator)
+        )
+
+    # A config of only unverifiable entity types is allowed: it scans
+    # nothing, warns loudly, and exits 2 — which is the honest answer.
+    if not (rules.secrets or rules.patterns or rules.unverifiable):
+        raise VerifyError("the rules file contains no rules")
+    return rules
+
+
+def _load_rules_json(rules_path: Path) -> RuleSet:
     """Parse the rules JSON file, validating its shape.
 
     Each entry carries a 'name' and exactly one of:
@@ -1167,7 +1291,7 @@ def load_rules(rules_path: Path) -> tuple[list[Secret], list[PatternRule]]:
 
     if not secrets and not patterns:
         raise VerifyError("the rules file contains no rules")
-    return secrets, patterns
+    return RuleSet(secrets=secrets, patterns=patterns)
 
 
 def _sanitize_report_text(text: str) -> str:
@@ -1243,13 +1367,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        secrets, patterns = load_rules(args.secrets)
+        rules = load_rules(args.secrets)
     except VerifyError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 2
+    secrets, patterns = rules.secrets, rules.patterns
 
     matcher = SecretMatcher(secrets)
     report = ScanReport()
+
+    # Scope, not coverage: a shared redaction config can ask for entity
+    # types this tool has no way to search for. Say so — a PASS that
+    # silently skipped a category would be the false assurance the whole
+    # exit-code contract exists to prevent.
+    if rules.unverifiable:
+        report.warnings.append(
+            "Scope: the config asks a redactor to remove "
+            f"{', '.join(sorted(set(rules.unverifiable)))} — these are "
+            "identified by LLM judgement and have no regex equivalent, so "
+            "this tool CANNOT verify they were removed"
+        )
 
     # Start the independent subprocess layers now; they run concurrently
     # behind the in-process DOM/OCR scans.
