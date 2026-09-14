@@ -37,6 +37,7 @@ sanitized in the report.
 
 Usage:
     python verify.py --target document.pdf --secrets secrets.json
+    python verify.py --target document.pdf --secrets redact_config.yaml
 
 Exit codes:
     0 — PASS: no secret found in any layer, all layers ran clean.
@@ -1094,12 +1095,90 @@ def check_hidden_layers(
 # is one of THIS tool's built-in classes: verification deliberately uses
 # its own regexes and validators rather than importing the redactor's, so
 # a flaw in the redactor's detection cannot hide itself from the check.
+# The full entity-type roster redactor supports (its EntityType enum).
+# Declared explicitly so an unknown string is distinguishable from a known
+# coverage gap: a typo must be rejected, not reported as "LLM-only".
+UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
+    "person_name", "ssn", "email", "phone", "address", "date_of_birth",
+    "account_number", "credit_card", "drivers_license", "passport",
+})
+
+# redactor entity types that have a regex equivalent here. The value is
+# one of THIS tool's built-in classes: verification deliberately uses its
+# own regexes and validators rather than importing the redactor's, so a
+# flaw in the redactor's detection cannot hide itself from the check.
 ENTITY_TYPE_TO_CLASS: dict[str, str] = {
     "ssn": "ssn",
     "email": "email",
     "phone": "us-phone",
     "credit_card": "credit-card",
 }
+
+# Mapped types whose class covers only PART of what the redactor means by
+# that name. Having a regex for a name is not the same as covering the
+# name, so these raise the same scope warning an unmapped type does.
+PARTIAL_ENTITY_COVERAGE: dict[str, str] = {
+    "phone": "only North American (NANP) numbers are checked; "
+             "international formats are not",
+}
+
+# Top-level keys redactor itself understands. Anything else is a typo or
+# an upstream addition; either way the section it names is not scanned, so
+# it is surfaced rather than silently dropped.
+UPSTREAM_CONFIG_KEYS: frozenset[str] = frozenset({
+    "entity_types", "exact_values", "patterns",
+    "backend", "model", "llm_url", "ollama_url", "scrub_metadata",
+})
+
+# These tables are edited for different reasons and live far apart; an
+# unguarded subscript would turn a rename into a KeyError that exits 1,
+# this tool's code for "secret detected".
+assert set(ENTITY_TYPE_TO_CLASS) <= UPSTREAM_ENTITY_TYPES
+assert set(ENTITY_TYPE_TO_CLASS.values()) <= set(BUILTIN_PATTERN_CLASSES)
+assert set(PARTIAL_ENTITY_COVERAGE) <= set(ENTITY_TYPE_TO_CLASS)
+
+
+def _make_value_rule(name: str, spec: str, label: str = "") -> Secret:
+    """Build a value rule, shared by both rule formats so the guards
+    cannot drift apart (they already did once: the JSON path rejected a
+    non-string spec while the YAML path coerced it, which is how YAML
+    implicit typing silently changed what was searched for)."""
+    normalized = normalize_string(spec)
+    if not normalized:
+        raise VerifyError(
+            f"{label or name} normalizes to an empty string — it would "
+            "match everything or nothing; refusing to scan"
+        )
+    return Secret(name, normalized)
+
+
+def _make_pattern_rule(
+    name: str, spec: str, flags: int, label: str = ""
+) -> PatternRule:
+    """Build a custom-regex rule, shared by both rule formats."""
+    try:
+        regex = re.compile(spec, flags)
+    except re.error as exc:
+        raise VerifyError(f"{label or name}: invalid regex: {exc}")
+    if regex.match(""):
+        raise VerifyError(
+            f"{label or name}: pattern matches the empty string; "
+            "refusing to scan"
+        )
+    return PatternRule(name, regex)
+
+
+def _make_class_rule(
+    name: str, class_name: str, label: str = ""
+) -> PatternRule:
+    """Build a built-in class rule, shared by both rule formats."""
+    if class_name not in BUILTIN_PATTERN_CLASSES:
+        raise VerifyError(
+            f"{label or name}: unknown class {class_name!r} — valid "
+            f"classes: {', '.join(sorted(BUILTIN_PATTERN_CLASSES))}"
+        )
+    regex_src, validator = BUILTIN_PATTERN_CLASSES[class_name]
+    return PatternRule(name, re.compile(regex_src), validator)
 
 
 @dataclass
@@ -1130,110 +1209,159 @@ def load_rules(rules_path: Path) -> RuleSet:
     return _load_rules_json(rules_path)
 
 
+def _yaml_section(raw: dict, key: str) -> list:
+    """Read a list-valued section, distinguishing absent from malformed.
+
+    `raw.get(key) or []` would collapse {} and '' into an empty section
+    before any type check ran, silently narrowing the scan instead of
+    refusing it.
+    """
+    if key not in raw:
+        return []
+    value = raw[key]
+    if value is None:           # `key:` with nothing under it
+        return []
+    if not isinstance(value, list):
+        raise VerifyError(f"{key} must be a list, got {type(value).__name__}")
+    return value
+
+
 def _load_rules_yaml(rules_path: Path) -> RuleSet:
     """Load a redactor's redact_config.yaml as verification rules.
 
     Mapping:
       exact_values -> value rules (normalized matching)
-      patterns     -> pattern rules, compiled IGNORECASE as the redactor
-                      compiles them, plus MULTILINE for anchor sanity
+      patterns     -> pattern rules, compiled IGNORECASE exactly as the
+                      redactor compiles them
       entity_types -> this tool's own built-in classes; types with no
-                      regex equivalent land in RuleSet.unverifiable
+                      regex equivalent, or only partial coverage, are
+                      recorded so the scope gap is reported
 
     Keys the redactor needs but verification does not (backend, model,
-    llm_url, scrub_metadata) are ignored.
+    llm_url, ollama_url, scrub_metadata) are ignored.
     """
     try:
         import yaml
     except ImportError:  # pragma: no cover - declared dependency
         raise VerifyError("reading a YAML config needs PyYAML: pip install pyyaml")
-    # YAML's implicit typing is actively dangerous for secrets: an
-    # unquoted 0123 parses as octal int 83, 1.50 as float 1.5, `yes` as
-    # True. Coercing those back with str() would make the tool search for
-    # a string the user never wrote — and certify clean a document that
-    # contains the real one. Strip the implicit resolvers so every plain
-    # scalar stays the literal text on the page.
-    class RawScalars(yaml.SafeLoader):
-        pass
 
-    RawScalars.yaml_implicit_resolvers = {}
+    # YAML's implicit typing is actively dangerous for secrets: unquoted
+    # 00123456 is octal int 42798, 1.50 is float 1.5, `yes` is True.
+    # Coercing those back with str() makes the tool search for a string
+    # the user never wrote. Drop the coercing scalar resolvers so plain
+    # scalars stay literal — but KEEP the merge resolver, or `<<: *anchor`
+    # silently stops merging and whole sections vanish from the scan.
+    _MERGE = "tag:yaml.org,2002:merge"
+
+    class RawScalars(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):  # type: ignore[override]
+            # PyYAML keeps the LAST of duplicate keys without complaint,
+            # which silently discards an entire earlier section.
+            seen_keys: set[str] = set()
+            for key_node, _ in node.value:
+                key = key_node.value
+                if isinstance(key, str) and key in seen_keys:
+                    raise VerifyError(f"duplicate key {key!r} in {rules_path}")
+                if isinstance(key, str):
+                    seen_keys.add(key)
+            return super().construct_mapping(node, deep)
+
+    RawScalars.yaml_implicit_resolvers = {
+        ch: [(tag, rx) for tag, rx in resolvers if tag == _MERGE]
+        for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
 
     try:
         text = rules_path.read_text(encoding="utf-8")
         raw: Any = yaml.load(text, RawScalars)
         coerced: Any = yaml.safe_load(text)
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # ValueError covers UnicodeDecodeError: a non-UTF-8 config is an
+        # operational error (exit 2), never the leak code.
         raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
     if not isinstance(raw, dict):
         raise VerifyError("a YAML rules file must be a mapping")
 
     rules = RuleSet()
-    seen: set[str] = set()
 
-    def claim(name: str) -> str:
-        """Names are rule identity and must be unique; YAML lists carry
-        none, so synthesize stable ones from the source location."""
-        candidate, n = name, 2
-        while candidate in seen:
-            candidate, n = f"{name} ({n})", n + 1
-        seen.add(candidate)
-        return candidate
-
-    values = raw.get("exact_values") or []
-    if not isinstance(values, list):
-        raise VerifyError("exact_values must be a list")
-    # A redactor reading this file with a plain safe_load sees the
-    # coerced value and removes THAT string, so any divergence means the
-    # two tools are working from different text. Say so rather than
-    # quietly disagreeing.
-    coerced_values = (coerced or {}).get("exact_values") or []
-    for i, value in enumerate(values):
-        if i < len(coerced_values) and str(coerced_values[i]) != str(value):
-            rules.warnings.append(
-                f"Rules: exact_values[{i}] is unquoted, so YAML reads "
-                f"{str(value)!r} as {str(coerced_values[i])!r} — a redactor "
-                "sharing this file may have removed the wrong string. Quote "
-                "the value in the config."
-            )
-        normalized = normalize_string(str(value))
-        if not normalized:
-            raise VerifyError(
-                f"exact_values[{i}] normalizes to an empty string — it would "
-                "match everything or nothing; refusing to scan"
-            )
-        rules.secrets.append(Secret(claim(f"exact_values[{i}]"), normalized))
-
-    raw_patterns = raw.get("patterns") or []
-    if not isinstance(raw_patterns, list):
-        raise VerifyError("patterns must be a list")
-    for i, spec in enumerate(raw_patterns):
-        if not isinstance(spec, str):
-            raise VerifyError(
-                f"patterns[{i}] must be a string, got {type(spec).__name__}"
-            )
-        try:
-            regex = re.compile(spec, re.IGNORECASE | re.MULTILINE)
-        except re.error as exc:
-            raise VerifyError(f"patterns[{i}]: invalid regex: {exc}")
-        if regex.match(""):
-            raise VerifyError(
-                f"patterns[{i}]: matches the empty string; refusing to scan"
-            )
-        rules.patterns.append(PatternRule(claim(f"patterns[{i}]"), regex))
-
-    entity_types = raw.get("entity_types") or []
-    if not isinstance(entity_types, list):
-        raise VerifyError("entity_types must be a list")
-    for entity in entity_types:
-        key = str(entity)
-        mapped = ENTITY_TYPE_TO_CLASS.get(key)
-        if mapped is None:
-            rules.unverifiable.append(key)
-            continue
-        regex_src, validator = BUILTIN_PATTERN_CLASSES[mapped]
-        rules.patterns.append(
-            PatternRule(claim(f"entity_types:{key}"), re.compile(regex_src), validator)
+    unknown_keys = sorted(set(raw) - UPSTREAM_CONFIG_KEYS)
+    if unknown_keys:
+        rules.warnings.append(
+            f"Rules: unrecognized config key(s) {', '.join(unknown_keys)} — "
+            "if one is a misspelled section its rules were NOT scanned"
         )
+
+    def literal(section: str, i: int, value: Any) -> str:
+        """Every rule spec must be literal text. A non-string survived
+        YAML's typing (an explicit !!int tag, or a nested mapping), which
+        means the tool would search for something other than what is
+        written in the file."""
+        if not isinstance(value, str):
+            raise VerifyError(
+                f"{section}[{i}] must be a quoted string, got "
+                f"{type(value).__name__} — quote it in the config"
+            )
+        return value
+
+    # A redactor reading this file with a plain safe_load sees coerced
+    # values and removes THOSE strings, so divergence means the two tools
+    # are working from different text. Samples are masked: a warning must
+    # never re-leak the secret it is warning about.
+    coerced_values = (coerced or {}).get("exact_values") or []
+    values = _yaml_section(raw, "exact_values")
+    for i, value in enumerate(values):
+        spec = literal("exact_values", i, value)
+        if i < len(coerced_values) and str(coerced_values[i]) != spec:
+            rules.warnings.append(
+                f"Rules: exact_values[{i}] is unquoted, so YAML reads it as "
+                f"{mask(str(coerced_values[i]))} rather than {mask(spec)} — a "
+                "redactor sharing this file may have removed the wrong "
+                "string. Quote the value in the config."
+            )
+        rules.secrets.append(_make_value_rule(f"exact_values[{i}]", spec))
+
+    for i, value in enumerate(_yaml_section(raw, "patterns")):
+        spec = literal("patterns", i, value)
+        if f"{spec} #" in text:
+            rules.warnings.append(
+                f"Rules: patterns[{i}] appears to be truncated at an "
+                "unquoted '#' (YAML comment) — quote the pattern"
+            )
+        # IGNORECASE only, matching the redactor's own _compile_patterns;
+        # adding MULTILINE here would make a shared rule mean different
+        # things in the two tools.
+        rule = _make_pattern_rule(f"patterns[{i}]", spec, re.IGNORECASE)
+        if rule.regex.groups:
+            rules.warnings.append(
+                f"Rules: patterns[{i}] has a capturing group — the redactor "
+                "removes only the group text, so this rule verifies more "
+                "than it removed; manual review recommended"
+            )
+        rules.patterns.append(rule)
+
+    # Upstream defaults entity_types to the FULL roster when the key is
+    # absent, so treating absent as empty would certify clean a document
+    # whose ten redacted categories were never searched for.
+    if "entity_types" in raw:
+        entity_types = _yaml_section(raw, "entity_types")
+    else:
+        entity_types = sorted(UPSTREAM_ENTITY_TYPES)
+    for entity in dict.fromkeys(str(e) for e in entity_types):
+        if entity not in UPSTREAM_ENTITY_TYPES:
+            raise VerifyError(
+                f"unknown entity type {entity!r} — valid types: "
+                f"{', '.join(sorted(UPSTREAM_ENTITY_TYPES))}"
+            )
+        mapped = ENTITY_TYPE_TO_CLASS.get(entity)
+        if mapped is None:
+            rules.unverifiable.append(entity)
+            continue
+        rules.patterns.append(_make_class_rule(f"entity_types:{entity}", mapped))
+        if entity in PARTIAL_ENTITY_COVERAGE:
+            rules.warnings.append(
+                f"Scope: entity type {entity!r} is only partly verifiable — "
+                f"{PARTIAL_ENTITY_COVERAGE[entity]}"
+            )
 
     # A config of only unverifiable entity types is allowed: it scans
     # nothing, warns loudly, and exits 2 — which is the honest answer.
@@ -1254,7 +1382,9 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
     """
     try:
         payload: Any = json.loads(rules_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # ValueError covers UnicodeDecodeError: a non-UTF-8 rules file is
+        # an operational error (exit 2), never the leak code.
         raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
 
     if not isinstance(payload, list):
@@ -1287,35 +1417,15 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
             )
 
         if kind == "value":
-            normalized = normalize_string(spec)
-            if not normalized:
-                raise VerifyError(
-                    f"secret {name!r} normalizes to an empty string — it "
-                    "would match everything or nothing; refusing to scan"
-                )
-            secrets.append(Secret(name, normalized))
+            secrets.append(_make_value_rule(name, spec, f"secret {name!r}"))
         elif kind == "pattern":
-            try:
-                # MULTILINE so grep-style ^/$ anchors match per line of
-                # the extracted page text instead of silently never
-                # matching mid-page.
-                regex = re.compile(spec, re.MULTILINE)
-            except re.error as exc:
-                raise VerifyError(f"rule {name!r}: invalid regex: {exc}")
-            if regex.match(""):
-                raise VerifyError(
-                    f"rule {name!r}: pattern matches the empty string; "
-                    "refusing to scan"
-                )
-            patterns.append(PatternRule(name, regex))
+            # MULTILINE so grep-style ^/$ anchors match per line of the
+            # extracted page text instead of silently never matching.
+            patterns.append(
+                _make_pattern_rule(name, spec, re.MULTILINE, f"rule {name!r}")
+            )
         else:
-            if spec not in BUILTIN_PATTERN_CLASSES:
-                raise VerifyError(
-                    f"rule {name!r}: unknown class {spec!r} — valid classes: "
-                    f"{', '.join(sorted(BUILTIN_PATTERN_CLASSES))}"
-                )
-            regex_src, validator = BUILTIN_PATTERN_CLASSES[spec]
-            patterns.append(PatternRule(name, re.compile(regex_src), validator))
+            patterns.append(_make_class_rule(name, spec, f"rule {name!r}"))
 
     if not secrets and not patterns:
         raise VerifyError("the rules file contains no rules")
@@ -1377,9 +1487,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--target", required=True, type=Path, help="PDF file to verify")
     parser.add_argument(
         "--secrets", required=True, type=Path,
-        help="JSON array of rules: known values, custom regex patterns, "
-        "and/or built-in pattern classes "
-        f"({', '.join(sorted(BUILTIN_PATTERN_CLASSES))})",
+        help="rules file: a JSON array of rules (name + one of value / "
+        "pattern / class, classes being "
+        f"{', '.join(sorted(BUILTIN_PATTERN_CLASSES))}), or a redactor's "
+        "redact_config.yaml when the path ends in .yaml/.yml",
     )
     parser.add_argument(
         "--fail-fast",
