@@ -1113,6 +1113,9 @@ class RuleSet:
     # equivalent (LLM-detected categories). Recorded, never dropped:
     # they are a hole in verification scope and must be reported.
     unverifiable: list[str] = field(default_factory=list)
+    # Problems with the rules file that do not stop the scan but make a
+    # clean result untrustworthy (surfaced as warnings -> exit 2).
+    warnings: list[str] = field(default_factory=list)
 
 
 def load_rules(rules_path: Path) -> RuleSet:
@@ -1144,8 +1147,21 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
         import yaml
     except ImportError:  # pragma: no cover - declared dependency
         raise VerifyError("reading a YAML config needs PyYAML: pip install pyyaml")
+    # YAML's implicit typing is actively dangerous for secrets: an
+    # unquoted 0123 parses as octal int 83, 1.50 as float 1.5, `yes` as
+    # True. Coercing those back with str() would make the tool search for
+    # a string the user never wrote — and certify clean a document that
+    # contains the real one. Strip the implicit resolvers so every plain
+    # scalar stays the literal text on the page.
+    class RawScalars(yaml.SafeLoader):
+        pass
+
+    RawScalars.yaml_implicit_resolvers = {}
+
     try:
-        raw: Any = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+        text = rules_path.read_text(encoding="utf-8")
+        raw: Any = yaml.load(text, RawScalars)
+        coerced: Any = yaml.safe_load(text)
     except (OSError, yaml.YAMLError) as exc:
         raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
     if not isinstance(raw, dict):
@@ -1166,7 +1182,19 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
     values = raw.get("exact_values") or []
     if not isinstance(values, list):
         raise VerifyError("exact_values must be a list")
+    # A redactor reading this file with a plain safe_load sees the
+    # coerced value and removes THAT string, so any divergence means the
+    # two tools are working from different text. Say so rather than
+    # quietly disagreeing.
+    coerced_values = (coerced or {}).get("exact_values") or []
     for i, value in enumerate(values):
+        if i < len(coerced_values) and str(coerced_values[i]) != str(value):
+            rules.warnings.append(
+                f"Rules: exact_values[{i}] is unquoted, so YAML reads "
+                f"{str(value)!r} as {str(coerced_values[i])!r} — a redactor "
+                "sharing this file may have removed the wrong string. Quote "
+                "the value in the config."
+            )
         normalized = normalize_string(str(value))
         if not normalized:
             raise VerifyError(
@@ -1380,6 +1408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # types this tool has no way to search for. Say so — a PASS that
     # silently skipped a category would be the false assurance the whole
     # exit-code contract exists to prevent.
+    report.warnings.extend(rules.warnings)
+
     if rules.unverifiable:
         report.warnings.append(
             "Scope: the config asks a redactor to remove "

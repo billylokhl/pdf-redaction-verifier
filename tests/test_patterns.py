@@ -413,3 +413,46 @@ scrub_metadata: true
         path = self._yaml(tmp_path, "patterns:\n  - '(unclosed'\n")
         with pytest.raises(verify.VerifyError, match="invalid regex"):
             verify.load_rules(path)
+
+
+class TestYamlScalarCoercion:
+    """YAML implicit typing must never change what gets searched for."""
+
+    def _yaml(self, tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "cfg.yaml"
+        path.write_text(body)
+        return path
+
+    def test_unquoted_leading_zero_is_not_octal(self, tmp_path) -> None:
+        # Regression: `00123456` parsed as octal int 42798, so the tool
+        # searched for "42798" and CERTIFIED CLEAN a document containing
+        # the real account number.
+        path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
+        assert [s.normalized for s in verify.load_rules(path).secrets] == ["00123456"]
+
+    def test_scalars_keep_their_literal_text(self, tmp_path) -> None:
+        path = self._yaml(
+            tmp_path, "exact_values:\n  - 1.50\n  - yes\n  - 0123\n"
+        )
+        # 1.50 must not become "1.5", yes must not become "True".
+        assert [s.normalized for s in verify.load_rules(path).secrets] == [
+            "150", "yes", "0123",
+        ]
+
+    def test_coercion_divergence_is_warned(self, tmp_path) -> None:
+        # A redactor sharing the file reads it with a plain safe_load and
+        # would remove a different string — say so, and never exit 0.
+        path = self._yaml(tmp_path, "exact_values:\n  - 0123\n")
+        rules = verify.load_rules(path)
+        assert any("unquoted" in w for w in rules.warnings)
+
+    def test_quoted_values_raise_no_warning(self, tmp_path) -> None:
+        path = self._yaml(tmp_path, 'exact_values:\n  - "0123"\n')
+        assert verify.load_rules(path).warnings == []
+
+    def test_unquoted_secret_is_still_detected(self, tmp_path) -> None:
+        pdf = _pdf_with_text(tmp_path, "Account: 00123456 on file")
+        path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
+        result = run_verify(pdf, path)
+        assert result.returncode == 1, result.stdout
+        assert "LAYER: DOM" in result.stdout
