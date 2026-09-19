@@ -1229,42 +1229,44 @@ def _iter_pdf_strings(buf: str) -> Iterator[tuple[str, int]]:
     it, so a legal content stream could hide a secret in plain sight.
     Depth tracking reads it the way a PDF parser does.
 
-    An unterminated literal yields nothing, as before: its extent is
-    unknowable, and guessing one would fuse the rest of the object into
-    a single token that hard pattern rules could match across.
+    An unterminated literal yields nothing: its extent is unknowable,
+    and guessing one would fuse the rest of the object into a single
+    token that hard pattern rules could match across.
+
+    Single pass, so cost is linear in len(buf). An earlier version
+    rescanned from start+1 whenever a literal ran to the end unclosed,
+    which is quadratic: a stream of unescaped "(" (crafted, or just
+    binary that slipped the opaque-stream filter) took 13 minutes at
+    200KB and hours at 1MB — a denial of service on a tool whose whole
+    job is to answer.
     """
     i, n = 0, len(buf)
+    stack: list[int] = []          # positions of currently-open "("
     while i < n:
         char = buf[i]
+        if stack:                  # inside a literal: parens nest, "<" is data
+            if char == "\\":       # escape — the next char cannot close
+                i += 2
+                continue
+            if char == "(":
+                stack.append(i)
+            elif char == ")":
+                start = stack.pop()
+                if not stack:
+                    yield buf[start:i + 1], i + 1
+            i += 1
+            continue
+        if char == "(":
+            stack.append(i)
+            i += 1
+            continue
         if char == "<":
             match = _PDF_HEX_STRING_RE.match(buf, i)
             if match:
                 yield match.group(0), match.end()
                 i = match.end()
                 continue
-            i += 1
-            continue
-        if char != "(":
-            i += 1
-            continue
-        start, depth, j = i, 0, i
-        while j < n:
-            c = buf[j]
-            if c == "\\":
-                j += 2
-                continue
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
-        if j >= n:            # unterminated — skip the "(" and move on
-            i = start + 1
-            continue
-        yield buf[start:j + 1], j + 1
-        i = j + 1
+        i += 1
 
 
 def _feed_pdf_strings(

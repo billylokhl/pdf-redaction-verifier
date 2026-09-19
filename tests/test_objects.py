@@ -184,6 +184,17 @@ class TestStructuralScan:
         # the object into a token hard pattern rules could match across.
         assert list(verify._iter_pdf_strings("(closed) (dangling")) == [("(closed)", 8)]
 
+    def test_tokenizer_is_linear_not_quadratic(self) -> None:
+        # A run of unescaped "(" (crafted, or binary that slipped the
+        # opaque-stream filter) once rescanned from start+1 per paren:
+        # 200KB took 13 minutes, 1MB hours — a DoS on a tool whose job
+        # is to answer. One pass finishes 1M parens well under a second.
+        import time
+
+        start = time.perf_counter()
+        assert list(verify._iter_pdf_strings("(" * 1_000_000)) == []
+        assert time.perf_counter() - start < 2.0
+
     def test_font_programs_are_not_parsed_as_text(self, tmp_path) -> None:
         # A TrueType glyf table tokenizes into literals whose bytes
         # normalize to digit runs — that produced two hard SSN findings
