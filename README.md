@@ -144,3 +144,23 @@ positives, exit-code contract violations). PDF fixtures are generated on
 the fly — nothing binary is committed. Tests needing Apple Vision,
 `exiftool`, or `qpdf` skip with a reason when the tool is unavailable,
 so the suite runs (partially) on any platform.
+
+Two suites go beyond regression pinning to test robustness directly:
+
+- **`test_corpus.py`** scans the same planted secret across the on-disk
+  layouts real producers emit — classic xref, object streams + xref
+  stream (the PDF 1.5+ default of Acrobat/Ghostscript/Chrome),
+  incremental updates, and garbage-collected rewrites — asserting a leak
+  is found and a clean file is never falsely accused of orphaned content
+  in any of them.
+- **`test_mutation.py`** plants a secret on each carrier surface
+  (content stream, dictionary string, /Info, annotation, form field,
+  ObjStm-packed object, orphaned content stream) and asserts detection,
+  then neutralizes each guard in turn and asserts the bug it prevents
+  comes back — so a guard whose removal changed nothing (dead or
+  untested code) is caught, not just an outright regression.
+
+To exercise **real vendor PDFs** without committing binaries, drop a
+`foo.pdf` plus a `foo.pdf.secrets.json` sidecar (a list of
+`[name, value]` pairs) into `tests/corpus_pdfs/`; `test_corpus.py` picks
+them up automatically and asserts every listed secret is caught.
