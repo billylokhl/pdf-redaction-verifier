@@ -163,6 +163,54 @@ class TestStructuralScan:
         assert not verify._is_opaque_stream(doc, doc[0].get_contents()[0])
         doc.close()
 
+    def test_indirect_filter_is_resolved(self, tmp_path) -> None:
+        # /Filter may be an indirect reference; xref_get_key then returns
+        # kind 'xref', which used to fall through to non-opaque, so an
+        # image behind an indirect filter was parsed as text. (Written as
+        # raw bytes: MuPDF collapses an indirect ref built in memory, so
+        # only an ingested file reproduces the 'xref' kind.)
+        path = tmp_path / "indirect.pdf"
+        path.write_bytes(
+            b"%PDF-1.7\n"
+            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]"
+            b"/Resources<<>>>>endobj\n"
+            b"4 0 obj/DCTDecode endobj\n"
+            b"5 0 obj<</Type/XObject/Subtype/Image/Width 1/Height 1"
+            b"/Filter 4 0 R/Length 4>>stream\n\xff\xd8\xff\xe0\nendstream endobj\n"
+            b"trailer<</Root 1 0 R>>\n%%EOF"
+        )
+        doc = fitz.open(path)
+        assert doc.xref_get_key(5, "Filter")[0] == "xref"   # the trap
+        assert verify._stream_key(doc, 5, "Filter") == ("name", "/DCTDecode")
+        assert verify._is_opaque_stream(doc, 5)
+        doc.close()
+
+    def test_content_sniff_skips_markerless_binary(self, tmp_path) -> None:
+        # A binary stream with no image/font/embedded marker slips the key
+        # pre-filter; the content sniff on the decompressed body keeps its
+        # bytes out of the tokenizer (where "(" bytes coin false findings).
+        blob = bytes(range(256)) * 20
+        assert verify._looks_binary(blob)
+        assert not verify._looks_binary(b"BT /F1 12 Tf (hello world) Tj ET")
+
+    def test_object_and_xref_streams_are_opaque(self, tmp_path) -> None:
+        path = tmp_path / "os.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean")
+        doc.save(path, deflate=True, use_objstms=1)
+        doc.close()
+        doc = fitz.open(path)
+        seen = set()
+        for xref in range(1, doc.xref_length()):
+            t = doc.xref_get_key(xref, "Type")[1]
+            if t in ("/ObjStm", "/XRef"):
+                seen.add(t)
+                assert verify._is_opaque_stream(doc, xref), f"{t} scanned as text"
+        doc.close()
+        assert "/ObjStm" in seen and "/XRef" in seen
+
     def test_nested_parens_do_not_truncate_a_literal(self, tmp_path) -> None:
         # "(SSN (mine): 123-45-6789)" is ONE literal — the spec only
         # requires escaping unbalanced parens. A regex that forbade "("
@@ -183,6 +231,23 @@ class TestStructuralScan:
         # Its extent is unknowable; guessing one would fuse the rest of
         # the object into a token hard pattern rules could match across.
         assert list(verify._iter_pdf_strings("(closed) (dangling")) == [("(closed)", 8)]
+
+    def test_unterminated_literal_degrades_not_silent(self, tmp_path) -> None:
+        # An unbalanced '(' swallows the following literals; that content
+        # must degrade the verdict (a warning -> exit 2), never be dropped
+        # silently on a document that could still be leaking.
+        spans, truncated = verify._pdf_string_spans(f"(oops  BT (SSN {SSN}) Tj")
+        assert truncated and spans == []
+        path = tmp_path / "trunc.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "cover")
+        doc.update_stream(page.get_contents()[0], f"(oops  (SSN {SSN}) Tj".encode())
+        doc.save(path)
+        doc.close()
+        report = _scan(path)
+        assert any("unterminated string literal" in w for w in report.warnings)
+        assert report.degraded
 
     def test_tokenizer_is_linear_not_quadratic(self) -> None:
         # A run of unescaped "(" (crafted, or binary that slipped the
@@ -238,6 +303,27 @@ class TestOrphanLabel:
         locations = {f.location for f in _scan(path).findings}
         assert locations and not any("ORPHANED" in loc for loc in locations)
 
+    def test_object_streams_do_not_fake_orphans(self, tmp_path) -> None:
+        # On PDF 1.5+ (Acrobat/Ghostscript/qpdf/Chrome default), dict
+        # objects are packed into /ObjStm containers linked only by the
+        # xref stream's binary offsets, never by an 'N G R' token. Scanning
+        # an ObjStm body re-found every packed secret and, since the
+        # container is never reachable via a textual ref, stamped it
+        # ORPHANED on a clean, fully-referenced document.
+        path = tmp_path / "objstm.pdf"
+        doc = fitz.open()
+        doc.new_page().add_freetext_annot(fitz.Rect(50, 50, 300, 90), f"SSN {SSN}")
+        doc.save(path, deflate=True, use_objstms=1)
+        doc.close()
+        # The container really is present and unreachable-by-ref...
+        reloaded = fitz.open(path)
+        types = {reloaded.xref_get_key(x, "Type")[1]
+                 for x in range(1, reloaded.xref_length())}
+        reloaded.close()
+        assert "/ObjStm" in types                     # the layout under test
+        # ...yet nothing is falsely accused.
+        assert not any("ORPHANED" in f.location for f in _scan(path).findings)
+
     def test_a_real_orphan_is_still_named(self, tmp_path) -> None:
         path = tmp_path / "orphan.pdf"
         doc = fitz.open()
@@ -247,6 +333,51 @@ class TestOrphanLabel:
         doc.save(path)
         doc.close()
         assert all("ORPHANED" in f.location for f in _scan(path).findings)
+
+    def test_ref_shaped_string_does_not_confer_reachability(self, tmp_path) -> None:
+        # A genuine orphan must keep its ORPHANED label even when its
+        # object number appears as an 'N G R'-shaped run inside some
+        # reachable object's string literal. References are read from the
+        # source with literals stripped, so the decoy cannot fake an edge.
+        path = tmp_path / "decoy.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "clean")
+        orphan = doc.get_new_xref()                    # referenced by nothing
+        doc.update_object(orphan, f"<< /T ({SSN}) >>")
+        doc.xref_set_key(doc.pdf_catalog(), "Note", f"({orphan} 0 R)")
+        doc.save(path)
+        doc.close()
+        locations = {f.location for f in _scan(path).findings}
+        assert locations and all("ORPHANED" in loc for loc in locations)
+
+    def test_partial_reachability_walk_does_not_accuse(self, tmp_path) -> None:
+        # If the walk cannot render an object it hits (a truncated set,
+        # not an empty one), the bool()-of-set guard used to stay True and
+        # every object reached only through the failed node was stamped
+        # ORPHANED. A partial walk must be treated as untrusted.
+        path = tmp_path / "hub.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+        doc.save(path)
+        doc.close()
+        doc = fitz.open(path)
+        root = doc.pdf_catalog()
+        real = doc.xref_object
+
+        def flaky(xref, *a, **k):
+            if xref == root:
+                raise RuntimeError("unrenderable hub")
+            return real(xref, *a, **k)
+
+        doc.xref_object = flaky
+        report = verify.ScanReport()
+        verify.scan_pdf_objects(
+            doc, verify.SecretMatcher([verify.Secret("T", verify.normalize_string(SSN))]),
+            (), report)
+        doc.close()
+        assert report.findings
+        assert not any("ORPHANED" in f.location for f in report.findings)
 
     def test_unknown_reachability_does_not_accuse(self, tmp_path) -> None:
         # An unreadable trailer means "unknown", not "everything is
