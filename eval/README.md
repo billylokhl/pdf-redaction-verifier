@@ -62,6 +62,32 @@ pattern rule alone; labels and known gaps in
 CI runs them on Linux, where OCR is absent — their labels hold with and
 without OCR.
 
+### The raw writer (`caselib/rawpdf.py`)
+
+Every case above can be written with PyMuPDF, but PyMuPDF is also the
+library the verifier reads with — a corpus it alone wrote could not show
+a place the two disagree (docs/REDESIGN.md §5's same-author-bias guard).
+`rawpdf.py` assembles a PDF's bytes by hand instead, object by object:
+
+- **`build`** — a classic file: objects in number order, one classic
+  cross-reference table, a trailer.
+- **`incremental_update(pdf, objects)`** — appends one more incremental
+  save to an already-built file: the given objects, a classic
+  cross-reference section listing exactly those numbers, and a trailer
+  whose `/Prev` chains back to `pdf`'s own last `startxref` — the same
+  chain the verifier's earlier-revision walk follows, so this is what
+  makes a raw `superseded.*` case possible.
+- **`build_objstm`** — a PDF 1.5 file instead: the non-stream objects
+  packed into one `/ObjStm`, and the cross-reference itself written as an
+  `/XRef` stream rather than a table.
+
+`caselib.NONFITZ_PENDING` (`cells.py`) lists claimed (✓/⚑) cells that
+still have no *caught leak case from a non-fitz writer* — a leak, no
+`known_gap`, `writer != "fitz"` — tracking the same same-author-bias
+guard case by case. It may only shrink; `tests/test_case_library.py`
+checks both directions (nothing claimed and uncovered is missing from
+it, and nothing in it is already covered).
+
 ## Running
 
 ```bash

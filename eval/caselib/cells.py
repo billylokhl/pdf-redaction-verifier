@@ -161,6 +161,12 @@ UNDOCUMENTED_GAPS: frozenset[str] = frozenset({
 })
 
 
+# Claimed (read/flagged) cells with no non-fitz caught leak case yet — a
+# leak, no known_gap, writer != fitz (docs/REDESIGN.md §5's same-author-bias
+# guard). May only shrink; empty today.
+NONFITZ_PENDING: frozenset[str] = frozenset()
+
+
 def parts(cell_id: str) -> tuple[str, str | None, str | None]:
     """(row, column, qualifier) of a coverage cell; column is None for
     match.* and false-alarm.* ids."""
