@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import fitz
+import pytest
 
 import verify
 
@@ -557,6 +558,84 @@ class TestLeftoverChecks:
                                 "/BitsPerComponent 8 /ColorSpace /DeviceGray >>")
             got = any("image(s)" in w for w in _scan_objects(path).warnings)
             assert got == flagged, (width, height)
+
+
+class TestContentSyntax:
+    """Leftover streams are tokenized the way a PDF parser reads content:
+    tokens separated by whitespace (NUL included) or delimiters. Regexes
+    that needed whitespace around operators missed compact content
+    ("BT/F1 11 Tf", "]ID" — as clean_contents and redactor write it),
+    long text objects, and a font set outside the text object (K8 in
+    docs/REDESIGN.md)."""
+
+    GLYPHS = "<0034003400310003001400150016>"
+
+    @pytest.mark.parametrize("body", [
+        "BT /F1 12 Tf 72 700 Td (x) Tj ET",
+        "q BT/EM 11 Tf 1 0 0 1 72 770 Tm[<0034>]TJ ET Q",
+        "BT/F1 12 Tf(abc)Tj ET",
+        "BT\n/F1 12 Tf\n[<0001>]TJ\nET",
+        "BT /F1 1 Tf<0102>Tj ET",
+        "BT/F1 12 Tf(a)' ET",
+        "BT\x00/EM 11\x00Tf\x00<0102>Tj\x00ET",               # NUL is PDF whitespace
+        "q /EM 11 Tf BT 72 770 Td <0102>Tj ET Q",               # font set before BT
+        "BT 72 770 Td <0102>Tj ET",                             # font from the drawer
+        "BT /F1 1 Tf ( ET ) Tj ET",                             # ET inside a string
+        "(a)Tj ET\nBT/F1 1 Tf(b)Tj ET",                         # BT after a delimiter
+        "BT /EM 6 Tf " + "0 -7 Td <00410042> Tj " * 3000 + "ET",  # one 60 KB text object
+    ])
+    def test_text_objects_in_any_token_form(self, body) -> None:
+        assert verify._is_content_stream(body)
+
+    @pytest.mark.parametrize("body", [
+        "xBTy /F1 Tfz (a) Tj ET",                  # operators inside other tokens
+        "BTx /F1 12 Tf (a) Tj ETx",
+        "BT/F1 12 Tf ET",                           # no show operator
+        "Notes on BT, ET, Tf and Tj.",
+        "Use BT, then /F1 Tf, then (a) Tj, then ET.",
+    ])
+    def test_not_text_objects(self, body) -> None:
+        assert not verify._is_content_stream(body)
+
+    @pytest.mark.parametrize("body, dims", [
+        ("q BI /W 200 /H 24 /BPC 8 /CS /G ID \x01\x02 EI Q", (200, 24)),
+        ("q BI /W 200/H 24/BPC 8/CS/G/D[0 1]ID \x01\x02 EI Q", (200, 24)),  # MuPDF's form
+        ("BI/W 100/H 20/BPC 8/CS/G ID xx\nEI", (100, 20)),
+        ("BI /Width 90 /Height 30 /F /AHx ID 00ff00>\nEI", (90, 30)),
+    ])
+    def test_inline_images_in_any_token_form(self, body, dims) -> None:
+        assert verify._scan_content(body).inline_images == [dims]
+
+    def test_kerned_glyph_codes_are_judged_joined(self) -> None:
+        assert verify._shows_unreadable_text("BT /F0 1 Tf [<05>-15<1A>-15<22>-15<09>]TJ ET")
+        assert not verify._shows_unreadable_text("BT /F1 1 Tf [(H)-15(e)-15(l)-15(lo)]TJ ET")
+
+    def test_one_glyph_coded_piece_among_plain_text_is_judged_alone(self) -> None:
+        body = "BT /F1 1 Tf [(" + "Plain words " * 10 + ")" + self.GLYPHS + "]TJ ET"
+        assert verify._shows_unreadable_text(body)
+
+    @pytest.mark.parametrize("body", [
+        "BT/F1 x " * 400_000,                       # compact, never closed
+        "BT " + " Tf )Tj" * 200_000,                # show operators without strings
+        "(" * 2_000_000,                            # unclosed strings
+    ])
+    def test_linear_on_hostile_input(self, body) -> None:
+        import time
+        start = time.perf_counter()
+        verify._scan_content(body)
+        assert time.perf_counter() - start < 3
+
+    @pytest.mark.parametrize("text", [
+        "Claimant SSN 123-45-6789, per 552(b)(6); see paragraphs (f), (m) and (n).",
+        "f(x) = 2x and g(x) = f(x) for claimant SSN 123-45-6789 (n = 42).",
+        "<td>n</td><td>n</td><td>n</td> SSN 123-45-6789",
+    ])
+    def test_prose_leftovers_still_searched_raw(self, tmp_path, text) -> None:
+        # Delimiter-bounded operator counting would call these page
+        # content and skip their raw-text search.
+        path = tmp_path / "prose.pdf"
+        _orphan(path, text.encode(), "<< >>")
+        assert any("(raw text) contains" in w for w in _scan_objects(path).warnings)
 
 
 class TestLiveContentIsNeverLeftover:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import fitz
 
-from ..model import CODE, SSN, KnownGap, case, expect
+from ..model import CODE, SSN, case, expect
 from ..pdfkit import (FILLER, body, cjk_font, compressed, embedded_font, orphan,
                       png_of, redact, save)
 
@@ -52,8 +52,8 @@ def deleted_page_embedded(path: Path) -> None:
 
 @leak("leftover.deleted-page-embedded-font-compact", "orphaned.font.compact-syntax",
       "The same deleted page, its content written compactly (\"BT/EM 11 Tf\", no space "
-      "after BT): the leftover glyph codes are neither read nor flagged.",
-      expected=UNDECODABLE, known_gap=KnownGap("orphaned.font.compact-syntax", expect(0)),
+      "after BT), as clean_contents and many producers write it.",
+      expected=UNDECODABLE,
       mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def deleted_page_embedded_compact(path: Path) -> None:
     _deleted_page(path, embedded_font, compact=True)
@@ -76,8 +76,8 @@ def redacted_no_gc(path: Path) -> None:
 
 @leak("leftover.redacted-no-gc-embedded-font-compact", "orphaned.font.compact-syntax",
       "The same, with the page in an embedded font written compactly: the original "
-      "stream's glyph codes stay in the file, neither read nor flagged.",
-      expected=UNDECODABLE, known_gap=KnownGap("orphaned.font.compact-syntax", expect(0)),
+      "stream's glyph codes stay in the file.",
+      expected=UNDECODABLE,
       mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def redacted_no_gc_compact(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
@@ -178,3 +178,16 @@ def mixed_stream(secret_hex: str | None) -> bytes:
     if secret_hex:
         lines.append(f"BT /EM 11 Tf 72 {y} Td {secret_hex} Tj ET")
     return "\n".join(lines).encode()
+
+
+@leak("leftover.deleted-page-long-text-object", "orphaned.font",
+      "A deleted page whose text was inserted in one call, so all 60 lines — the SSN "
+      "last — are one text object over 10 KB long.", expected=UNDECODABLE,
+      mistake=NO_GC, recovery=RECOVER_GLYPHS)
+def deleted_page_long_text(path: Path) -> None:
+    doc = fitz.open(); body(doc.new_page())
+    page = doc.new_page(); font = embedded_font(page)
+    lines = [f"Ledger row {i} reconciled against the monthly statement" for i in range(60)]
+    page.insert_text((36, 40), "\n".join([*lines, f"SSN {SSN}"]), fontname=font, fontsize=6)
+    doc = fitz.open("pdf", doc.tobytes(garbage=4, no_new_id=True))
+    doc.delete_page(1); save(doc, path)

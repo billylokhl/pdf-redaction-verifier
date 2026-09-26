@@ -69,7 +69,8 @@ def _cells() -> dict[str, Cell]:
         "orphaned.plain.mislabelled": Cell(gap, "plain text in a stream labelled as a font or image"),
         "orphaned.font": Cell(flagged, "font-coded text in an orphaned stream"),
         "orphaned.font.ordinary-codes": Cell(gap, "a font mapping ordinary-looking codes to other glyphs"),
-        "orphaned.font.compact-syntax": Cell(gap, "font-coded text written without spaces (BT/F1 …)"),
+        "orphaned.font.single-glyph-strings": Cell(gap, "glyph codes shown one character per Tj"),
+        "orphaned.font.compact-syntax": Cell(flagged, "font-coded text written without spaces (BT/F1 …)"),
         "orphaned.pixels": Cell(flagged, "an orphaned image big enough to hold text"),
         "orphaned.pixels.small": Cell(gap, "an orphaned image below the size gate"),
         "orphaned.pixels.outlines": Cell(gap, "orphaned text converted to outlines (paths)"),
@@ -78,7 +79,7 @@ def _cells() -> dict[str, Cell]:
         "superseded.plain": Cell(read, "plain strings an incremental update rewrote"),
         "superseded.plain.revision-cap": Cell(flagged, "more earlier revisions than are scanned"),
         "superseded.font": Cell(flagged, "font-coded text an incremental update rewrote"),
-        "superseded.font.compact-syntax": Cell(gap, "rewritten font-coded text without spaces"),
+        "superseded.font.compact-syntax": Cell(flagged, "rewritten font-coded text without spaces"),
         "superseded.pixels": Cell(flagged, "an image an incremental update replaced"),
         "superseded.container": Cell(flagged, "a container an incremental update replaced"),
         # metadata
@@ -97,6 +98,8 @@ def _cells() -> dict[str, Cell]:
         "embedded-other.pixels": Cell(gap, "images in /AF and rich-media files"),
         "embedded-other.container": Cell(gap, "containers in /AF and rich-media files"),
         "orphaned-attachment.plain": Cell(read, "an orphaned text attachment", tier="review"),
+        "orphaned-attachment.plain.operator-words": Cell(
+            gap, "untyped text with three stand-alone content-operator words"),
         "orphaned-attachment.pixels": Cell(flagged, "an orphaned attached image"),
         "orphaned-attachment.container": Cell(flagged, "an orphaned attached container"),
         # other non-page content

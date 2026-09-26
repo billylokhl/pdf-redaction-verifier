@@ -2015,10 +2015,160 @@ def _reachable_from_sources(
     return seen, trusted
 
 
-# A text-showing operator in a content stream: Tj, TJ, or a string followed
-# by ' or " (move to next line and show). Operators are delimited by
-# whitespace or by the end of the string or array before them.
-_TEXT_SHOW_RE = re.compile(r"(?<![A-Za-z])T[jJ](?![A-Za-z])|[)>]\s*['\"]")
+# ── Content-stream tokenizer ──────────────────────────────────────────────
+# Leftover streams are judged by what they would draw, so they are read the
+# way a PDF parser reads content: tokens separated by whitespace (including
+# NUL) *or* delimiters, strings and inline-image data skipped as units.
+# Regexes that required whitespace around operators missed content written
+# compactly ("BT/F1 11 Tf", "]ID"), as clean_contents, redactor and many
+# producers write it; windowed ones missed long text objects and
+# backtracked for minutes on hostile input. This is one linear pass.
+_WS = "\x00\t\n\x0c\r "
+_CONTENT_TOKEN_RE = re.compile(
+    rf"[{_WS}]+"                                  # whitespace
+    r"|%[^\r\n]*"                                 # comment
+    r"|<<|>>|[\[\]{{}}]"                             # dict / array / proc delimiters
+    rf"|<[0-9A-Fa-f{_WS}]*>"                      # hex string
+    rf"|/[^{_WS}()<>\[\]{{}}/%]*"                   # name
+    rf"|[^{_WS}()<>\[\]{{}}/%]+"                    # number or operator
+    r"|[)<>]")                                    # stray delimiter
+_LITERAL_STEP_RE = re.compile(r"[()\\]")
+# Inline image data ends at whitespace + EI + a token boundary.
+_INLINE_IMAGE_END_RE = re.compile(rf"[{_WS}]EI(?=[{_WS}()<>\[\]{{}}/%]|$)")
+_NUMBER_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)$")
+_TEXT_SHOW_OPS = frozenset({"Tj", "TJ", "'", '"'})
+# Common content operators between whitespace, for telling a leftover that
+# is page content from a text payload to search raw. Deliberately *not*
+# delimiter-bounded like the tokenizer: in prose, code and HTML, "(n)",
+# "f(x)" and ">n<" would count, and a secret in such text would lose its
+# raw-text search.
+_CONTENT_OP_RE = re.compile(r"(?:^|\s)(?:q|Q|cm|re|Do|BT|ET|Tf|Td|Tm|m|l|f|S|W|n)(?=\s)")
+
+
+@dataclass
+class _ContentScan:
+    """What a content stream would draw, as far as tokens tell."""
+
+    text_objects: int = 0          # BT … ET blocks that show a string
+    shown: list[str] = field(default_factory=list)   # one per show operation
+    pieces: list[str] = field(default_factory=list)  # each shown string alone
+    inline_images: list[tuple[int | None, int | None]] = field(default_factory=list)
+
+
+def _literal_end(buf: str, start: int) -> int:
+    """Index just past the literal string opening at *start* (nesting and
+    escapes honoured), or len(buf) if it never closes."""
+    depth, skip = 0, -1
+    for m in _LITERAL_STEP_RE.finditer(buf, start):
+        pos = m.start()
+        if pos < skip:
+            continue
+        char = m.group()
+        if char == "\\":
+            skip = pos + 2
+        elif char == "(":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+    return len(buf)
+
+
+def _inline_dimensions(tokens: list[str]) -> tuple[int | None, int | None]:
+    dims: dict[str, int] = {}
+    for key, value in zip(tokens, tokens[1:]):
+        if key in ("/W", "/Width", "/H", "/Height") and value.isdigit():
+            dims[key[1]] = int(value)
+    return dims.get("W"), dims.get("H")
+
+
+def _scan_content(buf: str) -> _ContentScan:
+    """Tokenize a content stream (latin-1 text) in one linear pass."""
+    scan = _ContentScan()
+    operands: list[tuple[str, Any]] = []
+    array: list[str] | None = None
+    depth = 0
+    in_text = shown_in_block = False
+    inline: list[str] | None = None
+    i, n = 0, len(buf)
+    while i < n:
+        if buf[i] == "(":
+            end = _literal_end(buf, i)
+            token = buf[i:end] if end < n or buf[end - 1] == ")" else buf[i:end] + ")"
+            text = _decode_pdf_string(token) or ""
+            if array is not None:
+                array.append(text)
+            else:
+                operands.append(("str", text))
+            i = end
+            continue
+        m = _CONTENT_TOKEN_RE.match(buf, i)
+        if m is None:               # unreachable: the pattern covers every char
+            i += 1
+            continue
+        token, i = m.group(), m.end()
+        first = token[0]
+        if first in _WS or first == "%":
+            continue
+        if inline is not None:      # the inline image's dictionary, up to ID
+            if token == "ID":
+                scan.inline_images.append(_inline_dimensions(inline))
+                end = _INLINE_IMAGE_END_RE.search(buf, i + 1)
+                i = end.end() if end else n
+                inline = None
+            else:
+                inline.append(token)
+            continue
+        if token == "[":
+            depth += 1
+            if array is None:
+                array = []
+            continue
+        if token == "]":
+            depth -= 1
+            if depth <= 0:
+                operands.append(("array", array or []))
+                array, depth = None, 0
+            continue
+        if first == "<" and token not in ("<", "<<"):
+            text = _decode_pdf_string(token) or ""
+            if array is not None:
+                array.append(text)
+            else:
+                operands.append(("str", text))
+            continue
+        if token in ("<<", ">>", "{", "}", ")", "<", ">") or first == "/" or _NUMBER_RE.match(token):
+            if array is None and first == "/":
+                operands.append(("name", token))
+            continue
+        if array is not None:       # a bare word inside [...] is data
+            continue
+        # An operator.
+        if token == "BT":
+            in_text, shown_in_block = True, False
+        elif token == "ET":
+            if in_text and shown_in_block:
+                scan.text_objects += 1
+            in_text = False
+        elif token in _TEXT_SHOW_OPS and operands:
+            kind, value = operands[-1]
+            if token == "TJ" and kind == "array":
+                scan.shown.append("".join(value))
+                scan.pieces.extend(value)
+            elif token != "TJ" and kind == "str":
+                scan.shown.append(value)
+                scan.pieces.append(value)
+            else:
+                value = None
+            if value is not None and in_text:
+                shown_in_block = True
+        elif token == "BI":
+            inline = []
+        operands.clear()
+    return scan
+
+
 # Share of a string's characters that must be ordinary text for it to
 # count as readable; glyph-ID codes (Identity-H) are half NULs.
 _READABLE_CODE_FLOOR = 0.8
@@ -2041,16 +2191,17 @@ def _shows_unreadable_text(body_text: str) -> bool:
     /Differences or Type3 font as arbitrary codes: the strings are there,
     but without the font they are not the characters on the page. Judged
     per string, because one run of glyph codes among ordinary text is
-    exactly how a secret in a second font hides.
+    exactly how a secret in a second font hides. Each TJ array is also
+    judged joined, so kerning that splits glyph codes into one-character
+    strings cannot hide them either.
     """
-    if not _TEXT_SHOW_RE.search(body_text):
-        return False
-    for a, b in _pdf_string_spans(body_text)[0]:
-        decoded = _decode_pdf_string(body_text[a:b]) or ""
-        if len(decoded) >= 2 and (
-                sum(map(_is_plain_code, decoded)) / len(decoded) < _READABLE_CODE_FLOOR):
-            return True
-    return False
+    return _unreadable(_scan_content(body_text))
+
+
+def _unreadable(scan: _ContentScan) -> bool:
+    return any(len(text) >= 2
+               and sum(map(_is_plain_code, text)) / len(text) < _READABLE_CODE_FLOOR
+               for text in (*scan.pieces, *scan.shown))
 
 
 # File signatures of containers whose contents are not searchable as text
@@ -2100,19 +2251,6 @@ _ORPHAN_PAYLOAD_TYPES: dict[str, str] = {
     "/EmbeddedFile": "attachment",
     "/Metadata": "XMP metadata",
 }
-# Content-stream structure: a text object (BT ... ET) with a font set and
-# a show operator, each a whitespace-delimited operator. Random bytes
-# contain "BT" and "Tj" by chance; they almost never contain this.
-_TEXT_OBJECT_RE = re.compile(
-    r"(?:^|\s)BT\s(?:(?!\sET\s).){0,4000}?\sTf\s(?:(?!\sET\s).){0,4000}?"
-    r"(?:[\s)>\]](?:Tj|TJ)|[)>]\s*['\"])(?:(?!\sET\s).){0,4000}?\sET(?:\s|$)",
-    re.S)
-# Any common content operator, for telling page content from a text payload.
-_CONTENT_OP_RE = re.compile(r"(?:^|\s)(?:q|Q|cm|re|Do|BT|ET|Tf|Td|Tm|m|l|f|S|W|n)(?=\s)")
-# An inline image's dictionary, whose /W and /H decide whether it could
-# hold legible text.
-_INLINE_IMAGE_RE = re.compile(r"(?:^|\s)BI\s(.{0,400}?)\sID\s", re.S)
-_DIM_RE = re.compile(r"/(W|Width|H|Height)\s+(\d+)")
 
 # Smallest leftover image worth flagging: a single line of text at a
 # readable size is ~8 px tall, so strips that small are flagged too; below
@@ -2138,16 +2276,13 @@ def _is_text_sized_image(doc: fitz.Document, xref: int) -> bool:
 
 
 def _has_text_sized_inline_image(body_text: str) -> bool:
-    for match in _INLINE_IMAGE_RE.finditer(body_text):
-        dims = {k[0]: int(v) for k, v in _DIM_RE.findall(match.group(1))}
-        if "W" not in dims or "H" not in dims or _text_sized(dims["W"], dims["H"]):
-            return True
-    return False
+    return any(w is None or h is None or _text_sized(w, h)
+               for w, h in _scan_content(body_text).inline_images)
 
 
 def _is_content_stream(body_text: str) -> bool:
     """Whether a stream is page content that draws text."""
-    return bool(_TEXT_OBJECT_RE.search(body_text))
+    return _scan_content(body_text).text_objects > 0
 
 
 def _object_list(xrefs: list[int], limit: int = 8) -> str:
@@ -2398,10 +2533,11 @@ def _check_leftover_stream(
 ) -> None:
     """Leftover content no other layer will see: read what can be read as
     raw text, flag what cannot be read at all."""
-    if _has_text_sized_inline_image(body_text):
+    scan = _scan_content(body_text)
+    if any(w is None or h is None or _text_sized(w, h) for w, h in scan.inline_images):
         tally.images.append(xref)               # pixels: not OCR'd
-    if _is_content_stream(body_text):
-        if _looks_binary(body) or _shows_unreadable_text(body_text):
+    if scan.text_objects:
+        if _looks_binary(body) or _unreadable(scan):
             tally.undecodable.append(xref)       # glyph codes, or text by binary
     elif _is_container(body):
         tally.unreadable_payloads.append(f"{xref} (embedded file)")
@@ -2920,11 +3056,11 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-# redactor entity types that have a regex equivalent here. The value
+# The redactor's entity types that have a regex equivalent here. The value
 # is one of THIS tool's built-in classes: verification deliberately uses
 # its own regexes and validators rather than importing the redactor's, so
 # a flaw in the redactor's detection cannot hide itself from the check.
-# The full entity-type roster redactor supports (its EntityType enum).
+# The full entity-type roster the redactor supports (its EntityType enum).
 # Declared explicitly so an unknown string is distinguishable from a known
 # coverage gap: a typo must be rejected, not reported as "LLM-only".
 UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
@@ -2932,7 +3068,7 @@ UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
     "account_number", "credit_card", "drivers_license", "passport",
 })
 
-# redactor entity types that have a regex equivalent here. The value is
+# The redactor's entity types that have a regex equivalent here. The value is
 # one of THIS tool's built-in classes: verification deliberately uses its
 # own regexes and validators rather than importing the redactor's, so a
 # flaw in the redactor's detection cannot hide itself from the check.
@@ -2951,7 +3087,7 @@ PARTIAL_ENTITY_COVERAGE: dict[str, str] = {
              "international formats are not",
 }
 
-# Top-level keys redactor itself understands. Anything else is a typo or
+# Top-level keys the redactor itself understands. Anything else is a typo or
 # an upstream addition; either way the section it names is not scanned, so
 # it is surfaced rather than silently dropped.
 UPSTREAM_CONFIG_KEYS: frozenset[str] = frozenset({

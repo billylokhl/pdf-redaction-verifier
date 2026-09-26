@@ -348,7 +348,7 @@ class TestPatternCleanPass:
 
 
 class TestSharedYamlConfig:
-    """A redactor redact_config.yaml doubles as a rules file, so the
+    """A redactor's redact_config.yaml doubles as a rules file, so the
     redactor and the verifier cannot drift out of sync."""
 
     def _yaml(self, tmp_path: Path, body: str) -> Path:

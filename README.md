@@ -409,7 +409,7 @@ automatically.
 
 A PDF is a pile of numbered **objects**. A **cross-reference (xref)
 table** at the end of the file records where each one lives. Some objects
-are **dictionaries** — key–value records like `<< /Title (Tax Return) >>`
+are **dictionaries** — key–value records like `<< /Title (Quarterly Report) >>`
 — whose text values are **strings**, written `(like this)` or as hex
 `<4A6F…>`. A **stream** is an object carrying a blob of (usually
 compressed) data; a page's **content stream** holds its drawing
