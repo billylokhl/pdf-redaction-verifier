@@ -178,3 +178,16 @@ def mixed_stream(secret_hex: str | None) -> bytes:
     if secret_hex:
         lines.append(f"BT /EM 11 Tf 72 {y} Td {secret_hex} Tj ET")
     return "\n".join(lines).encode()
+
+
+@leak("leftover.deleted-page-long-text-object", "orphaned.font",
+      "A deleted page whose text was inserted in one call, so all 60 lines — the SSN "
+      "last — are one text object over 10 KB long.", expected=UNDECODABLE,
+      mistake=NO_GC, recovery=RECOVER_GLYPHS)
+def deleted_page_long_text(path: Path) -> None:
+    doc = fitz.open(); body(doc.new_page())
+    page = doc.new_page(); font = embedded_font(page)
+    lines = [f"Ledger row {i} reconciled against the monthly statement" for i in range(60)]
+    page.insert_text((36, 40), "\n".join([*lines, f"SSN {SSN}"]), fontname=font, fontsize=6)
+    doc = fitz.open("pdf", doc.tobytes(garbage=4, no_new_id=True))
+    doc.delete_page(1); save(doc, path)

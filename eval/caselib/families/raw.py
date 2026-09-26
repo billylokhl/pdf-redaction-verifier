@@ -175,3 +175,60 @@ def associated_file(path: Path) -> None:
       story="A minimal hand-assembled one-page document (control for the raw writer).")
 def clean_raw(path: Path) -> None:
     _write(path, one_page(PAGE))
+
+
+# ── Leftover content in the token forms real producers write ───────────
+
+GLYPHS = b"<0034003400310003001400150016000E0017001800190019001A001B001C>"   # "SSN 123-45-6789" as glyph ids
+UNDECODABLE = expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),))
+
+
+@leak("leftover.font-set-before-text-object", "orphaned.font",
+      "A leftover stream that sets its font before BT (text state persists across "
+      "text objects), then shows the SSN as glyph codes.", expected=UNDECODABLE)
+def font_before_bt(path: Path) -> None:
+    _write(path, one_page(PAGE, o5=stream(b"", b"q /EM 11 Tf BT 72 770 Td " + GLYPHS + b"Tj ET Q")))
+
+
+@leak("leftover.kerned-glyph-codes", "orphaned.font",
+      "A leftover stream showing the SSN's glyph codes one per string, kerned in a TJ "
+      "array — no single string is long enough to judge.", expected=UNDECODABLE)
+def kerned(path: Path) -> None:
+    codes = GLYPHS[1:-1]
+    pieces = b"".join(b"<" + codes[i:i + 4] + b">-15" for i in range(0, len(codes), 4))
+    _write(path, one_page(PAGE, o5=stream(b"", b"BT/EM 11 Tf 72 700 Td[" + pieces + b"]TJ ET")))
+
+
+@leak("leftover.single-glyph-show-runs", "orphaned.font.single-glyph-strings",
+      "A leftover stream in a custom-encoded font (one-byte codes 0x01–0x1E) showing "
+      "the SSN one code per Tj operator: each string is one character, so none is "
+      "judged, and the codes pass as readable.",
+      expected=UNDECODABLE, known_gap=KnownGap("orphaned.font.single-glyph-strings", expect(0)))
+def single_glyph_runs(path: Path) -> None:
+    codes = [0x05, 0x05, 0x0E, 0x01, 0x12, 0x13, 0x14, 0x02, 0x15, 0x16, 0x02, 0x17, 0x18, 0x19, 0x1A]
+    shows = b" ".join(b"<%02X>Tj 6 0 Td" % c for c in codes)
+    _write(path, one_page(PAGE, o5=stream(b"", b"BT /EM 11 Tf 72 700 Td " + shows + b" ET")))
+
+
+@leak("leftover.inline-image-compact", "orphaned.pixels",
+      "A leftover content stream drawing the SSN as an inline image, written the way "
+      "MuPDF's clean_contents writes it (\"/D[0 1]ID\", no spaces).",
+      expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)))
+def inline_image_compact(path: Path) -> None:
+    from ..pdfkit import png_of
+    gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
+    data = (b"q %d 0 0 %d 72 400 cm BI /W %d/H %d/BPC 8/CS/G/D[0 1]ID "
+            % (gray.width // 2, gray.height // 2, gray.width, gray.height)
+            + gray.samples + b"\nEI Q")
+    _write(path, one_page(PAGE, o5=stream(b"", data)))
+
+
+@leak("leftover.untyped-text-operator-words", "orphaned-attachment.plain.operator-words",
+      "A removed attachment without a /Type whose text has three stand-alone words that "
+      "are also content operators (n, m, q): it is taken for page content and never "
+      "searched as text.",
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)),
+      known_gap=KnownGap("orphaned-attachment.plain.operator-words", expect(0)))
+def operator_words(path: Path) -> None:
+    text = b"for n in rows:\n    m = n\n    q = m\n# claimant SSN 123-45-6789\n"
+    _write(path, one_page(PAGE, o5=stream(b"", text)))

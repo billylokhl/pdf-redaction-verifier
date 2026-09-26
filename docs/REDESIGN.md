@@ -514,8 +514,10 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K5 | Text converted to outlines, in an orphaned stream |
 | K6 | Same, in a switched-off optional-content layer |
 | K7 | Plain text after the final `%%EOF` |
-| K8 | Leftover font-coded text written without whitespace after `BT` (`BT/F1 11 Tf`, as `clean_contents` and redactor write it) — orphaned or superseded; found by the review of the case library; **fixed** in the current tool (token boundaries include PDF delimiters) |
+| K8 | Leftover font-coded text written without whitespace after `BT` (`BT/F1 11 Tf`, as `clean_contents` and redactor write it) — orphaned or superseded; found by the review of the case library; **fixed** in the current tool: leftover streams are tokenized as content (delimiters, NUL, long text objects, a font set before BT, compact inline images) |
 | K9 | Font-coded text running across the page edge: the page reading splits it into on- and off-page parts |
+| K10 | Leftover glyph codes shown one character per `Tj`: no string is long enough to judge |
+| K11 | An untyped leftover text with three stand-alone words that are content operators (`n`, `m`, `q`) is taken for page content and never searched (pre-existing) |
 
 To check in Phase 0b:
 

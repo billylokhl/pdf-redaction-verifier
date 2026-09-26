@@ -69,6 +69,7 @@ def _cells() -> dict[str, Cell]:
         "orphaned.plain.mislabelled": Cell(gap, "plain text in a stream labelled as a font or image"),
         "orphaned.font": Cell(flagged, "font-coded text in an orphaned stream"),
         "orphaned.font.ordinary-codes": Cell(gap, "a font mapping ordinary-looking codes to other glyphs"),
+        "orphaned.font.single-glyph-strings": Cell(gap, "glyph codes shown one character per Tj"),
         "orphaned.font.compact-syntax": Cell(flagged, "font-coded text written without spaces (BT/F1 …)"),
         "orphaned.pixels": Cell(flagged, "an orphaned image big enough to hold text"),
         "orphaned.pixels.small": Cell(gap, "an orphaned image below the size gate"),
@@ -97,6 +98,8 @@ def _cells() -> dict[str, Cell]:
         "embedded-other.pixels": Cell(gap, "images in /AF and rich-media files"),
         "embedded-other.container": Cell(gap, "containers in /AF and rich-media files"),
         "orphaned-attachment.plain": Cell(read, "an orphaned text attachment", tier="review"),
+        "orphaned-attachment.plain.operator-words": Cell(
+            gap, "untyped text with three stand-alone content-operator words"),
         "orphaned-attachment.pixels": Cell(flagged, "an orphaned attached image"),
         "orphaned-attachment.container": Cell(flagged, "an orphaned attached container"),
         # other non-page content
