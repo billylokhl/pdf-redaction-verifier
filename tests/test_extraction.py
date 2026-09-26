@@ -1,4 +1,4 @@
-"""Unit-level regression tests for the normalizer and DOM extraction.
+"""Unit-level regression tests for the normalizer and text-layer extraction.
 
 Each test pins a previously confirmed detection-gap bug.
 """

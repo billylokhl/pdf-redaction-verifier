@@ -111,7 +111,7 @@ def _text_as_png(text: str) -> bytes:
 
 @pytest.fixture(scope="session")
 def leaky_pdf(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Adversarial fixture: attacks the DOM, OCR, Metadata, and Binary layers.
+    """Adversarial fixture: attacks the Text, OCR, Metadata, and Objects layers.
 
     Page 1 draws the SSN digits in shuffled order into separate form
     boxes; page 2 carries the DOB only as image pixels; the SSN is also

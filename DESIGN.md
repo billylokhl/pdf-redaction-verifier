@@ -43,7 +43,7 @@ raise a finding.
 
 | Layer | Sees | Catches what the others miss |
 | --- | --- | --- |
-| **DOM** | Text objects, positioned | Text under a redaction box; glyphs drawn out of order |
+| **Text** | Text objects, positioned | Text under a redaction box; glyphs drawn out of order |
 | **OCR** | Rendered pixels (Apple Vision) | Text with no text objects: scans, vector outlines |
 | **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
 | **Objects** | PDF objects walked structurally (PyMuPDF) | Orphaned content streams, dictionary strings |

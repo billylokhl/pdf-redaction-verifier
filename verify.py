@@ -5,7 +5,7 @@ verify.py — Forensic PDF Redaction Verification Suite.
 Detects sensitive strings (secrets) inside a PDF across six independent
 layers:
 
-  1. DOM      — layout-aware text extraction in horizontal AND vertical
+  1. Text     — layout-aware text extraction in horizontal AND vertical
                 reading order, defeats out-of-order draw commands,
                 per-character form boxes, and rotated-matrix text.
   2. OCR      — rasterize + Apple Vision (native, hardware-accelerated),
@@ -173,7 +173,7 @@ class Finding:
     excluded from equality so dedup keys on (layer, rule, location).
     """
 
-    layer: str          # DOM | OCR | Metadata | Objects | Binary | Hidden
+    layer: str          # Text | OCR | Metadata | Objects | Binary | Hidden
     secret_name: str
     location: str
     sample: str = field(default="", compare=False)
@@ -458,7 +458,7 @@ class PatternScanner:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# PHASE 2: Layout-Aware Text Extraction (DOM layer)
+# PHASE 2: Layout-Aware Text Extraction (Text layer)
 # ──────────────────────────────────────────────────────────────────────────
 def _reconstruct(
     glyphs: list[tuple[float, float, float, float, str]],
@@ -644,7 +644,7 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Shared per-page layer driver (DOM and OCR)
+# Shared per-page layer driver (Text and OCR)
 # ──────────────────────────────────────────────────────────────────────────
 def scan_page_layer(
     doc: fitz.Document,
@@ -669,10 +669,10 @@ def scan_page_layer(
     variants — those the extractor produces in natural reading order —
     giving hard findings aggregated per rule across pages. Matches that
     appear only in fused multi-line text, in reconstruction-derived
-    variants (DOM's vertical column orders), or across page boundaries
+    variants (the Text layer's vertical column orders), or across page boundaries
     are demoted to manual-review warnings. Callers set *hard_variants* to
     the number of leading variants that are genuine reads rather than
-    reconstructions: 1 for DOM, all of them for OCR.
+    reconstructions: 1 for Text, all of them for OCR.
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
@@ -801,7 +801,7 @@ def _start_tool(
 def start_hidden_tools(
     pdf_path: Path, report: ScanReport
 ) -> dict[str, subprocess.Popen[bytes] | None]:
-    """Kick off exiftool and qpdf now so they run behind the DOM/OCR scans."""
+    """Kick off exiftool and qpdf now so they run behind the Text/OCR scans."""
     return {
         "exiftool": _start_tool(
             report, "Metadata", ["exiftool", "-json", str(pdf_path)]
@@ -2123,7 +2123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # prog is left to argparse so --help names however it was
         # invoked: "verify.py" as a script, "pdf-verify" as the
         # installed console script.
-        description="Forensic PDF verification: detect secrets across DOM, "
+        description="Forensic PDF verification: detect secrets across Text, "
         "OCR, metadata, binary-stream and hidden-object layers.",
     )
     parser.add_argument("--target", required=True, type=Path, help="PDF file to verify")
@@ -2172,7 +2172,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     # Start the independent subprocess layers now; they run concurrently
-    # behind the in-process DOM/OCR scans.
+    # behind the in-process Text/OCR scans.
     procs = start_hidden_tools(pdf_path, report)
 
     try:
@@ -2190,7 +2190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if doc.page_count == 0:
             report.warnings.append(
-                "PDF contains zero pages — DOM/OCR content layers cannot "
+                "PDF contains zero pages — Text/OCR content layers cannot "
                 "scan an empty document"
             )
 
@@ -2213,15 +2213,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{layer}: layer crashed ({exc}) — NOT fully scanned"
                 )
 
-        print("[*] Phase 2: DOM layer (layout-aware visual text)...")
+        print("[*] Phase 2: Text layer (layout-aware visual text)...")
         try:
             scan_page_layer(
                 doc, matcher, report,
-                layer="DOM", extractor=extract_visual_text, note="visual text layer",
+                layer="Text", extractor=extract_visual_text, note="visual text layer",
                 patterns=patterns, fail_fast=args.fail_fast,
             )
         except Exception as exc:
-            report.warnings.append(f"DOM: layer crashed ({exc}) — NOT fully scanned")
+            report.warnings.append(f"Text: layer crashed ({exc}) — NOT fully scanned")
 
         if args.fail_fast and report.leaked:
             report.warnings.append("OCR: skipped (--fail-fast after earlier finding)")
