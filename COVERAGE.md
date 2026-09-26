@@ -1,9 +1,11 @@
 # Coverage
 
 Where a secret can be stored in a PDF, how it is encoded there, and what
-this tool does about each combination. This is the map the layers are
-checked against: a cell marked ✗ is a place a leaking document can still
-be certified clean.
+this tool does about each combination. This is the current **known** map,
+built by probing each cell with a planted secret; adversarial review keeps
+finding new places, so a missing row means "not yet known", never "safe".
+A cell marked ✗ is a place a leaking document can still be certified
+clean.
 
 **Legend**
 
@@ -19,33 +21,55 @@ be certified clean.
 | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- |
 | **Live page content** — drawn on a page | ✓ Text, Objects, OCR | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
-| **Off the page** — drawn outside the visible area | ✓ Text, Objects | ✓ Text | ✗ | — |
-| **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`) | ⚑ Objects | ⚑ Objects³ | — |
-| **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)⁴ | ⚑ Objects | ⚑ Objects³ | — |
-| **Document metadata** — Info dictionary, XMP | ✓ Metadata, Objects | — | — | — |
-| **Orphaned XMP** | ✓ Objects | — | — | — |
-| **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden |
-| **Orphaned attachments** | ✓ Objects (manual review) | — | ⚑ Objects | ⚑ Objects |
+| **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise | ✗ | — |
+| **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
+| **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
+| **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
+| **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
+| **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
+| **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
+| **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ |
+| **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
+| **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) | — | ⚑ Objects | ⚑ Objects⁸ |
 | **Annotation text, form fields, link targets, layer names** | ✓ Hidden, Objects | — | — | — |
-| **JavaScript** | ✓ Hidden (document-level), Objects (scripts stored as strings), Binary (scripts stored as streams; manual review) | — | — | — |
+| **JavaScript** | ✓ Hidden (catalog `/OpenAction`, named scripts), Objects (scripts stored as strings), Binary (scripts stored as streams: known values only, manual review) · ✗ pattern rules on scripts stored as streams on links, fields or pages | — | — | — |
+| **Private application data** (`/PieceInfo`) | live: ✓ Binary known values only · ✗ pattern rules; leftover: ✓ Objects (manual review) | — | — | — |
+| **Unindexed bytes** — after the final `%%EOF`, in comments, or in an object whose table entry is marked free | ✗ | ✗ | ✗ | ✗ |
 
 ¹ Fonts whose codes are not the characters shown: CID fonts with
-Identity-H encoding (standard for Word, Chrome and embedded TrueType),
-custom `/Differences` encodings, Type3 fonts. The Text layer applies the
-font's Unicode mapping, so live text is read. For leftover content only
-the raw codes are available; the tool flags them when they are visibly
-not text (mostly control bytes). A font that maps *ordinary-looking* codes
-to other glyphs is not detected — ✗.
+Identity-H encoding (Word, Chrome and embedded TrueType fonts commonly use
+it), custom `/Differences` encodings, Type3 fonts. The Text layer applies
+the font's Unicode map, so live text is read; OCR reads the rendered page.
 
-² zip, Office documents, nested PDFs — anything that is not text once
-decompressed.
+² zip, Office documents, nested PDFs, gzip, rar, 7z — recognised by file
+signature. A container encoded as text (an `.eml` with a base64 part, an
+HTML file with a `data:` URI) is neither unpacked nor flagged — ✗.
 
-³ Images big enough to hold legible text (at least 16×32 pixels); smaller
-masks and icons are not flagged.
+³ Text in PDF string syntax is decoded; a leftover stream that is neither
+page content nor binary (an untyped attachment, a script, private data)
+is searched as raw text at the manual-review tier.
 
-⁴ Each earlier revision is reopened by cutting the file at its `%%EOF`,
-and every object that differs from the current version is scanned as
-leftover content (up to the 50 most recent revisions).
+⁴ Flagged when any string a leftover stream shows is mostly non-text
+codes (NUL-interleaved glyph numbers, control bytes). A font that maps
+*ordinary-looking* codes to other glyphs is not detected — ✗.
+
+⁵ Image XObjects and inline images at least 8 px on the short side and
+32 px on the long side (a line of text); smaller masks and icons are not
+flagged, and a secret in one is ✗.
+
+⁶ Earlier revisions are located through the file's own cross-reference
+chain (each `startxref` and trailer `/Prev`), so a `%%EOF` inside a stream
+cannot invent one and a missing `%%EOF` cannot hide one. Only objects a
+newer revision redefines are compared. Up to 50 revisions: the original
+and the latest 49.
+
+⁷ A known value is a hard finding; a pattern-class match is manual review
+(IDs and dates in XMP assemble digit runs by coincidence).
+
+⁸ Leftover payloads are read up to 16 MB decompressed; a warning says
+when a larger one was cut.
 
 ## Matching limits
 
@@ -59,20 +83,27 @@ matcher sees it whole. Each is ✗:
   page's lines interleaves the columns.
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
+- Text placed at extreme coordinates (around 10⁹ points and beyond), which
+  PyMuPDF does not return.
 
 ## What ⚑ costs, and what comes next
 
 A flag is the honest answer to "found it, could not read it", but it means
-a clean document that merely *contains* such content exits `2` too. Each
-flag is removed by teaching the tool to read that cell:
+a clean document that merely *contains* such content exits `2` too — on
+real-world PDFs this fires rarely (about 1.5% in a corpus of 1,224, all
+genuine leftover glyph-coded text from Adobe tools). Each flag is removed
+by teaching the tool to read that cell, and each ✗ closed by reading or
+flagging it:
 
-- **Font-coded leftover text** — decode through the font's Unicode
-  mapping, e.g. by re-attaching the leftover stream to the page it came
-  from.
-- **Leftover images, and pixels under a drawn box** — OCR stored images
-  directly, not only the rendered page.
-- **Containers** — unpack zip and Office files, and scan nested PDFs as
-  PDFs.
+- **Font-coded leftover text** — decode through the font's Unicode map,
+  e.g. by re-attaching the leftover stream to the page it came from.
+- **Pixels: leftover images, pixels under a drawn box, thumbnails** —
+  OCR stored images directly, not only the rendered page.
+- **Hidden layers, hidden annotations, unused resources** — extract and
+  render them explicitly.
+- **Containers** — unpack zip and Office files, scan nested PDFs as PDFs.
+- **Other embedded files and scripts on actions** — walk every `/EF` and
+  every action in the Hidden layer, with pattern rules.
 
 The Binary layer (qpdf) is a cross-check with a second PDF parser rather
 than a row of its own: it sees only objects reachable from the file's

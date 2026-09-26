@@ -92,8 +92,8 @@ of a genuine reading or one decoded string. Reported samples are masked
 ## What it checks — six layers, most likely to find a leak first
 
 A redactor can succeed on the page and still leave the data in the file.
-[COVERAGE.md](COVERAGE.md) maps every place a secret can be stored against
-what reads it. The layers are ordered by how common their failure mode is
+[COVERAGE.md](COVERAGE.md) maps the known places a secret can be stored
+against what reads each one. The layers are ordered by how common their failure mode is
 in practice —
 a judgment from well-known redaction failures and the cases this project
 has seen, not measured statistics.
@@ -118,8 +118,10 @@ still there: invisible on screen, but selectable and copyable.
   and sorting within each line — so text drawn out of order or one digit
   per form box still reads back as `123-45-6789`. A wide gap inside a line
   is treated as a column break, so neighbouring table cells never merge
-  into a false number. Text placed outside the visible page area is read
-  too: invisible to a viewer, but still in the file.
+  into a false number. Text placed outside the visible page area (the
+  crop or media box) is read too, as its own reading — invisible to a
+  viewer, but still in the file — and kept apart from the visible text so
+  it cannot come between the halves of a value split across a page break.
 - **Readings:** three *genuine* readings — horizontally written text read
   left to right, and text written vertically (rotated) read along its own
   direction both ways — plus two *reconstructed* readings of every glyph
@@ -157,13 +159,14 @@ in this project's real-document case.
   dictionary is always scanned. References are followed from the file's
   root; any object not reached is reported **ORPHANED** — left behind, not
   displayed.
-- **Leftover content:** orphaned objects, and every object that an
-  incremental update rewrote (each earlier revision is reopened by cutting
-  the file at its `%%EOF`). Leftover XMP packets and attachment bodies are
-  searched as raw text. Leftover content the tool finds but cannot read —
-  text in font codes that are not plain characters, text mixed with
-  binary data, images, non-text attachments — is **flagged** as a
-  manual-review warning rather than passed silently.
+- **Leftover content:** orphaned objects, and every object an incremental
+  update rewrote (earlier revisions are found through the file's own
+  cross-reference chain and rebuilt). Leftover XMP packets, attachment
+  bodies and other leftover text that is not PDF syntax are searched as
+  raw text. Leftover content the tool finds but cannot read — text in
+  font codes that are not plain characters, images (including inline
+  ones), containers such as zip or PDF — is **flagged** as a
+  manual-review warning.
 - **Tier:** a known value is hard anywhere in one object, even split
   across its strings; a pattern is hard only within one decoded string.
 
@@ -188,7 +191,7 @@ case number that was scrubbed from the page.
 - **Method:** PyMuPDF APIs read each hidden place directly: attachments
   (`embfile_*` — names, descriptions, and contents up to 16 MB decoded as
   UTF-8 text; an attachment that is not text — zip, Office, image, nested
-  PDF — is flagged as not scanned),
+  PDF, recognised by file signature — is flagged as not scanned),
   annotation text and attached files (`page.annots()`), form-field values
   and names (`page.widgets()`), link targets (`page.get_links()`),
   JavaScript in the catalog's `/OpenAction` and the top level of its named
@@ -241,21 +244,28 @@ named, not that you named everything.
 
 ### Known gaps
 
-[COVERAGE.md](COVERAGE.md) has the full map. Places a secret can still be
-**not detected** (exit `0`):
+[COVERAGE.md](COVERAGE.md) is the full known map; its ✗ cells are where a
+secret can still be **not detected** (exit `0`). In short:
 
-- **Pixels under a box drawn over an image** (see OCR), and images placed
-  outside the page area.
+- **Pixels the tool does not OCR:** under a box drawn over an image, off
+  the page, in page or XMP thumbnails, in embedded files other than
+  listed attachments.
+- **Content no page shows:** font-coded text or images in a switched-off
+  optional-content layer, a hidden annotation's appearance, or a page
+  resource that is never drawn (plain text there *is* read).
+- **Unindexed bytes:** anything after the final `%%EOF`, in comments, or in
+  an object whose table entry is marked free.
 - **Leftover text in a font that maps ordinary-looking codes to other
-  glyphs** — flagged only when the codes are visibly not text.
-- **A value split across a page break** with a header, footer or page
+  glyphs**, and **containers encoded as text** (a base64 email part, an
+  HTML `data:` URI).
+- **Pattern rules** on embedded files other than attachments and on
+  scripts stored as streams on links, fields or pages (known values are
+  still found there, as manual review).
+- **Split values:** a page-break split with a header, footer or page
   number between its halves, or where a page's last line is not its
-  reading-order last line (two-column layouts, text rotated 270°).
-- **A value wrapped inside one column of a multi-column page** — joining a
-  page's lines interleaves the columns.
-- **Pattern-class numbers written without dashes** (bare or
-  space-separated) and wrapped at a line or page break — the pattern
-  regexes cannot match across a line break.
+  reading-order last line; a value wrapped inside one column of a
+  multi-column page; dash-less pattern numbers wrapped at a line or page
+  break; text at extreme coordinates.
 
 Leftover images, leftover text in non-plain font codes, and attachments
 that are not text are **flagged** (exit `2`) rather than read: a clean
