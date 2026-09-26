@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from .keys import effective_exit
 from .metrics import CaseMetricRow, Scorecard, compute_metrics
 from .runner import CliResult, current_python, run_cli
 
@@ -167,14 +168,15 @@ def scan_corpus(
     return runs
 
 
-def _row(run: CorpusRun) -> CaseMetricRow:
+def _row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
     report = run.result.report
     has_hard = bool(report and any(f.get("tier") == "hard" for f in report.get("findings", [])))
+    actual_exit = None if run.result.crashed else effective_exit(report, have)  # type: ignore[arg-type]
     return CaseMetricRow(
         case_id=run.entry.sha256[:16],
         truth="clean",  # the real corpus is assumed clean: no planted secret
         expected_exit=None,
-        actual_exit=run.result.returncode if not run.result.crashed else None,
+        actual_exit=actual_exit,
         has_hard_finding=has_hard,
         crashed=run.result.crashed,
         timed_out=run.result.timed_out,
@@ -182,9 +184,13 @@ def _row(run: CorpusRun) -> CaseMetricRow:
     )
 
 
-def stratify(runs: list[CorpusRun]) -> dict[str, Scorecard]:
+def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[str, Scorecard]:
     """Clean-side metrics overall and per stratum: text-bearing vs not,
-    multi-revision vs not, and each producer family seen."""
+    multi-revision vs not, and each producer family seen. *have* drops
+    environmental warnings (e.g. no OCR on this machine) the same way
+    the differential does, so a run on a partial environment does not
+    inflate the review rate — pass `caselib.run.available()` for that;
+    omit it to use the exit code exactly as reported."""
     strata: dict[str, list[CorpusRun]] = {"all": list(runs)}
     for run in runs:
         strata.setdefault(
@@ -194,4 +200,6 @@ def stratify(runs: list[CorpusRun]) -> dict[str, Scorecard]:
             "multi-revision" if run.entry.multi_revision else "single-revision", []
         ).append(run)
         strata.setdefault(f"producer:{run.entry.producer_family}", []).append(run)
-    return {name: compute_metrics([_row(r) for r in group]) for name, group in strata.items()}
+    return {
+        name: compute_metrics([_row(r, have) for r in group]) for name, group in strata.items()
+    }

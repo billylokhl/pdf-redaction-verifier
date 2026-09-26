@@ -73,6 +73,8 @@ def _cmd_corpus_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_corpus_run(args: argparse.Namespace) -> int:
+    from caselib.run import available
+
     from .refs import candidate_verify_path, repo_root
 
     entries = corpus_mod.load_manifest(args.manifest)
@@ -93,7 +95,7 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         workdir=args.out,
         timeout=args.timeout,
     )
-    strata = corpus_mod.stratify(runs)
+    strata = corpus_mod.stratify(runs, have=available())
     print(report.render_stratified_table(strata))
     if args.json:
         payload = {name: sc.to_jsonable() for name, sc in strata.items()}

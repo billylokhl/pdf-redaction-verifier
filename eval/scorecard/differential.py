@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from .accepted import AcceptedDiff, find_accepted, load_accepted_diffs
-from .keys import NormalizedKey, normalize
+from .keys import NormalizedKey, effective_exit, normalize
 from .metrics import CaseMetricRow
 from .refs import REFERENCE_REF, candidate_verify_path, repo_root, resolve_commit, worktree_for_ref
 from .runner import CliResult, current_python, run_cli
@@ -51,8 +51,10 @@ class CaseRun:
     result: CliResult | None = None
 
     @staticmethod
-    def from_result(case_id: str, result: CliResult) -> "CaseRun":
-        key = None if result.crashed else normalize(result.report)  # type: ignore[arg-type]
+    def from_result(
+        case_id: str, result: CliResult, have: frozenset[str] | None = None
+    ) -> "CaseRun":
+        key = None if result.crashed else normalize(result.report, have=have)  # type: ignore[arg-type]
         return CaseRun(case_id, key, result.crashed, result.timed_out, result.elapsed, result)
 
 
@@ -197,13 +199,14 @@ def run_differential(
     When *cache_dir* is given and already holds every selected case's
     reference result under today's `reference_cache_key`, the reference
     worktree and subprocess runs are skipped entirely."""
-    from caselib.run import build as build_case
+    from caselib.run import available, build as build_case
 
     from .accepted import DEFAULT_PATH
 
     root = repo_root()
     accepted = load_accepted_diffs(accepted_path or DEFAULT_PATH)
-    cases = select_cases(case_ids)
+    have = available()
+    cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
     workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
@@ -230,7 +233,9 @@ def run_differential(
                 }
                 for future in concurrent.futures.as_completed(futures):
                     case = futures[future]
-                    reference_runs[case.id] = CaseRun.from_result(case.id, future.result())
+                    reference_runs[case.id] = CaseRun.from_result(
+                        case.id, future.result(), have=have
+                    )
         if cache_dir is not None and cache_key is not None:
             save_reference_cache(cache_dir, cache_key, reference_runs)
 
@@ -246,7 +251,7 @@ def run_differential(
         }
         for future in concurrent.futures.as_completed(futures):
             case = futures[future]
-            candidate_runs[case.id] = CaseRun.from_result(case.id, future.result())
+            candidate_runs[case.id] = CaseRun.from_result(case.id, future.result(), have=have)
 
     results: list[CaseDiff] = []
     for case in cases:
@@ -267,20 +272,27 @@ def unlisted_diffs(diffs: Sequence[CaseDiff]) -> list[CaseDiff]:
     return [d for d in diffs if not d.ok]
 
 
-def to_metric_row(case: Any, result: CliResult) -> CaseMetricRow:
+def to_metric_row(
+    case: Any, result: CliResult, have: frozenset[str] | None = None
+) -> CaseMetricRow:
     """A case + its candidate CLI result, reduced to a metrics row
     (`scorecard.metrics`) — the correct verdict comes from the case's own
     `expected` (docs/REDESIGN.md §5), not from a known gap's `today`, so a
-    documented gap still counts as a silent miss or downgrade here."""
+    documented gap still counts as a silent miss or downgrade here.
+    *have* drops environmental warnings the same way the differential
+    does, so the exit code used here is comparable across environments
+    (e.g. a case's exit is not counted as 2 on Linux merely because OCR
+    is absent)."""
     report = result.report
     has_hard = bool(
         report and any(f.get("tier") == "hard" for f in report.get("findings", []))
     )
+    actual_exit = None if result.crashed else effective_exit(report, have)  # type: ignore[arg-type]
     return CaseMetricRow(
         case_id=case.id,
         truth=case.truth,
         expected_exit=case.expected.exit,
-        actual_exit=result.returncode if not result.crashed else None,
+        actual_exit=actual_exit,
         has_hard_finding=has_hard,
         crashed=result.crashed,
         timed_out=result.timed_out,
@@ -297,10 +309,11 @@ def run_candidate(
 ) -> list[CaseMetricRow]:
     """Run the candidate CLI alone over the selected cases, for the
     scorecard's label-based metrics — no reference or worktree needed."""
-    from caselib.run import build as build_case
+    from caselib.run import available, build as build_case
 
     root = repo_root()
-    cases = select_cases(case_ids)
+    have = available()
+    cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
     candidate_verify = candidate_verify_path(root)
@@ -325,5 +338,5 @@ def run_candidate(
             ] = case
         for future in concurrent.futures.as_completed(futures):
             case = futures[future]
-            rows.append(to_metric_row(case, future.result()))
+            rows.append(to_metric_row(case, future.result(), have=have))
     return rows

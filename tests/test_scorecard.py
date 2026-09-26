@@ -16,7 +16,7 @@ import pytest
 
 from scorecard.accepted import AcceptedDiff, dump_accepted_diffs, find_accepted, load_accepted_diffs
 from scorecard.differential import CaseDiff, CaseRun, load_reference_cache, save_reference_cache
-from scorecard.keys import NormalizedKey, normalize
+from scorecard.keys import NormalizedKey, effective_exit, is_environmental, normalize
 from scorecard.metrics import CaseMetricRow, compute_metrics
 from scorecard.runner import CliResult, run_cli
 
@@ -99,6 +99,100 @@ def test_normalized_key_jsonable_roundtrip():
     )
     key = normalize(report)
     assert NormalizedKey.from_jsonable(key.to_jsonable()) == key
+
+
+# ── environmental warnings (OCR/tool absent on this machine) ─────────────
+
+
+def _ocr_unavailable(**extra):
+    return {"code": "OCR_UNAVAILABLE", "kind": "coverage", "layer": "OCR", **extra}
+
+
+def _tool_missing(tool, **extra):
+    return {"code": "TOOL_MISSING", "kind": "coverage", "layer": "Binary", "tool": tool, **extra}
+
+
+NO_OCR = frozenset({"qpdf", "exiftool", "no-ocr"})
+FULL_ENV = frozenset({"qpdf", "exiftool", "ocr"})
+
+
+def test_is_environmental_true_when_tool_missing_from_have():
+    assert is_environmental(_ocr_unavailable(), NO_OCR)
+
+
+def test_is_environmental_false_when_tool_present():
+    assert not is_environmental(_ocr_unavailable(), FULL_ENV)
+
+
+def test_is_environmental_false_under_require_full_env(monkeypatch):
+    monkeypatch.setenv("REQUIRE_FULL_ENV", "1")
+    assert not is_environmental(_ocr_unavailable(), NO_OCR)
+
+
+def test_is_environmental_uses_warning_tool_field_for_tool_missing():
+    assert is_environmental(_tool_missing("qpdf"), frozenset({"exiftool", "no-ocr"}))
+    assert not is_environmental(_tool_missing("qpdf"), frozenset({"qpdf", "exiftool", "no-ocr"}))
+
+
+def test_effective_exit_drops_solely_environmental_warning():
+    # A leftover/revision case with no findings and nothing but an
+    # OCR_UNAVAILABLE warning: exit is reported as 2, but on a machine
+    # that genuinely lacks OCR that's environmental noise, not a verdict.
+    report = _report(exit_code=2, warnings=[_ocr_unavailable()])
+    assert effective_exit(report, NO_OCR) == 0
+    assert effective_exit(report) == 2  # unfiltered: reported exit stands
+
+
+def test_effective_exit_keeps_exit_when_a_real_warning_remains():
+    report = _report(
+        exit_code=2,
+        warnings=[_ocr_unavailable(), {"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}],
+    )
+    assert effective_exit(report, NO_OCR) == 2
+
+
+def test_normalize_with_have_drops_environmental_warning_from_key():
+    report = _report(exit_code=2, warnings=[_ocr_unavailable()])
+    key = normalize(report, have=NO_OCR)
+    assert key.exit == 0
+    assert key.warnings == frozenset()
+
+
+def test_normalize_reference_vs_candidate_on_a_no_ocr_machine():
+    """Regression for the scorecard-diff CI failure: on Linux (no OCR),
+    every scan carries an OCR_UNAVAILABLE warning, which used to bump
+    both sides' exit to 2 unfiltered and made the K8-fix's real change
+    (exit 0 -> 2, a new leftover warning) look like a totally different,
+    unlisted diff (just a warning added, no exit change) from the one
+    accepted_diffs.yaml records for the full (OCR-available) environment.
+    With `have` applied, the two environments agree."""
+    reference_report = _report(exit_code=2, warnings=[_ocr_unavailable()])
+    candidate_report = _report(
+        exit_code=2,
+        warnings=[
+            _ocr_unavailable(),
+            {"code": "LEFTOVER_UNDECODABLE_TEXT", "kind": "coverage", "layer": "Objects"},
+        ],
+    )
+    ref_key = normalize(reference_report, have=NO_OCR)
+    cand_key = normalize(candidate_report, have=NO_OCR)
+    assert ref_key.exit == 0
+    assert cand_key.exit == 2
+    diff = ref_key.diff(cand_key)
+    assert any("exit 0 -> 2" in p for p in diff)
+    assert any("LEFTOVER_UNDECODABLE_TEXT" in p for p in diff)
+    # And it matches exactly what a full-environment (OCR available) run
+    # of the very same reference/candidate pair produces:
+    full_env_ref = normalize(_report(exit_code=0), have=FULL_ENV)
+    full_env_cand = normalize(
+        _report(
+            exit_code=2,
+            warnings=[{"code": "LEFTOVER_UNDECODABLE_TEXT", "kind": "coverage", "layer": "Objects"}],
+        ),
+        have=FULL_ENV,
+    )
+    assert ref_key == full_env_ref
+    assert cand_key == full_env_cand
 
 
 # ── diff detection ───────────────────────────────────────────────────────
