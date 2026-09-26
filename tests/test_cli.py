@@ -8,6 +8,7 @@ the wrong exit code (or a silent clean verdict) was previously produced.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import fitz
@@ -307,6 +308,81 @@ class TestUncaughtExceptionsNeverExitTheLeakCode:
             ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
         ) == 2
 
+    def test_system_exit_inside_pipeline_does_not_escape(
+        self, clean_pdf, secrets_file, monkeypatch
+    ) -> None:
+        # Regression: only Exception and KeyboardInterrupt were caught, so
+        # a SystemExit raised inside the pipeline (a buggy dependency
+        # calling sys.exit, say) carried its own arbitrary code all the
+        # way out of main() — a clean document could exit however that
+        # SystemExit happened to be constructed, including 0 or 1.
+        def _boom(*args, **kwargs):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(verify, "print_report", _boom)
+        assert verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        ) == 2
+
+    def test_argparse_error_through_run_cli_still_exits_2(self) -> None:
+        # The BaseException backstop added to run_cli (for the SystemExit
+        # case above) must not swallow argparse's OWN error path: a
+        # missing required flag still exits 2 with argparse's own
+        # message, not a spurious "internal error" line.
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "verify.py"), "--secrets", "x.json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 2
+        assert "[ERROR] internal error" not in result.stderr
+        assert "required" in result.stderr
+
+
+class TestOrphanedChildProcesses:
+    """Regression (#2): a crash escaping main()'s scan pipeline — or a
+    Ctrl-C while check_hidden_layers is blocked waiting on qpdf/exiftool
+    — must never leave those subprocesses running once main() has decided
+    to leave. run_cli then calls os._exit, which would otherwise abandon
+    them as orphans with no parent left to reap them.
+    """
+
+    def test_keyboard_interrupt_kills_hidden_tool_children(
+        self, clean_pdf, secrets_file, tmp_path, monkeypatch
+    ) -> None:
+        # A stand-in for both qpdf and exiftool that just hangs, so the
+        # test can prove they get killed rather than merely finishing on
+        # their own before the assertion runs.
+        stub = tmp_path / "stall.sh"
+        stub.write_text("#!/bin/sh\nsleep 30\n")
+        stub.chmod(0o755)
+        monkeypatch.setattr(verify.shutil, "which", lambda name: str(stub))
+
+        spawned: list[subprocess.Popen] = []
+        real_popen = verify.subprocess.Popen
+
+        def _spy_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(verify.subprocess, "Popen", _spy_popen)
+
+        # Simulate Ctrl-C while Phase 4 is blocked waiting on the (here,
+        # stalled) tools — exactly the case check_hidden_layers' own
+        # per-collector `except Exception` cannot catch.
+        def _interrupt(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(verify, "check_hidden_layers", _interrupt)
+
+        code = verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        )
+        assert code == 2
+        assert len(spawned) == 2       # both stand-ins actually launched
+        for proc in spawned:
+            assert proc.poll() is not None, "child process still alive after main() returned"
+
 
 class TestSubprocessHardening:
     """qpdf and exiftool are launched defensively (#4): resolved once to
@@ -326,50 +402,91 @@ class TestSubprocessHardening:
         resolved = {"exiftool": "/opt/tools/exiftool", "qpdf": "/opt/tools/qpdf"}
         monkeypatch.setattr(verify.shutil, "which", lambda name: resolved.get(name))
 
-        captured: dict[str, tuple[list[str], dict[str, str]]] = {}
+        captured: dict[str, tuple[list[str], dict[str, str], str]] = {}
 
         class _FakeProc:
             def poll(self):
                 return None
 
-        def _fake_popen(argv, stdout=None, stderr=None, env=None):
-            captured[argv[0]] = (list(argv), dict(env or {}))
+        def _fake_popen(argv, stdout=None, stderr=None, env=None, cwd=None):
+            captured[argv[0]] = (list(argv), dict(env or {}), cwd)
             return _FakeProc()
 
         monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
 
         report = verify.ScanReport()
-        verify.start_hidden_tools(target, report)
+        procs, scratch = verify.start_hidden_tools(target, report)
+        try:
+            assert report.warnings == []      # both "found": no TOOL_MISSING
 
-        assert report.warnings == []      # both "found": no TOOL_MISSING
+            exif_argv, exif_env, exif_cwd = captured["/opt/tools/exiftool"]
+            # -config "" first: no config file from EXIFTOOL_HOME/HOME is
+            # ever loaded; "--" then ends option parsing so the filename
+            # can never be read as a flag (exiftool's own documented
+            # convention).
+            assert exif_argv[1:5] == ["-config", "", "-json", "--"]
+            assert exif_argv[5] == str(target.resolve())
+            assert exif_argv[5].startswith("/")
 
-        exif_argv, exif_env = captured["/opt/tools/exiftool"]
-        # -config "" first: no config file from the environment is ever
-        # loaded; "--" then ends option parsing so the filename can never
-        # be read as a flag (exiftool's own documented convention).
-        assert exif_argv[1:5] == ["-config", "", "-json", "--"]
-        assert exif_argv[5] == str(target.resolve())
-        assert exif_argv[5].startswith("/")
+            qpdf_argv, qpdf_env, qpdf_cwd = captured["/opt/tools/qpdf"]
+            assert qpdf_argv[-2:] == [str(target.resolve()), "-"]
+            assert qpdf_argv[-2].startswith("/")
 
-        qpdf_argv, qpdf_env = captured["/opt/tools/qpdf"]
-        assert qpdf_argv[-2:] == [str(target.resolve()), "-"]
-        assert qpdf_argv[-2].startswith("/")
+            for env in (exif_env, qpdf_env):
+                assert set(env) <= {"PATH", "LANG", "LC_ALL"}
+                assert env.get("LANG") == "C" and env.get("LC_ALL") == "C"
+                assert "SOME_OTHER_VAR" not in env
 
-        for env in (exif_env, qpdf_env):
-            assert set(env) <= {"PATH", "LANG", "LC_ALL"}
-            assert env.get("LANG") == "C" and env.get("LC_ALL") == "C"
-            assert "SOME_OTHER_VAR" not in env
+            # Both launched from the same private, empty scratch directory
+            # — never this process's own cwd (see #4: exiftool also
+            # searches its WORKING DIRECTORY for .ExifTool_config).
+            assert exif_cwd == qpdf_cwd == scratch.name
+            assert exif_cwd != os.getcwd()
+            assert os.listdir(exif_cwd) == []
+        finally:
+            scratch.cleanup()
 
     def test_missing_tools_still_warn_tool_missing(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(verify.shutil, "which", lambda name: None)
         report = verify.ScanReport()
-        procs = verify.start_hidden_tools(tmp_path / "doc.pdf", report)
-        assert procs == {"exiftool": None, "qpdf": None}
-        missing = {(w.code, w.fields.get("tool"), w.layer) for w in report.warnings}
-        assert missing == {
-            ("TOOL_MISSING", "exiftool", "Metadata"),
-            ("TOOL_MISSING", "qpdf", "Binary"),
-        }
+        procs, scratch = verify.start_hidden_tools(tmp_path / "doc.pdf", report)
+        try:
+            assert procs == {"exiftool": None, "qpdf": None}
+            missing = {(w.code, w.fields.get("tool"), w.layer) for w in report.warnings}
+            assert missing == {
+                ("TOOL_MISSING", "exiftool", "Metadata"),
+                ("TOOL_MISSING", "qpdf", "Binary"),
+            }
+        finally:
+            scratch.cleanup()
+
+    def test_exiftool_argv_starts_with_config_override(self, monkeypatch) -> None:
+        # Dedicated, narrow check that the broader hardening test above
+        # doesn't spell out on its own: exiftool's argv must start with
+        # '-config ""' — before -json, before --, before anything else —
+        # so no config file is ever consulted for EXIFTOOL_HOME/HOME/
+        # HOMEDRIVE+HOMEPATH (the cwd fallback is closed separately, by
+        # running from a private scratch directory — see #4 and the tests
+        # below).
+        monkeypatch.setattr(verify.shutil, "which", lambda name: f"/opt/tools/{name}")
+        captured: dict[str, list[str]] = {}
+
+        class _FakeProc:
+            def poll(self):
+                return None
+
+        def _fake_popen(argv, stdout=None, stderr=None, env=None, cwd=None):
+            captured[argv[0]] = list(argv)
+            return _FakeProc()
+
+        monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
+
+        report = verify.ScanReport()
+        procs, scratch = verify.start_hidden_tools(Path("/nonexistent/target.pdf"), report)
+        try:
+            assert captured["/opt/tools/exiftool"][1:3] == ["-config", ""]
+        finally:
+            scratch.cleanup()
 
     @requires_qpdf
     def test_dash_prefixed_target_is_scanned_not_parsed_as_an_option(
@@ -388,18 +505,38 @@ class TestSubprocessHardening:
             assert marker not in result.stdout
 
     @requires_exiftool
-    def test_exiftool_config_in_home_is_not_honored(
+    def test_exiftool_config_in_callers_cwd_is_not_honored(
         self, clean_pdf, secrets_file, tmp_path
     ) -> None:
-        # exiftool searches $HOME/.ExifTool_config by default; a
-        # booby-trapped one must never be loaded just because it happens
-        # to sit in the invoking environment's home directory.
-        fake_home = tmp_path / "fake-home"
-        fake_home.mkdir()
-        (fake_home / ".ExifTool_config").write_text("this is not valid Perl {{{\n")
-        result = run_verify(
-            clean_pdf, secrets_file, env_overrides={"HOME": str(fake_home)}
-        )
+        # Regression target for #4. exiftool's own manual: it searches
+        # EXIFTOOL_HOME, then HOME, then HOMEDRIVE+HOMEPATH, and FALLS
+        # BACK TO ITS WORKING DIRECTORY when none of those is set — and
+        # our minimal subprocess environment strips HOME entirely, which
+        # makes the working directory the live threat, not $HOME. Without
+        # cwd= hardening, exiftool would inherit THIS process's cwd (here,
+        # deliberately set to a directory holding a hostile config) and
+        # choke on it; with it, exiftool never runs from this directory
+        # at all.
+        evil_cwd = tmp_path / "attacker-controlled-cwd"
+        evil_cwd.mkdir()
+        (evil_cwd / ".ExifTool_config").write_text("this is not valid Perl {{{\n")
+        result = run_verify(clean_pdf, secrets_file, cwd=evil_cwd)
         assert result.returncode in (0, 2)
         assert "TOOL_EXIT_NONZERO" not in result.stdout
-        assert "exiftool" not in result.stdout or "not installed" not in result.stdout
+        assert "TOOL_OUTPUT_MALFORMED" not in result.stdout
+
+    @requires_exiftool
+    def test_metadata_secret_found_through_hardened_exiftool(
+        self, secrets_file, tmp_path
+    ) -> None:
+        # #5: the hardening (minimal env, -config "", --, absolute path,
+        # private cwd) must not accidentally break exiftool's actual job.
+        path = tmp_path / "meta.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "clean body")
+        doc.set_metadata({"subject": f"applicant {SSN}"})
+        doc.save(path)
+        doc.close()
+        result = run_verify(path, secrets_file)
+        assert result.returncode == 1, result.stdout
+        assert "LAYER: Metadata" in result.stdout

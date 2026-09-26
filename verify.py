@@ -77,6 +77,7 @@ import select
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import zlib
@@ -1138,7 +1139,8 @@ def _minimal_subprocess_env() -> dict[str, str]:
 
 
 def _start_tool(
-    report: ScanReport, layer: str, name: str, argv: Sequence[str], env: dict[str, str]
+    report: ScanReport, layer: str, name: str, argv: Sequence[str],
+    env: dict[str, str], cwd: str,
 ) -> subprocess.Popen[bytes] | None:
     """Launch an external tool; a start failure degrades the layer loudly.
 
@@ -1148,7 +1150,8 @@ def _start_tool(
     """
     try:
         return subprocess.Popen(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env
+            list(argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=env, cwd=cwd,
         )
     except FileNotFoundError:
         report.warn(
@@ -1169,7 +1172,7 @@ def _start_tool(
 
 def start_hidden_tools(
     pdf_path: Path, report: ScanReport
-) -> dict[str, subprocess.Popen[bytes] | None]:
+) -> tuple[dict[str, subprocess.Popen[bytes] | None], tempfile.TemporaryDirectory[str]]:
     """Kick off exiftool and qpdf now so they run behind the Text/OCR scans.
 
     Hardened against a hostile target/environment (see docs/REDESIGN.md
@@ -1182,20 +1185,26 @@ def start_hidden_tools(
       always rooted at "/", so it can never itself start with "-");
     - exiftool additionally gets its documented '-- FILE' convention (its
       own manual recommends this for exactly this threat) and '-config
-      ""' first, so it never loads a config file from the environment it
-      happens to run in (home directory, EXIFTOOL_HOME, an
-      ExifTool_config on PATH). qpdf's own "--" only terminates specific
-      option groups (--encrypt, --add-attachment, ...), not the command
-      line as a whole, so it is not used here — the resolved absolute
-      path is qpdf's protection;
+      ""' first, so it never loads a config file from EXIFTOOL_HOME, HOME,
+      or (see below) its own working directory;
+    - both run inside a private, empty scratch directory rather than this
+      process's own current directory: exiftool's *.ExifTool_config*
+      search falls back to its WORKING DIRECTORY when none of
+      EXIFTOOL_HOME/HOME/HOMEDRIVE+HOMEPATH is set (or, with the minimal
+      environment below, none of them is), so a hostile config file
+      sitting in the caller's cwd must not be reachable at all — '-config
+      ""' alone does not close that door, the cwd does;
     - both run with a minimal environment (_minimal_subprocess_env), so
       no other inherited variable can steer them either.
 
     A missing tool still produces exactly the TOOL_MISSING warning it did
-    before this hardening.
+    before this hardening. Returns the two Popen slots plus the
+    TemporaryDirectory they were launched in — the caller owns its
+    lifetime and must call .cleanup() once both are collected or killed.
     """
     target = str(pdf_path.resolve())
     env = _minimal_subprocess_env()
+    scratch = tempfile.TemporaryDirectory(prefix="pdf-redaction-verifier-")
 
     def launch(name: str, layer: str, args: Sequence[str]) -> subprocess.Popen[bytes] | None:
         exe = shutil.which(name)
@@ -1207,18 +1216,21 @@ def start_hidden_tools(
                 tool=name,
             )
             return None
-        return _start_tool(report, layer, name, [exe, *args], env)
+        return _start_tool(report, layer, name, [exe, *args], env, scratch.name)
 
-    return {
+    procs = {
         "exiftool": launch("exiftool", "Metadata", ["-config", "", "-json", "--", target]),
         "qpdf": launch(
             "qpdf", "Binary",
             ["--qdf", "--object-streams=disable", target, "-"],
         ),
     }
+    return procs, scratch
 
 
 def kill_hidden_tools(procs: dict[str, subprocess.Popen[bytes] | None]) -> None:
+    """Kill whatever of the two tools is still running. Idempotent: safe to
+    call more than once, and safe to call when neither ever started."""
     for proc in procs.values():
         if proc is not None and proc.poll() is None:
             proc.kill()
@@ -3727,12 +3739,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return code
 
     def crash(exc: BaseException) -> int:
-        """Any exception that escapes the scan pipeline below — a bug in
-        print_report, start_hidden_tools, the JSON writer, or anywhere
-        else not already caught per-layer — must still exit 2 (cannot
-        certify), never 1 (a secret was found): the previous behaviour let
-        it propagate uncaught, which under run_cli exited 1 on a document
-        where nothing had actually been found (see #1).
+        """Any exception (or other BaseException — a SystemExit raised
+        inside a layer must not carry its own arbitrary code out) that
+        escapes the scan pipeline below — a bug in print_report,
+        start_hidden_tools, the JSON writer, or anywhere else not already
+        caught per-layer — must never be certified clean, and (unless a
+        secret was already confirmed — see below) must exit 2, never 1: a
+        secret was NOT necessarily found, so 1 (the leak code) would
+        overstate it. The previous behaviour let it propagate uncaught,
+        which under run_cli exited 1 on a document where nothing had
+        actually been found (see #1).
+
+        This project's severity order is 0 < 2 < 1: a confirmed leak
+        outranks "cannot certify". So if report.leaked is already true —
+        a hard finding was recorded before the crash — the verdict stays
+        1, "fail", never downgraded to 2 just because the scan could not
+        finish; the JSON report still carries error.code = INTERNAL_ERROR
+        so a consumer can see the scan was cut short.
 
         The message is the exception's TYPE plus a truncated str(), never
         interpolated document content: an uncaught exception is exactly
@@ -3740,15 +3763,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         the report unmasked.
         """
         detail = f"{type(exc).__name__}: {exc}"[:500]
+        code = 1 if report.leaked else 2
         try:
-            return finish(2, ("INTERNAL_ERROR", f"internal error: {detail}"))
+            return finish(code, ("INTERNAL_ERROR", f"internal error: {detail}"))
         except Exception:
             # finish() itself failed (building or writing the JSON report
             # is exactly the kind of thing #1 was raised about) — fall
             # back to the bare minimum so this can never re-raise and
-            # exit 1 by accident.
+            # exit 1 by accident when nothing was actually found.
             print(f"[ERROR] internal error: {detail}", file=sys.stderr)
-            return 2
+            return code
 
     try:
         if json_path is not None:
@@ -3807,122 +3831,140 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         # Start the independent subprocess layers now; they run concurrently
-        # behind the in-process Text/OCR scans.
-        procs = start_hidden_tools(pdf_path, report)
-
+        # behind the in-process Text/OCR scans. procs/tools_scratch default
+        # to "nothing started" so the outer finally below is always safe to
+        # run, even if start_hidden_tools itself never returns normally.
+        procs: dict[str, subprocess.Popen[bytes] | None] = {"exiftool": None, "qpdf": None}
+        tools_scratch: tempfile.TemporaryDirectory[str] | None = None
         try:
-            doc = fitz.open(pdf_path)
-        except Exception as exc:
-            kill_hidden_tools(procs)
-            return finish(2, ("PDF_UNREADABLE", f"Cannot open PDF {pdf_path}: {exc}"))
+            procs, tools_scratch = start_hidden_tools(pdf_path, report)
 
-        try:
-            if doc.needs_pass:
-                kill_hidden_tools(procs)
-                return finish(2, ("PDF_PASSWORD", f"PDF is password-protected: {pdf_path}"))
+            try:
+                doc = fitz.open(pdf_path)
+            except Exception as exc:
+                return finish(2, ("PDF_UNREADABLE", f"Cannot open PDF {pdf_path}: {exc}"))
 
-            if doc.page_count == 0:
-                report.warn(
-                    "EMPTY_DOCUMENT",
-                    "Document",
-                    "PDF contains zero pages — Text/OCR content layers cannot "
-                    "scan an empty document",
-                )
+            try:
+                if doc.needs_pass:
+                    return finish(2, ("PDF_PASSWORD", f"PDF is password-protected: {pdf_path}"))
 
-            print(f"[*] Scanning {pdf_path.name} ({doc.page_count} page(s)) "
-                  f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
-
-            # Each layer is independent, so one crashing must cost only its
-            # own coverage — as a warning, which forces exit 2. Letting it
-            # propagate printed a traceback and exited 1, the leak code, on
-            # a document nothing had been found in.
-            for layer, scan in (
-                ("Metadata", scan_xmp_metadata),
-                ("Hidden", scan_hidden_objects),
-                ("Objects", scan_pdf_objects),
-                ("Objects", functools.partial(scan_earlier_revisions, pdf_path)),
-            ):
-                try:
-                    scan(doc, matcher, patterns, report)
-                except Exception as exc:
+                if doc.page_count == 0:
                     report.warn(
-                        "LAYER_CRASHED", layer, f"{layer}: layer crashed ({exc}) — NOT fully scanned"
+                        "EMPTY_DOCUMENT",
+                        "Document",
+                        "PDF contains zero pages — Text/OCR content layers cannot "
+                        "scan an empty document",
                     )
 
-            print("[*] Phase 2: Text layer (layout-aware visual text)...")
-            try:
-                scan_page_layer(
-                    doc, matcher, report,
-                    layer="Text", extractor=extract_visual_text, note="visual text layer",
-                    hard_variants=TEXT_GENUINE_READINGS,
-                    patterns=patterns, fail_fast=args.fail_fast,
-                )
-            except Exception as exc:
-                report.warn("LAYER_CRASHED", "Text", f"Text: layer crashed ({exc}) — NOT fully scanned")
+                print(f"[*] Scanning {pdf_path.name} ({doc.page_count} page(s)) "
+                      f"for {len(secrets)} secret(s) and {len(patterns)} pattern rule(s)...")
 
-            if args.fail_fast and report.leaked:
-                report.warn(
-                    "SKIPPED_FAIL_FAST", "OCR", "OCR: skipped (--fail-fast after earlier finding)"
-                )
-            elif not _OCR_IMPORTS_OK:
-                report.warn(
-                    "OCR_UNAVAILABLE",
-                    "OCR",
-                    "OCR: PyObjC Vision bridge not available — visual layer NOT scanned "
-                    "(uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz; macOS only)",
-                )
-            else:
-                print("[*] Phase 3: OCR layer (Apple Vision, correction on+off)...")
+                # Each layer is independent, so one crashing must cost only its
+                # own coverage — as a warning, which forces exit 2. Letting it
+                # propagate printed a traceback and exited 1, the leak code, on
+                # a document nothing had been found in.
+                for layer, scan in (
+                    ("Metadata", scan_xmp_metadata),
+                    ("Hidden", scan_hidden_objects),
+                    ("Objects", scan_pdf_objects),
+                    ("Objects", functools.partial(scan_earlier_revisions, pdf_path)),
+                ):
+                    try:
+                        scan(doc, matcher, patterns, report)
+                    except Exception as exc:
+                        report.warn(
+                            "LAYER_CRASHED", layer, f"{layer}: layer crashed ({exc}) — NOT fully scanned"
+                        )
+
+                print("[*] Phase 2: Text layer (layout-aware visual text)...")
                 try:
                     scan_page_layer(
                         doc, matcher, report,
-                        layer="OCR", extractor=extract_ocr_text,
-                        note=f"Apple Vision @ {OCR_DPI} dpi",
-                        patterns=patterns,
-                        # Both Vision passes (language correction on and off)
-                        # are independent natural-order reads of the same
-                        # pixels, not reconstructions — correction-off is in
-                        # fact the more reliable read for digit strings — so
-                        # both are eligible for hard findings.
-                        hard_variants=2,
-                        fail_fast=args.fail_fast,
+                        layer="Text", extractor=extract_visual_text, note="visual text layer",
+                        hard_variants=TEXT_GENUINE_READINGS,
+                        patterns=patterns, fail_fast=args.fail_fast,
                     )
                 except Exception as exc:
+                    report.warn("LAYER_CRASHED", "Text", f"Text: layer crashed ({exc}) — NOT fully scanned")
+
+                if args.fail_fast and report.leaked:
                     report.warn(
-                        "LAYER_CRASHED", "OCR", f"OCR: layer crashed ({exc}) — NOT fully scanned"
+                        "SKIPPED_FAIL_FAST", "OCR", "OCR: skipped (--fail-fast after earlier finding)"
                     )
-        finally:
-            doc.close()
+                elif not _OCR_IMPORTS_OK:
+                    report.warn(
+                        "OCR_UNAVAILABLE",
+                        "OCR",
+                        "OCR: PyObjC Vision bridge not available — visual layer NOT scanned "
+                        "(uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz; macOS only)",
+                    )
+                else:
+                    print("[*] Phase 3: OCR layer (Apple Vision, correction on+off)...")
+                    try:
+                        scan_page_layer(
+                            doc, matcher, report,
+                            layer="OCR", extractor=extract_ocr_text,
+                            note=f"Apple Vision @ {OCR_DPI} dpi",
+                            patterns=patterns,
+                            # Both Vision passes (language correction on and off)
+                            # are independent natural-order reads of the same
+                            # pixels, not reconstructions — correction-off is in
+                            # fact the more reliable read for digit strings — so
+                            # both are eligible for hard findings.
+                            hard_variants=2,
+                            fail_fast=args.fail_fast,
+                        )
+                    except Exception as exc:
+                        report.warn(
+                            "LAYER_CRASHED", "OCR", f"OCR: layer crashed ({exc}) — NOT fully scanned"
+                        )
+            finally:
+                doc.close()
 
-        if args.fail_fast and report.leaked:
-            kill_hidden_tools(procs)
-            report.warn(
-                "SKIPPED_FAIL_FAST",
-                "Metadata/Binary",
-                "Metadata/Binary: skipped (--fail-fast after earlier finding)",
-            )
-        else:
-            print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
-            try:
-                check_hidden_layers(procs, matcher, patterns, report)
-            except Exception as exc:
-                kill_hidden_tools(procs)
+            if args.fail_fast and report.leaked:
                 report.warn(
-                    "LAYER_CRASHED",
+                    "SKIPPED_FAIL_FAST",
                     "Metadata/Binary",
-                    f"Metadata/Binary: collection crashed ({exc}) — NOT fully scanned",
+                    "Metadata/Binary: skipped (--fail-fast after earlier finding)",
                 )
+            else:
+                print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
+                try:
+                    check_hidden_layers(procs, matcher, patterns, report)
+                except Exception as exc:
+                    report.warn(
+                        "LAYER_CRASHED",
+                        "Metadata/Binary",
+                        f"Metadata/Binary: collection crashed ({exc}) — NOT fully scanned",
+                    )
 
-        print_report(report, pdf_path)
+            print_report(report, pdf_path)
 
-        if report.leaked:
-            return finish(1)
-        if report.degraded:
-            return finish(2)  # clean-so-far, but not certifiable as a real PASS
-        return finish(0)
-    except KeyboardInterrupt as exc:
-        return crash(exc)
-    except Exception as exc:
+            if report.leaked:
+                return finish(1)
+            if report.degraded:
+                return finish(2)  # clean-so-far, but not certifiable as a real PASS
+            return finish(0)
+        finally:
+            # Guaranteed on every exit from the block above — a normal
+            # return, an early return, or ANY exception (including a
+            # KeyboardInterrupt raised while blocked on a subprocess read,
+            # which the per-layer `except Exception` guards above do not
+            # catch) — so qpdf/exiftool are never left running as orphans
+            # once main() has decided to leave, and the private scratch
+            # directory they ran in (see start_hidden_tools) never
+            # outlives them. Both calls are idempotent.
+            kill_hidden_tools(procs)
+            if tools_scratch is not None:
+                tools_scratch.cleanup()
+    except BaseException as exc:
+        # BaseException, not Exception: a SystemExit (or other
+        # BaseException) raised somewhere inside the pipeline above must
+        # not carry its own arbitrary code out — it is exactly as
+        # "escaped uncaught" as any other exception here (see #1).
+        # argparse's own SystemExit (bad flags, --version combined with
+        # other args) is unaffected: it is raised by parser.parse_args()
+        # well before this try block starts.
         return crash(exc)
 
 
@@ -3948,14 +3990,22 @@ def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
     """
     try:
         code = main(argv)
-    except KeyboardInterrupt:
-        # main() already turns every exception it can reach into exit 2
-        # (see the `crash` helper inside it, and #1); this is the
-        # process-boundary backstop for anything that still escapes, so a
-        # crash's exit code is never mistaken for 1, the leak code.
-        print("[ERROR] interrupted", file=sys.stderr)
-        code = 2
-    except Exception as exc:
+    except SystemExit:
+        # argparse's own error path (a missing/unknown flag, or --version
+        # combined with other flags) already exits 2 (or 0 for a bare
+        # --version) entirely on its own, before main()'s own guarded
+        # pipeline even starts — let it propagate exactly as it always
+        # has, rather than reinterpreting it as an internal crash below.
+        raise
+    except BaseException as exc:
+        # BaseException, not Exception: main() already turns every
+        # Exception (and KeyboardInterrupt, and any other BaseException,
+        # such as a stray SystemExit) reaching its own guarded pipeline
+        # into exit 2 — or 1 if a secret had already been confirmed — via
+        # the `crash` helper inside it (#1). This is the process-boundary
+        # backstop for anything that still escapes it (e.g. before that
+        # pipeline's own try block starts), so a crash's exit code is
+        # never mistaken for 1, the leak code, by accident.
         detail = f"{type(exc).__name__}: {exc}"[:500]
         print(f"[ERROR] internal error: {detail}", file=sys.stderr)
         code = 2

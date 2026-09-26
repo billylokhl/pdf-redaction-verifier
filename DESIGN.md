@@ -31,6 +31,19 @@ match is plausible but might be coincidence — the answer is `2`, never
 is worse than no scanner, because it converts an unknown into a false
 assurance.
 
+The same rule governs the tool's own crashes, not just the document's
+content: an exception that escapes every per-layer guard — a bug in the
+report writer, say — must never be certified `0`, and must never read as
+`1` either unless a secret had already been confirmed before the crash.
+`main()`'s entire scan pipeline runs under one last `except BaseException`
+(not `Exception`: a stray `SystemExit` must not carry its own arbitrary
+code out) that answers `2` if nothing had been found yet, or keeps `1` if
+something had — the severity order is `0 < 2 < 1`, so a crash can only
+ever push the verdict *up* from a clean-so-far `2`, never take back a
+confirmed leak. The `--json` report still records the crash
+(`error.code = "INTERNAL_ERROR"`) alongside whatever findings and
+warnings had already been collected.
+
 The rule has two halves, and the second took longer to see. A layer that
 cannot *run* is obvious. A layer that runs, *finds* content, and cannot
 *read* it is not — a leftover content stream in glyph codes, a leftover
@@ -314,6 +327,21 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
+
+The subprocesses themselves are launched defensively, not just bounded:
+`qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
+rather than letting `exec()` search `PATH`, the target is always passed
+as that same absolute path so a filename starting with `-` can never be
+read as an option, exiftool gets `-config ""` plus its own documented
+`--` end-of-options convention so no config file is ever consulted, and
+both run with a minimal environment (`PATH`, `LANG=C`, `LC_ALL=C`) from a
+private, empty scratch directory — exiftool falls back to its *working
+directory* for `.ExifTool_config` once none of `EXIFTOOL_HOME`/`HOME`/
+`HOMEDRIVE`+`HOMEPATH` is set (which the minimal environment guarantees),
+so the cwd has to be closed separately from `-config ""`, not by it.
+Every exit from the scan that started them — normal completion, an early
+`return`, or any exception — kills whichever of the two are still running
+and removes that scratch directory, so neither survives as an orphan.
 
 ## Sharing a config with the redactor
 

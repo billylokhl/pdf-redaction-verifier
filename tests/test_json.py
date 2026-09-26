@@ -176,6 +176,40 @@ class TestReportFile:
         code = verify.main(["--target", str(target), "--secrets", str(secrets_file)])
         assert code == 2
 
+    def test_crash_after_a_confirmed_finding_stays_a_fail(
+        self, leaky_pdf, secrets_file, tmp_path, monkeypatch
+    ) -> None:
+        # This project's severity order is 0 < 2 < 1: a confirmed leak
+        # outranks "cannot certify". print_report runs only after every
+        # layer has already recorded its findings, so a crash there must
+        # not downgrade an already-confirmed FAIL to a mere "uncertified"
+        # — the secret was still found, crash or no crash.
+        out = tmp_path / "r.json"
+        monkeypatch.setattr(verify, "print_report",
+                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+        code = verify.main(["--target", str(leaky_pdf), "--secrets", str(secrets_file),
+                            "--json", str(out)])
+        assert code == 1
+        data = json.loads(out.read_text())
+        assert data["exit_code"] == 1 and data["verdict"] == "fail"
+        # The crash is still visible to a consumer, alongside the finding.
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert data["findings"]
+
+    def test_crash_before_any_finding_stays_uncertified(
+        self, clean_pdf, secrets_file, tmp_path, monkeypatch
+    ) -> None:
+        out = tmp_path / "r.json"
+        monkeypatch.setattr(verify, "print_report",
+                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+        code = verify.main(["--target", str(clean_pdf), "--secrets", str(secrets_file),
+                            "--json", str(out)])
+        assert code == 2
+        data = json.loads(out.read_text())
+        assert data["exit_code"] == 2 and data["verdict"] == "uncertified"
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert data["findings"] == []
+
     def test_read_only_old_report_is_replaced(self, leaky_pdf, secrets_file,
                                               tmp_path) -> None:
         out = tmp_path / "report.json"

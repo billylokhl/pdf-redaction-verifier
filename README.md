@@ -30,11 +30,14 @@ The exit code is the verdict:
 | Code | Meaning |
 | --- | --- |
 | `0` | **Clean** — no secret found, and every layer actually ran. |
-| `1` | **Leak** — a secret was detected. The report names where. |
-| `2` | **Cannot certify** — a layer could not run, a match needs manual review, the tool found content it cannot read, the rules ask for something this tool can't check, or the PDF needs a password to open. Never treat a `2` as clean. |
+| `1` | **Leak** — a secret was detected. The report names where. Also the code for an internal crash that happened *after* a secret was already confirmed: a confirmed leak is never downgraded just because the scan could not finish. |
+| `2` | **Cannot certify** — a layer could not run, a match needs manual review, the tool found content it cannot read, the rules ask for something this tool can't check, the PDF needs a password to open, or the tool crashed before confirming a leak. Never treat a `2` as clean. |
 
 That last row is the whole point: the tool fails *closed*. If it could not
-look somewhere, it says so instead of certifying the document clean.
+look somewhere — including because it crashed — it says so instead of
+certifying the document clean; the severity order is `0 < 2 < 1`, so a
+crash can only ever push the verdict *up* from a clean-so-far `2`, never
+down from a confirmed `1`.
 
 For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
@@ -42,12 +45,19 @@ a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
 match to judge), `coverage` (something not fully read) or `scope` (the
 rules ask for something the tool cannot check). Both carry structured
 fields: the layer, where the content is stored (`live`, `orphaned`,
-`unreferenced`, `superseded`), and the object, revision and page when
-known. The file is replaced atomically and removed at the start of each
-run, so a run that dies leaves no report rather than an old one — but the
-exit code stays the authority. The format is experimental;
-`schema_version` changes if a field is renamed or removed. `--version`
-(on its own) prints the tool version.
+`unreferenced`, `superseded`), the object, revision and page when known,
+and (only on `TOOL_EXIT_NONZERO`) the tool's own `returncode`, so a real
+qpdf failure can be told apart from its benign, version-dependent exit 3
+without parsing the message text. An internal crash is reported the same
+way any other operational failure is — `error: {"code": "INTERNAL_ERROR",
+"message": ...}` alongside whatever findings and warnings were already
+recorded, message text never more than the exception's type plus a
+truncated summary, never raw document content. The file is replaced
+atomically and removed at the start of each run, so a run that dies
+leaves no report rather than an old one — but the exit code stays the
+authority. The format is experimental; `schema_version` changes if a
+field is renamed or removed. `--version` (on its own) prints the tool
+version.
 
 ## How it works
 
