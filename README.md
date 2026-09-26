@@ -40,9 +40,14 @@ For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
 a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
 match to judge), `coverage` (something not fully read) or `scope` (the
-rules ask for something the tool cannot check). The format is
-experimental; `schema_version` changes if a field is renamed or removed.
-`--version` prints the tool version.
+rules ask for something the tool cannot check). Both carry structured
+fields: the layer, where the content is stored (`live`, `orphaned`,
+`unreferenced`, `superseded`), and the object, revision and page when
+known. The file is replaced atomically and removed at the start of each
+run, so a run that dies leaves no report rather than an old one — but the
+exit code stays the authority. The format is experimental;
+`schema_version` changes if a field is renamed or removed. `--version`
+(on its own) prints the tool version.
 
 ## How it works
 

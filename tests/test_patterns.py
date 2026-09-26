@@ -522,7 +522,7 @@ class TestYamlAdapterFidelity:
         # inherent LLM-only coverage gap.
         for bad in ("SSN", "credit-card", "emial"):
             path = self._yaml(tmp_path, f"entity_types: [{bad}]\n")
-            with pytest.raises(verify.VerifyError, match="unknown entity type"):
+            with pytest.raises(verify.VerifyError, match="not a known entity type"):
                 verify.load_rules(path)
 
     def test_partial_coverage_is_declared(self, tmp_path) -> None:
