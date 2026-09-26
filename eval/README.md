@@ -88,6 +88,65 @@ guard case by case. It may only shrink; `tests/test_case_library.py`
 checks both directions (nothing claimed and uncovered is missing from
 it, and nothing in it is already covered).
 
+### Real-tool files and their provenance (`caselib/real/`)
+
+The only binaries in the library: committed output of a redaction tool,
+because a generated corpus can only show a failure someone thought to
+build. All data in them is fabricated (`families/redactors.py`'s
+docstring). The tool itself is never named — only described generically
+("a PyMuPDF-based redaction tool") — since this is a public repository.
+
+Every `real/<name>.pdf` has a sidecar, `real/<name>.json`: its sha256
+(re-checked against the file on disk, never trusted from the sidecar
+alone), a declared per-file size cap, the tool's generic description,
+version and run date, the exact settings and values used, which caselib
+case (if any) generated its pre-redaction input, an explicit
+"fabricated data" statement, the list of metadata fields scrubbed
+(empty when the tool's own output already had none to scrub), and a
+summary of the label (`families/redactors.py`'s `case()` call) it backs.
+`families/redactors.py` cross-checks its own cases against their
+sidecars at import time (`_sidecar`); `tests/test_case_library.py`'s
+`TestProvenance` re-derives the same facts independently, so a sidecar
+can't drift from either the file or the registered case without a test
+failing.
+
+### Privacy scrub
+
+Every case whose bytes are committed as-is (`writer="file"` — today
+`real/*.pdf` and the red-team round's PDFs) is scanned by
+`TestPrivacyScrub`, in both its raw bytes and every stream PyMuPDF can
+decompress, for home-directory paths (`/Users/…`, `/home/…`,
+`C:\Users\…`), email addresses outside `example.com` / `example.org` /
+`*.test`, hostname-shaped strings (`*.local`, `*.lan`, `*.corp`, …), and
+XMP document/instance ids that look machine-generated (a real UUID in
+`xmpMM:DocumentID` or `xmpMM:InstanceID`). A genuine exception needs an
+explicit, reasoned entry in the case's `Case.privacy_allowlist` — never
+a silent pass.
+
+### The blind red-team slot (`caselib/redteam/`)
+
+Every other case is written by someone who has read `verify.py`, which
+is exactly the bias this corpus needs correcting for. `redteam/<round>/`
+holds rounds built by someone working only from `COVERAGE.md` and the
+threat model — see [`redteam/README.md`](caselib/redteam/README.md) for
+the full protocol: how a round is authored, why its `labels.json` is
+frozen (a sha256 in `round.json`, changeable only through a recorded
+`adjudications.log` entry), and how a round may report a storage place
+COVERAGE.md has no row for yet through the `new.<slug>` placeholder
+namespace (`cells.NEW_CELL_ALLOWLIST`, redteam-only). Red-team cases load
+through the ordinary family mechanism (`families/redteam.py`) and land
+in the same `REGISTRY` with `origin="redteam"`.
+
+### Gallery fields ratchet
+
+A leak case is shown in a gallery of how redaction fails, so it should
+carry `mistake` (what caused it) and `recovery` (how it's found by
+hand). `model.GALLERY_FIELDS_PENDING` is a may-only-shrink allowlist —
+the same shape as `UNDOCUMENTED_GAPS` — for the leak cases that don't
+carry both yet; `tests/test_case_library.py`'s `TestGalleryFields`
+checks it is exact (nothing missing is left off it, and nothing on it is
+actually filled in already).
+
 ## Running
 
 ```bash

@@ -13,10 +13,13 @@ import hashlib
 import json
 import re
 
+import fitz
 import pytest
 
-from caselib import CELLS, NONFITZ_PENDING, REGISTRY, UNDOCUMENTED_GAPS, load
+from caselib import (CELLS, GALLERY_FIELDS_PENDING, NEW_CELL_ALLOWLIST, NONFITZ_PENDING,
+                     REGISTRY, UNDOCUMENTED_GAPS, load)
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
+from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
 from caselib.model import Case, expect
 from caselib.run import Scan, available, build, judge, scan
@@ -26,6 +29,8 @@ from .conftest import REPO_ROOT
 load()
 HAVE = available()
 LOCKED = json.loads(LOCK.read_text())
+REAL_DIR = REPO_ROOT / "eval" / "caselib" / "real"
+SIZE_CAP = 100_000
 
 
 def _params():
@@ -235,11 +240,237 @@ class TestLibrary:
         assert on_disk and all(name in source for name in on_disk)
         assert all((real / name).stat().st_size < 100_000 for name in on_disk)
 
-    def test_real_files_hold_nothing_personal(self) -> None:
-        for pdf in (REPO_ROOT / "eval" / "caselib" / "real").glob("*.pdf"):
-            data = pdf.read_bytes()
-            assert not re.search(rb"/Users/|/home/|C:\\\\Users", data), pdf.name
-
     def test_stories(self) -> None:
         for case in REGISTRY.values():
             assert case.story.strip().endswith((".", ")")), case.id
+
+
+# ── Provenance sidecars (eval/caselib/real/<name>.json) ─────────────────
+
+class TestProvenance:
+    """Every committed real-tool PDF (docs/REDESIGN.md §5's "real-redactor
+    tier") carries a sidecar recording where it came from, so a reviewer
+    never has to trust the PDF's bytes on faith."""
+
+    REQUIRED_FIELDS = ("file", "sha256", "size_bytes", "size_cap_bytes", "origin", "case_id",
+                       "tool", "fabricated_data_statement", "metadata_fields_scrubbed",
+                       "labels_summary")
+
+    def _sidecars(self) -> dict[str, dict]:
+        return {p.stem: json.loads(p.read_text()) for p in REAL_DIR.glob("*.json")}
+
+    def test_every_real_pdf_has_a_sidecar(self) -> None:
+        pdfs = {p.stem for p in REAL_DIR.glob("*.pdf")}
+        sidecars = set(self._sidecars())
+        assert pdfs, "no real/*.pdf files found"
+        assert pdfs == sidecars, f"missing or orphaned sidecars: {pdfs ^ sidecars}"
+
+    def test_sidecar_fields_present(self) -> None:
+        for stem, data in self._sidecars().items():
+            missing = [f for f in self.REQUIRED_FIELDS if f not in data]
+            assert missing == [], f"{stem}.json missing {missing}"
+            tool = data["tool"]
+            assert tool.get("description") and tool.get("version") and tool.get("date"), stem
+            assert "settings" in tool and tool["settings"], f"{stem}.json: tool.settings is empty"
+
+    def test_sidecar_sha256_matches_the_file(self) -> None:
+        for stem, data in self._sidecars().items():
+            pdf = REAL_DIR / data["file"]
+            digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            assert digest == data["sha256"], f"{stem}.json: sha256 does not match {pdf.name}"
+            assert pdf.stat().st_size == data["size_bytes"], f"{stem}.json: size_bytes is stale"
+
+    def test_sidecar_size_cap_is_declared_and_enforced(self) -> None:
+        for stem, data in self._sidecars().items():
+            cap = data["size_cap_bytes"]
+            assert isinstance(cap, int) and 0 < cap <= SIZE_CAP, f"{stem}.json: bad size_cap_bytes"
+            assert data["size_bytes"] <= cap, f"{stem}.json: file exceeds its own declared cap"
+
+    def test_sidecar_case_matches_the_registry(self) -> None:
+        """The sidecar's case_id, origin and truth must be the actual case
+        that uses this file — cross-checked independently of
+        families/redactors.py's own ``_sidecar`` (which only checks the
+        cases it itself defines)."""
+        for stem, data in self._sidecars().items():
+            case_id = data["case_id"]
+            assert case_id in REGISTRY, f"{stem}.json: case {case_id!r} is not registered"
+            case = REGISTRY[case_id]
+            assert case.origin == "redactor", f"{case_id}: origin must be 'redactor'"
+            assert case.writer == "file", f"{case_id}: writer must be 'file'"
+            assert case.truth == data["labels_summary"]["truth"], (
+                f"{case_id}: sidecar truth disagrees with the registered case")
+
+
+# ── Privacy scrub: every committed binary, raw and decompressed ─────────
+
+_HOME_PATH_RE = re.compile(rb"/Users/[^/\s)>]+|/home/[^/\s)>]+|C:\\Users\\[^\\/\s)>]+")
+_EMAIL_RE = re.compile(rb"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+_ALLOWED_EMAIL_DOMAINS = (b"example.com", b"example.org")
+_HOSTNAME_RE = re.compile(
+    rb"\b[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.(?:local|lan|corp|internal|home|"
+    rb"localdomain)\b", re.IGNORECASE)
+_UUID = rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_XMP_ID_RE = re.compile(rb"xmpMM:(?:Document|Instance)ID=\"[^\"]*" + _UUID + rb"[^\"]*\"")
+
+
+def _email_allowed(domain: bytes) -> bool:
+    domain = domain.lower()
+    return domain in _ALLOWED_EMAIL_DOMAINS or domain.endswith(b".test")
+
+
+def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
+    """(kind, matched text) for every home path, non-fixture email,
+    hostname-shaped string, and machine-generated-looking XMP id in
+    *pdf_path*'s raw bytes and its decompressed streams."""
+    blobs = [pdf_path.read_bytes()]
+    try:
+        doc = fitz.open(str(pdf_path))
+        for xref in range(1, doc.xref_length()):
+            if doc.xref_is_stream(xref):
+                try:
+                    blobs.append(doc.xref_stream(xref))
+                except Exception:
+                    pass
+        doc.close()
+    except Exception:
+        pass
+    findings: list[tuple[str, str]] = []
+    for blob in blobs:
+        for m in _HOME_PATH_RE.finditer(blob):
+            findings.append(("home-path", m.group().decode("latin-1")))
+        for m in _EMAIL_RE.finditer(blob):
+            if not _email_allowed(m.group(1)):
+                findings.append(("email", m.group().decode("latin-1")))
+        for m in _HOSTNAME_RE.finditer(blob):
+            findings.append(("hostname", m.group().decode("latin-1")))
+        for m in _XMP_ID_RE.finditer(blob):
+            findings.append(("xmp-id", m.group().decode("latin-1", "replace")))
+    seen: set[tuple[str, str]] = set()
+    unique = []
+    for f in findings:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+    return unique
+
+
+def _allowlisted(case, kind: str, text: str) -> bool:
+    return any(entry.get("reason") and entry.get("pattern", "") in text
+              for entry in case.privacy_allowlist)
+
+
+class TestPrivacyScrub:
+    """No committed binary — today only ``real/*.pdf`` and the red-team
+    round's PDFs, but this runs for any future ``writer="file"`` case —
+    may hold a home-directory path, a non-fixture email, a hostname, or a
+    machine-looking XMP id, unless the case explicitly allowlists it
+    (``Case.privacy_allowlist``) with a reason."""
+
+    def _file_cases(self):
+        return [c for c in REGISTRY.values() if c.writer == "file"]
+
+    def test_there_are_file_backed_cases_to_check(self) -> None:
+        # A regression guard on the test itself: if this ever hits zero,
+        # the scrub below is silently checking nothing.
+        assert self._file_cases()
+
+    def test_no_unallowlisted_privacy_findings(self, tmp_path) -> None:
+        problems = []
+        for case in self._file_cases():
+            pdf = build(case, tmp_path / f"{case.id}.privacy.pdf")
+            for kind, text in _privacy_findings(pdf):
+                if not _allowlisted(case, kind, text):
+                    problems.append(f"{case.id}: {kind} {text!r}")
+        assert problems == []
+
+    def test_allowlist_entries_have_a_reason(self) -> None:
+        for case in REGISTRY.values():
+            for entry in case.privacy_allowlist:
+                assert entry.get("pattern"), f"{case.id}: privacy_allowlist entry has no pattern"
+                assert entry.get("reason"), f"{case.id}: privacy_allowlist entry has no reason"
+
+
+# ── The blind red-team slot (eval/caselib/redteam/) ──────────────────────
+
+class TestRedTeam:
+    def test_at_least_the_example_round_is_loaded(self) -> None:
+        redteam_cases = [c for c in REGISTRY.values() if c.origin == "redteam"]
+        assert redteam_cases, "no origin='redteam' cases registered"
+
+    def test_round_dirs_are_found(self) -> None:
+        assert redteam_loader.round_dirs(), "no red-team round directories found"
+
+    @pytest.mark.parametrize("round_dir", redteam_loader.round_dirs(), ids=lambda d: d.name)
+    def test_label_hash_lock(self, round_dir) -> None:
+        """labels.json must match round.json's recorded hash, and any
+        drift from the round's frozen initial hash must be recorded in
+        adjudications.log (redteam/README.md's "Why labels are frozen")."""
+        redteam_loader.check_label_lock(round_dir)  # raises with the specifics on failure
+
+    def test_adjudication_entries_are_well_formed(self) -> None:
+        required = {"round", "case_id", "date", "adjudicator", "reason", "old_sha256", "new_sha256"}
+        for entry in redteam_loader.read_adjudications():
+            missing = required - entry.keys()
+            assert not missing, f"adjudications.log entry missing {missing}: {entry}"
+
+    def test_new_cell_allowlist_maps_to_issue_numbers(self) -> None:
+        for cell_id, issue in NEW_CELL_ALLOWLIST.items():
+            assert cell_id.startswith("new."), cell_id
+            assert isinstance(issue, int) and issue > 0, (
+                f"{cell_id}: NEW_CELL_ALLOWLIST value must be a GitHub issue number")
+
+    def test_new_cell_allowlist_has_no_graduated_ids(self) -> None:
+        """Once a placeholder gets a real COVERAGE.md row (cells.CELLS),
+        it must be removed here — never left listed alongside the real id."""
+        graduated = set(NEW_CELL_ALLOWLIST) & set(CELLS)
+        assert sorted(graduated) == []
+
+    def test_new_placeholder_rejected_outside_the_allowlist(self) -> None:
+        """model.Case's own gate: a redteam case may use an allowlisted
+        new.* id; a non-redteam case, or an unlisted new.* id, is rejected
+        at construction time — the mechanism redteam/README.md documents,
+        exercised directly here rather than requiring a real round to use
+        it."""
+        from caselib.model import Case, expect
+
+        def make(cell: str, origin: str):
+            return Case(id="page.placeholder-probe", truth="leak", cells=(cell,),
+                       expected=expect(1, findings=(("SSN", "live"),)),
+                       story="probe.", build=lambda p: None, origin=origin)
+
+        with pytest.raises(ValueError):
+            make("new.unlisted-place", "redteam")
+        with pytest.raises(ValueError):
+            make("new.unlisted-place", "generated")
+        if NEW_CELL_ALLOWLIST:
+            listed = next(iter(NEW_CELL_ALLOWLIST))
+            make(listed, "redteam")                      # must not raise
+            with pytest.raises(ValueError):
+                make(listed, "generated")                 # placeholder is redteam-only
+
+
+# ── Gallery fields ratchet (mistake / recovery on leak cases) ────────────
+
+class TestGalleryFields:
+    """Leak cases are shown in a gallery of how redaction fails; each
+    should carry ``mistake`` (what caused it) and ``recovery`` (how it's
+    found by hand). ``GALLERY_FIELDS_PENDING`` is a may-only-shrink
+    allowlist for the ones that don't yet, the same shape as
+    ``UNDOCUMENTED_GAPS``."""
+
+    def _missing(self) -> set[str]:
+        return {c.id for c in REGISTRY.values()
+               if c.truth == "leak" and not (c.mistake and c.recovery)}
+
+    def test_missing_fields_are_all_pending(self) -> None:
+        missing = self._missing()
+        assert sorted(missing - GALLERY_FIELDS_PENDING) == []
+
+    def test_pending_list_has_no_stale_entries(self) -> None:
+        missing = self._missing()
+        assert sorted(GALLERY_FIELDS_PENDING - missing) == [], (
+            "filled in now: remove from GALLERY_FIELDS_PENDING")
+
+    def test_pending_ids_are_real_leak_cases(self) -> None:
+        leak_ids = {c.id for c in REGISTRY.values() if c.truth == "leak"}
+        assert GALLERY_FIELDS_PENDING <= leak_ids

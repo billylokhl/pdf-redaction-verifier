@@ -60,7 +60,8 @@ def deleted_page_embedded_compact(path: Path) -> None:
 
 
 @leak("leftover.deleted-page-cjk", "orphaned.font",
-      "A deleted page set in an embedded CJK font.", expected=UNDECODABLE)
+      "A deleted page set in an embedded CJK font.", expected=UNDECODABLE,
+      mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def deleted_page_cjk(path: Path) -> None:
     _deleted_page(path, cjk_font)
 
@@ -89,7 +90,7 @@ def redacted_no_gc_compact(path: Path) -> None:
 
 @leak("leftover.mixed-fonts", "orphaned.font",
       "A deleted page mostly in a standard font, with the secret in an embedded font.",
-      expected=UNDECODABLE)
+      expected=UNDECODABLE, mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def mixed_fonts(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     page = doc.new_page(); font = embedded_font(page)
@@ -101,14 +102,16 @@ def mixed_fonts(path: Path) -> None:
 
 @leak("leftover.single-stream-mixed", "orphaned.font",
       "One leftover stream: many lines of plain text, and the SSN as glyph codes.",
-      expected=UNDECODABLE)
+      expected=UNDECODABLE, mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def single_stream_mixed(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< >>", mixed_stream(embedded_glyphs(f"SSN {SSN}"))); save(doc, path)
 
 
 @leak("leftover.xmp", "leftover-xmp.plain",
-      "An old XMP metadata packet with the SSN in its title, no longer referenced.")
+      "An old XMP metadata packet with the SSN in its title, no longer referenced.",
+      mistake="Rewriting metadata without garbage-collecting the old XMP packet.",
+      recovery="Decompress the file and read the earlier /Metadata stream's XML.")
 def orphan_xmp(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     xmp = ('<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
@@ -119,10 +122,15 @@ def orphan_xmp(path: Path) -> None:
     orphan(doc, "<< /Type /Metadata /Subtype /XML >>", xmp.encode()); save(doc, path)
 
 
+REMOVED_ATTACHMENT = "Removing an attachment by deleting its listing, not with garbage collection."
+
+
 @leak("leftover.attachment-text", "orphaned-attachment.plain",
       "A removed attachment's text is still stored, unreferenced (manual review: a run "
       "of arbitrary text).",
-      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)))
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)),
+      mistake=REMOVED_ATTACHMENT,
+      recovery="Decompress the file and read the leftover /EmbeddedFile stream.")
 def orphan_attachment_text(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Type /EmbeddedFile >>", f"Employee SSN {SSN}\n".encode()); save(doc, path)
@@ -130,7 +138,9 @@ def orphan_attachment_text(path: Path) -> None:
 
 @leak("leftover.attachment-untyped", "orphaned-attachment.plain",
       "A removed attachment stored without a /Type.",
-      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)))
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)),
+      mistake=REMOVED_ATTACHMENT,
+      recovery="Decompress the file and read the leftover stream's plain text.")
 def orphan_attachment_untyped(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Params << /Size 22 >> >>", f"Employee SSN {SSN}\n".encode())
@@ -139,7 +149,9 @@ def orphan_attachment_untyped(path: Path) -> None:
 
 @leak("leftover.attachment-zip", ("orphaned-attachment.container", "orphaned.container"),
       "A removed zip attachment holding the SSN, still stored.",
-      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)),
+      mistake=REMOVED_ATTACHMENT,
+      recovery="Decompress the file, find the leftover stream, and extract the zip.")
 def orphan_attachment_zip(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Type /EmbeddedFile >>", compressed("zip", f"SSN {SSN}")); save(doc, path)
@@ -147,7 +159,9 @@ def orphan_attachment_zip(path: Path) -> None:
 
 @leak("leftover.attachment-png", "orphaned-attachment.pixels",
       "A removed PNG attachment showing the SSN, still stored.",
-      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)),
+      mistake=REMOVED_ATTACHMENT,
+      recovery="Decompress the file, find the leftover stream, and view the PNG.")
 def orphan_attachment_png(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Type /EmbeddedFile >>", png_of(f"SSN {SSN}")); save(doc, path)
@@ -155,7 +169,8 @@ def orphan_attachment_png(path: Path) -> None:
 
 @leak("leftover.inline-image", "orphaned.pixels",
       "A leftover content stream drawing the SSN as an inline image.",
-      expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)),
+      mistake=NO_GC, recovery="Decompress the file and render the leftover inline image.")
 def orphan_inline_image(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(f"SSN {SSN}")))

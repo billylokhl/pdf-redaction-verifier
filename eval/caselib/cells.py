@@ -167,6 +167,18 @@ UNDOCUMENTED_GAPS: frozenset[str] = frozenset({
 NONFITZ_PENDING: frozenset[str] = frozenset()
 
 
+# A blind red-team case (caselib/redteam/, model.Case origin="redteam") may
+# report finding a secret in a place this table has no row for. Rather than
+# rejecting it outright, its case may use the placeholder namespace
+# "new.<slug>" — but only once listed here, mapped to the GitHub issue that
+# tracks giving it a real COVERAGE.md row. This is the whole gate: a
+# placeholder id used anywhere else (a non-redteam case, or a redteam case
+# not listed here) is rejected by model.Case at construction time. Once
+# COVERAGE.md gains the row, add the real cell above, update the case to
+# use it, and delete the entry here — never leave a graduated id listed.
+NEW_CELL_ALLOWLIST: dict[str, int] = {}
+
+
 def parts(cell_id: str) -> tuple[str, str | None, str | None]:
     """(row, column, qualifier) of a coverage cell; column is None for
     match.* and false-alarm.* ids."""

@@ -27,7 +27,8 @@ def visible(path: Path) -> None:
 
 @leak("page.visible-embedded-font", "live.font",
       "The SSN on the page in an embedded font (glyph codes).",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)),
+      mistake="Nobody redacted it.", recovery="Read the page.")
 def visible_embedded(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, embedded_font(page), lines=[*FILLER, f"SSN {SSN}"]); save(doc, path)
@@ -35,7 +36,8 @@ def visible_embedded(path: Path) -> None:
 
 @leak("page.visible-cjk", "live.font",
       "A code name on a page set in an embedded CJK font.",
-      expected=expect(1, findings=(("Code", "live"),), layers=(("Code", "Text"),)))
+      expected=expect(1, findings=(("Code", "live"),), layers=(("Code", "Text"),)),
+      mistake="Nobody redacted it.", recovery="Read the page.")
 def visible_cjk(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, cjk_font(page), lines=[*FILLER, f"代号 {CODE}"]); save(doc, path)
@@ -44,7 +46,8 @@ def visible_cjk(path: Path) -> None:
 @leak("page.visible-pattern-rule", "live.plain",
       "An SSN on the page, searched for by the built-in SSN pattern instead of its value.",
       rules=({"name": "Any SSN", "class": "ssn"},),
-      expected=expect(1, findings=(("Any SSN", "live"),), layers=(("Any SSN", "Text"),)))
+      expected=expect(1, findings=(("Any SSN", "live"),), layers=(("Any SSN", "Text"),)),
+      mistake="Nobody redacted it.", recovery="Read the page.")
 def visible_pattern(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page(), lines=[*FILLER, f"SSN {SSN}"]); save(doc, path)
 
@@ -87,6 +90,7 @@ def redaction_missed(path: Path) -> None:
 @leak("page.above-page", "off-page.plain",
       "The SSN drawn above the top edge of the page, where no viewer shows it.",
       expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)),
+      mistake="Nobody redacted it; the value simply sits off the visible page.",
       recovery="Copy all text, or enlarge the page box.")
 def above_page(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
@@ -95,7 +99,10 @@ def above_page(path: Path) -> None:
 
 @leak("page.right-of-page-embedded-font", "off-page.font",
       "The SSN right of the page edge, in an embedded font.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)),
+      mistake="Nobody redacted it; the value simply sits off the visible page.",
+      recovery="Enlarge the page box and map the glyph codes through the font's "
+               "Unicode table.")
 def right_of_page(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); font = embedded_font(page); body(page, font)
     page.insert_text((700, 100), f"SSN {SSN}", fontname=font); save(doc, path)
@@ -112,7 +119,9 @@ def outside_crop(path: Path) -> None:
 
 @leak("page.runs-off-right-edge", "live.plain",
       "An SSN that starts on the page and runs past its right edge. Found in the "
-      "stored string; the page reading splits it at the edge.")
+      "stored string; the page reading splits it at the edge.",
+      mistake="Nobody redacted it; the value simply runs past the visible margin.",
+      recovery="Widen the page or copy the underlying string.")
 def off_right_edge(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     page.insert_text((540, 300), f"SSN {SSN}"); save(doc, path)
@@ -121,20 +130,25 @@ def off_right_edge(path: Path) -> None:
 @leak("page.runs-off-right-edge-embedded-font", "off-page.font.straddling",
       "The same SSN running past the right edge, in an embedded font: the glyph codes "
       "are not readable as a string, and the page reading splits the value at the edge.",
-      known_gap=KnownGap("off-page.font.straddling", expect(0)))
+      known_gap=KnownGap("off-page.font.straddling", expect(0)),
+      mistake="Nobody redacted it; the value simply runs past the visible margin.",
+      recovery="Widen the page and map the glyph codes through the font's Unicode table.")
 def off_right_edge_embedded(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); font = embedded_font(page); body(page, font)
     page.insert_text((540, 300), f"SSN {SSN}", fontname=font); save(doc, path)
 
 
-@leak("page.rotated-ssn", "live.plain", "The SSN in a rotated margin note.")
+@leak("page.rotated-ssn", "live.plain", "The SSN in a rotated margin note.",
+      mistake="Nobody redacted it.", recovery="Rotate the page view and read the note.")
 def rotated(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     page.insert_text((500, 600), f"SSN {SSN}", rotate=90); save(doc, path)
 
 
 @leak("document.form-ssn", "annot-fields.plain", "The SSN as a form field's value.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)),
+      mistake="Redacting the page but not the form field's stored value.",
+      recovery="Open the form in any PDF editor and inspect the field's value.")
 def form_field(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     widget = fitz.Widget(); widget.field_name = "ssn"
@@ -155,7 +169,9 @@ def metadata_title(path: Path) -> None:
 
 
 @leak("document.xmp-title", "metadata.plain", "The SSN in the XMP metadata packet's title.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Metadata"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Metadata"),)),
+      mistake="Redacting the page but not the document's XMP metadata.",
+      recovery="File > Properties, or read the /Metadata stream's XML directly.")
 def xmp_title(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     doc.set_xml_metadata(
@@ -169,7 +185,9 @@ def xmp_title(path: Path) -> None:
 
 @leak("document.javascript", "javascript.plain",
       "The SSN inside the document's open action JavaScript.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)),
+      mistake="Leaving a debug or prefill script with the value hard-coded.",
+      recovery="Open the catalog's /OpenAction and read the /JS string.")
 def javascript(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     xref = doc.get_new_xref()
