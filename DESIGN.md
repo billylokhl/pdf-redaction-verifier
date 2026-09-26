@@ -36,7 +36,7 @@ on clean documents gets ignored, and then it may as well not exist. Most
 of the design below is about keeping `1` and `0` both honest, with `2` as
 the pressure valve for everything uncertain.
 
-## Five independent layers
+## Six independent layers
 
 No single extraction method sees everything, so six run and any one can
 raise a finding.
@@ -199,9 +199,21 @@ The resolution is that **not all matches are equally trustworthy**:
   that required fusing separate things: multi-line text, vertical column
   reconstructions, adjacent literals, page boundaries.
 
-Neither tier is silent. A real leak split across a page break still
+Neither tier is silent. A pattern match split across a page break still
 surfaces — as a `2` demanding review rather than a `1` asserting a
 breach. That is the correct confidence level for the evidence.
+
+**Value rules relax two joins, and only two.** A known value is exact and
+specific, so a split at a *structural* seam is treated as a deliberate
+split, not a coincidence: across the strings of one PDF object, and from
+the last line of one page onto the first line of the next (the natural
+reading continuation). Any other join — two lines within a page, or a
+page break reached only by also joining other lines — stays
+manual-review, because fused page text can still assemble a short value
+by accident. An earlier version fed each page's fully joined text to a
+cross-page scanner, which escalated ordinary same-page joins to hard
+findings labelled "across page boundaries"; the join is now checked at
+the seam itself.
 
 **Fences** are how the hard tier stays honest. The class regexes allow at
 most one separator character between digit groups, so inserting *two*

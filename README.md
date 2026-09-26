@@ -56,8 +56,8 @@ decomposition (fullwidth `１` → `1`), accents stripped, casefolded, then
 every character that is not a letter or digit removed. The tool then looks
 for each normalized secret as an exact substring, using one compiled
 Python `re` pattern built from all the secrets. So `123-45-6789` matches
-`123 45 6789`, `１２３４５６７８９`, or the value split by a page break —
-but not `123-45-6788`.
+`123 45 6789`, `１２３４５６７８９`, or the value continuing from one page
+onto the next — but not `123-45-6788`.
 
 **Pattern rules → regular expressions (Python `re`).** Built-in classes
 and your own regexes run on the extracted text after Unicode dashes,
@@ -75,9 +75,10 @@ cannot be real:
 
 **Two tiers.** A *hard* finding (exit `1`) needs the match to be
 genuinely present on one real surface: a single visual line, one PDF
-object, one metadata value, one OCR reading. A known value split across a
-page break, or across strings inside one PDF object, still counts as hard,
-because splitting a secret is a real way to hide it. A match that only
+object, one metadata value, one OCR reading. A known value is also hard
+when it runs from the last line of one page onto the first line of the
+next, or across strings inside one PDF object, because splitting a secret
+is a real way to hide it. A match that only
 appears after separate lines or table columns on a page are joined is a
 *manual-review* warning (exit `2`). That way a coincidental run of digits
 never hard-fails a clean document, and a possible leak is never silent.
@@ -115,9 +116,10 @@ still there: invisible on screen, but selectable and copyable.
   merge into a false number. Secrets are also matched across page
   boundaries.
 - **Tier:** a known value is hard when it appears within one line of any
-  reading or across a page break; a pattern is hard only within one line of
-  the horizontal reading. Matches that need lines joined on a page are
-  manual-review.
+  reading, or runs from the last line of one page onto the first line of
+  the next (blank pages in between are skipped). A pattern is hard only
+  within one line of the horizontal reading. Anything that needs other
+  lines joined — on one page or across a break — is manual-review.
 
 ### 2. Objects — everything the file stores
 

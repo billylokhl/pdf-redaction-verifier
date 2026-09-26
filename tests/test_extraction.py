@@ -86,3 +86,60 @@ class TestVisualOrder:
             assert "111222333" in verify.normalize_string(horizontal.split("\n")[0])
         finally:
             doc.close()
+
+
+def _scan_pages(pages: list[list[str]]) -> verify.ScanReport:
+    """Text layer only, one line of text per list entry, one list per page."""
+    doc = fitz.open()
+    for lines in pages:
+        page = doc.new_page()
+        for i, line in enumerate(lines):
+            page.insert_text((72, 100 + 30 * i), line)
+    report = verify.ScanReport()
+    matcher = verify.SecretMatcher([verify.Secret("SSN", verify.normalize_string(SSN))])
+    try:
+        verify.scan_page_layer(doc, matcher, report, layer="Text",
+                               extractor=verify.extract_visual_text,
+                               note="visual text layer", patterns=[])
+    finally:
+        doc.close()
+    return report
+
+
+class TestPageBoundaryTiers:
+    """A value split across lines is manual-review within a page and hard
+    only when it genuinely continues from one page's last line onto the
+    next page's first line."""
+
+    def test_same_page_split_is_not_escalated(self) -> None:
+        # Regression: each page's fully joined text fed a cross-page rolling
+        # scanner, so a same-page cross-line join became a hard finding
+        # mislabelled "across page boundaries" — on a one-page document.
+        report = _scan_pages([["Invoice total 123-45-", "6789 units shipped"]])
+        assert report.findings == []
+        assert any("cross-line" in w for w in report.warnings)
+
+    def test_split_between_last_and_first_line_is_hard(self) -> None:
+        report = _scan_pages([["intro", "Applicant SSN 123-45-"],
+                              ["6789 continues here", "more"]])
+        assert [f.location for f in report.findings] == [
+            "across page boundaries, pages 1–2 (visual text layer)"]
+
+    def test_split_needing_other_lines_is_manual_review(self) -> None:
+        # Spans the break only by also joining two lines of page 1.
+        report = _scan_pages([["ref 123", "45-"], ["6789 end"]])
+        assert report.findings == []
+        assert any("spans the page break" in w for w in report.warnings)
+
+    def test_split_continues_over_a_blank_page(self) -> None:
+        report = _scan_pages([["SSN 123-45-"], [], ["6789 tail"]])
+        assert [f.location for f in report.findings] == [
+            "across page boundaries, pages 1–3 (visual text layer)"]
+
+    def test_confirmed_leak_draws_no_coincidence_warning(self) -> None:
+        # Regression: the cross-line check compared only against hits from
+        # its own reading, so vertical readings called a secret found hard
+        # on one horizontal line "possibly coincidental" — twice.
+        report = _scan_pages([["SSN 123-45-6789"], ["next page"]])
+        assert [f.location for f in report.findings] == ["page 1 (visual text layer)"]
+        assert report.warnings == []

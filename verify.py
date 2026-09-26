@@ -646,6 +646,13 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────────
 # Shared per-page layer driver (Text and OCR)
 # ──────────────────────────────────────────────────────────────────────────
+def _spanning(matcher: SecretMatcher, left: str, right: str) -> list[str]:
+    """Names of secrets found in left+right but in neither part alone —
+    i.e. matches that genuinely cross the join between the two."""
+    inside = {s.name for s in matcher.search(left)} | {s.name for s in matcher.search(right)}
+    return sorted({s.name for s in matcher.search(left + right)} - inside)
+
+
 def scan_page_layer(
     doc: fitz.Document,
     matcher: SecretMatcher,
@@ -677,7 +684,19 @@ def scan_page_layer(
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
     """
-    cross_page_scanners: list[RollingScanner] = []
+    # Cross-page value matching, per reading variant. Only a match that
+    # actually spans a page break counts: a hard finding needs it split
+    # between the LAST line of one page and the FIRST line of the next
+    # (the natural continuation); anything that spans the break only by
+    # also joining other lines is manual-review, exactly like a cross-line
+    # match within a page. Feeding each page's fully joined text to a
+    # rolling scanner used to escalate an ordinary same-page cross-line
+    # join to a hard finding labelled "across page boundaries".
+    tail_len = max(matcher.max_len - 1, 0)
+    prev_last_line: dict[int, tuple[int, str]] = {}   # vi -> (page, line)
+    prev_tail: dict[int, tuple[int, str]] = {}        # vi -> (page, tail)
+    cross_page_hard: dict[str, str] = {}              # name -> location
+    cross_page_soft: dict[str, tuple[int, int]] = {}  # name -> (from, to)
     cross_page_patterns = PatternScanner(patterns, collapse_separators=True)
     layer_hard: dict[str, tuple[list[int], str]] = {}
     layer_soft: dict[str, tuple[list[int], str]] = {}
@@ -688,35 +707,57 @@ def scan_page_layer(
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warnings.append(f"{layer}: page {page_index + 1} failed ({exc})")
             continue
-        for vi, text in enumerate(variants):
-            normalized_full = normalize_string(text)
-            # High-confidence: match each visual line individually.
-            per_line_hits: set[str] = set()
+        # High-confidence: match each visual line of EVERY reading first.
+        # Collecting these per page (not per reading) keeps a secret one
+        # reading found on a single line from also drawing a "possibly
+        # coincidental" cross-line warning from another reading — which
+        # restated a confirmed leak as a maybe.
+        page_line_hits: set[str] = set()
+        for text in variants:
             for line in text.split("\n"):
                 norm_line = normalize_string(line)
                 if norm_line:
                     for secret in matcher.search(norm_line):
-                        per_line_hits.add(secret.name)
+                        page_line_hits.add(secret.name)
                         report.record(layer, secret.name,
                                       f"page {page_index + 1} ({note})")
+        cross_line_warned: set[str] = set()
+        for vi, text in enumerate(variants):
+            normalized_full = normalize_string(text)
             # Cross-line: the full normalized text fuses all lines into
             # one string.  A match that appears only here (not within
-            # any single line) may be a coincidental concatenation of
-            # adjacent tokens — the same collision class the Binary
-            # layer explicitly demotes to a manual-review warning.
+            # any single line of any reading) may be a coincidental
+            # concatenation of adjacent tokens — the same collision class
+            # the Binary layer explicitly demotes to a manual-review warning.
             for secret in matcher.search(normalized_full):
-                if secret.name not in per_line_hits:
+                if (secret.name not in page_line_hits
+                        and secret.name not in cross_line_warned):
+                    cross_line_warned.add(secret.name)
                     report.warnings.append(
                         f"{layer}: page {page_index + 1} contains a cross-line "
                         f"sequence matching secret {secret.name!r} — possibly "
                         "a coincidental concatenation of adjacent tokens; "
                         "manual review recommended"
                     )
-            # Feed every variant into its own cross-page scanner so
-            # vertical/rotated text spanning a page boundary is caught.
-            while len(cross_page_scanners) <= vi:
-                cross_page_scanners.append(RollingScanner(matcher))
-            cross_page_scanners[vi].feed(normalized_full)
+            # Cross-page, per variant, so vertical/rotated text spanning a
+            # page break is caught too. A pending line or tail carries
+            # over pages with no text (e.g. an image-only page).
+            page_no = page_index + 1
+            lines = [ln for ln in map(normalize_string, text.split("\n")) if ln]
+            if lines and vi in prev_last_line:
+                from_page, last = prev_last_line[vi]
+                for name in _spanning(matcher, last, lines[0]):
+                    cross_page_hard.setdefault(
+                        name, f"across page boundaries, pages "
+                              f"{from_page}–{page_no} ({note})")
+            if normalized_full and tail_len and vi in prev_tail:
+                from_page, tail = prev_tail[vi]
+                for name in _spanning(matcher, tail, normalized_full[:tail_len]):
+                    cross_page_soft.setdefault(name, (from_page, page_no))
+            if lines:
+                prev_last_line[vi] = (page_no, lines[-1])
+            if normalized_full and tail_len:
+                prev_tail[vi] = (page_no, normalized_full[-tail_len:])
         # Pattern rules, two tiers. Hard findings come only from single
         # visual lines of the primary variant (natural reading order) —
         # matches that need fused lines, vertical column reconstructions,
@@ -748,10 +789,17 @@ def scan_page_layer(
             break
 
     found_in_layer = {f.secret_name for f in report.findings if f.layer == layer}
-    for scanner in cross_page_scanners:
-        for secret in scanner.found:
-            if secret.name not in found_in_layer:
-                report.record(layer, secret.name, f"across page boundaries ({note})")
+    for name, where in cross_page_hard.items():
+        if name not in found_in_layer:
+            report.record(layer, name, where)
+    for name, (from_page, to_page) in cross_page_soft.items():
+        if name not in found_in_layer and name not in cross_page_hard:
+            report.warnings.append(
+                f"{layer}: pages {from_page}–{to_page}: a sequence matching "
+                f"secret {name!r} spans the page break only when several lines "
+                "are joined — possibly a coincidental concatenation; manual "
+                "review recommended"
+            )
 
     # Aggregate pattern results: one finding (or warning) per rule.
     def _pages_label(pages: list[int]) -> str:
