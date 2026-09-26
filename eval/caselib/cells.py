@@ -118,6 +118,9 @@ def _cells() -> dict[str, Cell]:
         "match.line-wrap": Cell(read, "a value wrapped across lines", tier="review"),
         "match.columns": Cell(gap, "a value wrapped inside one column of a multi-column page"),
         "match.undashed-wrap": Cell(gap, "a pattern number without dashes, wrapped"),
+        "match.pattern-split": Cell(
+            gap, "a pattern-rule value split at a page break in form boxes, a stack, rotated "
+                 "text, or with mixed separators: no reading joins it in a form the rule accepts"),
         "match.extreme-coordinates": Cell(gap, "text at coordinates PyMuPDF does not return"),
         # false alarms on clean documents
         "false-alarm.binary-value-collision": Cell(

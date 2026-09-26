@@ -18,13 +18,14 @@ import fitz
 
 from ..model import KnownGap, case
 from ..pdfkit import save
-from .page_text_labels import GAPS, LABELS
+from .page_text_labels import GAP_REQUIRES, GAPS, LABELS
 
 SSN = "123-45-6789"
 CARD = "4111 1111 1111 1111"
 NAME = "Jonathan Quincy"
 
 RULE_SETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "pattern-only": (),                     # the SSN pattern rule alone
     "ssn": (("SSN", SSN),),
     "multi": (("SSN", SSN), ("CARD", CARD), ("NAME", NAME)),
     "overlapping": (("LONG", "123-45-6789-0001"), ("SSN", SSN), ("SHORT", "45-67")),
@@ -134,7 +135,7 @@ def _build(pages: list):
 
 
 CELL = {"single-line": "live.plain", "rotated": "live.plain", "overlapping-values": "live.plain",
-        "form-boxes": "live.plain", "blank-pages": None}
+        "form-boxes": "live.plain", "several-values": "match.page-break", "blank-pages": None}
 
 # Which rules' values each layout actually contains. The short value
 # "45-67" lies inside every SSN, so it is present wherever the SSN is.
@@ -150,7 +151,7 @@ def _present(layout: str, rule: str) -> bool:
         return layout == "several-values"
     if rule == "LONG":
         return layout.startswith("overlapping")
-    return layout not in _NAME_ONLY          # SSN, SHORT
+    return layout not in _NAME_ONLY          # SSN, SHORT, the SSN pattern
 
 
 def _cell(layout: str) -> str:
@@ -164,20 +165,25 @@ def _cell(layout: str) -> str:
 for layout, (description, pages) in LAYOUTS.items():
     for rule_set, values in RULE_SETS.items():
         for pattern in ("", "pattern"):
+            if rule_set == "pattern-only" and not pattern:
+                continue
             key = (layout, rule_set, pattern)
             label = LABELS[key]
             rules = tuple({"name": n, "value": v} for n, v in values)
             if pattern:
                 rules += ({"name": "Any SSN", "class": "ssn"},)
             cell = _cell(layout)
-            leak = cell is not None and any(_present(layout, name) for name, _ in values)
+            names = [name for name, _ in values] + (["Any SSN"] if pattern else [])
+            leak = cell is not None and any(_present(layout, name) for name in names)
             gap = GAPS.get(key)
-            case(f"layout.{layout}-{rule_set}{'-pattern' if pattern else ''}",
+            slug = f"{rule_set}{'-pattern' if pattern and rule_set != 'pattern-only' else ''}"
+            case(f"layout.{layout}-{slug}",
                  truth="leak" if leak else "clean",
                  cells=(cell,) if leak else (),
-                 features=() if leak else ((cell,) if cell else ("live.plain",)),
+                 features=() if leak or cell is None else (cell,),
                  expected=label, rules=rules,
                  known_gap=KnownGap(gap[0], gap[1]) if gap else None,
+                 requires=GAP_REQUIRES.get(key, ()),
                  story=f"{description[0].upper()}{description[1:]}; rules: {rule_set}"
                        f"{' plus the SSN pattern' if pattern else ''}.",
                  grid="page-text",

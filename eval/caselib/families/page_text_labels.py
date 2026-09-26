@@ -178,7 +178,51 @@ LABELS: dict[tuple[str, str, str], Expect] = {
     ('vertical-stack', 'overlapping', 'pattern'): expect(2, warnings=(('REVIEW_CROSS_LINE', 'live'), ('REVIEW_FUSED_PATTERN', 'live'), )),
     ('vertical-stack', 'ssn', ''): expect(2, warnings=(('REVIEW_CROSS_LINE', 'live'), )),
     ('vertical-stack', 'ssn', 'pattern'): expect(2, warnings=(('REVIEW_CROSS_LINE', 'live'), ('REVIEW_FUSED_PATTERN', 'live'), )),
+    # The SSN pattern rule alone: what the rule finds without a value rule's help.
+    ('single-line', 'pattern-only', 'pattern'): expect(1, findings=(('Any SSN', 'live'), )),
+    ('split-lines', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-three-lines', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-pages-needs-earlier-lines', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-pages-needs-later-lines', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-over-blank-page', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-three-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('split-four-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('rotated', 'pattern-only', 'pattern'): expect(1, findings=(('Any SSN', 'live'), )),
+    ('rotated-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('rotated270-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('form-boxes', 'pattern-only', 'pattern'): expect(1, findings=(('Any SSN', 'live'), )),
+    ('form-boxes-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('vertical-stack', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('vertical-stack-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('table-rows', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('table-rows-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('several-values', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('overlapping-values', 'pattern-only', 'pattern'): expect(1, findings=(('Any SSN', 'live'), )),
+    ('overlapping-split-pages', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('overlapping-split-short-tail', 'pattern-only', 'pattern'): expect(1, findings=(('Any SSN', 'live'), )),
+    ('blank-pages', 'pattern-only', 'pattern'): expect(0),
+    ('repeated-line-wraps', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('two-page-breaks', 'pattern-only', 'pattern'): expect(2, warnings=(('REVIEW_FUSED_PATTERN', 'live'), )),
+    ('name-split-pages', 'pattern-only', 'pattern'): expect(0),
+    ('name-split-three-pages', 'pattern-only', 'pattern'): expect(0),
 }
 
-# Members today's tool gets wrong: key -> (cell, today). None so far.
-GAPS: dict[tuple[str, str, str], tuple[str, Expect]] = {}
+# Members today's tool gets wrong: key -> (cell, today). A pattern-rule SSN
+# split at a page break inside form boxes, a vertical stack or rotated text,
+# or with mixed separators ("ref 123" / "45-" / "6789"), is joined by no
+# reading in a form the SSN pattern accepts: silent, not even a review.
+GAPS: dict[tuple[str, str, str], tuple[str, Expect]] = {
+    ('split-pages-needs-earlier-lines', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+    ('split-four-pages', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+    ('rotated-split-pages', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+    ('rotated270-split-pages', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+    ('form-boxes-split-pages', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+    ('vertical-stack-split-pages', 'pattern-only', 'pattern'): ('match.pattern-split', expect(0)),
+}
+
+# The 90°-rotated split is caught by OCR on macOS but not by the text
+# layer: judge it only where OCR is absent, where the gap shows.
+GAP_REQUIRES: dict[tuple[str, str, str], tuple[str, ...]] = {
+    ('rotated-split-pages', 'pattern-only', 'pattern'): ('no-ocr',),
+}

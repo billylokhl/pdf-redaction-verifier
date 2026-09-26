@@ -40,7 +40,9 @@ WRITERS = frozenset({
     "file",        # a committed file (real tool output), used as is
 })
 ORIGINS = frozenset({"generated", "redactor"})
-REQUIREMENTS = frozenset({"ocr", "qpdf", "exiftool"})
+# "no-ocr": judged only where OCR is absent — for a gap in the text layer
+# that OCR happens to cover on macOS.
+REQUIREMENTS = frozenset({"ocr", "qpdf", "exiftool", "no-ocr"})
 STORAGE = frozenset({"live", "orphaned", "unreferenced", "superseded"})
 
 _ID_RE = re.compile(r"^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$")

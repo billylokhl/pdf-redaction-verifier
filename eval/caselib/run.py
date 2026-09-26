@@ -22,8 +22,7 @@ _ENVIRONMENT = {"OCR_UNAVAILABLE": "ocr", "TOOL_MISSING": None}
 def available() -> frozenset[str]:
     import verify
     have = {name for name in ("qpdf", "exiftool") if shutil.which(name)}
-    if verify._OCR_IMPORTS_OK:
-        have.add("ocr")
+    have.add("ocr" if verify._OCR_IMPORTS_OK else "no-ocr")
     return frozenset(have)
 
 
