@@ -1,39 +1,34 @@
 version: 2
+# Any dependency bump can change what the verifier reads or how a case PDF
+# is written: review it with the full test suite (the case library's build
+# lock flags a PyMuPDF output change).
 updates:
-  # Python dependencies
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
-    grouped:
-      patterns:
-        - "*"
+    groups:
+      python:
+        patterns: ["*"]
     commit-message:
       prefix: "chore"
       include: "scope"
-    pull-request-branch-name:
-      separator: "/"
-    reviewers:
+    assignees:
       - billylokhl
     labels:
       - dependencies
-    body: |
-      Any dependency bump in pyproject.toml needs the full test suite to verify no output changes.
 
-  # GitHub Actions
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    grouped:
-      patterns:
-        - "*"
+    groups:
+      actions:
+        patterns: ["*"]
     commit-message:
       prefix: "ci"
       include: "scope"
-    pull-request-branch-name:
-      separator: "/"
-    reviewers:
+    assignees:
       - billylokhl
     labels:
       - ci

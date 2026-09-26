@@ -394,14 +394,11 @@ pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
 Every regression test pins a previously confirmed bug; fixtures are
 generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
-absent. Code is checked with ruff (style/correctness), mypy (types on the
-case library), and coverage is reported on each test run. Three suites go further and test robustness directly:
+absent. CI also runs ruff (correctness) and mypy (types, on the case
+library), and reports coverage on the Linux Python 3.12 job; the commands
+above run the same checks locally. Two suites go further and test
+robustness directly:
 
-- **`test_corpus.py`** scans the same planted secret across the on-disk
-  layouts real producers emit — classic xref, object streams + xref
-  stream (the PDF 1.5+ default of Acrobat/Ghostscript/Chrome), incremental
-  updates, garbage-collected rewrites — asserting a leak is found and a
-  clean file is never falsely accused of orphaned content in any of them.
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
   correct verdict and the story of how its redaction failed — real

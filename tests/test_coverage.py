@@ -625,7 +625,9 @@ class TestContentSyntax:
         # Measure relative performance (linearity) rather than absolute wall time,
         # because coverage tracing slows all code proportionally. Scale the timeout
         # based on whether tracing is active (coverage instrumentation).
-        budget_multiplier = 20 if sys.gettrace() is not None else 1
+        # Coverage tracing measured at ~2.5x; 5x leaves headroom without
+        # hiding a real slowdown (the old quadratic scan took minutes).
+        budget_multiplier = 5 if sys.gettrace() is not None else 1
         start = time.perf_counter()
         verify._scan_content(body)
         elapsed = time.perf_counter() - start
