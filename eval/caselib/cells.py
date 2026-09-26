@@ -131,34 +131,8 @@ def _cells() -> dict[str, Cell]:
 CELLS: dict[str, Cell] = _cells()
 
 # Gap and false-alarm cells with no case yet. May only shrink (0b-2).
-# The binary collision reproduced only with macOS Arial's font program.
-UNDOCUMENTED_GAPS: frozenset[str] = frozenset({
-    "live.pixels.under-box",
-    "off-page.font.no-unicode",
-    "off-page.pixels",
-    "oc-off.font",
-    "annot-appearance.font",
-    "annot-appearance.pixels",
-    "unused-resource.font",
-    "unused-resource.pixels",
-    "orphaned.font.ordinary-codes",
-    "orphaned.pixels.small",
-    "metadata.pixels",
-    "leftover-xmp.pixels",
-    "thumbnail.pixels",
-    "attachment.container.text-encoded",
-    "embedded-other.plain.pattern-rules",
-    "embedded-other.pixels",
-    "embedded-other.container",
-    "javascript.plain.pattern-rules-in-streams",
-    "private-data.plain.pattern-rules",
-    "unindexed.font",
-    "unindexed.pixels",
-    "unindexed.container",
-    "match.columns",
-    "match.extreme-coordinates",
-    "false-alarm.binary-value-collision",
-})
+# All pinned in eval/caselib/families/gaps.py (docs/REDESIGN.md K12-K35).
+UNDOCUMENTED_GAPS: frozenset[str] = frozenset()
 
 
 # Claimed (read/flagged) cells with no non-fitz caught leak case yet — a

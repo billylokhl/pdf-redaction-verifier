@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 
 import fitz
@@ -33,12 +34,19 @@ REAL_DIR = REPO_ROOT / "eval" / "caselib" / "real"
 SIZE_CAP = 100_000
 
 
+RUN_PERF = os.environ.get("RUN_PERF") == "1"
+
+
 def _params():
     for case_id, case in sorted(REGISTRY.items()):
         missing = case.requires - HAVE
         marks = [pytest.mark.skip(reason=f"needs {', '.join(sorted(missing))}")] if missing else []
         if case.grid:
             marks.append(pytest.mark.grid)     # CI runs grids on Linux only
+        if case.perf:
+            marks.append(pytest.mark.perf)     # large files: opt in with RUN_PERF=1
+            if not RUN_PERF:
+                marks.append(pytest.mark.skip(reason="perf case; set RUN_PERF=1 to run"))
         yield pytest.param(case, id=case_id, marks=marks)
 
 

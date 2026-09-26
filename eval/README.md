@@ -260,6 +260,10 @@ zlib versions). After changing a case, regenerate it:
 PYTHONPATH=eval:. python -m caselib.lock
 ```
 
+Perf cases (below) are excluded (`caselib.lock.lockable`): they are large
+and slow on purpose, and nothing reviews their bytes line by line the way
+it does an ordinary case's.
+
 ## The scorecard (`scorecard/`)
 
 The scorecard (docs/REDESIGN.md §5, Phase 0c) is the case library run a
@@ -425,3 +429,29 @@ way as `--manifest`) for exactly this reason.
   (`.github/workflows/scorecard-weekly.yml`).
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
+
+## Performance files (`marked perf=True`)
+
+Three large, generated files representative of real workloads
+(`families/perf.py`), for measuring runtime rather than correctness:
+
+- `file.perf-scanned-300` — a ~300-page scanned-style document (every page
+  an image of text), for the OCR layer's per-page cost.
+- `file.perf-text-500` — a ~500-page text document in an embedded font
+  (Word-export-like), for the Text layer's per-page cost.
+- `file.perf-image-heavy` — an image-heavy ~50 MB file (a handful of
+  large, incompressible images), for throughput and memory on a
+  big-but-few-objects file.
+
+They are excluded from the default test run — `pytest` skips anything
+marked `perf` unless `RUN_PERF=1` is set:
+
+```bash
+RUN_PERF=1 pytest tests/test_case_library.py -k perf -v
+```
+
+or, outside pytest, to keep the PDF and time the scan directly:
+
+```bash
+PYTHONPATH=eval:. python -m caselib.run /tmp/perf file.perf-scanned-300
+```

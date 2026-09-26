@@ -146,3 +146,6 @@ def leaky_pdf(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "grid: a member of a parameterised case-library grid (CI runs these on Linux)")
+    config.addinivalue_line(
+        "markers",
+        "perf: a large performance file (eval/README.md); skipped unless RUN_PERF=1")
