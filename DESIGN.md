@@ -22,7 +22,7 @@ Everything else follows from this. Three exit codes:
 | --- | --- |
 | `0` | Certified clean — every layer ran, nothing found |
 | `1` | A secret or pattern was found |
-| `2` | Cannot certify — an error, a layer that could not run, or a match needing human review |
+| `2` | Cannot certify — an error, a layer that could not run, content found but not readable, or a match needing human review |
 
 **A `2` is not a pass.** If `qpdf` is missing, if the OCR bridge fails to
 import, if qpdf exits non-zero and may have truncated its output, if a
@@ -30,6 +30,20 @@ match is plausible but might be coincidence — the answer is `2`, never
 `0`. A scanner that silently downgrades coverage and still says "clean"
 is worse than no scanner, because it converts an unknown into a false
 assurance.
+
+The rule has two halves, and the second took longer to see. A layer that
+cannot *run* is obvious. A layer that runs, *finds* content, and cannot
+*read* it is not — a leftover content stream in glyph codes, a leftover
+image, a zip attachment — and for a long time the tool passed those
+silently. Several rounds of adversarial review kept finding new instances
+of that one flaw, because coverage had grown from what each extraction
+method happened to decode rather than from a model of where data can be
+stored. [COVERAGE.md](COVERAGE.md) is that model: the known places a secret
+can be stored, crossed with how it can be encoded, each cell read (✓),
+flagged as unreadable (⚑, exit `2`), or an admitted gap (✗). It is a
+known map, not a proof of completeness — review still finds new rows — so
+a new place is added as ✗ first. A flag is only ever removed by learning
+to read the cell.
 
 The corollary is that `1` must be trustworthy too. A tool that cries wolf
 on clean documents gets ignored, and then it may as well not exist. Most
@@ -328,24 +342,19 @@ the gap is stated rather than implied away.
 - **Pattern rules cannot span pages as hard findings** — they surface as
   review warnings. Value rules are hard only at a page seam (see the
   two-tier model).
-- **Silent misses — places no layer reads:** an object rewritten under the
-  same number by an incremental update (the earlier version stays in the
-  file; objects the update merely stopped referencing *are* found, as
-  ORPHANED); orphaned content in a font whose codes are not plain
-  characters (Identity-H, custom encodings, Type3); orphaned attachments
-  and orphaned XMP packets; attachments in compressed containers (zip,
-  Office, nested PDF); pixels under a box drawn over a scanned image; a
-  leftover content stream dominated by an inline image; text outside the
-  page area when the Objects layer cannot decode it; a value split across
-  a page break with a header, footer or page number between its halves,
-  or where the page's last line is not its reading-order last line (two
-  columns, 270° rotation); a value wrapped inside one column of a
-  multi-column page; and pattern-class numbers written without dashes
-  and wrapped at a line or page break.
-- **Most of those silent misses share one cause.** The tool reads the
-  content, cannot decode it, and says nothing. Fail-closed is enforced
-  when a layer cannot *run*, not yet when it runs and cannot *read* what
-  it found — the next design step.
+- **Remaining silent misses** are the ✗ cells in COVERAGE.md: pixels the
+  tool does not OCR (under a drawn box, off the page, thumbnails, other
+  embedded files); font-coded text or images in switched-off layers,
+  hidden annotations and never-drawn resources; unindexed bytes; leftover
+  text in fonts that map ordinary-looking codes to other glyphs;
+  text-encoded containers; pattern rules on non-attachment embedded files
+  and on scripts stored as streams on actions; and the matching limits —
+  page-break splits with something between the halves, multi-column
+  wraps, dash-less pattern wraps, extreme coordinates.
+- **Flags cost certainty.** Leftover images, leftover text in non-plain
+  font codes, and attachments that are not text are flagged (exit `2`),
+  so a clean document that merely contains them cannot certify as `0`
+  until the tool learns to read them.
 - **Some false positives remain.** A short value (a 5-digit ZIP) can be
   assembled as a hard finding at a page seam — a page number followed by
   the next page's first line — and decompressed font tables in the

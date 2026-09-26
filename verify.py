@@ -18,7 +18,11 @@ layers:
                 for high-confidence findings, with image/font/binary
                 bodies excluded by key and by content so their bytes are
                 never parsed as text. A finding names its carrier and
-                whether the document still references it (ORPHANED).
+                whether the document still references it (ORPHANED);
+                objects an incremental update rewrote are read from each
+                earlier revision. Leftover content it finds but cannot
+                read (font-coded text, images, containers) is flagged
+                for manual review rather than passed silently.
   5. Binary   — qpdf QDF rewrite of the reachable objects, streamed with
                 bounded memory: a second parser's view (damaged-xref
                 recovery, decompressed attachments). Orphaned objects and
@@ -63,6 +67,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -71,6 +76,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterator, NoReturn, Sequence
@@ -569,30 +575,45 @@ def _join_cluster(
 
 # How many of extract_visual_text's readings are genuine reading orders
 # (hard-finding eligible); the rest are reconstructions (manual review).
-TEXT_GENUINE_READINGS = 3
+TEXT_GENUINE_READINGS = 4
 
 
 def extract_visual_text(page: fitz.Page) -> list[str]:
     """Reconstruct page text in visual reading orders.
 
-    Returns five readings, or [] for a page with no glyphs:
+    Returns six readings, or [] for a page with no glyphs:
 
-    0. horizontal — horizontally written text, lines top to bottom;
-    1-2. rotated, top-to-bottom and bottom-to-top — only text written
+    0. horizontal — visible, horizontally written text, lines top to bottom;
+    1-2. rotated, top-to-bottom and bottom-to-top — visible text written
        vertically (a rotated matrix), read along its own direction;
-    3-4. every glyph read in vertical columns, top-to-bottom and
+    3. off-page — text placed outside the visible area (crop or media box),
+       read horizontally on its own;
+    4-5. every visible glyph read in vertical columns, top-to-bottom and
        bottom-to-top.
 
-    Readings 0-2 are genuine: each reads text in the direction it was
-    written. Readings 3-4 are reconstructions: a column of an ordinary
-    horizontal page stacks one glyph from each of many lines (a ledger's
-    last digits, a numbered list's numbers), so they can assemble a value
-    by accident — yet they are also the only reading of a value written
-    one character per line. Callers treat them as manual-review only.
+    Readings 0-3 are genuine: each reads text the way it was written.
+    Off-page text is kept apart from the visible readings: merged into
+    them, a slug or Bates stamp below the page became the page's "last
+    line" and hid a value split across the page break. Readings 4-5 are
+    reconstructions: a column of an ordinary horizontal page stacks one
+    glyph from each of many lines (a ledger's last digits, a numbered
+    list's numbers), so they can assemble a value by accident — yet they
+    are also the only reading of a value written one character per line.
+    Callers treat them as manual-review only.
     """
-    flat: list[tuple[float, float, float, float, str]] = []
-    rotated: list[tuple[float, float, float, float, str]] = []
-    raw: dict[str, Any] = page.get_text("rawdict")
+    Glyph = tuple[float, float, float, float, str]
+    flat: list[Glyph] = []
+    rotated: list[Glyph] = []
+    off_page: list[Glyph] = []
+    # The visible area in the (unrotated) coordinates glyphs are reported
+    # in, computed once per page: a per-glyph Point * Matrix doubled the
+    # Text layer's run time.
+    vx0, vy0, vx1, vy1 = page.rect * page.derotation_matrix
+    # No clipping to the page: text outside the visible area is invisible
+    # to a reader but still in the file, and still a leak.
+    raw: dict[str, Any] = page.get_text(
+        "rawdict", clip=fitz.INFINITE_RECT(),
+        flags=fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_MEDIABOX_CLIP)
     for block in raw.get("blocks", []):
         for line in block.get("lines", []):
             # dir is the writing direction: (1, 0) for ordinary text,
@@ -604,13 +625,19 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
                     if not c or c.isspace():
                         continue
                     x0, y0, x1, y1 = char["bbox"]
-                    glyph = ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0, c)
-                    (rotated if written_vertically else flat).append(glyph)
+                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                    glyph = (cx, cy, x1 - x0, y1 - y0, c)
+                    if not (vx0 <= cx <= vx1 and vy0 <= cy <= vy1):
+                        off_page.append(glyph)
+                    elif written_vertically:
+                        rotated.append(glyph)
+                    else:
+                        flat.append(glyph)
 
-    if not (flat or rotated):
+    if not (flat or rotated or off_page):
         return []
 
-    def columns(glyphs: list[tuple[float, float, float, float, str]]) -> tuple[str, str]:
+    def columns(glyphs: list[Glyph]) -> tuple[str, str]:
         if not glyphs:
             return "", ""
         down = _reconstruct(glyphs, cluster_axis=0)
@@ -618,8 +645,9 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
 
     horizontal = _reconstruct(flat, cluster_axis=1) if flat else ""
     rotated_down, rotated_up = columns(rotated)
+    outside = _reconstruct(off_page, cluster_axis=1) if off_page else ""
     all_down, all_up = columns(flat + rotated)
-    return [horizontal, rotated_down, rotated_up, all_down, all_up]
+    return [horizontal, rotated_down, rotated_up, outside, all_down, all_up]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1081,6 +1109,12 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                    f"{MAX_ATTACHMENT_BYTES} were scanned")
             content = content[:MAX_ATTACHMENT_BYTES]
         if content:
+            if not _is_readable_text(content):
+                # A zip, Office file, image or nested PDF is decoded as
+                # garbage below; say so rather than pass it as scanned.
+                yield (f"Hidden: {where} is not text (e.g. zip, Office, "
+                       "image or PDF) — its contents are NOT scanned; manual "
+                       "review recommended")
             yield HiddenItem(
                 f"{where} (content)",
                 content.decode("utf-8", errors="replace"),
@@ -1124,6 +1158,11 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                            f"{len(payload)} bytes; only the first "
                            f"{MAX_ATTACHMENT_BYTES} were scanned")
                     payload = payload[:MAX_ATTACHMENT_BYTES]
+                if not _is_readable_text(payload):
+                    yield (f"Hidden: file attached to annotation {xref} on page "
+                           f"{human_page} is not text (e.g. zip, Office, image or "
+                           "PDF) — its contents are NOT scanned; manual review "
+                           "recommended")
                 yield HiddenItem(
                     f"file attached to annotation {xref} on page {human_page}",
                     payload.decode("utf-8", errors="replace"),
@@ -1410,6 +1449,34 @@ def _strip_pdf_strings(source: str) -> str:
     return "".join(out)
 
 
+_PDF_DATE_RE = re.compile(r"D:\d{4}(?:\d{2}){0,5}(?:[Zz+\-](?:\d{2}'?\d{0,2}'?)?)?$")
+
+
+def _decode_pdf_string(token: str) -> str | None:
+    """Decode one `(literal)` or `<hex>` token to text: escapes resolved,
+    UTF-16BE when byte-order-marked, otherwise latin-1. None when a hex
+    token is malformed."""
+    if token.startswith("("):
+        decoded = _unescape_pdf_literal(token[1:-1])
+        # A literal may itself hold UTF-16BE text (BOM-prefixed).
+        if decoded.startswith("\xfe\xff"):
+            decoded = (
+                decoded[2:].encode("latin-1", errors="replace")
+                .decode("utf-16-be", errors="replace")
+            )
+        return decoded
+    hex_chars = re.sub(r"\s+", "", token[1:-1])
+    if len(hex_chars) % 2:
+        hex_chars += "0"
+    try:
+        data = bytes.fromhex(hex_chars)
+    except ValueError:
+        return None
+    if data[:2] == b"\xfe\xff":
+        return data[2:].decode("utf-16-be", errors="replace")
+    return data.decode("latin-1")
+
+
 def _feed_pdf_strings(
     buf: str,
     scanner: RollingScanner,
@@ -1430,28 +1497,15 @@ def _feed_pdf_strings(
     """
     spans, truncated = _pdf_string_spans(buf)
     for start, end in spans:
-        token = buf[start:end]
-        if token.startswith("("):
-            decoded = _unescape_pdf_literal(token[1:-1])
-            # A literal may itself hold UTF-16BE text (BOM-prefixed).
-            if decoded.startswith("\xfe\xff"):
-                decoded = (
-                    decoded[2:].encode("latin-1", errors="replace")
-                    .decode("utf-16-be", errors="replace")
-                )
-        else:
-            hex_chars = re.sub(r"\s+", "", token[1:-1])
-            if len(hex_chars) % 2:
-                hex_chars += "0"
-            try:
-                data = bytes.fromhex(hex_chars)
-            except ValueError:
-                continue
-            if data[:2] == b"\xfe\xff":
-                decoded = data[2:].decode("utf-16-be", errors="replace")
-            else:
-                decoded = data.decode("latin-1")
+        decoded = _decode_pdf_string(buf[start:end])
+        if decoded is None:
+            continue
         scanner.feed(normalize_string(decoded))
+        if _PDF_DATE_RE.match(decoded):
+            # A PDF timestamp (D:YYYYMMDDHHmmSS±HH'mm'): machine-written,
+            # never user data, and its digit run passes the card checksum
+            # about one time in ten — every incremental save adds another.
+            continue
         hard_patterns.feed(decoded + "\n\n")
         soft_patterns.feed(decoded)
     return truncated
@@ -1564,7 +1618,7 @@ _XREF_REF_RE = re.compile(r"\b(\d+)\s+\d+\s+R\b")
 
 
 def _reachable_from_sources(
-    trailer: str, sources: dict[int, str]
+    trailer: str, sources: dict[int, str], size: int | None = None
 ) -> tuple[set[int], bool]:
     """Objects the document graph references, walked from the trailer.
 
@@ -1599,11 +1653,191 @@ def _reachable_from_sources(
         seen.add(xref)
         source = sources.get(xref)
         if source is None:
-            trusted = False          # a referenced object we could not read
+            # A reference past the end of the table is to an object that
+            # does not exist, which the PDF spec reads as null — common in
+            # real files and no reason to distrust the walk. Only an
+            # existing object we could not read leaves the set incomplete.
+            if size is None or xref < size:
+                trusted = False
             continue
         pending.extend(
             int(m) for m in _XREF_REF_RE.findall(_strip_pdf_strings(source)))
     return seen, trusted
+
+
+# A text-showing operator in a content stream: Tj, TJ, or a string followed
+# by ' or " (move to next line and show). Operators are delimited by
+# whitespace or by the end of the string or array before them.
+_TEXT_SHOW_RE = re.compile(r"(?<![A-Za-z])T[jJ](?![A-Za-z])|[)>]\s*['\"]")
+# Share of a string's characters that must be ordinary text for it to
+# count as readable; glyph-ID codes (Identity-H) are half NULs.
+_READABLE_CODE_FLOOR = 0.8
+# WinAnsi's printable punctuation in 0x80-0x9F (smart quotes, bullets,
+# dashes) decodes to C1 controls under latin-1; judge it as cp1252 does.
+_CP1252_C1 = {i: bytes([i]).decode("cp1252", errors="ignore") or "\x00"
+              for i in range(0x80, 0xA0)}
+
+
+def _is_plain_code(c: str) -> bool:
+    c = _CP1252_C1.get(ord(c), c)
+    return c.isprintable() and ord(c) < 0x250
+
+
+def _shows_unreadable_text(body_text: str) -> bool:
+    """Whether a content stream draws any text whose codes are not plain
+    characters — so decoding its strings as latin-1 cannot find a secret.
+
+    Text in a CID/Identity-H font is stored as glyph numbers, a custom
+    /Differences or Type3 font as arbitrary codes: the strings are there,
+    but without the font they are not the characters on the page. Judged
+    per string, because one run of glyph codes among ordinary text is
+    exactly how a secret in a second font hides.
+    """
+    if not _TEXT_SHOW_RE.search(body_text):
+        return False
+    for a, b in _pdf_string_spans(body_text)[0]:
+        decoded = _decode_pdf_string(body_text[a:b]) or ""
+        if len(decoded) >= 2 and (
+                sum(map(_is_plain_code, decoded)) / len(decoded) < _READABLE_CODE_FLOOR):
+            return True
+    return False
+
+
+# File signatures of containers whose contents are not searchable as text
+# even when their bytes are mostly printable (a small PDF is).
+_CONTAINER_MAGIC = (b"%PDF-", b"PK\x03\x04", b"\x1f\x8b", b"\xd0\xcf\x11\xe0",
+                    b"Rar!", b"7z\xbc\xaf")
+
+
+def _is_container(data: bytes) -> bool:
+    return data.lstrip()[:8].startswith(_CONTAINER_MAGIC)
+
+
+def _is_readable_text(data: bytes) -> bool:
+    """Whether bytes are text this tool can search: not a container (PDF,
+    zip, gzip, Office, rar, 7z), and valid UTF-8 (any language), UTF-16
+    with a byte-order mark, or mostly printable."""
+    if _is_container(data):
+        return False
+    sample = data[:65536]
+    if sample[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return True
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(sample) - 3:     # cut mid-character at 64 KB
+            return True
+    return not _looks_binary(data)
+
+
+def _read_stream_capped(doc: fitz.Document, xref: int, cap: int) -> tuple[bytes, bool]:
+    """A stream body decompressed to at most *cap* bytes, and whether it was
+    cut. Flate streams are inflated incrementally, so a compression bomb
+    costs *cap* bytes, not its full size; other filters decode in full."""
+    if _stream_key(doc, xref, "Filter") == ("name", "/FlateDecode") \
+            and _stream_key(doc, xref, "DecodeParms")[0] == "null":
+        inflater = zlib.decompressobj()
+        data = inflater.decompress(doc.xref_stream_raw(xref), cap)
+        return data, bool(inflater.unconsumed_tail)
+    data = doc.xref_stream(xref)
+    return data[:cap], len(data) > cap
+
+
+# Orphaned stream types whose bodies are plain text rather than PDF string
+# syntax, scanned as raw text: {/Type: label}.
+_ORPHAN_PAYLOAD_TYPES: dict[str, str] = {
+    "/EmbeddedFile": "attachment",
+    "/Metadata": "XMP metadata",
+}
+# Content-stream structure: a text object (BT ... ET) with a font set and
+# a show operator, each a whitespace-delimited operator. Random bytes
+# contain "BT" and "Tj" by chance; they almost never contain this.
+_TEXT_OBJECT_RE = re.compile(
+    r"(?:^|\s)BT\s(?:(?!\sET\s).){0,4000}?\sTf\s(?:(?!\sET\s).){0,4000}?"
+    r"(?:[\s)>\]](?:Tj|TJ)|[)>]\s*['\"])(?:(?!\sET\s).){0,4000}?\sET(?:\s|$)",
+    re.S)
+# Any common content operator, for telling page content from a text payload.
+_CONTENT_OP_RE = re.compile(r"(?:^|\s)(?:q|Q|cm|re|Do|BT|ET|Tf|Td|Tm|m|l|f|S|W|n)(?=\s)")
+# An inline image's dictionary, whose /W and /H decide whether it could
+# hold legible text.
+_INLINE_IMAGE_RE = re.compile(r"(?:^|\s)BI\s(.{0,400}?)\sID\s", re.S)
+_DIM_RE = re.compile(r"/(W|Width|H|Height)\s+(\d+)")
+
+# Smallest leftover image worth flagging: a single line of text at a
+# readable size is ~8 px tall, so strips that small are flagged too; below
+# that, and anything under 32 px long, only masks and icons remain.
+_MIN_TEXT_IMAGE_SIDE = 8
+_MIN_TEXT_IMAGE_LENGTH = 32
+
+
+def _text_sized(width: int, height: int) -> bool:
+    return (min(width, height) >= _MIN_TEXT_IMAGE_SIDE
+            and max(width, height) >= _MIN_TEXT_IMAGE_LENGTH)
+
+
+def _is_text_sized_image(doc: fitz.Document, xref: int) -> bool:
+    if _stream_key(doc, xref, "Subtype") != ("name", "/Image"):
+        return False
+    try:
+        width = int(doc.xref_get_key(xref, "Width")[1])
+        height = int(doc.xref_get_key(xref, "Height")[1])
+    except (ValueError, TypeError, RuntimeError):
+        return True        # unknown size: flag rather than assume harmless
+    return _text_sized(width, height)
+
+
+def _has_text_sized_inline_image(body_text: str) -> bool:
+    for match in _INLINE_IMAGE_RE.finditer(body_text):
+        dims = {k[0]: int(v) for k, v in _DIM_RE.findall(match.group(1))}
+        if "W" not in dims or "H" not in dims or _text_sized(dims["W"], dims["H"]):
+            return True
+    return False
+
+
+def _is_content_stream(body_text: str) -> bool:
+    """Whether a stream is page content that draws text."""
+    return bool(_TEXT_OBJECT_RE.search(body_text))
+
+
+def _object_list(xrefs: list[int], limit: int = 8) -> str:
+    shown = ", ".join(map(str, xrefs[:limit]))
+    more = f" (+{len(xrefs) - limit} more)" if len(xrefs) > limit else ""
+    return f"object{'s' if len(xrefs) > 1 else ''} {shown}{more}"
+
+
+def _scan_orphaned_payload(
+    body: bytes, label: str, where: str, *, hard: bool,
+    matcher: SecretMatcher, patterns: Sequence[PatternRule], report: ScanReport,
+) -> None:
+    """Search leftover text that is not PDF string syntax as raw text.
+
+    A known value in XMP is held to the Metadata layer's tier (hard); every
+    other hit — any pattern match, and anything in an attachment or other
+    raw text — is manual review: IDs and dates in such text assemble digit
+    runs that pattern classes accept by coincidence.
+    """
+    if body[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = body.decode("utf-16", errors="replace")
+    else:
+        text = body.decode("utf-8", errors="replace")
+    for secret in matcher.search(normalize_string(text)):
+        _report_payload_hit(report, where, secret.name, "", hard=hard)
+    for name, sample in match_patterns(text, patterns).items():
+        _report_payload_hit(report, where, name, sample, hard=False)
+
+
+def _report_payload_hit(report: ScanReport, where: str, name: str,
+                        sample: str, *, hard: bool) -> None:
+    if hard:
+        report.record("Objects", name, where, sample)
+        return
+    shown = f" (sample {mask(sample)})" if sample else ""
+    report.warnings.append(
+        f"Objects: {where} contains a sequence matching {name!r}{shown}"
+        " — this content is a run of arbitrary text, so the match may be "
+        "a coincidental fusion; manual review recommended"
+    )
 
 
 def scan_pdf_objects(
@@ -1649,73 +1883,425 @@ def scan_pdf_objects(
         trailer = doc.pdf_trailer()
     except Exception:
         trailer = ""            # reachability unknown -> no ORPHANED claims
-    reachable, trusted = _reachable_from_sources(trailer, sources)
+    reachable, trusted = _reachable_from_sources(trailer, sources, xref_count)
 
-    truncated_objects = 0
+    tally = _ObjectTally(unreadable=unreadable)
     for xref, source in sources.items():
-        texts = [source]
-        try:
-            is_stream = doc.xref_is_stream(xref)
-        except Exception:
-            unreadable += 1
-            is_stream = False
-        if is_stream and not _is_opaque_stream(doc, xref):
-            try:
-                body = doc.xref_stream(xref)
-            except Exception:
-                unreadable += 1
-            else:
-                # The content sniff is the general backstop to the key
-                # pre-filter: a marker-less binary body is kept out of the
-                # tokenizer here rather than tokenized into false findings.
-                if not _looks_binary(body):
-                    texts.append(body.decode("latin-1"))
-
-        literals = RollingScanner(matcher)
-        hard_patterns = PatternScanner(patterns)
-        soft_patterns = PatternScanner(patterns, collapse_separators=True)
-        truncated = False
-        for text in texts:
-            # Fence so one object's tail cannot fuse with the next.
-            if _feed_pdf_strings(text + "\n\n", literals, hard_patterns, soft_patterns):
-                truncated = True
-        hard_patterns.flush()
-        soft_patterns.flush()
-        if truncated:
-            truncated_objects += 1
-
-        if not (literals.found or hard_patterns.hits or soft_patterns.hits):
-            continue
-
-        # An object nothing references is content a reader never sees but
-        # a parser still can — DESIGN.md's founding example of a redaction
-        # that drew a box without removing the text. The label is applied
-        # only when the reachability walk is trustworthy; otherwise the
-        # plain "object N" is used rather than accusing content falsely.
-        orphaned = trusted and xref not in reachable
+        # The ORPHANED label is applied only when the reachability walk is
+        # trustworthy; otherwise the plain "object N" is used rather than
+        # accusing content falsely.
+        # Leftover checks run on every object the walk did not reach; only
+        # the ORPHANED label waits for a trustworthy walk. With no walk at
+        # all (unreadable trailer), nothing can be called leftover.
+        leftover = bool(reachable) and xref not in reachable
+        orphaned = leftover and trusted
         where = f"{'ORPHANED object' if orphaned else 'object'} {xref}"
-        for secret in sorted(literals.found, key=lambda s: s.name):
-            report.record("Objects", secret.name, where)
-        for name, sample in hard_patterns.hits.items():
-            report.record("Objects", name, where, sample)
-        for name, sample in soft_patterns.hits.items():
-            if name in hard_patterns.hits:
-                continue
+        _scan_object(doc, xref, source, where, leftover=leftover,
+                     matcher=matcher, patterns=patterns, report=report, tally=tally)
+    tally.report_to(report, leftover_kind="ORPHANED")
+
+
+@dataclass
+class _ObjectTally:
+    """What the Objects layer could not read, aggregated for one warning
+    each instead of one per object."""
+
+    unreadable: int = 0
+    truncated: int = 0
+    undecodable: list[int] = field(default_factory=list)
+    unreadable_payloads: list[str] = field(default_factory=list)
+    images: list[int] = field(default_factory=list)
+
+    def report_to(self, report: ScanReport, *, leftover_kind: str,
+                  scope: str = "") -> None:
+        # Leftover content this layer found but cannot read is reported
+        # rather than skipped: a leftover is exactly where a redactor's
+        # original lives, so "could not read it" must not pass as clean.
+        prefix = f"Objects: {scope}" if scope else "Objects: "
+        if self.undecodable:
             report.warnings.append(
-                f"Objects: {where}: adjacent literals fuse into a sequence "
-                f"matching pattern rule {name!r} (sample {mask(sample)}) — "
-                "possibly a coincidental concatenation; manual review recommended"
+                f"{prefix}{len(self.undecodable)} {leftover_kind} object(s) draw "
+                "text this tool cannot decode (font codes that are not plain "
+                "characters, or text mixed with binary data): "
+                f"{_object_list(self.undecodable)} — NOT scanned; manual "
+                "review recommended"
+            )
+        if self.images:
+            report.warnings.append(
+                f"{prefix}{len(self.images)} {leftover_kind} image(s) this tool "
+                f"does not read (stored images are not OCR'd): "
+                f"{_object_list(self.images)} — NOT scanned; manual review "
+                "recommended"
+            )
+        if self.unreadable_payloads:
+            report.warnings.append(
+                f"{prefix}{leftover_kind} payload(s) this tool cannot read as "
+                f"text (e.g. zip, Office, image): "
+                f"{', '.join(self.unreadable_payloads)} — NOT scanned; manual "
+                "review recommended"
+            )
+        if self.truncated:
+            report.warnings.append(
+                f"{prefix}{self.truncated} object(s) held an unterminated "
+                "string literal — content after it was NOT scanned; manual "
+                "review recommended"
+            )
+        if self.unreadable:
+            report.warnings.append(
+                f"{prefix}{self.unreadable} object(s) could not be read — NOT "
+                "fully scanned"
             )
 
-    if truncated_objects:
+
+def _read_stream(doc: fitz.Document, xref: int, tally: _ObjectTally) -> bytes | None:
+    try:
+        return doc.xref_stream(xref)
+    except Exception:
+        tally.unreadable += 1
+        return None
+
+
+def _read_leftover(doc: fitz.Document, xref: int, where: str,
+                   report: ScanReport, tally: _ObjectTally) -> bytes | None:
+    """A leftover stream body, capped like live attachments are, so a
+    decompression bomb left in the file cannot exhaust memory."""
+    try:
+        body, cut = _read_stream_capped(doc, xref, MAX_ATTACHMENT_BYTES)
+    except Exception:
+        tally.unreadable += 1
+        return None
+    if cut:
         report.warnings.append(
-            f"Objects: {truncated_objects} object(s) held an unterminated string "
-            "literal — content after it was NOT scanned; manual review recommended"
-        )
-    if unreadable:
+            f"Objects: {where} is larger than {MAX_ATTACHMENT_BYTES} bytes "
+            "decompressed; only the start was scanned")
+    return body
+
+
+def _check_leftover_stream(
+    xref: int, body: bytes, body_text: str, where: str, *,
+    matcher: SecretMatcher, patterns: Sequence[PatternRule],
+    report: ScanReport, tally: _ObjectTally,
+) -> None:
+    """Leftover content no other layer will see: read what can be read as
+    raw text, flag what cannot be read at all."""
+    if _has_text_sized_inline_image(body_text):
+        tally.images.append(xref)               # pixels: not OCR'd
+    if _is_content_stream(body_text):
+        if _looks_binary(body) or _shows_unreadable_text(body_text):
+            tally.undecodable.append(xref)       # glyph codes, or text by binary
+    elif _is_container(body):
+        tally.unreadable_payloads.append(f"{xref} (embedded file)")
+    elif not _looks_binary(body) and len(_CONTENT_OP_RE.findall(body_text)) < 3:
+        # Neither page content nor binary: an untyped attachment, a script
+        # or private application data. Its text is not PDF string syntax,
+        # so search it raw — at manual review, since it is arbitrary text.
+        _scan_orphaned_payload(body, "raw text", f"{where} (raw text)",
+                               hard=False, matcher=matcher, patterns=patterns,
+                               report=report)
+
+
+def _scan_object(
+    doc: fitz.Document, xref: int, source: str, where: str, *, leftover: bool,
+    matcher: SecretMatcher, patterns: Sequence[PatternRule],
+    report: ScanReport, tally: _ObjectTally,
+) -> None:
+    """Scan one object's dictionary and (text) stream body.
+
+    *leftover* marks content the document no longer uses — an orphan, or
+    an object's superseded version from an earlier revision. For leftovers
+    the tool also reads attachment and XMP bodies as raw text, and flags
+    text it cannot decode, since no other layer will see them.
+    """
+    texts = [source]
+    try:
+        is_stream = doc.xref_is_stream(xref)
+    except Exception:
+        tally.unreadable += 1
+        is_stream = False
+    payload = _stream_key(doc, xref, "Type")[1] if is_stream and leftover else None
+    if is_stream and leftover and _is_text_sized_image(doc, xref):
+        # A leftover image — e.g. the original scan a redaction replaced —
+        # can hold the secret as pixels, and nothing OCRs stored images.
+        tally.images.append(xref)
+    if payload in _ORPHAN_PAYLOAD_TYPES:
+        # An attachment or XMP packet: its body is not PDF string syntax,
+        # and the Hidden and Metadata layers follow only what the document
+        # still references — so nothing else reads a leftover one.
+        label = _ORPHAN_PAYLOAD_TYPES[payload]
+        body = _read_leftover(doc, xref, where, report, tally)
+        if body is not None:
+            if _is_readable_text(body):
+                _scan_orphaned_payload(body, label, f"{where} ({label})",
+                                       hard=(payload == "/Metadata"),
+                                       matcher=matcher, patterns=patterns,
+                                       report=report)
+            else:
+                tally.unreadable_payloads.append(f"{xref} ({label})")
+    elif is_stream and not _is_opaque_stream(doc, xref):
+        body = (_read_leftover(doc, xref, where, report, tally) if leftover
+                else _read_stream(doc, xref, tally))
+        if body is not None:
+            body_text = body.decode("latin-1")
+            # The content sniff is the general backstop to the key
+            # pre-filter: a marker-less binary body is kept out of the
+            # tokenizer here rather than tokenized into false findings.
+            if not _looks_binary(body):
+                texts.append(body_text)
+            if leftover:
+                _check_leftover_stream(xref, body, body_text, where,
+                                       matcher=matcher, patterns=patterns,
+                                       report=report, tally=tally)
+
+    literals = RollingScanner(matcher)
+    hard_patterns = PatternScanner(patterns)
+    soft_patterns = PatternScanner(patterns, collapse_separators=True)
+    truncated = False
+    for text in texts:
+        # Fence so one object's tail cannot fuse with the next.
+        if _feed_pdf_strings(text + "\n\n", literals, hard_patterns, soft_patterns):
+            truncated = True
+    hard_patterns.flush()
+    soft_patterns.flush()
+    if truncated:
+        tally.truncated += 1
+
+    for secret in sorted(literals.found, key=lambda s: s.name):
+        report.record("Objects", secret.name, where)
+    for name, sample in hard_patterns.hits.items():
+        report.record("Objects", name, where, sample)
+    for name, sample in soft_patterns.hits.items():
+        if name in hard_patterns.hits:
+            continue
         report.warnings.append(
-            f"Objects: {unreadable} object(s) could not be read — NOT fully scanned"
+            f"Objects: {where}: adjacent literals fuse into a sequence "
+            f"matching pattern rule {name!r} (sample {mask(sample)}) — "
+            "possibly a coincidental concatenation; manual review recommended"
         )
+
+
+# Where each revision's cross-reference section starts: the file's final
+# startxref names the newest; each section's trailer /Prev names the one
+# before it. Every revision also writes its own startxref, so those offsets
+# are collected too (a broken /Prev link then loses nothing).
+_STARTXREF_RE = re.compile(rb"startxref\s+(\d+)")
+_OBJ_HEADER_RE = re.compile(rb"\s*\d+\s+\d+\s+obj\b")
+_PREV_RE = re.compile(rb"/Prev\s+(\d+)")
+MAX_EARLIER_REVISIONS = 50
+
+
+def _dict_end(raw: bytes, start: int) -> int | None:
+    """Offset just past the PDF dictionary opening at raw[start] ('<<'),
+    skipping nested dictionaries, hex strings and literal strings."""
+    depth, i, n = 0, start, len(raw)
+    while i < n:
+        if raw.startswith(b"<<", i):
+            depth, i = depth + 1, i + 2
+        elif raw.startswith(b">>", i):
+            depth, i = depth - 1, i + 2
+            if depth == 0:
+                return i
+        elif raw[i] == 0x3C:                         # '<' hex string
+            close = raw.find(b">", i + 1)
+            i = n if close < 0 else close + 1
+        elif raw[i] == 0x28:                         # '(' literal string
+            level, i = 1, i + 1
+            while i < n and level:
+                if raw[i] == 0x5C:                   # backslash escape
+                    i += 1
+                elif raw[i] == 0x28:
+                    level += 1
+                elif raw[i] == 0x29:
+                    level -= 1
+                i += 1
+        else:
+            i += 1
+    return None
+
+
+_INT_PAIR_RE = re.compile(rb"^\s*(\d+)\s+(\d+)\s*$")
+_INDEX_RE = re.compile(rb"/Index\s*\[([\d\s]*)\]")
+_SIZE_RE = re.compile(rb"/Size\s+(\d+)")
+
+
+def _xref_section(
+    raw: bytes, offset: int
+) -> tuple[int, int | None, list[range] | None] | None:
+    """(end, prev, objects) for the cross-reference section at *offset*: the
+    byte just past its trailer (classic table) or stream object (PDF 1.5+),
+    its /Prev offset, and the object-number ranges it defines (None when
+    they cannot be read). None when *offset* holds no section."""
+    if not 0 <= offset < len(raw):
+        return None
+    if raw.startswith(b"xref", offset):
+        trailer = raw.find(b"trailer", offset)
+        opening = raw.find(b"<<", trailer) if trailer >= 0 else -1
+        end = _dict_end(raw, opening) if opening >= 0 else None
+        if end is None:
+            return None
+        dictionary = raw[opening:end]
+        # Subsection headers are the lines holding exactly two integers.
+        objects: list[range] | None = [
+            range(int(m.group(1)), int(m.group(1)) + int(m.group(2)))
+            for m in map(_INT_PAIR_RE.match, raw[offset + 4:trailer].splitlines())
+            if m
+        ]
+    elif _OBJ_HEADER_RE.match(raw, offset):
+        opening = raw.find(b"<<", offset)
+        dict_end = _dict_end(raw, opening) if opening >= 0 else None
+        if dict_end is None or b"/XRef" not in raw[opening:dict_end]:
+            return None
+        dictionary = raw[opening:dict_end]
+        close = raw.find(b"endobj", dict_end)
+        end = close + len(b"endobj") if close >= 0 else None
+        if end is None:
+            return None
+        index = _INDEX_RE.search(dictionary)
+        size = _SIZE_RE.search(dictionary)
+        if index:
+            numbers = [int(n) for n in index.group(1).split()]
+            objects = [range(a, a + c) for a, c in zip(numbers[::2], numbers[1::2])]
+        elif size:
+            objects = [range(0, int(size.group(1)))]
+        else:
+            objects = None
+    else:
+        return None
+    prev = _PREV_RE.search(dictionary)
+    return end, (int(prev.group(1)) if prev else None), objects
+
+
+def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
+    """(xref offset, section end, changed later) for every revision before
+    the current one, oldest first. *changed later* is the set of object
+    numbers some newer section redefines or frees — the only objects whose
+    earlier version can differ from the current one (None if unknown). Boundaries come from the file's own cross-reference
+    chain — never from '%%EOF' bytes, which can occur inside a stream (an
+    attached PDF) and which an incremental writer may omit."""
+    starts = [int(m.group(1)) for m in _STARTXREF_RE.finditer(raw)]
+    if not starts:
+        return []
+    current = starts[-1]
+    sections: dict[int, tuple[int, list[range] | None]] = {}
+    pending = [current, *starts]
+    while pending:
+        offset = pending.pop()
+        if offset in sections:
+            continue
+        found = _xref_section(raw, offset)
+        if found is None:
+            continue
+        end, prev, objects = found
+        if prev is not None:
+            pending.append(prev)
+            if prev > offset and offset != current:
+                # A /Prev pointing forward marks a linearized file's
+                # first-page section: part of the same revision as the
+                # main section it points to, not an earlier revision.
+                continue
+        sections[offset] = (end, objects)
+    earlier = []
+    for offset, (end, _) in sorted(sections.items()):
+        if offset == current:
+            continue
+        changed: set[int] | None = set()
+        # Newer sections are written after this one in the file.
+        for other, (_, objects) in sections.items():
+            if other <= offset:
+                continue
+            if objects is None:
+                changed = None
+                break
+            for numbers in objects:
+                changed.update(numbers)
+        earlier.append((offset, end, changed))
+    return earlier
+
+
+def scan_earlier_revisions(
+    pdf_path: Path,
+    doc: fitz.Document,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+) -> None:
+    """Scan the superseded object versions an incremental update left behind.
+
+    An incremental save appends changes after the previous revision; the
+    earlier revision — including any object the update rewrote under the
+    same number — stays in the bytes, but PyMuPDF and qpdf read only the
+    newest. Each earlier revision is rebuilt by cutting the file just past
+    its own cross-reference section, and every object whose content
+    differs from the current version is scanned as leftover content.
+    """
+    try:
+        raw = Path(pdf_path).read_bytes()
+    except OSError as exc:
+        report.warnings.append(
+            f"Objects: file unreadable for the earlier-revision scan ({exc}) — "
+            "earlier revisions NOT scanned")
+        return
+    revisions = _earlier_revisions(raw)
+    if len(revisions) > MAX_EARLIER_REVISIONS:
+        report.warnings.append(
+            f"Objects: {len(revisions)} earlier revisions; only the original and "
+            f"the latest {MAX_EARLIER_REVISIONS - 1} were scanned")
+        # The first revision is where a pre-redaction original lives.
+        revisions = revisions[:1] + revisions[-(MAX_EARLIER_REVISIONS - 1):]
+    tally = _ObjectTally()
+    current: dict[int, str] = {}           # current sources, read once
+    for number, (offset, end, changed) in enumerate(revisions, start=1):
+        prefix = raw[:end] + b"\nstartxref\n%d\n%%%%EOF\n" % offset
+        try:
+            old = fitz.open("pdf", prefix)
+        except Exception:
+            old = None
+        if old is None or old.is_repaired:
+            # A revision that only opens by repair would have its objects
+            # guessed from raw bytes (an attached PDF's included): report
+            # it as unread rather than scan invented content.
+            if old is not None:
+                old.close()
+            report.warnings.append(
+                f"Objects: earlier revision {number} could not be read cleanly — "
+                "NOT scanned; manual review recommended")
+            continue
+        try:
+            candidates = range(1, old.xref_length()) if changed is None else \
+                sorted(x for x in changed if 0 < x < old.xref_length())
+            for xref in candidates:
+                try:
+                    source = old.xref_object(xref, compressed=True)
+                except Exception:
+                    continue
+                if not _superseded(old, doc, xref, source, current):
+                    continue
+                _scan_object(old, xref, source,
+                             f"earlier revision {number}, object {xref}",
+                             leftover=True, matcher=matcher, patterns=patterns,
+                             report=report, tally=tally)
+        finally:
+            old.close()
+    tally.report_to(report, leftover_kind="superseded")
+
+
+def _superseded(old: fitz.Document, doc: fitz.Document, xref: int, source: str,
+                current: dict[int, str]) -> bool:
+    """Whether an earlier revision's version of *xref* differs from the
+    current one (or the object is gone) — i.e. content only the earlier
+    revision still holds. Streams are compared as stored (undecoded), so
+    unchanged objects cost no decompression."""
+    try:
+        if xref >= doc.xref_length():
+            return True
+        if xref not in current:
+            current[xref] = doc.xref_object(xref, compressed=True)
+        if current[xref] != source:
+            return True
+        if old.xref_is_stream(xref):
+            return old.xref_stream_raw(xref) != doc.xref_stream_raw(xref)
+    except Exception:
+        return True
+    return False
 
 
 def _collect_qpdf(
@@ -2303,6 +2889,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("Metadata", scan_xmp_metadata),
             ("Hidden", scan_hidden_objects),
             ("Objects", scan_pdf_objects),
+            ("Objects", functools.partial(scan_earlier_revisions, pdf_path)),
         ):
             try:
                 scan(doc, matcher, patterns, report)
