@@ -36,8 +36,9 @@ jobs:
         # markers — no separate requirements file to keep in sync.
         run: python -m pip install -e '.[test]'
       - name: Run test suite
-        # Case-library grids need no OCR and run on Linux; here they would
-        # add minutes of OCR per case for nothing (their labels hold both ways).
+        # Case-library grids need no OCR and run on Linux; here they would add
+        # OCR time for nothing (their labels hold both ways; a full-env run of
+        # the grids is tracked in REDESIGN.md Phase 0c).
         run: python -m pytest tests/ -rs -m "not grid"
 
   # Partial suite on Linux across the supported Python range (README

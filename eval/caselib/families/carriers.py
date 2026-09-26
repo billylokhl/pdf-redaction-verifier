@@ -135,9 +135,14 @@ for carrier, (plant, cell, storage, where) in CARRIERS.items():
             continue
         family = {"orphaned": "leftover"}.get(storage,
                                               "page" if carrier == "content-stream" else "document")
+        found = (("SSN", storage),)
+        if carrier == "info" and name == "incremental":
+            # The update rewrites the Info dictionary (keywords), so its
+            # earlier version, still holding the SSN, is superseded too.
+            found += (("SSN", "superseded"),)
         case(f"{family}.{carrier}-{name}",
              truth="leak", cells=cell,
-             expected=expect(1, findings=(("SSN", storage),), layers=(("SSN", "Objects"),)),
+             expected=expect(1, findings=found, layers=(("SSN", "Objects"),)),
              story=f"The SSN in {where}, saved as {how}.", **common)(_builder(plant, layout))
 
 for name, (layout, how) in LAYOUTS.items():

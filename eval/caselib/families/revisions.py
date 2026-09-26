@@ -148,7 +148,10 @@ def truncated_stream(path: Path) -> None:
 
 
 @leak("revision.rewritten-stream", "superseded.plain",
-      "The SSN overwritten with X's in the same content stream, saved incrementally.",
+      "The SSN overwritten with X's in the same content stream, saved incrementally. "
+      "Tidying the page first left its original stream unreferenced, so the SSN is in "
+      "an orphan as well as in the earlier revision.",
+      expected=expect(1, findings=(("SSN", "superseded"), ("SSN", "orphaned"))),
       mistake=INCREMENTAL, recovery=RECOVER_REVISION)
 def rewritten_stream(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page, lines=[*FILLER, f"SSN {SSN}"])

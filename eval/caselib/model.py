@@ -52,7 +52,8 @@ _ID_RE = re.compile(r"^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$")
 class Expect:
     """A verdict and what must appear in the report.
 
-    *findings* are (rule, storage) hard findings; *warnings* are
+    *findings* are (rule, storage) hard findings — exact per rule: a rule
+    listed here may not also be found in a storage class not listed; *warnings* are
     (code, storage or None) warnings; *layers* are (rule, layer) — the
     layer that must report the finding, for cases whose cell is about one
     layer's reading. The report may hold more findings and review or
