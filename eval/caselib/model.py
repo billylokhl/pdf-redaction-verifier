@@ -57,6 +57,11 @@ _NEW_CELL_RE = re.compile(r"^new\.[a-z0-9]+(?:-[a-z0-9]+)*$")
 # shrink — filling either field must remove the id here.
 GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()
 
+# The kinds tests/test_case_library.py's privacy scrub reports. A
+# Case.privacy_allowlist entry must name exactly one of these — matched
+# only against a finding of that same kind, never any other.
+PRIVACY_KINDS = frozenset({"home-path", "email", "hostname", "xmp-id"})
+
 
 @dataclass(frozen=True)
 class Expect:
@@ -129,9 +134,13 @@ class Case:
     # Explicit exceptions for tests/test_case_library.py's privacy scrub
     # (a committed binary's bytes, or its decompressed streams, matching a
     # home-directory path, an email, a hostname or a machine-generated XMP
-    # id): ({"pattern": <substring>, "reason": <why it's fine>}, ...). Only
-    # meaningful for a case whose bytes are committed as-is (writer="file");
-    # every entry needs a reason, checked by the scrub test itself.
+    # id): ({"kind": <one of PRIVACY_KINDS>, "pattern": <full-match regex>,
+    # "reason": <why it's fine>}, ...). "kind" must match the finding's own
+    # kind exactly (an "email" entry never excuses a "hostname" finding);
+    # "pattern" is matched with re.fullmatch against the finding's text, not
+    # as a substring, and must not be trivially broad (bare "." or ".*").
+    # Only meaningful for a case whose bytes are committed as-is
+    # (writer="file"); every entry is checked by the scrub test itself.
     privacy_allowlist: tuple[dict[str, str], ...] = ()
 
     @property

@@ -28,6 +28,16 @@ from ..model import Expect, KnownGap, case, expect
 
 REDTEAM = Path(__file__).resolve().parent.parent / "redteam"
 ADJUDICATIONS = REDTEAM / "adjudications.log"
+ROUND_REQUIRED_FIELDS = ("round", "author", "date", "coverage_md_commit",
+                         "no_code_access_statement", "initial_labels_sha256", "labels_sha256")
+
+# Every case id this loader has registered, in registration order — the
+# other half of the origin="redteam" invariant
+# (tests/test_case_library.py::TestRedTeam.test_origin_matches_the_loader):
+# a normal family could still pass origin="redteam" to model.case(), but
+# its id would then be missing from this list, and that test would catch
+# it. This is the whole enforcement; there is no separate runtime guard.
+REGISTERED_IDS: list[str] = []
 
 
 def _sha256(path: Path) -> str:
@@ -75,6 +85,19 @@ def check_label_lock(round_dir: Path) -> None:
                 f"recorded adjudication.")
 
 
+def check_attestation(round_dir: Path) -> None:
+    """Raise unless a round declares who wrote it, when, against which
+    COVERAGE.md commit, and states (in its own words) that they had no
+    code access — plus a README.md a human can actually read. See
+    redteam/README.md's "The protocol"."""
+    meta = json.loads((round_dir / "round.json").read_text())
+    missing = [f for f in ROUND_REQUIRED_FIELDS if not meta.get(f)]
+    if missing:
+        raise ValueError(f"redteam/{round_dir.name}: round.json missing or empty {missing}")
+    if not (round_dir / "README.md").exists():
+        raise ValueError(f"redteam/{round_dir.name}: no README.md")
+
+
 def _load_builder(round_dir: Path, ref: str) -> Callable[[Path], None]:
     module_name, _, func_name = ref.partition(":")
     path = round_dir / f"{module_name}.py"
@@ -102,6 +125,7 @@ def _expect_from(data: dict[str, Any]) -> Expect:
 
 def register_round(round_dir: Path) -> None:
     check_label_lock(round_dir)
+    check_attestation(round_dir)
     entries = json.loads((round_dir / "labels.json").read_text())
     for entry in entries:
         rules = entry.get("rules")
@@ -132,6 +156,7 @@ def register_round(round_dir: Path) -> None:
             raise ValueError(f"redteam/{round_dir.name}: case {entry['id']!r} names neither "
                               "a pdf nor a builder")
         case(entry["id"], **kwargs)(build)
+        REGISTERED_IDS.append(entry["id"])
 
 
 for _round in round_dirs():

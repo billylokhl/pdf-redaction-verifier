@@ -349,7 +349,8 @@ case(
     story="A zip attachment holding the SSN, replaced by a clean one in an incremental "
           "update.",
     mistake="Replacing an attachment incrementally keeps the original.",
-    recovery="Decompress the file and read the earlier revision's embedded-file stream.",
+    recovery="Decompress the file, read the earlier revision's embedded-file stream, "
+             "and extract the zip.",
 )(_incremental(build(_ATTACHMENT_BASE),
                {8: stream(b"/Type /EmbeddedFile /Params << /Size %d >>" % len(_CLEAN_ZIP),
                           _CLEAN_ZIP)}))

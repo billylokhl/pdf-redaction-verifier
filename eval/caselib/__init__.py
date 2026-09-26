@@ -13,11 +13,11 @@ import importlib
 import pkgutil
 
 from .cells import CELLS, NEW_CELL_ALLOWLIST, NONFITZ_PENDING, UNDOCUMENTED_GAPS, Cell
-from .model import (CODE, DEFAULT_RULES, GALLERY_FIELDS_PENDING, REGISTRY, SSN, Case, Expect,
-                    KnownGap, case, expect)
+from .model import (CODE, DEFAULT_RULES, GALLERY_FIELDS_PENDING, PRIVACY_KINDS, REGISTRY, SSN,
+                    Case, Expect, KnownGap, case, expect)
 
 __all__ = ["CELLS", "GALLERY_FIELDS_PENDING", "NEW_CELL_ALLOWLIST", "NONFITZ_PENDING",
-           "UNDOCUMENTED_GAPS", "Cell", "CODE", "DEFAULT_RULES",
+           "PRIVACY_KINDS", "UNDOCUMENTED_GAPS", "Cell", "CODE", "DEFAULT_RULES",
            "REGISTRY", "SSN", "Case", "Expect", "KnownGap", "case", "expect", "load"]
 
 

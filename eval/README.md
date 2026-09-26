@@ -114,14 +114,25 @@ failing.
 
 Every case whose bytes are committed as-is (`writer="file"` — today
 `real/*.pdf` and the red-team round's PDFs) is scanned by
-`TestPrivacyScrub`, in both its raw bytes and every stream PyMuPDF can
-decompress, for home-directory paths (`/Users/…`, `/home/…`,
+`TestPrivacyScrub`, in its raw bytes, every stream PyMuPDF can
+decompress, every PDF string token (literal `(...)` or hex `<...>`)
+those contain — decoded, including a hex string's packed bytes and a
+UTF-16BE/LE literal's actual text, since a leak hiding behind either is
+invisible to a plain ASCII scan of the surrounding bytes — the
+document's metadata and XMP, and any embedded file's name or
+description. It looks for home-directory paths (`/Users/…`, `/home/…`,
 `C:\Users\…`), email addresses outside `example.com` / `example.org` /
 `*.test`, hostname-shaped strings (`*.local`, `*.lan`, `*.corp`, …), and
 XMP document/instance ids that look machine-generated (a real UUID in
-`xmpMM:DocumentID` or `xmpMM:InstanceID`). A genuine exception needs an
-explicit, reasoned entry in the case's `Case.privacy_allowlist` — never
-a silent pass.
+`xmpMM:DocumentID` or `xmpMM:InstanceID`).
+
+A genuine exception is a `Case.privacy_allowlist` entry naming a
+`"kind"` (one of `model.PRIVACY_KINDS`), a `"pattern"` matched with
+`re.fullmatch` against the finding's own text (a regex, not a
+substring — and not a bare `.`/`.*`, rejected as too broad to mean
+anything), and a `"reason"`. `"kind"` must equal the finding's own kind
+exactly: an entry allowlisting an `"email"` finding never excuses the
+same text reported as a `"hostname"`.
 
 ### The blind red-team slot (`caselib/redteam/`)
 
@@ -129,13 +140,26 @@ Every other case is written by someone who has read `verify.py`, which
 is exactly the bias this corpus needs correcting for. `redteam/<round>/`
 holds rounds built by someone working only from `COVERAGE.md` and the
 threat model — see [`redteam/README.md`](caselib/redteam/README.md) for
-the full protocol: how a round is authored, why its `labels.json` is
-frozen (a sha256 in `round.json`, changeable only through a recorded
-`adjudications.log` entry), and how a round may report a storage place
-COVERAGE.md has no row for yet through the `new.<slug>` placeholder
-namespace (`cells.NEW_CELL_ALLOWLIST`, redteam-only). Red-team cases load
-through the ordinary family mechanism (`families/redteam.py`) and land
-in the same `REGISTRY` with `origin="redteam"`.
+the full protocol: how a round is authored (and what it must attest —
+author, date, the `COVERAGE.md` commit it was given, a no-code-access
+statement, a `README.md`; `families/redteam.py`'s `check_attestation`
+enforces this at load time), why its `labels.json` is frozen (a sha256
+in `round.json`, changeable only through a recorded `adjudications.log`
+entry), and how a round may report a storage place COVERAGE.md has no
+row for yet through the `new.<slug>` placeholder namespace
+(`cells.NEW_CELL_ALLOWLIST`, redteam-only). Red-team cases load through
+the ordinary family mechanism (`families/redteam.py`) and land in the
+same `REGISTRY` with `origin="redteam"` — an invariant
+(`TestRedTeam.test_origin_matches_the_loader`) checks that every case
+claiming that origin is actually one the loader registered
+(`redteam.REGISTERED_IDS`), since nothing else stops an ordinary family
+from setting `origin="redteam"` on its own.
+
+`round.json`'s `labels_sha256` can be checked for internal consistency
+by a test that only sees one commit — but nothing stops that same
+commit from moving `labels_sha256` **and** `initial_labels_sha256`
+together, since the test would just compare the new file against
+itself. See "The ratchet check" below for how that's actually caught.
 
 ### Gallery fields ratchet
 
@@ -146,6 +170,33 @@ the same shape as `UNDOCUMENTED_GAPS` — for the leak cases that don't
 carry both yet; `tests/test_case_library.py`'s `TestGalleryFields`
 checks it is exact (nothing missing is left off it, and nothing on it is
 actually filled in already).
+
+### The ratchet check (`eval/check_ratchets.py`)
+
+`UNDOCUMENTED_GAPS`, `NONFITZ_PENDING` and `GALLERY_FIELDS_PENDING` may
+only shrink; a red-team round's `initial_labels_sha256` may never move.
+Each is checked for internal consistency by
+`tests/test_case_library.py` — but that suite only ever sees one
+checkout, so nothing there stops a single commit from editing one of
+these *and* loosening its own check to match, in lockstep. Catching that
+needs a second, different commit to compare against:
+`eval/check_ratchets.py` diffs every ratchet against the merge-base with
+`main` (a pull request) or `HEAD~1` (a direct push to `main`, which
+only catches a single-commit rewrite — see the script's docstring for
+what that does and doesn't cover) and fails if anything grew, or if an
+`initial_labels_sha256` moved. It is CI's `ratchets` job
+(`.github/workflows/tests.yml`, needs `fetch-depth: 0` for the history to
+diff against) and can also be run locally:
+
+```bash
+python eval/check_ratchets.py                 # resolves the base itself
+python eval/check_ratchets.py --base <ref>     # or name one explicitly
+```
+
+Its comparison logic (`run_all_checks` and friends) takes an abstract
+"tree" (`read(path)`, `glob(pattern)`), so `tests/test_check_ratchets.py`
+exercises it against fake in-memory trees — no git, no filesystem —
+independently of `GitTree`'s subprocess calls.
 
 ## Running
 

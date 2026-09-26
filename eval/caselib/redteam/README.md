@@ -51,7 +51,7 @@ already does. So:
 - `round.json` records `initial_labels_sha256` (set once, at the round's
   first commit, and never touched again) and `labels_sha256` (the hash
   `labels.json` must currently match — checked by
-  `tests/test_case_library.py`).
+  `tests/test_case_library.py::TestRedTeam.test_label_hash_lock`).
 - Changing a label means editing `labels.json`, recomputing its sha256,
   writing the new value into `labels_sha256`, **and** appending an entry
   to `adjudications.log` (one JSON object per line: `round`, `case_id`,
@@ -61,13 +61,22 @@ already does. So:
   live hash can only differ from the frozen one through a recorded,
   attributed change.
 
-This does not require inspecting git history (fragile across shallow
-clones, squashes and rebases) — it only requires that a silent edit to
-`labels.json` shows up as a **mismatch** between the file and its
-recorded hash, which is what the test actually catches, and that a
-*deliberate* edit leaves a paper trail. `initial_labels_sha256` itself
-is trusted at review time, the same way any other frozen constant in
-this repository is: reviewers read the diff.
+That internal-consistency test only ever sees one checkout, though — it
+compares `labels.json`, `labels_sha256` and `initial_labels_sha256`
+against each other, all three read from the same commit. Nothing in it
+stops a single commit from rewriting `labels.json` and setting **both**
+hashes to match the new content: the test would pass, because everything
+it looks at agrees with everything else it looks at. Catching that
+needs a second, independent commit to compare against —
+[`eval/check_ratchets.py`](../../check_ratchets.py) diffs
+`initial_labels_sha256` against the merge-base with `main` (a pull
+request) or `HEAD~1` (a direct push) and fails if it ever moved, no
+matter what the rest of the round says about itself. It is CI's
+`ratchets` job. See that script's module docstring for what a
+same-commit rewrite it still can't catch would take (several commits,
+each below its own `HEAD~1`, landing outside a pull request) — the
+practical answer there is requiring pull requests for `main`, which this
+check does not itself enforce.
 
 ## Cells COVERAGE.md doesn't have yet
 
@@ -95,11 +104,28 @@ and a maintainer adds the one allowlist line in review.
 
 `eval/caselib/families/redteam.py` is an ordinary family module (auto
 loaded by `caselib.load()`, like every other file under `families/`): it
-walks `redteam/*/`, verifies each round's label hash, and registers each
-case into the same `REGISTRY` via `model.case()`, with `origin="redteam"`
-(`model.ORIGINS`). From there a red-team case is judged exactly like any
-other — `tests/test_case_library.py`'s `test_case` builds it, scans it,
-and checks the verdict against `expected` (or `known_gap.today`).
+walks `redteam/*/`, verifies each round's label hash
+(`check_label_lock`) and attestation (`check_attestation` — the required
+`round.json` fields below, plus a `README.md`), and registers each case
+into the same `REGISTRY` via `model.case()`, with `origin="redteam"`
+(`model.ORIGINS`), appending its id to the module's `REGISTERED_IDS`.
+From there a red-team case is judged exactly like any other —
+`tests/test_case_library.py`'s `test_case` builds it, scans it, and
+checks the verdict against `expected` (or `known_gap.today`).
+
+`origin="redteam"` is otherwise just a string any family's `case()` call
+could set — nothing about the field itself is special. The actual gate
+is `TestRedTeam.test_origin_matches_the_loader`: the set of ids in
+`REGISTRY` claiming `origin="redteam"` must equal exactly
+`redteam.REGISTERED_IDS`, the ids this loader itself registered. An
+ordinary family case that set `origin="redteam"` would inflate the left
+side without ever appearing in `REGISTERED_IDS` and fail this.
+
+Every round's `round.json` must carry non-empty `author`, `date`,
+`coverage_md_commit` and `no_code_access_statement` fields, and the
+round directory must have its own `README.md`
+(`test_round_attestation`) — a round with no name attached to it, no
+stated commit, and no README is not evidence of anything.
 
 ## `round-0-example`
 

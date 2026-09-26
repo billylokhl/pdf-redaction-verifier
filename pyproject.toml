@@ -57,7 +57,7 @@ per-file-ignores = {}
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
-files = ["eval/caselib", "eval/scorecard"]
+files = ["eval/caselib", "eval/scorecard", "eval/check_ratchets.py"]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]

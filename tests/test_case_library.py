@@ -17,7 +17,7 @@ import fitz
 import pytest
 
 from caselib import (CELLS, GALLERY_FIELDS_PENDING, NEW_CELL_ALLOWLIST, NONFITZ_PENDING,
-                     REGISTRY, UNDOCUMENTED_GAPS, load)
+                     PRIVACY_KINDS, REGISTRY, UNDOCUMENTED_GAPS, load)
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
@@ -301,7 +301,15 @@ class TestProvenance:
                 f"{case_id}: sidecar truth disagrees with the registered case")
 
 
-# ── Privacy scrub: every committed binary, raw and decompressed ─────────
+# ── Privacy scrub: every committed binary, raw, decompressed and decoded ─
+#
+# Beyond scanning raw bytes and decompressed streams directly, this also
+# extracts every PDF string token (literal ``(...)`` and hex ``<...>``)
+# from each blob and decodes it — hex to its packed bytes, and either of
+# those (or a literal string) starting with a UTF-16 byte-order mark to
+# actual text — because a leak hiding in a hex string or a UTF-16BE
+# literal never matches an ASCII-oriented regex against the surrounding
+# raw bytes.
 
 _HOME_PATH_RE = re.compile(rb"/Users/[^/\s)>]+|/home/[^/\s)>]+|C:\\Users\\[^\\/\s)>]+")
 _EMAIL_RE = re.compile(rb"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
@@ -311,6 +319,8 @@ _HOSTNAME_RE = re.compile(
     rb"localdomain)\b", re.IGNORECASE)
 _UUID = rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _XMP_ID_RE = re.compile(rb"xmpMM:(?:Document|Instance)ID=\"[^\"]*" + _UUID + rb"[^\"]*\"")
+# Patterns .privacy_allowlist rejects as too broad to mean anything.
+_TRIVIAL_PATTERNS = frozenset({"", ".", ".*", ".+", "(?s).*", "(?s:.*)"})
 
 
 def _email_allowed(domain: bytes) -> bool:
@@ -318,10 +328,90 @@ def _email_allowed(domain: bytes) -> bool:
     return domain in _ALLOWED_EMAIL_DOMAINS or domain.endswith(b".test")
 
 
+def _extract_pdf_strings(blob: bytes) -> list[bytes]:
+    """Every literal ``(...)`` (escapes resolved) and hex ``<...>`` (nibbles
+    packed) PDF string token's raw bytes in *blob*. A best-effort scanner,
+    not a full PDF parser — good enough for the privacy scrub, which only
+    needs to find text, not build an object model. Dictionaries
+    (``<<...>>``) are not hex strings: a ``<`` immediately followed or
+    preceded by another ``<``/``>`` is skipped."""
+    out: list[bytes] = []
+    i, n = 0, len(blob)
+    simple_escapes = {0x6e: 0x0a, 0x72: 0x0d, 0x74: 0x09, 0x62: 0x08,
+                      0x66: 0x0c, 0x28: 0x28, 0x29: 0x29, 0x5c: 0x5c}
+    while i < n:
+        ch = blob[i]
+        if ch == 0x28:  # "("
+            depth, j, buf = 1, i + 1, bytearray()
+            while j < n and depth > 0:
+                c = blob[j]
+                if c == 0x5c and j + 1 < n:  # backslash
+                    nxt = blob[j + 1]
+                    if nxt in simple_escapes:
+                        buf.append(simple_escapes[nxt]); j += 2
+                    elif 0x30 <= nxt <= 0x37:  # octal escape
+                        k, digits = j + 1, b""
+                        while k < n and len(digits) < 3 and 0x30 <= blob[k] <= 0x37:
+                            digits += blob[k:k + 1]; k += 1
+                        buf.append(int(digits, 8) & 0xFF); j = k
+                    elif nxt in (0x0d, 0x0a):  # line continuation: dropped
+                        j += 2
+                        if nxt == 0x0d and j < n and blob[j] == 0x0a:
+                            j += 1
+                    else:
+                        buf.append(nxt); j += 2
+                elif c == 0x28:
+                    depth += 1; buf.append(c); j += 1
+                elif c == 0x29:
+                    depth -= 1; j += 1
+                    if depth > 0:
+                        buf.append(c)
+                else:
+                    buf.append(c); j += 1
+            out.append(bytes(buf))
+            i = j
+        elif ch == 0x3c and blob[i + 1:i + 2] != b"<" and (i == 0 or blob[i - 1:i] != b"<"):
+            j = i + 1
+            while j < n and blob[j] != 0x3e:
+                j += 1
+            digits = re.sub(rb"\s+", b"", blob[i + 1:j])
+            if digits and re.fullmatch(rb"[0-9A-Fa-f]*", digits):
+                if len(digits) % 2:
+                    digits += b"0"
+                try:
+                    out.append(bytes.fromhex(digits.decode("ascii")))
+                except ValueError:
+                    pass
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+def _decode_pdf_string(raw: bytes) -> str | None:
+    """A PDF string's likely text: UTF-16 if it opens with the byte-order
+    mark PDF literal/hex strings use for it, else latin-1 (never fails,
+    and preserves byte values 1:1 for the ASCII case)."""
+    if raw.startswith(b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16-be")
+        except UnicodeDecodeError:
+            return None
+    if raw.startswith(b"\xff\xfe"):
+        try:
+            return raw.decode("utf-16-le")
+        except UnicodeDecodeError:
+            return None
+    return raw.decode("latin-1")
+
+
 def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
     """(kind, matched text) for every home path, non-fixture email,
-    hostname-shaped string, and machine-generated-looking XMP id in
-    *pdf_path*'s raw bytes and its decompressed streams."""
+    hostname-shaped string, and machine-generated-looking XMP id, found
+    in *pdf_path*'s raw bytes, its decompressed streams, every PDF string
+    token those contain (decoded — including UTF-16 and hex strings),
+    the document's metadata and XMP, and any embedded file's name or
+    description."""
     blobs = [pdf_path.read_bytes()]
     try:
         doc = fitz.open(str(pdf_path))
@@ -331,9 +421,34 @@ def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
                     blobs.append(doc.xref_stream(xref))
                 except Exception:
                     pass
+        for value in doc.metadata.values():
+            if isinstance(value, str) and value:
+                blobs.append(value.encode("utf-8", "surrogatepass"))
+        xmp = doc.get_xml_metadata()
+        if xmp:
+            blobs.append(xmp.encode("utf-8", "surrogatepass"))
+        for i in range(doc.embfile_count()):
+            info = doc.embfile_info(i)
+            for key in ("name", "filename", "ufilename", "description"):
+                value = info.get(key)
+                if isinstance(value, str) and value:
+                    blobs.append(value.encode("utf-8", "surrogatepass"))
         doc.close()
     except Exception:
         pass
+
+    # Every PDF string token nested in the blobs above, decoded, feeds
+    # back in as its own blob — this is what catches a hex or UTF-16
+    # encoded leak an ASCII regex over the container bytes would miss.
+    decoded: list[bytes] = []
+    for blob in blobs:
+        for raw in _extract_pdf_strings(blob):
+            decoded.append(raw)
+            text = _decode_pdf_string(raw)
+            if text is not None:
+                decoded.append(text.encode("utf-8", "surrogatepass"))
+    blobs += decoded
+
     findings: list[tuple[str, str]] = []
     for blob in blobs:
         for m in _HOME_PATH_RE.finditer(blob):
@@ -354,9 +469,24 @@ def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
     return unique
 
 
+def _is_trivial_pattern(pattern: str) -> bool:
+    return pattern.strip() in _TRIVIAL_PATTERNS
+
+
 def _allowlisted(case, kind: str, text: str) -> bool:
-    return any(entry.get("reason") and entry.get("pattern", "") in text
-              for entry in case.privacy_allowlist)
+    """True only for an entry whose ``kind`` matches *kind* exactly and
+    whose ``pattern`` fully matches *text* (a regex, not a substring) —
+    one kind's exception never excuses another kind's finding."""
+    for entry in case.privacy_allowlist:
+        if entry.get("kind") != kind:
+            continue
+        pattern = entry.get("pattern", "")
+        try:
+            if re.fullmatch(pattern, text):
+                return True
+        except re.error:
+            continue
+    return False
 
 
 class TestPrivacyScrub:
@@ -364,7 +494,8 @@ class TestPrivacyScrub:
     round's PDFs, but this runs for any future ``writer="file"`` case —
     may hold a home-directory path, a non-fixture email, a hostname, or a
     machine-looking XMP id, unless the case explicitly allowlists it
-    (``Case.privacy_allowlist``) with a reason."""
+    (``Case.privacy_allowlist``) with a kind, a reason, and a non-trivial
+    pattern."""
 
     def _file_cases(self):
         return [c for c in REGISTRY.values() if c.writer == "file"]
@@ -386,8 +517,60 @@ class TestPrivacyScrub:
     def test_allowlist_entries_have_a_reason(self) -> None:
         for case in REGISTRY.values():
             for entry in case.privacy_allowlist:
-                assert entry.get("pattern"), f"{case.id}: privacy_allowlist entry has no pattern"
+                assert entry.get("kind") in PRIVACY_KINDS, (
+                    f"{case.id}: privacy_allowlist entry kind {entry.get('kind')!r} "
+                    f"must be one of {sorted(PRIVACY_KINDS)}")
+                pattern = entry.get("pattern", "")
+                assert pattern and not _is_trivial_pattern(pattern), (
+                    f"{case.id}: privacy_allowlist pattern {pattern!r} is too broad")
                 assert entry.get("reason"), f"{case.id}: privacy_allowlist entry has no reason"
+
+    def test_allowlist_kind_does_not_cross_exempt(self) -> None:
+        """A fake case allowlisting an 'email' finding must not also
+        exempt an identical string reported as a 'hostname' finding."""
+        from caselib.model import Case, expect
+
+        fake = Case(
+            id="page.allowlist-probe", truth="clean", cells=(), expected=expect(0),
+            story="probe.", build=lambda p: None,
+            privacy_allowlist=({"kind": "email", "pattern": re.escape("ci@example.com"),
+                               "reason": "fixture address, not a real leak"},),
+        )
+        assert _allowlisted(fake, "email", "ci@example.com")
+        assert not _allowlisted(fake, "hostname", "ci@example.com")
+
+    def test_catches_home_path_in_utf16be_literal_string(self, tmp_path) -> None:
+        """A home path stored as a UTF-16BE literal string (as a
+        producer's /Title or a form field can hold Unicode text) is
+        invisible to a plain ASCII byte scan — the reviewer built this
+        exact case; it must be caught."""
+        pdf = tmp_path / "utf16-leak.pdf"
+        doc = fitz.open()
+        doc.new_page()
+        xref = doc.get_new_xref()
+        payload = b"\xfe\xff" + "/Users/exampleuser/notes.txt".encode("utf-16-be")
+        doc.update_object(xref, "<< /Type /Custom >>")
+        doc.update_stream(xref, b"(" + payload + b")", compress=False)
+        doc.save(str(pdf))
+        doc.close()
+        findings = _privacy_findings(pdf)
+        assert any(kind == "home-path" for kind, _ in findings), findings
+
+    def test_catches_home_path_in_hex_string(self, tmp_path) -> None:
+        """The same leak, as a PDF hex string (``<2f55...>``) — decoded to
+        plain ASCII bytes rather than left as hex digits."""
+        pdf = tmp_path / "hex-leak.pdf"
+        doc = fitz.open()
+        doc.new_page()
+        xref = doc.get_new_xref()
+        text = b"/Users/exampleuser/secret.txt"
+        hex_token = b"<" + text.hex().encode("ascii") + b">"
+        doc.update_object(xref, "<< /Type /Custom >>")
+        doc.update_stream(xref, hex_token, compress=False)
+        doc.save(str(pdf))
+        doc.close()
+        findings = _privacy_findings(pdf)
+        assert any(kind == "home-path" for kind, _ in findings), findings
 
 
 # ── The blind red-team slot (eval/caselib/redteam/) ──────────────────────
@@ -396,6 +579,18 @@ class TestRedTeam:
     def test_at_least_the_example_round_is_loaded(self) -> None:
         redteam_cases = [c for c in REGISTRY.values() if c.origin == "redteam"]
         assert redteam_cases, "no origin='redteam' cases registered"
+
+    def test_origin_matches_the_loader(self) -> None:
+        """origin="redteam" is otherwise a self-declared tag any family
+        could set on an ordinary case. The real gate is this: the set of
+        ids actually claiming it must equal exactly what
+        families/redteam.py registered — nothing more, nothing less. A
+        normal family case with origin="redteam" would inflate the left
+        side without appearing in REGISTERED_IDS and fail this."""
+        declared = {c.id for c in REGISTRY.values() if c.origin == "redteam"}
+        assert declared == set(redteam_loader.REGISTERED_IDS)
+        # And the loader itself never registers a duplicate or drops one.
+        assert len(redteam_loader.REGISTERED_IDS) == len(set(redteam_loader.REGISTERED_IDS))
 
     def test_round_dirs_are_found(self) -> None:
         assert redteam_loader.round_dirs(), "no red-team round directories found"
@@ -406,6 +601,13 @@ class TestRedTeam:
         drift from the round's frozen initial hash must be recorded in
         adjudications.log (redteam/README.md's "Why labels are frozen")."""
         redteam_loader.check_label_lock(round_dir)  # raises with the specifics on failure
+
+    @pytest.mark.parametrize("round_dir", redteam_loader.round_dirs(), ids=lambda d: d.name)
+    def test_round_attestation(self, round_dir) -> None:
+        """Every round declares who wrote it, when, which COVERAGE.md
+        commit they had, and a no-code-access statement in their own
+        words — plus a README.md a human can read."""
+        redteam_loader.check_attestation(round_dir)  # raises with the specifics on failure
 
     def test_adjudication_entries_are_well_formed(self) -> None:
         required = {"round", "case_id", "date", "adjudicator", "reason", "old_sha256", "new_sha256"}

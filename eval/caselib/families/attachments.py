@@ -104,7 +104,8 @@ def annotation_zip(path: Path) -> None:
       expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "superseded"),
                                    ("ATTACHMENT_NOT_TEXT", "live"))),
       mistake="Replacing an attachment incrementally keeps the original.",
-      recovery="Decompress the file and read the earlier revision's embedded-file stream.")
+      recovery="Decompress the file, read the earlier revision's embedded-file stream, "
+               "and extract the zip.")
 def replaced_attachment(path: Path) -> None:
     _attach(path, "records.zip", compressed("zip", f"SSN {SSN}"))
 
