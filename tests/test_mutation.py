@@ -26,13 +26,16 @@ import pytest
 
 import verify
 
-from . import corpus_builders as cb
+from caselib import REGISTRY, SSN, load
+from caselib.run import build
+
+load()
 
 
 def _object_scan(path: Path) -> verify.ScanReport:
     doc = fitz.open(path)
     report = verify.ScanReport()
-    secrets = [verify.Secret("SSN", verify.normalize_string(cb.SSN))]
+    secrets = [verify.Secret("SSN", verify.normalize_string(SSN))]
     patterns = [verify.PatternRule(
         "ssn", re.compile(verify.BUILTIN_PATTERN_CLASSES["ssn"][0]),
         verify._valid_ssn)]
@@ -41,31 +44,6 @@ def _object_scan(path: Path) -> verify.ScanReport:
     finally:
         doc.close()
     return report
-
-
-# ── 1. Detection matrix: every carrier surface must be caught ───────────────
-@pytest.mark.parametrize("surface", sorted(cb.CARRIER_SURFACES))
-class TestCarrierSurfaceDetection:
-    def test_secret_is_detected(self, surface, tmp_path) -> None:
-        planter, layer = cb.CARRIER_SURFACES[surface]
-        path = tmp_path / f"{surface}.pdf"
-        planter(path)
-        report = _object_scan(path)
-        assert "SSN" in {f.secret_name for f in report.findings}, (
-            f"{surface}: planted secret not detected by the {layer} layer"
-        )
-
-    def test_orphan_labeling_is_correct(self, surface, tmp_path) -> None:
-        planter, _ = cb.CARRIER_SURFACES[surface]
-        path = tmp_path / f"{surface}.pdf"
-        expect_orphan = planter(path)
-        report = _object_scan(path)
-        ssn_findings = [f for f in report.findings if f.secret_name == "SSN"]
-        assert ssn_findings
-        labelled_orphan = any("ORPHANED" in f.location for f in ssn_findings)
-        assert labelled_orphan == expect_orphan, (
-            f"{surface}: ORPHANED label {labelled_orphan}, expected {expect_orphan}"
-        )
 
 
 # ── 2. Guard-necessity mutations ────────────────────────────────────────────
@@ -78,7 +56,7 @@ def _binary_stream_hiding_a_literal(path: Path) -> None:
     doc.new_page().insert_text((72, 72), "entirely clean visible text")
     blob = doc.get_new_xref()
     doc.update_object(blob, "<< >>")            # no /Subtype, /Length1, /Filter marker
-    body = bytes(range(256)) * 40 + f"(SSN {cb.SSN})".encode()
+    body = bytes(range(256)) * 40 + f"(SSN {SSN})".encode()
     doc.update_stream(blob, body)               # deflated on save
     doc.save(str(path), deflate=True)
     doc.close()
@@ -115,7 +93,7 @@ class TestGuardsAreLoadBearing:
         page = doc.new_page()
         page.insert_text((72, 72), "clean")
         orphan = doc.get_new_xref()
-        doc.update_object(orphan, f"<< /T (SSN {cb.SSN}) >>")
+        doc.update_object(orphan, f"<< /T (SSN {SSN}) >>")
         doc.xref_set_key(doc.pdf_catalog(), "Note", f"({orphan} 0 R)")
         doc.save(str(path))
         doc.close()
@@ -138,7 +116,7 @@ class TestGuardsAreLoadBearing:
         # stays uncompressed, an annotation is packed) — the container's
         # body then holds the secret and is unreachable via 'N G R'.
         path = tmp_path / "objstm.pdf"
-        cb.plant_objstm_packed(path)
+        build(REGISTRY["document.annotation-objstm"], path)
         doc = fitz.open(path)
         assert "/ObjStm" in {doc.xref_get_key(x, "Type")[1]
                              for x in range(1, doc.xref_length())}
@@ -165,7 +143,7 @@ class TestGuardsAreLoadBearing:
         page = doc.new_page()
         page.insert_text((72, 72), "cover")
         doc.update_stream(
-            page.get_contents()[0], f"(oops  (SSN {cb.SSN}) Tj".encode())
+            page.get_contents()[0], f"(oops  (SSN {SSN}) Tj".encode())
         doc.save(str(path))
         doc.close()
 

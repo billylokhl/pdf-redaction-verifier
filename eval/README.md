@@ -50,6 +50,13 @@ a leak case that is caught, reported in that cell's storage class; every
 (which may only shrink); and `cells.py` matches COVERAGE.md glyph for
 glyph.
 
+**Grids** (`grid=`, `params=`) are parameterised families: `carriers`
+(six carrier surfaces × four producer layouts) and `page-text` (27 page
+layouts × three rule sets × with or without the SSN pattern rule, labels
+in `families/page_text_labels.py`). Their tests carry the `grid` marker;
+CI runs them on Linux, where OCR is absent — their labels hold with and
+without OCR.
+
 ## Running
 
 ```bash

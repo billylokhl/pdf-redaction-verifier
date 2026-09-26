@@ -381,22 +381,19 @@ pytest
 Every regression test pins a previously confirmed bug; fixtures are
 generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
-absent. Three suites go further and test robustness directly:
-
-- **`test_corpus.py`** scans the same planted secret across the on-disk
-  layouts real producers emit — classic xref, object streams + xref
-  stream (the PDF 1.5+ default of Acrobat/Ghostscript/Chrome), incremental
-  updates, garbage-collected rewrites — asserting a leak is found and a
-  clean file is never falsely accused of orphaned content in any of them.
-- **`test_mutation.py`** plants a secret on each carrier surface and
-  asserts detection, then neutralizes each guard in turn and asserts the
-  bug it prevents comes back — so a guard whose removal changes nothing is
-  caught, not just an outright regression.
+absent. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
-  correct verdict and the story of how its redaction failed — including
-  real redaction-tool output and the tool's known gaps (strict xfails).
+  correct verdict and the story of how its redaction failed — real
+  redaction-tool output, known gaps pinned at today's wrong answer, and
+  parameter grids: each carrier surface in each on-disk layout real
+  producers emit (classic xref, object streams, incremental updates,
+  garbage-collected rewrites), and page-text layouts that split a value
+  across lines, pages, form boxes, columns and rotations.
+- **`test_mutation.py`** neutralizes each guard in turn and asserts the
+  bug it prevents comes back — so a guard whose removal changes nothing
+  is caught, not just an outright regression.
 
 To exercise **real vendor PDFs** without committing binaries, drop a
 `foo.pdf` plus a `foo.pdf.secrets.json` sidecar (a list of `[name, value]`
