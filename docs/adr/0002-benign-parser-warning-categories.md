@@ -1,6 +1,6 @@
 # 0002. Benign parser-warning categories
 
-Status: accepted
+Status: proposed
 
 ## Context
 
@@ -8,95 +8,131 @@ REDESIGN.md §4 defines parser agreement as: compare the inventory's
 in-use object set and page tree against PyMuPDF and against qpdf (a
 separate process) for the current revision, where "repair" means
 parse-level warnings (`qpdf <file> --object-streams=disable /dev/null`
-plus MuPDF warnings) -- explicitly **not** `qpdf --check`'s
-linearization lint, which the plan says fires on ~12% of real Acrobat
-files for reasons unrelated to structural soundness. The plan cites a
-measured flag rate of "~1.5%" for this definition but defers "benign
+plus MuPDF warnings) -- explicitly **not** `qpdf --check`'s linearization
+lint. The plan cites a measured flag rate of "~1.5%" but defers "benign
 warning categories" to an ADR. This is that ADR.
+
+**This is a substantial revision of the first version.** That version
+called four qpdf warning categories benign based on qpdf's own reassuring
+wording ("a common error handled correctly by qpdf and most other
+applications") without independently verifying the claim, and without
+checking it against REDESIGN §4's own "Ambiguity detection" bullet,
+which already lists **duplicate dictionary keys** and **xref offsets not
+landing on `N G obj`** as things the inventory must flag, not wave
+through. Review found concrete counter-examples for two of the four
+categories and an unverified assumption in a third. This version tightens
+the rules, verifies each one against the file's own bytes rather than
+trusting qpdf's wording, and re-measures.
 
 ## Decision
 
-A qpdf parse-level warning does **not** count toward the parser-agreement
-flag when the whole of its stderr output, after dropping qpdf's own
-one-line summary ("operation succeeded with warnings..."), matches one
-of these categories:
+**Only two categories survive, each requiring a per-instance check --
+not a blanket rule on the warning's wording:**
 
-1. **Self-corrected wrong xref offset** -- qpdf's own message: "object
-   has offset N - a common error handled correctly by qpdf and most
-   other applications." The object was still found unambiguously by
-   scanning for `N G obj`; nothing was lost.
-2. **Duplicated dictionary key** -- "dictionary has duplicated key
-   /Filter; last occurrence overrides earlier ones." The PDF spec's own
-   resolution rule (last wins) is deterministic; qpdf and MuPDF apply
-   it the same way.
-3. **Missing/misplaced `endobj`** -- "expected endobj," where the object
-   was still terminated unambiguously (the next token is the next
-   object header or a xref section). See the caveat below: this is the
-   one category with a real, if rare, failure mode.
-4. **The single-object "still valid" note** -- "input stream is complete
-   but output may still be valid," seen only on small single-object
-   fragment PDFs in this corpus (see Measurement).
+1. **A wrong/zero xref offset is benign only when the inventory's own
+   byte scan finds no object header (`N G obj`) for that object number
+   anywhere in the file.** qpdf's message ("object has offset 0 - a
+   common error handled correctly...") is not sufficient on its own:
+   review demonstrated a concrete case where an object's xref entry
+   pointed at offset 0, qpdf treated it as null (it does **not** scan
+   for the real body when the offset is exactly 0), and the object was a
+   page's `/Contents` -- the page rendered blank, and the object was
+   dropped entirely on rewrite. That is real data loss, not "nothing was
+   lost." The corrected rule: only benign when there genuinely is no
+   body anywhere for that number (nothing exists to lose); otherwise
+   this is exactly REDESIGN §4's ambiguity-detection case and must flag.
+2. **A duplicated dictionary key is benign only when both occurrences'
+   values are textually identical.** ISO 32000 does not define a
+   resolution order for a duplicate key ("keys shall be unique" -- a
+   duplicate is a violation, not a resolvable case with a spec-mandated
+   winner); "last occurrence overrides earlier ones" is qpdf's own
+   implementation choice, and another reader is free to pick the first,
+   or to error. When the two values are identical, no reader's choice
+   can produce a different document, so the ambiguity is moot; when they
+   differ, this is exactly REDESIGN §4's ambiguity-detection case.
 
-Everything else -- a numeric literal overflowing qpdf's parser and being
-replaced with null (data loss), "file is damaged," an actual
-cross-reference reconstruction, a bad indirect reference resolved as
-null, or any warning text not matching one of the four patterns above --
-**does** count as a repair-level disagreement and flags. `verify.py`
-today has no such list; the new inventory's benign-set check is a small,
-named, testable predicate (`_BENIGN_QPDF_PATTERNS` in
-`eval/spikes/measure_corpus.py` is the Phase 1 proof; Phase 3c ports it,
-with a regression test pinning each pattern against a hand-built
-fixture).
+**Two categories from the first version are dropped -- always flag:**
 
-**Caveat on category 3.** "Missing endobj, but the next token is
-unambiguous" is exactly the shape of ambiguity REDESIGN §4's own
-byte-tiler is built to detect (an omitted `endobj` could in principle
-hide extra bytes between the true end of a stream and the next object).
-Calling it benign here is a default, not a proof: it holds only because,
-in the corpus, the next token in every such case was structurally
-unambiguous. Phase 3a's real tiler should keep re-deriving this
-per-object rather than trusting the category name, and downgrade a
-specific instance out of the benign set the moment the following bytes
-are *not* unambiguous.
+3. **"Expected endobj"** (a missing/misplaced `endobj`) is dropped. The
+   first version claimed this was benign "when the next token is
+   unambiguous," but that check was never actually implemented --
+   `measure_corpus.py`'s regex matched the qpdf message text alone, with
+   no verification of what followed. This is exactly the kind of
+   ambiguity (padding between a stream's true end and the next object)
+   the byte tiler exists to catch; it always flags pending a real
+   per-object check in Phase 3a.
+4. **"Input stream is complete but output may still be valid"** is
+   dropped. This was mislabelled in the first version as a "single-object
+   note" related to inline images. It is actually qpdf's warning for an
+   **unterminated Flate stream** -- a truncated object or xref stream,
+   the same filter-chain problem as K1/K2 (data after a stream's declared
+   end, or a stream cut short). It always flags.
+
+Both surviving checks are implemented as verified per-instance functions
+in `eval/spikes/measure_corpus.py` (`_offset_warning_benign`,
+`_dup_key_benign`), not a stderr-text pattern match -- when either check
+cannot recover enough information to verify (the object number or key
+can't be parsed, or the object's raw span can't be found), the result is
+**not benign** by construction: fail closed.
 
 ## Measurement
 
-2,031 real files (`eval/spikes/RESULTS.md`, full table there). Headline
-numbers:
+2,031 real files, 484 text-bearing (`eval/spikes/RESULTS.md`, full table
+there; `eval/spikes/measure_corpus.py` is the script):
 
-| | Flag rate |
-| --- | --- |
-| Raw qpdf (any warning) | 9.0% |
-| Raw qpdf, benign categories excluded | 0.39% |
-| MuPDF (`is_repaired` or any warning) | 0.34% |
-| **Combined (either tool), benign excluded** | **0.69%** |
+| | All files | Text-bearing |
+| --- | --- | --- |
+| qpdf raw flag rate (any warning) | 9.0% | 32.4% |
+| qpdf refined flag rate (tightened categories excluded) | 2.9% | 7.0% |
+| MuPDF flag rate | 0.3% | 1.4% |
+| **Combined refined flag rate** | **2.9%** | **7.2%** |
 
-The raw rate (9.0%) is six times the plan's ~1.5% estimate; almost all
-of the gap is category 1 (146 of 182 raw-flagged files) and category 2
-(21 files) -- both self-correcting, spec-defined resolutions that every
-mainstream PDF reader already applies identically. With those (and
-categories 3-4) excluded, the combined rate lands at 0.69%, in the same
-order of magnitude as the plan's original estimate and comfortably
-affordable as a review-rate contributor.
+The refined rate is markedly higher than the first version's reported
+0.69%, because that number came from the four-category (unverified)
+benign list; with only the two verified categories, roughly two-thirds
+of what was called benign before is now correctly counted as a flag.
+7.2% on the text-bearing stratum -- the population parser agreement
+actually matters for -- is well above REDESIGN §4's original ~1.5%
+estimate, and above what §5's scorecard gates ("false hard < 1%...
+review rate" targets) would obviously tolerate without further work.
 
 ## Consequences
 
-- Without this ADR, shipping "any qpdf warning = repair" would have
-  flagged 9% of real files for exit `2` -- an order of magnitude above
-  what §5's scorecard gates ("false hard < 1%... review rate" targets)
-  would tolerate. This ADR is what makes parser agreement affordable at
-  all.
-- The benign set is a **closed, named list** (Principle 9: every
-  threshold named with its reason), not "ignore anything that looks
-  routine" -- a new qpdf version emitting new wording for the same
-  underlying condition needs a deliberate addition here, with its own
-  corpus evidence, not a silent behavior change.
-- Category 3's caveat means Phase 3a must implement the benign check as
-  a per-object structural confirmation, not a stderr-text pattern match
-  reused verbatim from this spike -- the spike's regex-on-stderr version
-  is good enough to size the decision, not to ship.
+- This ADR does not close the affordability question REDESIGN §4 raised
+  -- it corrects a wrong answer to it. A 7.2% review-rate contribution
+  from parser agreement alone is a real cost the owner needs to weigh
+  against the plan's Phase 3c gate ("Flag rate as measured in Phase 1").
+- Category 1's fix requires the byte-tiler's own object-header scan to be
+  available wherever parser-agreement is judged (already true in
+  `inventory_lite.py`/the eventual Phase 3a inventory) -- it is not a
+  qpdf-only check.
+- REDESIGN §4's "Ambiguity detection" bullet (duplicate keys, `/Length`
+  disagreeing with `endstream`, xref offsets not landing on `N G obj`,
+  the same object defined twice) already treats these as flag-worthy at
+  the *byte-tiling* level; this ADR does not contradict that -- it
+  narrows only when the **parser-agreement cross-check specifically**
+  (comparing qpdf/MuPDF's independent view against ours) treats an
+  instance as *additional* corroborating evidence of a problem, versus
+  when it is inert because provably nothing could have been lost. A
+  future revision of §4 should cite this ADR next to that bullet rather
+  than leave the two documents to be reconciled by inference.
+
+- **This measurement is a proxy, not the real check.** REDESIGN §4
+  defines parser agreement as comparing the *inventory's own* in-use
+  object set and page tree against PyMuPDF and qpdf -- that comparison
+  does not exist until Phase 3a builds the inventory. This spike measures
+  "did qpdf or MuPDF warn at all" as a stand-in for it, which is not the
+  same signal (a warning can fire with no effect on the object set or
+  page tree PyMuPDF and the inventory would each derive, and the reverse
+  is conceivable too). Phase 3c must re-measure against the real
+  object-set/page-tree comparison before treating the rate below as
+  settled -- this ADR's numbers size the *warning-based* proxy only.
 
 ## Owner confirmation needed
 
-None -- the measured gap between raw and refined rates is large enough
-that the direction of this decision is not close.
+- Whether a 7.2% (text-bearing) / 2.9% (all-files) parser-agreement flag
+  rate is affordable to ship as-is, or whether Phase 3c needs to narrow
+  further (e.g. by implementing the deferred "expected endobj" per-object
+  check rather than dropping the category outright) before this becomes
+  a real gate -- keeping in mind the rate above is from the warning-based
+  proxy, not the real object-set/page-tree comparison.

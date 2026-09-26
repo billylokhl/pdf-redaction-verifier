@@ -22,7 +22,9 @@ discovered from macOS system and application locations only:
 /Applications
 ```
 
-`corpus.py` never looks under `$HOME` or any user data directory. Every
+`corpus.py`'s `discover()` refuses (raises) any root that is, or sits
+under, `$HOME` — never looks under the user's home directory or any
+other personal data location. Every
 script here reports **aggregate counts and rates only** — file paths,
 filenames, or file contents are never printed, logged, or written to a
 committed file. `RESULTS.md` in this directory holds only the aggregate
@@ -33,11 +35,11 @@ the measurement is reproducible on another machine.
 
 | File | Purpose |
 | --- | --- |
-| `corpus.py` | Discovers the local PDF corpus (paths held in memory only). Run standalone to print just a count. |
-| `s1b_consumption_witness.py` | Spike S1b: extends `verify._scan_content` to also track the active font (for code-unit length) and compares its code count against `page.get_texttrace()`'s glyph count — first on hand-built adversarial content streams (malformed operator, truncated inline image, unbalanced `BT`/`q`), then as a reconciliation-rate sweep over every page of the real corpus. |
+| `corpus.py` | Discovers the local PDF corpus (paths held in memory only) and classifies a file as text-bearing (`is_text_bearing`, >=1 page with non-empty `get_text()`) — the shared stratification every other script uses. Run standalone to print counts for both. |
+| `s1b_consumption_witness.py` | Spike S1b: extends `verify._scan_content` to also track the active font (for code-unit length, keeping numeric operands on the stack so `Tf` is recognised) and, per font, excludes codes with no real glyph (`doc.get_char_widths`, not a byte-value guess) before comparing its code count against `page.get_texttrace()`'s glyph count — first on seven hand-built adversarial content streams, then as a reconciliation-rate sweep over every page of the real corpus, both a naive whole-page pass and the per-decoding-unit pass REDESIGN §4 actually specifies, with a breakdown of any residual mismatch by font encoding. |
 | `inventory_lite.py` | A minimal, spike-quality byte tiler (header / object / xref+trailer / `%%EOF` / whitespace) and an orphaned-stream classifier, reusing `verify.py`'s xref-chain regexes (`_STARTXREF_RE`, `_OBJ_HEADER_RE`, `_PREV_RE`, `_xref_section`, `_dict_end`) and `_reachable_from_sources`. Not the real Phase 3a inventory — just enough to measure the three corpus rates below. |
-| `measure_corpus.py` | Runs the three Phase 1 corpus measurements and prints an aggregate JSON summary: unindexed non-whitespace byte rate, orphaned-content-stream rate, and parser-agreement flag rate (qpdf `--object-streams=disable` + MuPDF repair/warnings, explicitly *not* `qpdf --check`'s linearization lint). |
-| `pattern_class_false_hard.py` | Runs `verify.py`'s own built-in pattern classes (imported, not reimplemented) against the real corpus's plain-text page extractions, behind `docs/adr/0005`. |
+| `measure_corpus.py` | Runs the three Phase 1 corpus measurements (each on both denominators — all files and text-bearing) and prints an aggregate JSON summary: unindexed non-whitespace byte rate, orphaned-content-stream rate, parser-agreement flag rate (qpdf `--object-streams=disable`, resolved via `shutil.which` + MuPDF repair/warnings, explicitly *not* `qpdf --check`'s linearization lint, with only two verified-per-instance benign categories excluded from the refined rate), and the per-file object-count distribution. |
+| `pattern_class_false_hard.py` | Runs `verify.py`'s own built-in pattern classes (imported, not reimplemented) against the real corpus's plain-text page extractions, on both denominators, behind `docs/adr/0005`. Scans page text only — not Metadata or Objects, which today's tool also runs pattern classes over. |
 
 ## Running
 
@@ -50,11 +52,12 @@ python3 eval/spikes/measure_corpus.py
 python3 eval/spikes/pattern_class_false_hard.py
 ```
 
-Both scripts add the repo root to `sys.path` themselves so `import
-verify` resolves without `PYTHONPATH`. Each prints a JSON object to
-stdout; nothing is written to disk. The numbers in `RESULTS.md` are a
-snapshot from one run on the author's machine — expect different (but
-similarly small) numbers on another machine's corpus.
+Every script adds the repo root to `sys.path` itself so `import verify`
+resolves without `PYTHONPATH`. Each prints a JSON object to stdout;
+nothing is written to disk. The numbers in `RESULTS.md` are a snapshot
+from one run on the author's machine — expect a different (not
+necessarily smaller: several rates measured much larger than first
+assumed, see `RESULTS.md`) set of numbers on another machine's corpus.
 
 ## Known limitations (spike quality, not production semantics)
 
@@ -75,3 +78,19 @@ similarly small) numbers on another machine's corpus.
   (`Identity-H`/`Identity-V` → 2, otherwise → 1). Real predefined CJK
   CMaps with mixed-width codespaces are not modelled; none appeared in
   the local corpus.
+- Its per-font "does this code have a real glyph" check
+  (`doc.get_char_widths`, glyph id 0 = no glyph) does not fully explain
+  the residual mismatch found on real content (see
+  `docs/adr/0008-consumption-witness-granularity.md` and this
+  directory's `RESULTS.md`) — a real, uninvestigated gap in this spike's
+  own measurement, not a settled finding.
+- **The corpus is a live directory listing, not a fixed reference set.**
+  `corpus.discover()` re-walks `/System/Library`, `/Library`, and
+  `/Applications` on every run; OS/app updates between runs can add,
+  remove, or change files, so exact counts (corpus size, text-bearing
+  count, per-category counts) drift by a handful between runs on the
+  *same* machine, and will differ more on another machine entirely. Every
+  number in `RESULTS.md` and the ADRs is quoted from one specific,
+  reproducible run, not a number this corpus is guaranteed to reproduce
+  exactly — rerun the scripts for a fresh, current count rather than
+  assuming the committed numbers still hold bit-for-bit.
