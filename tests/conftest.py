@@ -56,6 +56,7 @@ requires_full_env = pytest.mark.skipif(
     reason="needs Apple Vision (macOS), exiftool, and qpdf for a certifiable scan",
 )
 requires_qpdf = pytest.mark.skipif(not HAS_QPDF, reason="needs qpdf")
+requires_exiftool = pytest.mark.skipif(not HAS_EXIFTOOL, reason="needs exiftool")
 requires_metadata_tools = pytest.mark.skipif(
     not (HAS_EXIFTOOL or HAS_QPDF), reason="needs exiftool or qpdf"
 )

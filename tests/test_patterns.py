@@ -553,6 +553,35 @@ class TestYamlAdapterFidelity:
         assert "unquoted" in joined
         assert "00123456" not in joined and "42798" not in joined
 
+    def test_divergence_warning_names_only_the_type(self, tmp_path) -> None:
+        # Regression (#2): showing mask() of both the coerced value and
+        # the literal spec together narrowed a short secret from
+        # thousands of candidates to a few dozen, since the coerced value
+        # is a deterministic function of the whole spec. The warning must
+        # name only what YAML read the value as, with no digit of it.
+        path = self._yaml(tmp_path, "exact_values:\n  - 0123456701\n")
+        rules = verify.load_rules(path)
+        (warning,) = [w for w in rules.warnings if w.code == "RULES_UNQUOTED_VALUE"]
+        assert "a number" in warning
+        assert "****" not in warning
+        assert not re.search(r"\d", warning.replace("exact_values[0]", ""))
+
+    @pytest.mark.parametrize("body, kind", [
+        ("exact_values:\n  - yes\n", "a boolean"),
+        ("exact_values:\n  - 2024-01-01T10:00:00Z\n", "a date"),
+        ("exact_values:\n  - 1.50\n", "a number"),
+        ("exact_values:\n  - 0123456701\n", "a number"),
+    ])
+    def test_divergence_warning_names_the_right_type(
+        self, tmp_path, body, kind
+    ) -> None:
+        path = self._yaml(tmp_path, body)
+        (warning,) = [
+            w for w in verify.load_rules(path).warnings
+            if w.code == "RULES_UNQUOTED_VALUE"
+        ]
+        assert kind in warning
+
     def test_non_utf8_config_exits_2(self, tmp_path) -> None:
         # Operational error, never the leak code, and never a traceback.
         path = tmp_path / "latin.yaml"

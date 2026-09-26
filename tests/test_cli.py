@@ -21,6 +21,7 @@ import sys
 from .conftest import (
     REPO_ROOT,
     SSN,
+    requires_exiftool,
     requires_full_env,
     requires_qpdf,
     run_verify,
@@ -267,3 +268,138 @@ class TestRawSweepIsNotAnEquivalentBackstop:
             doc.close()
         # The structural pass is the only thing that can produce this.
         assert [f.secret_name for f in report.findings] == ["ssn"]
+
+
+class TestUncaughtExceptionsNeverExitTheLeakCode:
+    """Regression (#1): an exception escaping late in main() — print_report
+    here, but the same class covers start_hidden_tools, doc.page_count, or
+    the JSON writer — used to propagate all the way out. Under run_cli
+    that is a bare Python traceback and exit code 1: the "a secret was
+    found" code, on a document where nothing was actually found.
+    """
+
+    def test_run_cli_exits_2_not_1(self, clean_pdf, secrets_file) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); import verify; "
+             "verify.print_report = lambda *a, **k: (_ for _ in ()).throw("
+             "RuntimeError('boom')); "
+             "verify.run_cli(sys.argv[2:])",
+             str(REPO_ROOT), "--target", str(clean_pdf), "--secrets", str(secrets_file)],
+            capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        assert "[ERROR]" in result.stderr
+
+    def test_main_never_raises(self, clean_pdf, secrets_file, monkeypatch) -> None:
+        monkeypatch.setattr(verify, "print_report", _boom)
+        assert verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        ) == 2
+
+    def test_keyboard_interrupt_exits_2(self, clean_pdf, secrets_file, monkeypatch) -> None:
+        def _interrupt(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(verify, "print_report", _interrupt)
+        assert verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        ) == 2
+
+
+class TestSubprocessHardening:
+    """qpdf and exiftool are launched defensively (#4): resolved once to
+    an absolute path, given the target as an absolute path, and run with
+    a minimal environment — so a hostile filename or an inherited
+    environment variable cannot change what either tool does.
+    """
+
+    def test_tools_launched_with_absolute_paths_and_minimal_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        target = tmp_path / "-evil.pdf"       # a name that looks like a flag
+        target.write_bytes(b"%PDF-1.4\n%%EOF")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setenv("SOME_OTHER_VAR", "must-not-reach-the-child")
+
+        resolved = {"exiftool": "/opt/tools/exiftool", "qpdf": "/opt/tools/qpdf"}
+        monkeypatch.setattr(verify.shutil, "which", lambda name: resolved.get(name))
+
+        captured: dict[str, tuple[list[str], dict[str, str]]] = {}
+
+        class _FakeProc:
+            def poll(self):
+                return None
+
+        def _fake_popen(argv, stdout=None, stderr=None, env=None):
+            captured[argv[0]] = (list(argv), dict(env or {}))
+            return _FakeProc()
+
+        monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
+
+        report = verify.ScanReport()
+        verify.start_hidden_tools(target, report)
+
+        assert report.warnings == []      # both "found": no TOOL_MISSING
+
+        exif_argv, exif_env = captured["/opt/tools/exiftool"]
+        # -config "" first: no config file from the environment is ever
+        # loaded; "--" then ends option parsing so the filename can never
+        # be read as a flag (exiftool's own documented convention).
+        assert exif_argv[1:5] == ["-config", "", "-json", "--"]
+        assert exif_argv[5] == str(target.resolve())
+        assert exif_argv[5].startswith("/")
+
+        qpdf_argv, qpdf_env = captured["/opt/tools/qpdf"]
+        assert qpdf_argv[-2:] == [str(target.resolve()), "-"]
+        assert qpdf_argv[-2].startswith("/")
+
+        for env in (exif_env, qpdf_env):
+            assert set(env) <= {"PATH", "LANG", "LC_ALL"}
+            assert env.get("LANG") == "C" and env.get("LC_ALL") == "C"
+            assert "SOME_OTHER_VAR" not in env
+
+    def test_missing_tools_still_warn_tool_missing(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(verify.shutil, "which", lambda name: None)
+        report = verify.ScanReport()
+        procs = verify.start_hidden_tools(tmp_path / "doc.pdf", report)
+        assert procs == {"exiftool": None, "qpdf": None}
+        missing = {(w.code, w.fields.get("tool"), w.layer) for w in report.warnings}
+        assert missing == {
+            ("TOOL_MISSING", "exiftool", "Metadata"),
+            ("TOOL_MISSING", "qpdf", "Binary"),
+        }
+
+    @requires_qpdf
+    def test_dash_prefixed_target_is_scanned_not_parsed_as_an_option(
+        self, secrets_file, tmp_path
+    ) -> None:
+        pdf = tmp_path / "-evil.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing sensitive here")
+        doc.save(pdf)
+        doc.close()
+        result = run_verify(pdf, secrets_file)
+        assert result.returncode in (0, 2)
+        # Any of these would mean qpdf choked on (or hung on) a filename
+        # it read as an option instead of the resolved absolute path.
+        for marker in ("qpdf exited", "qpdf timed out", "qpdf stdout unavailable"):
+            assert marker not in result.stdout
+
+    @requires_exiftool
+    def test_exiftool_config_in_home_is_not_honored(
+        self, clean_pdf, secrets_file, tmp_path
+    ) -> None:
+        # exiftool searches $HOME/.ExifTool_config by default; a
+        # booby-trapped one must never be loaded just because it happens
+        # to sit in the invoking environment's home directory.
+        fake_home = tmp_path / "fake-home"
+        fake_home.mkdir()
+        (fake_home / ".ExifTool_config").write_text("this is not valid Perl {{{\n")
+        result = run_verify(
+            clean_pdf, secrets_file, env_overrides={"HOME": str(fake_home)}
+        )
+        assert result.returncode in (0, 2)
+        assert "TOOL_EXIT_NONZERO" not in result.stdout
+        assert "exiftool" not in result.stdout or "not installed" not in result.stdout

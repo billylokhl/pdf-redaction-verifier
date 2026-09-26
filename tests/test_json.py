@@ -12,6 +12,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import fitz
@@ -143,15 +145,36 @@ class TestReportFile:
                                                   monkeypatch) -> None:
         out = tmp_path / "r.json"
         self._seed_pass(out)
-        # A run that dies before writing its own report must not leave the
-        # previous run's pass behind.
+        # A run that crashes before reaching its own normal finish() must
+        # not leave the previous run's pass behind — and (see #1) the
+        # crash itself must exit 2, never 1 (the leak code), and still
+        # produce a --json report of its own, marked INTERNAL_ERROR, so a
+        # consumer polling the file never reads the stale pass as this
+        # run's verdict.
         monkeypatch.setattr(verify, "print_report",
                             lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
         target = _pdf(tmp_path / "doc.pdf", "hello")
-        with pytest.raises(RuntimeError):
-            verify.main(["--target", str(target), "--secrets", str(secrets_file),
-                         "--json", str(out)])
-        assert not out.exists()
+        code = verify.main(["--target", str(target), "--secrets", str(secrets_file),
+                            "--json", str(out)])
+        assert code == 2
+        data = json.loads(out.read_text())
+        assert data["exit_code"] == 2 and data["verdict"] == "uncertified"
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert "RuntimeError" in data["error"]["message"]
+
+    def test_uncaught_exception_never_exits_the_leak_code(
+        self, secrets_file, tmp_path, monkeypatch
+    ) -> None:
+        # Regression (#1): an exception escaping ANY of the late steps —
+        # print_report here, but the same guard covers start_hidden_tools,
+        # doc.page_count, and the JSON writer itself — used to propagate
+        # out of main() uncaught. Under run_cli that exits 1, the "a
+        # secret was found" code, on a document nothing was found in.
+        monkeypatch.setattr(verify, "print_report",
+                            lambda *a: (_ for _ in ()).throw(ValueError("boom")))
+        target = _pdf(tmp_path / "doc.pdf", "hello")
+        code = verify.main(["--target", str(target), "--secrets", str(secrets_file)])
+        assert code == 2
 
     def test_read_only_old_report_is_replaced(self, leaky_pdf, secrets_file,
                                               tmp_path) -> None:
@@ -303,6 +326,60 @@ class TestStructuredFields:
             assert w["storage"] in verify.STORAGE_CLASSES | {None}
 
 
+class TestToolReturnCodeField:
+    """#3: TOOL_EXIT_NONZERO carries the tool's own exit status as a
+    structured field, so a consumer can tell a real qpdf failure from its
+    benign (version-dependent) exit 3 "succeeded with warnings" without
+    parsing the message text.
+
+    Both collectors are exercised directly against a stand-in subprocess
+    (this interpreter, not the real tool) so the test needs neither qpdf
+    nor exiftool installed.
+    """
+
+    def test_qpdf_nonzero_exit_carries_returncode(self) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 64); sys.exit(3)"],
+            stdout=subprocess.PIPE,
+        )
+        report = verify.ScanReport()
+        verify._collect_qpdf(proc, verify.SecretMatcher([]), report)
+        (warn,) = [w for w in report.warnings if w.code == "TOOL_EXIT_NONZERO"]
+        assert warn.fields["returncode"] == 3
+        assert "returncode" in verify.WARNING_FIELDS
+
+    def test_exiftool_nonzero_exit_carries_returncode(self) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdout.write('[]'); sys.exit(2)"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        report = verify.ScanReport()
+        verify._collect_exiftool(proc, verify.SecretMatcher([]), [], report)
+        (warn,) = [w for w in report.warnings if w.code == "TOOL_EXIT_NONZERO"]
+        assert warn.fields["returncode"] == 2
+
+    def test_returncode_reaches_the_json_report(self) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 64); sys.exit(3)"],
+            stdout=subprocess.PIPE,
+        )
+        report = verify.ScanReport()
+        verify._collect_qpdf(proc, verify.SecretMatcher([]), report)
+        data = verify.build_json_report(report, 2, target=Path("t.pdf"))
+        (warning,) = [w for w in data["warnings"] if w["code"] == "TOOL_EXIT_NONZERO"]
+        assert warning["returncode"] == 3
+
+    def test_returncode_is_null_when_not_applicable(self, tmp_path) -> None:
+        # Additive field: every OTHER warning must still carry it, null.
+        rules = tmp_path / "rules.yaml"
+        rules.write_text("entity_types:\n  - person_name\n")
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        _, data = _run(pdf, rules, tmp_path)
+        assert data["warnings"]
+        assert all(w["returncode"] is None for w in data["warnings"]
+                   if w["code"] != "TOOL_EXIT_NONZERO")
+
+
 class TestWarningsAreAlwaysCoded:
     """A warning without a code would reach the report as UNCODED and the
     harness would lose track of it — so the report refuses one outright."""
@@ -399,6 +476,25 @@ class TestNothingSecretLeaks:
         assert code == 2 and data["error"]["code"] == "RULES_INVALID"
         assert not self.DIGITS.search(json.dumps(data))
         assert not self.DIGITS.search(capsys.readouterr().err)
+
+    def test_unquoted_yaml_value_warning_has_no_digit_of_the_value(
+        self, tmp_path
+    ) -> None:
+        # Regression (#2): the warning used to show mask() of BOTH the
+        # YAML-coerced value and the literal spec; together the two
+        # masked tails narrowed a short secret from thousands of
+        # candidates to a few dozen. It must now name only the TYPE YAML
+        # coerced the value to, with no digit or character of the value.
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing sensitive here")
+        rules = tmp_path / "rules.yaml"
+        rules.write_text("exact_values:\n  - 0123456701\n")
+        _, data = _run(pdf, rules, tmp_path)
+        (warning,) = [w for w in data["warnings"] if w["code"] == "RULES_UNQUOTED_VALUE"]
+        assert "a number" in warning["message"]
+        assert "****" not in warning["message"]
+        # "exact_values[0]" itself carries the rule's index, not the
+        # secret's digits — everything else must be digit-free.
+        assert not re.search(r"\d", warning["message"].replace("exact_values[0]", ""))
 
     def test_control_characters_sanitized(self, tmp_path) -> None:
         pdf = _pdf(tmp_path / "doc.pdf", f"SSN {SSN}")
