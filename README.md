@@ -302,6 +302,12 @@ through several page-number-only pages is only ever manual review; and
 decompressed font tables can raise coincidental Binary warnings (see
 Binary). Prefer longer, more specific values.
 
+A rewrite that closes these gaps by accounting for every byte of the
+file, rather than searching the places this tool knows about, is planned
+in [docs/REDESIGN.md](docs/REDESIGN.md); its Phase 1 design decisions
+are recorded in [docs/adr/](docs/adr/), each backed by a measurement in
+[eval/spikes/](eval/spikes/).
+
 ## Rules file
 
 `--secrets` accepts either this tool's JSON array or a

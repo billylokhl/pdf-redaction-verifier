@@ -1,7 +1,10 @@
 # Evaluation
 
 The case library that measures the verifier — see
-[docs/REDESIGN.md](../docs/REDESIGN.md) §5.
+[docs/REDESIGN.md](../docs/REDESIGN.md) §5. Feasibility probes and real-corpus
+measurements behind the redesign's Phase 1 ADRs live separately in
+[`spikes/`](spikes/README.md): throwaway scripts, not run in CI and not
+part of the case library.
 
 ## The case library (`caselib/`)
 
