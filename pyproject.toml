@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 # gates releases, so a silent upstream change must not change a verdict.
 dependencies = [
     "pymupdf==1.27.2.3",
-    # Reading redactor redact_config.yaml as a shared rules file.
+    # Reading a redactor's redact_config.yaml as a shared rules file.
     "pyyaml==6.0.2",
     # Apple Vision OCR bridge. The marker is the whole point: these are
     # required on macOS (without them the OCR layer degrades and the run

@@ -179,7 +179,7 @@ In priority order.
     to `1`/`2` or `1` to `2` is at least a minor version bump.
 12. **Compatibility.** Same CLI, exit codes and rules formats. A bare JSON
     array stays rules schema v1 forever; v2+ is `{"version": N, "rules":
-    [...]}`. The redactor YAML is another project's schema: unknown
+    [...]}`. The redactor's YAML is another project's schema: unknown
     keys stay exit `2` and its hash is recorded.
 
 ## 4. Architecture

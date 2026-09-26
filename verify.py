@@ -3056,11 +3056,11 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-# redactor entity types that have a regex equivalent here. The value
+# The redactor's entity types that have a regex equivalent here. The value
 # is one of THIS tool's built-in classes: verification deliberately uses
 # its own regexes and validators rather than importing the redactor's, so
 # a flaw in the redactor's detection cannot hide itself from the check.
-# The full entity-type roster redactor supports (its EntityType enum).
+# The full entity-type roster the redactor supports (its EntityType enum).
 # Declared explicitly so an unknown string is distinguishable from a known
 # coverage gap: a typo must be rejected, not reported as "LLM-only".
 UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
@@ -3068,7 +3068,7 @@ UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
     "account_number", "credit_card", "drivers_license", "passport",
 })
 
-# redactor entity types that have a regex equivalent here. The value is
+# The redactor's entity types that have a regex equivalent here. The value is
 # one of THIS tool's built-in classes: verification deliberately uses its
 # own regexes and validators rather than importing the redactor's, so a
 # flaw in the redactor's detection cannot hide itself from the check.
@@ -3087,7 +3087,7 @@ PARTIAL_ENTITY_COVERAGE: dict[str, str] = {
              "international formats are not",
 }
 
-# Top-level keys redactor itself understands. Anything else is a typo or
+# Top-level keys the redactor itself understands. Anything else is a typo or
 # an upstream addition; either way the section it names is not scanned, so
 # it is surfaced rather than silently dropped.
 UPSTREAM_CONFIG_KEYS: frozenset[str] = frozenset({

@@ -2,7 +2,7 @@
 the library): generated documents can only show failures someone thought
 to build. All data in these files is fabricated.
 
-Provenance: redactor 0.1.0 at commit  (2026-09-13), run with
+Provenance: a PyMuPDF-based redaction tool (version 0.1.0, 2026-09-13), run with
 LLM detection disabled and these exact values:
 "Jordan Q. Testperson", "123-45-6789", "01/01/1970", "1600 Fictional Ave",
 "Springfield", "000123456789". The compacted file is the hex output
