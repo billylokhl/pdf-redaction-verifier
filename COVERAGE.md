@@ -16,27 +16,33 @@ clean.
 - ✗ **Not covered** — a secret here can pass as clean (exit `0`).
 - — Not applicable.
 
+Each cell has a stable id, `<row id>.<column>` (columns `plain`, `font`,
+`pixels`, `container`), used by the case library in `eval/caselib` —
+every ✓ and ⚑ cell has at least one case planting a secret there
+(`eval/caselib/cells.py` lists them, with the ids of the ✗ parts of mixed
+cells).
+
 ## Where × how
 
-| Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
-| --- | --- | --- | --- | --- |
-| **Live page content** — drawn on a page | ✓ Text, Objects, OCR | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
-| **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise | ✗ | — |
-| **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
-| **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
-| **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
-| **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
-| **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
-| **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
-| **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
-| **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
-| **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ |
-| **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
-| **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) | — | ⚑ Objects | ⚑ Objects⁸ |
-| **Annotation text, form fields, link targets, layer names** | ✓ Hidden, Objects | — | — | — |
-| **JavaScript** | ✓ Hidden (catalog `/OpenAction`, named scripts), Objects (scripts stored as strings), Binary (scripts stored as streams: known values only, manual review) · ✗ pattern rules on scripts stored as streams on links, fields or pages | — | — | — |
-| **Private application data** (`/PieceInfo`) | live: ✓ Binary known values only · ✗ pattern rules; leftover: ✓ Objects (manual review) | — | — | — |
-| **Unindexed bytes** — after the final `%%EOF`, in comments, or in an object whose table entry is marked free | ✗ | ✗ | ✗ | ✗ |
+| Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
+| --- | --- | --- | --- | --- | --- |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
+| `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise | ✗ | — |
+| `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
+| `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
+| `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
+| `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
+| `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
+| `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
+| `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ |
+| `embedded-other` | **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
+| `orphaned-attachment` | **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) | — | ⚑ Objects | ⚑ Objects⁸ |
+| `annot-fields` | **Annotation text, form fields, link targets, layer names** | ✓ Hidden, Objects | — | — | — |
+| `javascript` | **JavaScript** | ✓ Hidden (catalog `/OpenAction`, named scripts), Objects (scripts stored as strings), Binary (scripts stored as streams: known values only, manual review) · ✗ pattern rules on scripts stored as streams on links, fields or pages | — | — | — |
+| `private-data` | **Private application data** (`/PieceInfo`) | live: ✓ Binary known values only · ✗ pattern rules; leftover: ✓ Objects (manual review) | — | — | — |
+| `unindexed` | **Unindexed bytes** — after the final `%%EOF`, in comments, or in an object whose table entry is marked free | ✗ | ✗ | ✗ | ✗ |
 
 ¹ Fonts whose codes are not the characters shown: CID fonts with
 Identity-H encoding (Word, Chrome and embedded TrueType fonts commonly use
@@ -70,6 +76,18 @@ and the latest 49.
 
 ⁸ Leftover payloads are read up to 16 MB decompressed; a warning says
 when a larger one was cut.
+
+Also ✗, found by the review of the redesign plan (cases `gap.*` in the
+case library; `docs/REDESIGN.md` §8):
+
+- Data after a compressed stream's end marker, inside its declared
+  length — on a live page (`live.after-stream-end`) or in a leftover
+  object (`orphaned.after-stream-end`). Both parsers stop at the marker.
+- Leftover plain text in a stream labelled as a font program or an image
+  (`orphaned.mislabelled`): skipped as binary.
+- Text converted to outlines (filled paths) in a leftover stream or a
+  switched-off layer (`orphaned.outlines`, `oc-off.pixels`): nothing
+  renders it and nothing flags it.
 
 ## Matching limits
 
