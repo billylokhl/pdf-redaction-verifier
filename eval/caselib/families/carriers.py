@@ -131,7 +131,7 @@ for carrier, (plant, cell, storage, where) in CARRIERS.items():
             case("leftover.orphan-removed-by-gc", truth="clean", features=cell,
                  expected=expect(0), story=f"The SSN in {where}, saved as {how}: the "
                  "rewrite drops the unreferenced object, so nothing is left.",
-                 **common)(_builder(plant, layout))
+                 **common)(_builder(plant, layout))  # type: ignore[arg-type]
             continue
         family = {"orphaned": "leftover"}.get(storage,
                                               "page" if carrier == "content-stream" else "document")
@@ -139,11 +139,11 @@ for carrier, (plant, cell, storage, where) in CARRIERS.items():
         if carrier == "info" and name == "incremental":
             # The update rewrites the Info dictionary (keywords), so its
             # earlier version, still holding the SSN, is superseded too.
-            found += (("SSN", "superseded"),)
+            found += (("SSN", "superseded"),)  # type: ignore[assignment]
         case(f"{family}.{carrier}-{name}",
              truth="leak", cells=cell,
              expected=expect(1, findings=found, layers=(("SSN", "Objects"),)),
-             story=f"The SSN in {where}, saved as {how}.", **common)(_builder(plant, layout))
+             story=f"The SSN in {where}, saved as {how}.", **common)(_builder(plant, layout))  # type: ignore[arg-type]
 
 for name, (layout, how) in LAYOUTS.items():
     case(f"document.clean-{name}", truth="clean", features="live.plain", expected=expect(0),

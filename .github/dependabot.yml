@@ -1,0 +1,34 @@
+version: 2
+# Any dependency bump can change what the verifier reads or how a case PDF
+# is written: review it with the full test suite (the case library's build
+# lock flags a PyMuPDF output change).
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    assignees:
+      - billylokhl
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    assignees:
+      - billylokhl
+    labels:
+      - ci

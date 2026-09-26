@@ -385,13 +385,19 @@ contract, the two-tier matching model, and the known limitations.
 ## Tests
 
 ```bash
-pytest
+pytest                                    # Run the test suite
+ruff check .                              # Lint code
+mypy                                      # Type check (eval/caselib only)
+pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
 ```
 
 Every regression test pins a previously confirmed bug; fixtures are
 generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
-absent. Two suites go further and test robustness directly:
+absent. CI also runs ruff (correctness) and mypy (types, on the case
+library), and reports coverage on the Linux Python 3.12 job; the commands
+above run the same checks locally. Two suites go further and test
+robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
@@ -409,6 +415,10 @@ To exercise **real vendor PDFs** without committing binaries, drop a
 `foo.pdf` plus a `foo.pdf.secrets.json` sidecar (a list of `[name, value]`
 pairs) into `tests/corpus_pdfs/`; `test_corpus.py` picks them up
 automatically.
+
+Any change that can move a file's exit code (clean → uncertifiable, or
+certified → leak) must be listed under **Verdict changes** in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Glossary
 

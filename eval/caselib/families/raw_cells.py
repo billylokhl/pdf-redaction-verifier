@@ -261,7 +261,7 @@ RECOVER_REVISION = "Cut the file at the earlier revision's %%EOF and open that r
 def _incremental(base: bytes, new: dict[int, bytes | None]):
     """A case builder: *base* with *new* appended as one incremental update."""
     def build_case(path: Path) -> None:
-        path.write_bytes(incremental_update(base, new))
+        path.write_bytes(incremental_update(base, new))  # type: ignore[arg-type]
     return build_case
 
 

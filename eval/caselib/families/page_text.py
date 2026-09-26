@@ -156,7 +156,7 @@ def _present(layout: str, rule: str) -> bool:
 
 def _cell(layout: str) -> str:
     if layout in CELL:
-        return CELL[layout]
+        return CELL[layout]  # type: ignore[return-value]
     if "pages" in layout or "page-break" in layout:
         return "match.page-break"
     return "match.line-wrap"

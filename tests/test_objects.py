@@ -147,7 +147,6 @@ class TestStructuralScan:
         # Both halves of the structural test, including a /Filter
         # pipeline — PyMuPDF renders those with no separators, so a
         # whitespace split would miss the codec.
-        path = tmp_path / "kinds.pdf"
         doc = fitz.open()
         doc.new_page().insert_text((72, 72), "clean")
         image = doc.get_new_xref()
