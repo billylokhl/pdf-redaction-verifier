@@ -19,15 +19,17 @@ layers:
                 bodies excluded by key and by content so their bytes are
                 never parsed as text. A finding names its carrier and
                 whether the document still references it (ORPHANED).
-  5. Binary   — qpdf QDF normalization streamed with bounded memory, as a
-                backstop for objects a damaged xref hides from the walk;
-                value-secret matches only, always manual-review warnings
+  5. Binary   — qpdf QDF rewrite of the reachable objects, streamed with
+                bounded memory: a second parser's view (damaged-xref
+                recovery, decompressed attachments). Orphaned objects and
+                earlier incremental revisions are not in its output.
+                Value-secret matches only, always manual-review warnings
                 (they can be numeric-operand or binary-data collisions).
   6. Hidden   — attachments, annotations, form-field values, link
                 targets, JavaScript and optional-content group names via
                 PyMuPDF: content no page renders, needing no external
-                binary. An attachment's stream is compressed, so it is
-                invisible to the byte sweep above.
+                binary, and naming the carrier — the qpdf sweep sees an
+                attachment only as anonymous, manual-review bytes.
 
 All comparisons happen on *normalized* strings: NFKD-decomposed (folding
 fullwidth and compatibility forms to ASCII), combining marks stripped,
@@ -238,6 +240,25 @@ class SecretMatcher:
         )
         self.max_len: int = max(map(len, norms), default=0)
 
+    def crossing(self, left: str, right: str) -> list[str]:
+        """Names of secrets with an occurrence that straddles the join of
+        *left* and *right* (both normalized).
+
+        Decided by position, not by comparing which names occur on each
+        side: a secret wholly inside one side must not mask a *separate*
+        occurrence that crosses the join.
+        """
+        joined, cut = left + right, len(left)
+        names: set[str] = set()
+        for secret in self._secrets:
+            needle = secret.normalized
+            if len(needle) < 2:
+                continue            # a 1-character value cannot straddle
+            start = joined.find(needle, max(0, cut - len(needle) + 1))
+            if 0 <= start < cut:
+                names.add(secret.name)
+        return sorted(names)
+
     def search(self, normalized_haystack: str) -> list[Secret]:
         if self._pattern is None:
             return []
@@ -286,8 +307,12 @@ class PatternRule:
 # Unicode look-alikes folded to ASCII before pattern matching: hyphen and
 # dash variants to '-', space variants to ' ', NULs (UTF-16 interleaving
 # residue) removed. NFKC in _fold_for_patterns handles fullwidth digits.
+# U+00AD (soft hyphen) is included because fonts embedded by some producers
+# (PyMuPDF with Arial, for one) extract an ordinary '-' as U+00AD, which
+# NFKC leaves alone — so "123-45-6789" read back as "123\xad45\xad6789".
 _PATTERN_FOLD_TABLE = {
-    **{cp: "-" for cp in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212)},
+    **{cp: "-" for cp in (0x00AD, 0x2010, 0x2011, 0x2012, 0x2013, 0x2014,
+                          0x2015, 0x2043, 0x2212)},
     **{cp: " " for cp in (0x00A0, 0x2007, 0x2009, 0x200A, 0x202F, 0x3000)},
     0x0000: None,
 }
@@ -542,36 +567,59 @@ def _join_cluster(
     return "".join(out)
 
 
+# How many of extract_visual_text's readings are genuine reading orders
+# (hard-finding eligible); the rest are reconstructions (manual review).
+TEXT_GENUINE_READINGS = 3
+
+
 def extract_visual_text(page: fitz.Page) -> list[str]:
     """Reconstruct page text in visual reading orders.
 
-    Returns up to three variants: horizontal (top-to-bottom lines, the
-    primary reading order), vertical columns top-to-bottom, and vertical
-    columns bottom-to-top. The vertical variants catch text drawn with a
-    rotated matrix, whose glyphs form vertical runs that a horizontal
-    line sort scrambles.
+    Returns five readings, or [] for a page with no glyphs:
+
+    0. horizontal — horizontally written text, lines top to bottom;
+    1-2. rotated, top-to-bottom and bottom-to-top — only text written
+       vertically (a rotated matrix), read along its own direction;
+    3-4. every glyph read in vertical columns, top-to-bottom and
+       bottom-to-top.
+
+    Readings 0-2 are genuine: each reads text in the direction it was
+    written. Readings 3-4 are reconstructions: a column of an ordinary
+    horizontal page stacks one glyph from each of many lines (a ledger's
+    last digits, a numbered list's numbers), so they can assemble a value
+    by accident — yet they are also the only reading of a value written
+    one character per line. Callers treat them as manual-review only.
     """
-    glyphs: list[tuple[float, float, float, float, str]] = []
+    flat: list[tuple[float, float, float, float, str]] = []
+    rotated: list[tuple[float, float, float, float, str]] = []
     raw: dict[str, Any] = page.get_text("rawdict")
     for block in raw.get("blocks", []):
         for line in block.get("lines", []):
+            # dir is the writing direction: (1, 0) for ordinary text,
+            # (0, -1) / (0, 1) for text rotated 90 / 270 degrees.
+            written_vertically = abs(line.get("dir", (1.0, 0.0))[1]) > 0.1
             for span in line.get("spans", []):
                 for char in span.get("chars", []):
                     c: str = char.get("c", "")
                     if not c or c.isspace():
                         continue
                     x0, y0, x1, y1 = char["bbox"]
-                    glyphs.append(
-                        ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0, c)
-                    )
+                    glyph = ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0, c)
+                    (rotated if written_vertically else flat).append(glyph)
 
-    if not glyphs:
+    if not (flat or rotated):
         return []
 
-    horizontal = _reconstruct(glyphs, cluster_axis=1)
-    vertical_down = _reconstruct(glyphs, cluster_axis=0)
-    vertical_up = "\n".join(line[::-1] for line in vertical_down.split("\n"))
-    return [horizontal, vertical_down, vertical_up]
+    def columns(glyphs: list[tuple[float, float, float, float, str]]) -> tuple[str, str]:
+        if not glyphs:
+            return "", ""
+        down = _reconstruct(glyphs, cluster_axis=0)
+        return down, "\n".join(line[::-1] for line in down.split("\n"))
+
+    horizontal = _reconstruct(flat, cluster_axis=1) if flat else ""
+    rotated_down, rotated_up = columns(rotated)
+    all_down, all_up = columns(flat + rotated)
+    return [horizontal, rotated_down, rotated_up, all_down, all_up]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -646,6 +694,20 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────────
 # Shared per-page layer driver (Text and OCR)
 # ──────────────────────────────────────────────────────────────────────────
+# Report wording for the page-by-page layers, shared with the tests.
+CROSS_PAGE_LOCATION = "across page boundaries, pages {prev}–{page} ({note})"
+CROSS_LINE_WARNING = (
+    "{layer}: page {page} contains a cross-line sequence matching secret "
+    "{name!r} — possibly a coincidental concatenation of adjacent tokens; "
+    "manual review recommended"
+)
+CROSS_PAGE_WARNING = (
+    "{layer}: page {page}: a sequence matching secret {name!r} appears only "
+    "when text is joined across the page break before it — possibly a "
+    "coincidental concatenation; manual review recommended"
+)
+
+
 def scan_page_layer(
     doc: fitz.Document,
     matcher: SecretMatcher,
@@ -660,24 +722,35 @@ def scan_page_layer(
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
 
-    Every extracted variant is searched per page; *each* variant is
-    additionally streamed through its own RollingScanner so secrets that
-    span a page boundary are still caught — including secrets in vertical
-    or rotated text (reported without a page number).
+    The extractor returns several readings per page. The first
+    *hard_variants* are genuine reading orders; any others are
+    reconstructions. Callers set it to the number of genuine readings:
+    TEXT_GENUINE_READINGS for Text, all of them for OCR.
 
-    Pattern rules match per visual line of the first *hard_variants*
-    variants — those the extractor produces in natural reading order —
-    giving hard findings aggregated per rule across pages. Matches that
-    appear only in fused multi-line text, in reconstruction-derived
-    variants (the Text layer's vertical column orders), or across page boundaries
-    are demoted to manual-review warnings. Callers set *hard_variants* to
-    the number of leading variants that are genuine reads rather than
-    reconstructions: 1 for Text, all of them for OCR.
+    Known values:
+    - hard: on one line of a genuine reading; or running from the last
+      line of a page onto the first line of the next page, in a genuine
+      reading;
+    - manual review: on one line of a reconstructed reading only, when a
+      page's lines are joined, or crossing a page break any other way
+      (other lines, blank or unreadable pages in between).
+    Each page break is checked on its own, so every place a value crosses
+    one is reported where it happens.
+
+    Pattern rules match per visual line of the genuine readings for hard
+    findings, aggregated per rule across pages. Matches that appear only
+    in fused multi-line text, in reconstructed readings, or across page
+    boundaries are manual-review warnings.
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
     """
-    cross_page_scanners: list[RollingScanner] = []
+    keep = max(matcher.max_len - 1, 0)   # enough of one side to straddle a join
+    # Per reading: the last `keep` characters read so far (the tail a match
+    # crossing into the next page must start in), and — genuine readings
+    # only — the page number and end of the last line, for the seam.
+    tails: dict[int, str] = {}
+    last_line: dict[int, tuple[int, str]] = {}
     cross_page_patterns = PatternScanner(patterns, collapse_separators=True)
     layer_hard: dict[str, tuple[list[int], str]] = {}
     layer_soft: dict[str, tuple[list[int], str]] = {}
@@ -688,35 +761,66 @@ def scan_page_layer(
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warnings.append(f"{layer}: page {page_index + 1} failed ({exc})")
             continue
-        for vi, text in enumerate(variants):
-            normalized_full = normalize_string(text)
-            # High-confidence: match each visual line individually.
-            per_line_hits: set[str] = set()
-            for line in text.split("\n"):
-                norm_line = normalize_string(line)
-                if norm_line:
-                    for secret in matcher.search(norm_line):
-                        per_line_hits.add(secret.name)
-                        report.record(layer, secret.name,
-                                      f"page {page_index + 1} ({note})")
-            # Cross-line: the full normalized text fuses all lines into
-            # one string.  A match that appears only here (not within
-            # any single line) may be a coincidental concatenation of
-            # adjacent tokens — the same collision class the Binary
-            # layer explicitly demotes to a manual-review warning.
-            for secret in matcher.search(normalized_full):
-                if secret.name not in per_line_hits:
-                    report.warnings.append(
-                        f"{layer}: page {page_index + 1} contains a cross-line "
-                        f"sequence matching secret {secret.name!r} — possibly "
-                        "a coincidental concatenation of adjacent tokens; "
-                        "manual review recommended"
-                    )
-            # Feed every variant into its own cross-page scanner so
-            # vertical/rotated text spanning a page boundary is caught.
-            while len(cross_page_scanners) <= vi:
-                cross_page_scanners.append(RollingScanner(matcher))
-            cross_page_scanners[vi].feed(normalized_full)
+        page_no = page_index + 1
+        norm_lines = [
+            [ln for ln in map(normalize_string, text.split("\n")) if ln]
+            for text in variants
+        ]
+
+        # Hard: one line of a genuine reading.
+        hard_here: set[str] = set()
+        for lines in norm_lines[:hard_variants]:
+            for line in lines:
+                for secret in matcher.search(line):
+                    hard_here.add(secret.name)
+                    report.record(layer, secret.name, f"page {page_no} ({note})")
+
+        # Hard: the page seam — a value running from the previous page's
+        # last line onto this page's first line, in a genuine reading. A
+        # page that failed or held no text never updates last_line, so it
+        # breaks the adjacency: what lies between the halves is unseen.
+        seam_here: set[str] = set()
+        for vi, lines in enumerate(norm_lines[:hard_variants]):
+            prev = last_line.get(vi)
+            if lines and prev and prev[0] == page_no - 1:
+                for name in matcher.crossing(prev[1], lines[0]):
+                    seam_here.add(name)
+                    report.record(layer, name, CROSS_PAGE_LOCATION.format(
+                        prev=page_no - 1, page=page_no, note=note))
+
+        # Manual review, once per secret per page: a reconstructed reading's
+        # single line, or any reading's lines joined.
+        page_warned: set[str] = set()
+        for vi, lines in enumerate(norm_lines):
+            candidates = [s for line in lines for s in matcher.search(line)] \
+                if vi >= hard_variants else []
+            candidates += matcher.search("".join(lines))
+            for secret in candidates:
+                if secret.name in hard_here or secret.name in page_warned:
+                    continue
+                page_warned.add(secret.name)
+                report.warnings.append(CROSS_LINE_WARNING.format(
+                    layer=layer, page=page_no, name=secret.name))
+
+        # Manual review: anything else crossing into this page from the text
+        # before it, in any reading — the net that keeps every page-break
+        # split, however joined, from being silent.
+        crossing_warned: set[str] = set()
+        for vi, lines in enumerate(norm_lines):
+            full = "".join(lines)
+            tail = tails.get(vi, "")
+            if keep and tail and full:
+                for name in matcher.crossing(tail, full[:keep]):
+                    if name in seam_here or name in crossing_warned:
+                        continue
+                    crossing_warned.add(name)
+                    report.warnings.append(CROSS_PAGE_WARNING.format(
+                        layer=layer, page=page_no, name=name))
+            if keep and full:
+                tails[vi] = (tail + full)[-keep:]
+            if vi < hard_variants and keep and lines:
+                last_line[vi] = (page_no, lines[-1][-keep:])
+
         # Pattern rules, two tiers. Hard findings come only from single
         # visual lines of the primary variant (natural reading order) —
         # matches that need fused lines, vertical column reconstructions,
@@ -746,12 +850,6 @@ def scan_page_layer(
             cross_page_patterns.feed("\n" + (variants[0] if variants else ""))
         if fail_fast and (report.leaked or layer_hard):
             break
-
-    found_in_layer = {f.secret_name for f in report.findings if f.layer == layer}
-    for scanner in cross_page_scanners:
-        for secret in scanner.found:
-            if secret.name not in found_in_layer:
-                report.record(layer, secret.name, f"across page boundaries ({note})")
 
     # Aggregate pattern results: one finding (or warning) per rule.
     def _pages_label(pages: list[int]) -> str:
@@ -2218,6 +2316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scan_page_layer(
                 doc, matcher, report,
                 layer="Text", extractor=extract_visual_text, note="visual text layer",
+                hard_variants=TEXT_GENUINE_READINGS,
                 patterns=patterns, fail_fast=args.fail_fast,
             )
         except Exception as exc:

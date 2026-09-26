@@ -31,7 +31,7 @@ The exit code is the verdict:
 | --- | --- |
 | `0` | **Clean** — no secret found, and every layer actually ran. |
 | `1` | **Leak** — a secret was detected. The report names where. |
-| `2` | **Cannot certify** — a layer could not run, or a match needs manual review. Never treat a `2` as clean. |
+| `2` | **Cannot certify** — a layer could not run, a match needs manual review, the rules ask for something this tool can't check, or the PDF needs a password to open. Never treat a `2` as clean. |
 
 That last row is the whole point: the tool fails *closed*. If it could not
 look somewhere, it says so instead of certifying the document clean.
@@ -56,33 +56,38 @@ decomposition (fullwidth `１` → `1`), accents stripped, casefolded, then
 every character that is not a letter or digit removed. The tool then looks
 for each normalized secret as an exact substring, using one compiled
 Python `re` pattern built from all the secrets. So `123-45-6789` matches
-`123 45 6789`, `１２３４５６７８９`, or the value split by a page break —
-but not `123-45-6788`.
+`123 45 6789`, `１２３４５６７８９`, or the value continuing from one page
+onto the next — but not `123-45-6788`.
 
 **Pattern rules → regular expressions (Python `re`).** Built-in classes
-and your own regexes run on the extracted text after Unicode dashes,
-spaces and fullwidth digits are folded to plain ASCII (NFKC). Each
+and your own regexes run on the extracted text after NFKC normalization
+(fullwidth digits become ASCII) and a fold of common Unicode dashes
+(U+00AD soft hyphen, U+2010–2015, U+2043, U+2212) to `-` and Unicode
+spaces to a plain space. Each
 built-in class is a regex plus a validator that rejects matches which
 cannot be real:
 
 | Class | Regex finds | Validator rejects |
 | --- | --- | --- |
-| `ssn` | `NNN-NN-NNNN` with consistent separators | SSA-impossible numbers: area `000`, `666` or `9xx`; group `00`; serial `0000` |
+| `ssn` | `NNN-NN-NNNN` (separator `-`, space or `.`, used consistently) or any bare 9-digit number | SSA-impossible numbers: area `000`, `666` or `9xx`; group `00`; serial `0000` |
 | `credit-card` | card-number digit runs (13–19 digits) | numbers failing the Luhn checksum, and 14-digit PDF date stamps |
 | `email` | `name@domain.tld` | image asset names like `logo@2x.png` |
 | `us-phone` | 10-digit numbers, optional `+1` | numbers breaking NANP rules (area code and exchange must start 2–9) |
 | `pattern` | your regex, as written | — |
 
-**Two tiers.** A *hard* finding (exit `1`) needs the match to be
-genuinely present on one real surface: a single visual line, one PDF
-object, one metadata value, one OCR reading. A known value split across a
-page break, or across strings inside one PDF object, still counts as hard,
-because splitting a secret is a real way to hide it. A match that only
-appears after separate lines or table columns on a page are joined is a
-*manual-review* warning (exit `2`). That way a coincidental run of digits
-never hard-fails a clean document, and a possible leak is never silent.
-Regex patterns are held to the stricter rule: hard only within one line or
-one decoded string. Reported samples are masked (`****6789`).
+**Two tiers.** A *hard* finding (exit `1`) is a match on one real surface:
+one line of a genuine reading (see the Text and OCR layers), one decoded
+PDF string, one form or annotation field. Known values are also hard when
+split across the strings of one PDF object, or when they run from the
+last line of one page onto the first line of the next. Anything else the
+tool finds by joining text — lines or table columns within a page, a
+vertical column of an ordinary page, any other join across a page break —
+is a *manual-review* warning (exit `2`), so a coincidental run of digits
+never hard-fails a clean document. Demotion never discards a match; what
+the tool cannot see at all is listed under [Known gaps](#known-gaps).
+Regex patterns are held to the stricter rule: hard only within one line
+of a genuine reading or one decoded string. Reported samples are masked
+(`****6789`).
 
 ## What it checks — six layers, most likely to find a leak first
 
@@ -98,7 +103,7 @@ has seen, not measured statistics.
 | 3 | **Metadata** | sits in document properties | every metadata tag dumped and matched | exiftool, PyMuPDF |
 | 4 | **Hidden** | no page renders at all | attachments, annotations, form fields, links, JavaScript, layer names read and matched | PyMuPDF |
 | 5 | **OCR** | exists only as pixels | each page rendered to an image, text recognized, matched | PyMuPDF, Apple Vision |
-| 6 | **Binary** | only a damaged file structure still reaches | whole file decompressed, searched for known values | qpdf |
+| 6 | **Binary** | survives in the objects qpdf rebuilds — a cross-check for damaged files | reachable objects decompressed, searched for known values | qpdf |
 
 ### 1. Text — the page's text layer
 
@@ -106,18 +111,28 @@ The most common redaction mistake is drawing a black box over text that is
 still there: invisible on screen, but selectable and copyable.
 
 - **Method:** PyMuPDF `page.get_text("rawdict")` returns every character
-  with its position. The tool rebuilds lines itself — clustering
-  characters by position (tolerance scales with font size) and sorting
-  within each line — so text drawn out of order, rotated, or one digit per
-  form box still reads back as `123-45-6789`. It builds three readings:
-  horizontal, vertical top-down and vertical bottom-up. A wide gap inside
-  a line is treated as a column break, so neighbouring table cells never
-  merge into a false number. Secrets are also matched across page
-  boundaries.
-- **Tier:** a known value is hard when it appears within one line of any
-  reading or across a page break; a pattern is hard only within one line of
-  the horizontal reading. Matches that need lines joined on a page are
-  manual-review.
+  with its position and writing direction. The tool rebuilds lines itself
+  — clustering characters by position (tolerance scales with font size)
+  and sorting within each line — so text drawn out of order or one digit
+  per form box still reads back as `123-45-6789`. A wide gap inside a line
+  is treated as a column break, so neighbouring table cells never merge
+  into a false number. Characters placed outside the page area are not
+  returned by PyMuPDF, so this layer does not read them.
+- **Readings:** three *genuine* readings — horizontally written text read
+  left to right, and text written vertically (rotated) read along its own
+  direction both ways — plus two *reconstructed* readings of every glyph
+  in vertical columns. The reconstructions are the only reading of a value
+  written one character per line, but a column of an ordinary page also
+  stacks unrelated lines (a numbered list's numbers), so they only ever
+  give manual-review warnings.
+- **Across pages:** each page break is checked on its own. A value running
+  from the last line of one page onto the first line of the next, in a
+  genuine reading, is hard. Any other match crossing the break — needing
+  other lines, or across a blank or unreadable page — is a manual-review
+  warning at the page it crosses into.
+- **Tier:** a known value is hard on one line of a genuine reading, or at
+  a page seam as above. A pattern is hard only on one line of a genuine
+  reading. Everything that needs text joined is manual-review.
 
 ### 2. Objects — everything the file stores
 
@@ -126,13 +141,20 @@ the file as an object nothing uses any more. This layer caught every leak
 in this project's real-document case.
 
 - **Method:** walks every numbered PDF object with PyMuPDF (`xref_object`,
-  `xref_stream`) and decodes its strings with a built-in parser that
+  `xref_stream`) and decodes its string tokens with a built-in parser that
   understands PDF syntax — `(literal)` strings with escapes and nested
-  parentheses, `<hex>` strings, UTF-16 text. Images, fonts and embedded
-  files are skipped (identified by their dictionary keys, backed by a
-  byte-content check) so binary data cannot produce false matches.
-  References are followed from the file's root; any object not reached is
-  reported **ORPHANED** — left behind, not displayed.
+  parentheses, `<hex>` strings — as latin-1, or UTF-16 when marked. Fonts
+  and encodings are not applied, so text in a font whose codes are not
+  plain characters — CID/Identity-H fonts (standard for Word, Chrome and
+  embedded TrueType), custom `/Differences` encodings, subset fonts with
+  sequential codes, Type3 fonts — cannot be read here. Stream bodies are
+  skipped when their dictionary marks them as an image, font program,
+  attachment, object stream or cross-reference stream, or when under 85%
+  of their first 64 KB is printable; so an inline image making up more
+  than about 15% of a content stream also hides the text around it. Every
+  dictionary is always scanned. References are followed from the file's
+  root; any object not reached is reported **ORPHANED** — left behind, not
+  displayed.
 - **Tier:** a known value is hard anywhere in one object, even split
   across its strings; a pattern is hard only within one decoded string.
 
@@ -141,21 +163,29 @@ in this project's real-document case.
 Title, author, subject, keywords and custom fields often keep a name or
 case number that was scrubbed from the page.
 
-- **Method:** `exiftool -json` dumps every metadata tag; each value is
-  matched on its own. Tags describing the local file (`SourceFile`,
-  `FileName`, `Directory`) are ignored, so the file's own path cannot
-  match. The XMP metadata block is also read in-process with PyMuPDF
-  `get_xml_metadata()`.
-- **Tier:** hard findings per metadata value.
+- **Method:** `exiftool -json` dumps the metadata tags. Known values are
+  searched across the whole dump (tag names included); patterns run on
+  each value separately. When the Info dictionary and XMP use the same tag
+  name, exiftool reports only one of them — the Objects layer still reads
+  the Info strings. Nine tags describing the local file are ignored
+  (`SourceFile`, `ExifToolVersion`, `FileName`, `Directory`, `FileSize`,
+  `FileModifyDate`, `FileAccessDate`, `FileInodeChangeDate`,
+  `FilePermissions`), so the file's own path cannot match. The XMP block is
+  also read in-process with PyMuPDF `get_xml_metadata()`.
+- **Tier:** hard.
 
 ### 4. Hidden — content no page renders
 
 - **Method:** PyMuPDF APIs read each hidden place directly: attachments
-  (`embfile_*` — names, descriptions and contents up to 16 MB),
+  (`embfile_*` — names, descriptions, and contents up to 16 MB decoded as
+  UTF-8 text; zip, Office and nested-PDF containers are not unpacked),
   annotation text and attached files (`page.annots()`), form-field values
   and names (`page.widgets()`), link targets (`page.get_links()`),
-  JavaScript (found by walking the document's action entries), and
-  optional-content group names (`get_ocgs()`).
+  JavaScript in the catalog's `/OpenAction` and the top level of its named
+  JavaScript tree, and optional-content group names (`get_ocgs()`).
+  Scripts on links, form fields, pages or the catalog's other actions are
+  not reported here; a script stored as a string is still caught by the
+  Objects layer, and one stored as a stream by Binary (manual review).
 - **Tier:** hard findings for text fields; attachment *contents* are
   arbitrary bytes, so matches there are manual-review.
 
@@ -174,23 +204,65 @@ flattened to images, text converted to vector outlines.
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
-  are still stored in the file.
+  are still stored in the file. Text outside the page area is not
+  rendered, so OCR does not see it either.
 
 ### 6. Binary — the raw decompressed file
 
-A backstop for files whose structure is damaged or unusual enough that
-the object walk cannot reach every object.
+A cross-check using a second PDF parser: qpdf can recover objects from a
+damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable` rewrites the file with
-  every stream decompressed; the output is streamed through the same
-  normalized substring search, for value secrets only. Regex patterns are
-  not run here — raw bytes produce too many coincidental matches.
+- **Method:** `qpdf --qdf --object-streams=disable` rewrites the objects
+  reachable from the file's root, decompressing their streams (image
+  codecs such as JPEG stay encoded); the output is streamed through the
+  same normalized substring search, for value secrets only. Regex patterns
+  are not run here — raw bytes produce too many coincidental matches.
+  Unreferenced (orphaned) objects and superseded object versions are
+  **not** in qpdf's output, so this layer is not a backstop for them.
+  Decompressed font programs *are* in it, and their tables contain byte
+  runs such as `123456789`, so a sequential value can raise a coincidental
+  Binary warning on a clean document.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction
 cannot hide a leak from the others. What no tool can tell you is whether
 your *rule set* was complete — this proves the redactor removed what you
 named, not that you named everything.
+
+### Known gaps
+
+Places the tool does not currently read, so a secret there can be **not
+detected** (exit `0`):
+
+- **An object rewritten by an incremental update under the same number.**
+  The earlier version is still in the file, but PyMuPDF and qpdf read only
+  the newest. (An object the update merely stopped referencing is found by
+  the Objects layer as ORPHANED.)
+- **Orphaned content in a font whose codes are not plain characters**
+  (see Objects): Text and OCR only see content still on a page.
+- **Orphaned attachments and orphaned XMP metadata** — their bodies are
+  not PDF string syntax, and the layers that read them follow only what
+  the document still references.
+- **Attachments in compressed containers** (zip, Office, nested PDF).
+- **Pixels under a box drawn over a scanned image** (see OCR).
+- **A leftover content stream dominated by an inline image** (see Objects).
+- **Text placed outside the page area**, unless the Objects layer can
+  decode it.
+- **A value split across a page break** with a header, footer or page
+  number between its halves, or where a page's last line is not its
+  reading-order last line (two-column layouts, text rotated 270°).
+- **A value wrapped inside one column of a multi-column page** — joining a
+  page's lines interleaves the columns.
+- **Pattern-class numbers written without dashes** (bare or
+  space-separated) and wrapped at a line or page break — the pattern
+  regexes cannot match across a line break.
+
+Known false positives: a short value such as a 5-digit ZIP can be
+assembled as a hard finding at a page seam (a page number followed by the
+next page's first line); a value assembled down a vertical column or
+through several page-number-only pages is only ever manual review; and
+decompressed font tables can raise coincidental Binary warnings (see
+Binary). Prefer longer, more specific values.
 
 ## Rules file
 
@@ -214,7 +286,8 @@ Each entry has a `name` and exactly one of:
 | `exact_values` | value rules (normalized matching) |
 | `patterns` | pattern rules, compiled `IGNORECASE` — the same flags the redactor uses |
 | `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card` |
-| `backend`, `model`, `llm_url`, `scrub_metadata` | ignored |
+| `backend`, `model`, `llm_url`, `ollama_url`, `scrub_metadata` | ignored |
+| any other key | warning (exit `2`) — a typo or a newer redactor key is surfaced, not skipped |
 
 The other entity types — `person_name`, `address`, `date_of_birth`,
 `account_number`, `drivers_license`, `passport` — are found by LLM
@@ -224,10 +297,22 @@ a shared config never implies coverage it lacks. `phone` is only partly
 verifiable (NANP numbers only) and says so; an entity type outside
 the redactor's ten is a hard error, not a coverage gap.
 
-Two YAML gotchas: **omitting `entity_types` means all ten** (matching
-the redactor's default), and **quote your values and patterns** — YAML reads
-unquoted `00123456` as octal and `Invoice #[0-9]{6}` as just `Invoice`;
-the tool keeps the literal text and warns (exit `2`) until you quote it.
+Because unverifiable types always raise a warning, a config that lists
+`phone`, any LLM-only type, or omits `entity_types` (which means all ten,
+matching the redactor's default) can never exit `0`. A pattern with a
+capturing group also warns (exit `2`): the redactor removes only the
+captured part, so the rest of the match can survive redaction.
+
+**Quote your values and patterns.** YAML reads an unquoted `00123456` in
+`exact_values` as an octal number; the tool keeps the literal text and
+warns (exit `2`), because the redactor reading the same file uses the
+number instead. For `patterns` the tool also keeps the literal text (an
+unquoted `0777` is searched as `0777`) but does not warn, although the
+redactor will use `511`. A `#`
+starts a YAML comment, so unquoted `Invoice #[0-9]{6}` becomes just
+`Invoice`: the tool warns when a pattern looks truncated but still scans
+the truncated rule, which can match ordinary words (exit `1`), and it does
+not check `exact_values` for this at all.
 
 ## Installation
 
@@ -321,9 +406,10 @@ and what the file stores.
 | **Form-field value** | Data typed into a fillable form. |
 | **Fused** | Separate pieces of text joined together (e.g. two table cells), which can accidentally form a digit sequence. |
 | **Garbage-collected rewrite** | Saving a PDF so unreferenced (orphaned) objects are dropped. The fix for leftover-content leaks. |
+| **Genuine reading** | Page text read in the direction it was written (horizontal, rotated, or an OCR pass); its matches can be hard findings. |
 | **Guard** | A check in the code that prevents a known bug. |
-| **Hard finding** | A match on one genuinely contiguous piece of text; exits `1`. |
-| **Incremental update** | Edits appended to the end of a file; earlier versions of objects stay inside it. |
+| **Hard finding** | A match strong enough to count as a confirmed leak (exit `1`) — see each layer's *Tier* for the exact rule. |
+| **Incremental update** | Edits appended to the end of a file; earlier revisions stay inside it, and no layer reads them (see Known gaps). |
 | **Info / XMP** | The two places PDFs store metadata: the older Info dictionary and the newer XML block. |
 | **Layout-aware** | Rebuilds lines from where characters sit on the page, not the order the file draws them. |
 | **LLM** | Large language model — the AI the redactor uses to find names and addresses. |
@@ -343,12 +429,13 @@ and what the file stores.
 | **Outlined vector text** | Letters converted into drawn shapes: looks like text, isn't text data. |
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |
-| **qpdf** | External command-line tool that rewrites a PDF with everything decompressed. |
+| **qpdf** | External command-line tool that rewrites a PDF's reachable objects with their streams decompressed. |
+| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. |
 | **Regex** | A text-search pattern language. |
 | **Rendered page** | The page drawn as an image — what a viewer sees. |
 | **Sidecar** | A small companion file next to a PDF listing the secrets it contains. |
 | **Substring search** | Checking whether one string appears exactly inside another. |
-| **Surface** | One real piece of text: a line, a decoded string, a metadata value. |
+| **Surface** | One real piece of text: a line, a decoded PDF string, a form or annotation field. |
 | **UTF-16** | A text encoding PDFs use for non-ASCII strings; the Objects layer decodes it. |
 | **Validator** | A check that a match is structurally real (e.g. SSNs never start with `000` or `666`). |
 | **Walked structurally** | Reading objects one by one through the PDF's own structure rather than scanning raw bytes. |
