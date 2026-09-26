@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import fitz
+import pytest
 
 import verify
 
@@ -557,6 +558,32 @@ class TestLeftoverChecks:
                                 "/BitsPerComponent 8 /ColorSpace /DeviceGray >>")
             got = any("image(s)" in w for w in _scan_objects(path).warnings)
             assert got == flagged, (width, height)
+
+
+class TestContentSyntax:
+    """PDF separates tokens by whitespace or a delimiter. Leftover content
+    written compactly ("BT/F1 11 Tf", as clean_contents and redactor
+    write it) was not recognised, so its glyph codes were neither read nor
+    flagged (K8 in docs/REDESIGN.md)."""
+
+    @pytest.mark.parametrize("body", [
+        "BT /F1 12 Tf 72 700 Td (x) Tj ET",
+        "q BT/EM 11 Tf 1 0 0 1 72 770 Tm[<0034>]TJ ET Q",
+        "BT/F1 12 Tf(abc)Tj ET",
+        "BT\n/F1 12 Tf\n[<0001>]TJ\nET",
+        "BT /F1 1 Tf<0102>Tj ET",
+        "BT/F1 12 Tf(a)' ET",
+    ])
+    def test_text_objects_in_any_token_form(self, body) -> None:
+        assert verify._is_content_stream(body)
+
+    @pytest.mark.parametrize("body", [
+        "xBTy /F1 Tfz (a) Tj ET",          # operators inside other tokens
+        "BT/F1 12 Tf ET",                   # no show operator
+        "Notes on BT, ET, Tf and Tj.",      # prose naming the operators
+    ])
+    def test_not_text_objects(self, body) -> None:
+        assert not verify._is_content_stream(body)
 
 
 class TestLiveContentIsNeverLeftover:

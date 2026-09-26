@@ -31,8 +31,8 @@ cells).
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
 | `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
-| `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ · ✗ after a stream's end marker⁹, or labelled as a font or image | ⚑ Objects⁴ · ✗ ordinary-looking codes⁴, compact syntax¹⁰ | ⚑ Objects⁵ · ✗ small images⁵, text as outlines | ⚑ Objects |
-| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ · ✗ compact syntax¹⁰ | ⚑ Objects⁵ | ⚑ Objects |
+| `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ · ✗ after a stream's end marker⁹, or labelled as a font or image | ⚑ Objects⁴ · ✗ ordinary-looking codes⁴ | ⚑ Objects⁵ · ✗ small images⁵, text as outlines | ⚑ Objects |
+| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
 | `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
 | `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
 | `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
@@ -79,11 +79,6 @@ when a larger one was cut.
 
 ⁹ Data inside a compressed stream's declared length but after its end
 marker: both parsers stop at the marker, so it is never read.
-
-¹⁰ Leftover content written without whitespace after `BT` (`BT/F1 11 Tf`,
-as `clean_contents`, redactor and many producers write it) is not
-recognised as page content, so its glyph codes are neither read nor
-flagged.
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the

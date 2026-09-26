@@ -2100,15 +2100,23 @@ _ORPHAN_PAYLOAD_TYPES: dict[str, str] = {
     "/EmbeddedFile": "attachment",
     "/Metadata": "XMP metadata",
 }
+# PDF separates tokens by whitespace *or* a delimiter: "BT/F1 11 Tf" and
+# "Tf(text)Tj" are as valid as the spaced forms, and clean_contents,
+# redactor and many producers write them. An operator is therefore
+# bounded by whitespace, a delimiter, or the start/end of the stream.
+_PDF_DELIMS = r"\s()<>\[\]{}/%"
+_OP_START = rf"(?:^|(?<=[{_PDF_DELIMS}]))"
+_OP_END = rf"(?=[{_PDF_DELIMS}]|$)"
 # Content-stream structure: a text object (BT ... ET) with a font set and
-# a show operator, each a whitespace-delimited operator. Random bytes
-# contain "BT" and "Tj" by chance; they almost never contain this.
+# a show operator. Random bytes contain "BT" and "Tj" by chance; they
+# almost never contain this.
 _TEXT_OBJECT_RE = re.compile(
-    r"(?:^|\s)BT\s(?:(?!\sET\s).){0,4000}?\sTf\s(?:(?!\sET\s).){0,4000}?"
-    r"(?:[\s)>\]](?:Tj|TJ)|[)>]\s*['\"])(?:(?!\sET\s).){0,4000}?\sET(?:\s|$)",
+    rf"{_OP_START}BT{_OP_END}(?:(?!\sET\s).){{0,4000}}?\sTf{_OP_END}(?:(?!\sET\s).){{0,4000}}?"
+    rf"(?:[\s)>\]](?:Tj|TJ)|[)>]\s*['\"])(?:(?!\sET\s).){{0,4000}}?\sET{_OP_END}",
     re.S)
 # Any common content operator, for telling page content from a text payload.
-_CONTENT_OP_RE = re.compile(r"(?:^|\s)(?:q|Q|cm|re|Do|BT|ET|Tf|Td|Tm|m|l|f|S|W|n)(?=\s)")
+_CONTENT_OP_RE = re.compile(
+    rf"{_OP_START}(?:q|Q|cm|re|Do|BT|ET|Tf|Td|Tm|m|l|f|S|W|n){_OP_END}")
 # An inline image's dictionary, whose /W and /H decide whether it could
 # hold legible text.
 _INLINE_IMAGE_RE = re.compile(r"(?:^|\s)BI\s(.{0,400}?)\sID\s", re.S)

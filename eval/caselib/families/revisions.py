@@ -7,7 +7,7 @@ from pathlib import Path
 
 import fitz
 
-from ..model import SSN, KnownGap, case, expect
+from ..model import SSN, case, expect
 from ..pdfkit import (FILLER, body, cjk_font, embedded_font, png_of, redact,
                       save, update)
 from .leftover import embedded_glyphs, mixed_stream
@@ -52,12 +52,11 @@ def redacted_incremental_cjk(path: Path) -> None:
     update(path, lambda d: redact(d, SSN))
 
 
-@leak("revision.redacted-incremental-compact", "superseded.font.compact-syntax",
+@leak("revision.redacted-incremental-compact", "orphaned.font.compact-syntax",
       "A compactly written page in an embedded font, garbage-collected, then redacted "
-      "in an incremental save: only the earlier revision holds the SSN's glyph codes, "
-      "and they are neither read nor flagged.",
-      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "superseded"),)),
-      known_gap=KnownGap("superseded.font.compact-syntax", expect(0)),
+      "in an incremental save: the original stream, no longer referenced, still holds "
+      "the SSN's glyph codes.",
+      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
       mistake=INCREMENTAL, recovery=RECOVER_REVISION)
 def redacted_incremental_compact(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
@@ -136,7 +135,7 @@ def rewritten_mixed(path: Path) -> None:
       "A page in an embedded font, compacted, then its content stream cut short in an "
       "incremental save to drop the SSN line: only the earlier version holds it.",
       expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "superseded"),)),
-      known_gap=KnownGap("superseded.font.compact-syntax", expect(0)), mistake=INCREMENTAL)
+      mistake=INCREMENTAL)
 def truncated_stream(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, embedded_font(page), lines=[*FILLER, f"SSN {SSN}"])
