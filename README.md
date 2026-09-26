@@ -31,7 +31,7 @@ The exit code is the verdict:
 | --- | --- |
 | `0` | **Clean** — no secret found, and every layer actually ran. |
 | `1` | **Leak** — a secret was detected. The report names where. |
-| `2` | **Cannot certify** — a layer could not run, a match needs manual review, the rules ask for something this tool can't check, or the PDF needs a password to open. Never treat a `2` as clean. |
+| `2` | **Cannot certify** — a layer could not run, a match needs manual review, the tool found content it cannot read, the rules ask for something this tool can't check, or the PDF needs a password to open. Never treat a `2` as clean. |
 
 That last row is the whole point: the tool fails *closed*. If it could not
 look somewhere, it says so instead of certifying the document clean.
@@ -92,7 +92,9 @@ of a genuine reading or one decoded string. Reported samples are masked
 ## What it checks — six layers, most likely to find a leak first
 
 A redactor can succeed on the page and still leave the data in the file.
-The layers are ordered by how common their failure mode is in practice —
+[COVERAGE.md](COVERAGE.md) maps every place a secret can be stored against
+what reads it. The layers are ordered by how common their failure mode is
+in practice —
 a judgment from well-known redaction failures and the cases this project
 has seen, not measured statistics.
 
@@ -116,8 +118,8 @@ still there: invisible on screen, but selectable and copyable.
   and sorting within each line — so text drawn out of order or one digit
   per form box still reads back as `123-45-6789`. A wide gap inside a line
   is treated as a column break, so neighbouring table cells never merge
-  into a false number. Characters placed outside the page area are not
-  returned by PyMuPDF, so this layer does not read them.
+  into a false number. Text placed outside the visible page area is read
+  too: invisible to a viewer, but still in the file.
 - **Readings:** three *genuine* readings — horizontally written text read
   left to right, and text written vertically (rotated) read along its own
   direction both ways — plus two *reconstructed* readings of every glyph
@@ -155,6 +157,13 @@ in this project's real-document case.
   dictionary is always scanned. References are followed from the file's
   root; any object not reached is reported **ORPHANED** — left behind, not
   displayed.
+- **Leftover content:** orphaned objects, and every object that an
+  incremental update rewrote (each earlier revision is reopened by cutting
+  the file at its `%%EOF`). Leftover XMP packets and attachment bodies are
+  searched as raw text. Leftover content the tool finds but cannot read —
+  text in font codes that are not plain characters, text mixed with
+  binary data, images, non-text attachments — is **flagged** as a
+  manual-review warning rather than passed silently.
 - **Tier:** a known value is hard anywhere in one object, even split
   across its strings; a pattern is hard only within one decoded string.
 
@@ -178,7 +187,8 @@ case number that was scrubbed from the page.
 
 - **Method:** PyMuPDF APIs read each hidden place directly: attachments
   (`embfile_*` — names, descriptions, and contents up to 16 MB decoded as
-  UTF-8 text; zip, Office and nested-PDF containers are not unpacked),
+  UTF-8 text; an attachment that is not text — zip, Office, image, nested
+  PDF — is flagged as not scanned),
   annotation text and attached files (`page.annots()`), form-field values
   and names (`page.widgets()`), link targets (`page.get_links()`),
   JavaScript in the catalog's `/OpenAction` and the top level of its named
@@ -204,8 +214,8 @@ flattened to images, text converted to vector outlines.
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
-  are still stored in the file. Text outside the page area is not
-  rendered, so OCR does not see it either.
+  are still stored in the file. An image placed outside the visible page
+  area is not rendered, so OCR does not see it either.
 
 ### 6. Binary — the raw decompressed file
 
@@ -218,7 +228,7 @@ damaged cross-reference table, and it decompresses attachment contents.
   same normalized substring search, for value secrets only. Regex patterns
   are not run here — raw bytes produce too many coincidental matches.
   Unreferenced (orphaned) objects and superseded object versions are
-  **not** in qpdf's output, so this layer is not a backstop for them.
+  **not** in qpdf's output; the Objects layer covers those.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
   Binary warning on a clean document.
@@ -231,23 +241,13 @@ named, not that you named everything.
 
 ### Known gaps
 
-Places the tool does not currently read, so a secret there can be **not
-detected** (exit `0`):
+[COVERAGE.md](COVERAGE.md) has the full map. Places a secret can still be
+**not detected** (exit `0`):
 
-- **An object rewritten by an incremental update under the same number.**
-  The earlier version is still in the file, but PyMuPDF and qpdf read only
-  the newest. (An object the update merely stopped referencing is found by
-  the Objects layer as ORPHANED.)
-- **Orphaned content in a font whose codes are not plain characters**
-  (see Objects): Text and OCR only see content still on a page.
-- **Orphaned attachments and orphaned XMP metadata** — their bodies are
-  not PDF string syntax, and the layers that read them follow only what
-  the document still references.
-- **Attachments in compressed containers** (zip, Office, nested PDF).
-- **Pixels under a box drawn over a scanned image** (see OCR).
-- **A leftover content stream dominated by an inline image** (see Objects).
-- **Text placed outside the page area**, unless the Objects layer can
-  decode it.
+- **Pixels under a box drawn over an image** (see OCR), and images placed
+  outside the page area.
+- **Leftover text in a font that maps ordinary-looking codes to other
+  glyphs** — flagged only when the codes are visibly not text.
 - **A value split across a page break** with a header, footer or page
   number between its halves, or where a page's last line is not its
   reading-order last line (two-column layouts, text rotated 270°).
@@ -256,6 +256,11 @@ detected** (exit `0`):
 - **Pattern-class numbers written without dashes** (bare or
   space-separated) and wrapped at a line or page break — the pattern
   regexes cannot match across a line break.
+
+Leftover images, leftover text in non-plain font codes, and attachments
+that are not text are **flagged** (exit `2`) rather than read: a clean
+document containing them cannot certify as `0` until the tool learns to
+read them.
 
 Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the
