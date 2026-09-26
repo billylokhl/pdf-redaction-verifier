@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .model import Case
 from .pdfkit import finalize
@@ -27,8 +30,27 @@ def available() -> frozenset[str]:
     return frozenset(have)
 
 
+@contextlib.contextmanager
+def _utc() -> Iterator[None]:
+    """PyMuPDF stamps attachments and annotations with local time, and the
+    zone's length ("Z" vs "-07'00'") cannot be pinned in place afterwards:
+    build under UTC so every machine writes the same bytes."""
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+
 def build(case: Case, path: Path) -> Path:
-    case.build(path)
+    with _utc():
+        case.build(path)
     finalize(path)
     return path
 
