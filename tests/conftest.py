@@ -56,6 +56,7 @@ requires_full_env = pytest.mark.skipif(
     reason="needs Apple Vision (macOS), exiftool, and qpdf for a certifiable scan",
 )
 requires_qpdf = pytest.mark.skipif(not HAS_QPDF, reason="needs qpdf")
+requires_exiftool = pytest.mark.skipif(not HAS_EXIFTOOL, reason="needs exiftool")
 requires_metadata_tools = pytest.mark.skipif(
     not (HAS_EXIFTOOL or HAS_QPDF), reason="needs exiftool or qpdf"
 )
@@ -66,6 +67,7 @@ def run_verify(
     secrets: Path,
     *extra: str,
     env_overrides: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     if env_overrides:
@@ -73,7 +75,7 @@ def run_verify(
     return subprocess.run(
         [sys.executable, str(REPO_ROOT / "verify.py"),
          "--target", str(target), "--secrets", str(secrets), *extra],
-        capture_output=True, text=True, env=env, timeout=300,
+        capture_output=True, text=True, env=env, timeout=300, cwd=cwd,
     )
 
 
