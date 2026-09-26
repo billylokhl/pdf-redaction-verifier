@@ -18,7 +18,7 @@ updates:
     labels:
       - dependencies
     body: |
-      Any dependency bump needs the full test suite (the case library's build lock will flag PyMuPDF output changes).
+      Any dependency bump in pyproject.toml needs the full test suite to verify no output changes.
 
   # GitHub Actions
   - package-ecosystem: github-actions

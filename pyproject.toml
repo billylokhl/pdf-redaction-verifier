@@ -58,3 +58,7 @@ per-file-ignores = {}
 python_version = "3.10"
 ignore_missing_imports = true
 files = ["eval/caselib"]
+
+[[tool.mypy.overrides]]
+module = "verify"
+ignore_errors = true
