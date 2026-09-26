@@ -12,12 +12,12 @@ from __future__ import annotations
 import importlib
 import pkgutil
 
-from .cells import CELLS, UNDOCUMENTED_GAPS, Cell
+from .cells import CELLS, NONFITZ_PENDING, UNDOCUMENTED_GAPS, Cell
 from .model import (CODE, DEFAULT_RULES, REGISTRY, SSN, Case, Expect, KnownGap, case,
                     expect)
 
-__all__ = ["CELLS", "UNDOCUMENTED_GAPS", "Cell", "CODE", "DEFAULT_RULES", "REGISTRY", "SSN",
-           "Case", "Expect", "KnownGap", "case", "expect", "load"]
+__all__ = ["CELLS", "NONFITZ_PENDING", "UNDOCUMENTED_GAPS", "Cell", "CODE", "DEFAULT_RULES",
+           "REGISTRY", "SSN", "Case", "Expect", "KnownGap", "case", "expect", "load"]
 
 
 def load() -> dict[str, Case]:

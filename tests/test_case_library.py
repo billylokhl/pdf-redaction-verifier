@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from caselib import CELLS, REGISTRY, UNDOCUMENTED_GAPS, load
+from caselib import CELLS, NONFITZ_PENDING, REGISTRY, UNDOCUMENTED_GAPS, load
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.lock import LOCK, lockable
 from caselib.run import available, build, judge, scan
@@ -110,6 +110,17 @@ class TestEvidence:
         assert sorted(gaps - pinned - UNDOCUMENTED_GAPS) == []
         assert sorted(UNDOCUMENTED_GAPS & pinned) == [], "pinned now: remove from UNDOCUMENTED_GAPS"
         assert UNDOCUMENTED_GAPS <= gaps
+
+    def test_claimed_cells_have_non_fitz_evidence(self) -> None:
+        """Every claimed cell needs a caught leak case whose bytes were not
+        serialised by fitz — also what the tool reads with — or must be
+        listed in NONFITZ_PENDING (docs/REDESIGN.md §5's same-author-bias
+        guard). NONFITZ_PENDING may only shrink."""
+        covered = {cid for cid, cases in _evidence().items()
+                  if any(c.writer != "fitz" for c in cases)}
+        claimed = {cid for cid, cell in CELLS.items() if cell.status in ("read", "flagged")}
+        assert sorted(claimed - covered - NONFITZ_PENDING) == []
+        assert sorted(NONFITZ_PENDING & covered) == [], "covered now: shrink NONFITZ_PENDING"
 
     def test_known_gaps_name_gap_cells(self) -> None:
         for case in REGISTRY.values():
