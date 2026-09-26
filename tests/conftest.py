@@ -139,3 +139,8 @@ def leaky_pdf(tmp_path_factory: pytest.TempPathFactory) -> Path:
     doc.save(path)
     doc.close()
     return path
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "grid: a member of a parameterised case-library grid (CI runs these on Linux)")

@@ -40,7 +40,9 @@ WRITERS = frozenset({
     "file",        # a committed file (real tool output), used as is
 })
 ORIGINS = frozenset({"generated", "redactor"})
-REQUIREMENTS = frozenset({"ocr", "qpdf", "exiftool"})
+# "no-ocr": judged only where OCR is absent — for a gap in the text layer
+# that OCR happens to cover on macOS.
+REQUIREMENTS = frozenset({"ocr", "qpdf", "exiftool", "no-ocr"})
 STORAGE = frozenset({"live", "orphaned", "unreferenced", "superseded"})
 
 _ID_RE = re.compile(r"^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -50,7 +52,8 @@ _ID_RE = re.compile(r"^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$")
 class Expect:
     """A verdict and what must appear in the report.
 
-    *findings* are (rule, storage) hard findings; *warnings* are
+    *findings* are (rule, storage) hard findings — exact per rule: a rule
+    listed here may not also be found in a storage class not listed; *warnings* are
     (code, storage or None) warnings; *layers* are (rule, layer) — the
     layer that must report the finding, for cases whose cell is about one
     layer's reading. The report may hold more findings and review or
@@ -109,6 +112,10 @@ class Case:
     recovery: str = ""                # how the secret is recovered by hand
     rules: tuple[dict[str, str], ...] = DEFAULT_RULES
     requires: frozenset[str] = frozenset()   # tools needed to judge it
+    # Grid cases: one member of a parameterised family (the grid's name and
+    # this member's parameters). The id is the grid's slug plus the values.
+    grid: str | None = None
+    params: tuple[tuple[str, str], ...] = ()
 
     @property
     def family(self) -> str:
@@ -153,6 +160,8 @@ def case(
     recovery: str = "",
     rules: tuple[dict[str, str], ...] = DEFAULT_RULES,
     requires: tuple[str, ...] = (),
+    grid: str | None = None,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -166,7 +175,7 @@ def case(
             id=id, truth=truth, cells=as_tuple(cells), expected=expected, story=story,
             build=build, features=as_tuple(features), writer=writer, origin=origin,
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
-            requires=frozenset(requires),
+            requires=frozenset(requires), grid=grid, params=params,
         )
         return build
     return register

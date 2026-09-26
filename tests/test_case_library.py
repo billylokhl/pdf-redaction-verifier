@@ -31,6 +31,8 @@ def _params():
     for case_id, case in sorted(REGISTRY.items()):
         missing = case.requires - HAVE
         marks = [pytest.mark.skip(reason=f"needs {', '.join(sorted(missing))}")] if missing else []
+        if case.grid:
+            marks.append(pytest.mark.grid)     # CI runs grids on Linux only
         yield pytest.param(case, id=case_id, marks=marks)
 
 
@@ -160,6 +162,23 @@ class TestCoverageDoc:
 
 
 class TestLibrary:
+    def test_object_stream_case_really_packs_the_secret(self, tmp_path) -> None:
+        # The object-stream layout exists to put the secret inside an
+        # /ObjStm body (an annotation is packed; /Info is not): the surface
+        # behind the bug that called every packed object ORPHANED.
+        import fitz
+
+        from caselib import SSN
+        import verify
+        path = build(REGISTRY["document.annotation-objstm"], tmp_path / "objstm.pdf")
+        doc = fitz.open(path)
+        assert any(
+            doc.xref_get_key(x, "Type")[1] == "/ObjStm"
+            and verify.normalize_string(SSN)
+            in verify.normalize_string(doc.xref_stream(x).decode("latin-1"))
+            for x in range(1, doc.xref_length()) if doc.xref_is_stream(x))
+
+
     def test_lock_lists_every_lockable_case(self) -> None:
         expected_ids = {c.id for c in REGISTRY.values() if lockable(c)}
         assert set(LOCKED) == expected_ids, "case list changed: rerun python -m caselib.lock"

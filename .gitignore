@@ -7,3 +7,6 @@ venv/
 build/
 dist/
 .coverage
+
+# Local agent worktrees and settings
+.claude/

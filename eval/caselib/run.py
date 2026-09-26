@@ -22,8 +22,7 @@ _ENVIRONMENT = {"OCR_UNAVAILABLE": "ocr", "TOOL_MISSING": None}
 def available() -> frozenset[str]:
     import verify
     have = {name for name in ("qpdf", "exiftool") if shutil.which(name)}
-    if verify._OCR_IMPORTS_OK:
-        have.add("ocr")
+    have.add("ocr" if verify._OCR_IMPORTS_OK else "no-ocr")
     return frozenset(have)
 
 
@@ -112,6 +111,12 @@ def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
     found = {(f["rule"], f["storage"]) for f in report["findings"]}
     for rule, storage in sorted(want.findings - found):
         problems.append(f"missing finding {rule!r} ({storage})")
+    # For a rule the case expects, where it was found is exact: an extra
+    # storage (a live object also called ORPHANED) is a mislabel.
+    expected_rules = {rule for rule, _ in want.findings}
+    for rule, storage in sorted(found - want.findings):
+        if rule in expected_rules:
+            problems.append(f"unexpected finding {rule!r} ({storage})")
     by_layer = {(f["rule"], f["layer"]) for f in report["findings"]}
     for rule, layer in sorted(want.layers - by_layer):
         problems.append(f"no {layer} finding for {rule!r}")
