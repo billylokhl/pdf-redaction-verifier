@@ -6,8 +6,8 @@ Why this tool is built the way it is. For *how to use it*, see the
 ## Problem
 
 A redaction tool draws a black box. It does not necessarily remove the
-text underneath, the copy in the metadata, or the copy in an orphaned
-object left by an incremental save. Someone then has to answer: **is this
+text underneath, the copy in the metadata, or the original object it
+replaced — still in the file, unreferenced. Someone then has to answer: **is this
 document actually safe to release?**
 
 Answering it by opening the PDF and looking is exactly the method that
@@ -47,7 +47,7 @@ raise a finding.
 | **OCR** | Rendered pixels (Apple Vision) | Text with no text objects: scans, vector outlines |
 | **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
 | **Objects** | PDF objects walked structurally (PyMuPDF) | Orphaned content streams, dictionary strings |
-| **Binary** | Decompressed byte stream (qpdf) | Content absent from the xref table entirely |
+| **Binary** | qpdf's decompressed rewrite of the reachable objects | Objects qpdf recovers from a damaged file; decompressed attachment bytes (value rules only) |
 | **Hidden** | Attachments, annotations, form fields, links, scripts, layer names (PyMuPDF) | Content no page renders at all |
 
 They are independent on purpose: a leak that defeats extraction usually
@@ -59,11 +59,11 @@ content, and a *separate* "Remove Hidden Information" pass handles
 attachments, annotations, form data, scripts and layers — and its
 documentation notes that users routinely assume the first step did the
 second. An attachment is the case that forces a dedicated layer rather
-than trusting the qpdf sweep: its stream is compressed, so the secret is
-not present in the file's bytes in any form a byte scan can match.
-Annotations and link targets often *are* visible to qpdf as plain string
-literals, but only when qpdf is installed, and they surface as anonymous
-literals rather than naming the carrier. This layer needs no external
+than trusting the qpdf sweep: qpdf's rewrite does decompress it, but
+there a match is anonymous, value-rule-only, manual-review, and present
+only when qpdf is installed. Annotations and link targets are likewise
+visible to qpdf, but surface as anonymous bytes rather than naming the
+carrier. This layer needs no external
 binary and says exactly where the leak lives.
 
 It honours the two-tier model rather than claiming exemption from it.
@@ -116,12 +116,25 @@ What counts as program data is read from the object's own `/Subtype`,
 source for a marker. `/Image` occurs as a substring of the
 `/ProcSet [/PDF /Text /ImageB /ImageC /ImageI]` array that countless
 producers emit on ordinary text-bearing Form XObjects, so a substring
-test skipped those and lost their text silently. Three families are
-excluded: image samples, font programs — a TrueType `glyf` table
-tokenizes into literals whose bytes normalize into digit runs, which
-decoded two hard SSN findings out of a clean real-world document — and embedded
-files, which the Hidden layer already scans at the manual-review tier
-that arbitrary binary deserves.
+test skipped those and lost their text silently. Excluded by key:
+image samples (`/Subtype /Image`, image-codec filters), font programs
+(`/Length1`, `/Type1C`, `/CIDFontType0C`, `/OpenType`) — a TrueType
+`glyf` table tokenizes into literals whose bytes normalize into digit
+runs, which decoded two hard SSN findings out of a clean real-world document —
+embedded files, which the Hidden layer scans at the manual-review tier
+arbitrary binary deserves, and the `/ObjStm` and `/XRef` containers,
+whose bytes are other objects' serialized form. A stream that passes
+the key test is still skipped if under 85% of its first 64 KB is
+printable. That catches marker-less binary, but it also skips a content
+stream carrying a large inline image — text and all (see Known
+limitations). Only stream *bodies* are skipped; every dictionary is
+scanned.
+
+Only PDF string tokens are matched, decoded as latin-1 or as UTF-16 when
+they carry a byte-order mark. Text shown through a CID font with
+Identity-H encoding — standard for Word, Chrome and any embedded
+TrueType — is stored as glyph IDs, which this layer cannot map back to
+characters.
 
 Literals are read the way a PDF parser reads them, tracking nesting
 depth. `(SSN (mine): 123-45-6789)` is one string whose text contains
@@ -132,10 +145,13 @@ secret in plain sight. An unterminated literal still yields nothing:
 its extent is unknowable, and guessing one would fuse the rest of the
 object into a token that hard pattern rules could match across.
 
-qpdf still runs, reduced to what an object walk cannot see: the xref table
-lists only what the file currently references, so content orphaned by an
-incremental save exists in the bytes and not the table. Its matches stay
-manual-review warnings, because a byte-level match can be coincidence.
+qpdf still runs, as a cross-check over the objects it rebuilds: it can
+recover objects from a damaged cross-reference table, and it decompresses
+attachment streams. It is *not* an orphan backstop — `qpdf --qdf`
+rewrites only objects reachable from the trailer, so unreferenced objects
+and earlier revisions of an incrementally saved file are absent from its
+output. Its matches stay manual-review warnings, because a byte-level
+match can be coincidence.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode
@@ -174,9 +190,11 @@ look-alikes cannot evade an ASCII regex, and each class carries a
 **validator** — Luhn for cards, SSA area/group/serial rules for SSNs,
 NANP for phones — that rejects structurally impossible matches.
 
-Validators matter more than they might seem. `\d{9}` matches roughly
-0.0000001% of random text but ~89% of it passes naive SSN shape checks;
-the validators are what keeps the false-positive rate survivable.
+Validators help unevenly. Luhn rejects about 90% of random card-length
+digit runs, but the SSA rules reject only about 11% of random 9-digit
+numbers — and the `ssn` class also matches any bare 9-digit run. For SSNs
+it is mostly the two-tier model, not the validator, that keeps false
+positives survivable.
 
 ## The two-tier model
 
@@ -192,9 +210,10 @@ invoice column.
 
 The resolution is that **not all matches are equally trustworthy**:
 
-- **Hard findings (exit 1)** come only from surfaces where the matched
-  characters were genuinely adjacent in the document: one visual line,
-  one decoded PDF literal, one metadata value, one OCR reading pass.
+- **Hard findings (exit 1)** for a pattern come only from surfaces where
+  the matched characters were genuinely adjacent in the document: one
+  visual line of the horizontal reading or of either OCR reading, one
+  decoded PDF literal, one metadata value.
 - **Soft findings (exit 2, manual-review warnings)** come from anything
   that required fusing separate things: multi-line text, vertical column
   reconstructions, adjacent literals, page boundaries.
@@ -204,16 +223,24 @@ surfaces — as a `2` demanding review rather than a `1` asserting a
 breach. That is the correct confidence level for the evidence.
 
 **Value rules relax two joins, and only two.** A known value is exact and
-specific, so a split at a *structural* seam is treated as a deliberate
-split, not a coincidence: across the strings of one PDF object, and from
-the last line of one page onto the first line of the next (the natural
-reading continuation). Any other join — two lines within a page, or a
-page break reached only by also joining other lines — stays
-manual-review, because fused page text can still assemble a short value
-by accident. An earlier version fed each page's fully joined text to a
-cross-page scanner, which escalated ordinary same-page joins to hard
-findings labelled "across page boundaries"; the join is now checked at
-the seam itself.
+specific, so a split at a *structural* seam is treated as deliberate, not
+coincidental: across the strings of one PDF object, and from the last
+line of one page onto the first line of the next adjacent page — the
+natural reading continuation, extended through pages that hold a single
+line, so a value spread over three pages is still one continuation. A
+page with no text, or one that failed to extract, breaks that adjacency:
+what lies between the halves is unseen. Every other join — two lines
+within a page, a page break reached only by also joining other lines, a
+break across a blank or image-only page — stays manual-review.
+
+Nothing is silent either way. Behind the seam check, a whole-document
+rolling scan per reading reports anything that spans a page break any
+other way, as manual review. An earlier version fed that rolling scan
+straight to the hard tier, which escalated ordinary same-page joins to
+hard findings labelled "across page boundaries"; a first fix that
+checked only adjacent pages then silently lost values spread over three
+or more. The seam-plus-backstop split keeps the confidence honest
+without ever being less sensitive than the plain rolling scan.
 
 **Fences** are how the hard tier stays honest. The class regexes allow at
 most one separator character between digit groups, so inserting *two*
@@ -245,8 +272,11 @@ inflate the tolerance enough to merge body text.
 Because rotated text produces vertical glyph runs that a horizontal sort
 scrambles, three variants are produced: horizontal, vertical top-down,
 and vertical bottom-up. Only the horizontal one is a genuine reading
-order, so only it feeds the hard tier; the vertical ones are
-reconstructions and their matches are soft.
+order, so only it feeds the hard tier *for pattern rules*; their matches
+in the vertical reconstructions are soft. Known values are hard on a
+single line of any reading — a specific value is unlikely to assemble by
+accident within one line — though that assumption fails for short values
+(see Known limitations).
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,
@@ -259,8 +289,9 @@ The tool must survive documents that are hostile or merely huge. qpdf
 output is streamed in chunks rather than buffered, with rolling scanners
 that keep only enough tail to catch matches spanning a boundary. Pattern
 feeds are batched (per-literal regex sweeps measured ~100x slower), rules
-already matched are skipped, and every subprocess has a deadline enforced
-with `select` so a stalled tool cannot hang the run. Report samples are
+already matched are skipped, and every subprocess has a deadline — qpdf's
+stream is read under `select`, exiftool runs under `communicate(timeout)`
+— so a stalled tool cannot hang the run. Report samples are
 masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
@@ -274,7 +305,7 @@ That removes a drift risk, and introduces a subtler one worth naming.
 Independence of *method* survives: `entity_types` are mapped onto this
 tool's own class regexes and validators, never the redactor's patterns,
 so a flaw in the redactor's detection cannot hide itself from the check,
-and the five layers still look where the redactor may not have.
+and the six layers still look where the redactor may not have.
 
 Independence of *scope* does not. A category the config omits is one this
 tool never searches for, so verification proves the redactor executed its
@@ -287,9 +318,24 @@ the gap is stated rather than implied away.
 
 - **OCR is macOS-only.** Apple Vision has no portable equivalent here;
   elsewhere that layer reports unavailable and the run exits `2`.
-- **Encrypted PDFs are rejected** rather than scanned.
+- **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted
+  with only an owner password opens without one and is scanned normally.
 - **Pattern rules cannot span pages as hard findings** — they surface as
-  review warnings. Value rules do span pages.
+  review warnings. Value rules are hard only at a page seam (see the
+  two-tier model).
+- **Silent misses — places no layer reads:** earlier revisions of an
+  incrementally saved file; leftover content set in Identity-H fonts;
+  pixels hidden under a box drawn over a scanned image; JavaScript on
+  links, form fields or pages (only document-level scripts are read); a
+  leftover content stream carrying an inline image; text placed outside
+  the page area when the Objects layer cannot decode it; and a value
+  split across a page break with a header, footer or page number between
+  its halves, or where the page's last line is not its reading-order
+  last line (two columns, 270° rotation).
+- **Short values raise false hard findings.** A 5-digit value can be
+  assembled at a page seam (a page number followed by the next page's
+  first line) or down a vertical reading (a numbered list's first
+  column). Prefer longer, more specific values.
 - **Custom regexes are trusted.** A pathological pattern can be slow; the
   built-in classes are anchored to avoid quadratic backtracking, but a
   user-supplied one is the user's responsibility.

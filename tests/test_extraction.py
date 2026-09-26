@@ -88,58 +88,194 @@ class TestVisualOrder:
             doc.close()
 
 
-def _scan_pages(pages: list[list[str]]) -> verify.ScanReport:
-    """Text layer only, one line of text per list entry, one list per page."""
+def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
+    """One list of lines per page; rotate=90 lays each line out vertically."""
     doc = fitz.open()
     for lines in pages:
         page = doc.new_page()
         for i, line in enumerate(lines):
-            page.insert_text((72, 100 + 30 * i), line)
+            if rotate:
+                page.insert_text((100 + 30 * i, 300), line, rotate=rotate)
+            else:
+                page.insert_text((72, 100 + 30 * i), line)
+    return doc
+
+
+def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
+          hard_variants: int = 1, secrets=(("SSN", SSN),)) -> verify.ScanReport:
     report = verify.ScanReport()
-    matcher = verify.SecretMatcher([verify.Secret("SSN", verify.normalize_string(SSN))])
+    matcher = verify.SecretMatcher(
+        [verify.Secret(name, verify.normalize_string(v)) for name, v in secrets])
     try:
-        verify.scan_page_layer(doc, matcher, report, layer="Text",
-                               extractor=verify.extract_visual_text,
-                               note="visual text layer", patterns=[])
+        verify.scan_page_layer(doc, matcher, report, layer=layer,
+                               extractor=extractor or verify.extract_visual_text,
+                               note="visual text layer", patterns=[],
+                               hard_variants=hard_variants)
     finally:
         doc.close()
     return report
 
 
-class TestPageBoundaryTiers:
-    """A value split across lines is manual-review within a page and hard
-    only when it genuinely continues from one page's last line onto the
-    next page's first line."""
+def _scan_pages(pages: list[list[str]], **kw) -> verify.ScanReport:
+    return _scan(_build(pages), **kw)
 
+
+SEAM = "across page boundaries, continuing onto page {} (visual text layer)"
+JOINED = ("Text: page {}: a sequence matching secret 'SSN' appears only when "
+          "text is joined across a page break")
+
+
+def _joined_warnings(report: verify.ScanReport) -> list[str]:
+    return [w.split(" — ")[0] for w in report.warnings if "page break" in w]
+
+
+class TestPageBoundaryTiers:
+    """Where a split value lands: hard only at a genuine page seam (last line
+    of one page onto the first line of the next adjacent page, continuing
+    through single-line pages); manual-review for every other join; never
+    silent where a plain rolling scan would have caught it."""
+
+    # ── same page ──────────────────────────────────────────────────────
     def test_same_page_split_is_not_escalated(self) -> None:
         # Regression: each page's fully joined text fed a cross-page rolling
         # scanner, so a same-page cross-line join became a hard finding
         # mislabelled "across page boundaries" — on a one-page document.
         report = _scan_pages([["Invoice total 123-45-", "6789 units shipped"]])
         assert report.findings == []
-        assert any("cross-line" in w for w in report.warnings)
+        assert [w for w in report.warnings if "cross-line" in w] == report.warnings
+        assert len(report.warnings) == 1
 
-    def test_split_between_last_and_first_line_is_hard(self) -> None:
-        report = _scan_pages([["intro", "Applicant SSN 123-45-"],
-                              ["6789 continues here", "more"]])
-        assert [f.location for f in report.findings] == [
-            "across page boundaries, pages 1–2 (visual text layer)"]
-
-    def test_split_needing_other_lines_is_manual_review(self) -> None:
-        # Spans the break only by also joining two lines of page 1.
-        report = _scan_pages([["ref 123", "45-"], ["6789 end"]])
+    def test_cross_line_warning_is_raised_once_per_page(self) -> None:
+        # Diagonal digits fuse in all three readings; one warning, not three.
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, digit in enumerate("123456789"):
+            page.insert_text((72 + 20 * i, 100 + 20 * i), digit)
+        report = _scan(doc)
         assert report.findings == []
-        assert any("spans the page break" in w for w in report.warnings)
-
-    def test_split_continues_over_a_blank_page(self) -> None:
-        report = _scan_pages([["SSN 123-45-"], [], ["6789 tail"]])
-        assert [f.location for f in report.findings] == [
-            "across page boundaries, pages 1–3 (visual text layer)"]
+        assert len(report.warnings) == 1 and "cross-line" in report.warnings[0]
 
     def test_confirmed_leak_draws_no_coincidence_warning(self) -> None:
-        # Regression: the cross-line check compared only against hits from
-        # its own reading, so vertical readings called a secret found hard
-        # on one horizontal line "possibly coincidental" — twice.
+        # Regression: vertical readings called a secret found hard on one
+        # horizontal line "possibly coincidental" — twice.
         report = _scan_pages([["SSN 123-45-6789"], ["next page"]])
         assert [f.location for f in report.findings] == ["page 1 (visual text layer)"]
         assert report.warnings == []
+
+    def test_single_line_hit_in_a_vertical_reading_counts(self) -> None:
+        # Rotated text: only a vertical reading holds the value on one line.
+        # That hit is hard and must suppress the horizontal cross-line join.
+        report = _scan(_build([["SSN 123-45-6789"]], rotate=90))
+        assert [f.location for f in report.findings] == ["page 1 (visual text layer)"]
+        assert report.warnings == []
+
+    # ── the seam: hard ─────────────────────────────────────────────────
+    def test_split_between_last_and_first_line_is_hard(self) -> None:
+        report = _scan_pages([["intro", "Applicant SSN 123-45-"],
+                              ["6789 continues here", "more"]])
+        assert [f.location for f in report.findings] == [SEAM.format(2)]
+        assert report.warnings == []
+
+    def test_value_chained_over_three_pages_is_hard(self) -> None:
+        # Regression (silent miss): the seam check compared only adjacent
+        # pages, so a value whose middle part is the whole of page 2 was
+        # neither a finding nor a warning. Single-line pages now carry the
+        # continuation.
+        report = _scan_pages([["intro", "SSN 123-"], ["45-"], ["6789 end"]])
+        assert [f.location for f in report.findings] == [SEAM.format(3)]
+        assert report.warnings == []
+
+    def test_seam_keeps_enough_of_the_previous_line(self) -> None:
+        # Eight of nine digits on the last line: the continuation must keep
+        # max_len-1 characters or the value drops to manual review.
+        report = _scan_pages([["SSN 123-45-678"], ["9 end"]])
+        assert [f.location for f in report.findings] == [SEAM.format(2)]
+
+    def test_value_wholly_on_the_first_line_is_not_a_seam(self) -> None:
+        # Found on page 2's first line alone: a page finding, not also a
+        # spurious "across page boundaries" one.
+        report = _scan_pages([["intro"], ["SSN 123-45-6789 end"]])
+        assert [f.location for f in report.findings] == ["page 2 (visual text layer)"]
+        assert report.warnings == []
+
+    def test_every_seam_is_reported(self) -> None:
+        report = _scan_pages([["SSN 123-45-"], ["6789", "id 123-"], ["45-6789"]])
+        assert [f.location for f in report.findings] == [SEAM.format(2), SEAM.format(3)]
+
+    def test_rotated_split_across_pages_is_hard(self) -> None:
+        report = _scan(_build([["SSN 123-45-"], ["6789 end"]], rotate=90))
+        assert [f.location for f in report.findings] == [SEAM.format(2)]
+        assert report.warnings == []
+
+    # ── everything else: manual review, never silent ───────────────────
+    def test_split_needing_other_lines_on_the_first_page(self) -> None:
+        report = _scan_pages([["ref 123", "45-"], ["6789 end"]])
+        assert report.findings == []
+        assert _joined_warnings(report) == [JOINED.format(2)]
+
+    def test_split_needing_other_lines_on_the_next_page(self) -> None:
+        report = _scan_pages([["SSN 123-45-"], ["67", "89 end"]])
+        assert report.findings == []
+        assert _joined_warnings(report) == [JOINED.format(2)]
+
+    def test_split_over_multi_line_middle_page(self) -> None:
+        report = _scan_pages([["SSN 123-"], ["45", "-67"], ["89 end"]])
+        assert report.findings == []
+        assert _joined_warnings(report) == [JOINED.format(3)]
+
+    def test_one_character_either_side_of_the_break(self) -> None:
+        # The backstop window must hold max_len-1 characters on each side.
+        for pages in ([["x 1234", "5678"], ["9 end"]],
+                      [["abc 1"], ["2345", "6789"]]):
+            report = _scan_pages(pages)
+            assert report.findings == []
+            assert _joined_warnings(report) == [JOINED.format(2)], pages
+
+    def test_blank_or_unreadable_middle_page_breaks_the_seam(self) -> None:
+        # Content between the halves is unseen (blank, punctuation-only, or
+        # failed to extract), so the join is not a proven continuation:
+        # manual review, not a hard finding — but never silent.
+        for pages in ([["SSN 123-45-"], [], ["6789 tail"]],
+                      [["SSN 123-45-"], ["* * *"], ["6789 tail"]]):
+            report = _scan_pages(pages)
+            assert report.findings == [], pages
+            assert _joined_warnings(report) == [JOINED.format(3)], pages
+
+        def flaky(page: fitz.Page) -> list[str]:
+            if page.number == 1:
+                raise RuntimeError("unreadable")
+            return verify.extract_visual_text(page)
+
+        report = _scan(_build([["SSN 123-45-"], ["x"], ["6789 tail"]]),
+                       extractor=flaky)
+        assert report.findings == []
+        assert _joined_warnings(report) == [JOINED.format(3)]
+
+    def test_a_confirmed_leak_suppresses_the_joined_warning(self) -> None:
+        report = _scan_pages([["SSN 123-45-6789", "id 123", "45-"], ["6789 x"]])
+        assert [f.location for f in report.findings] == ["page 1 (visual text layer)"]
+        assert report.warnings == []
+
+
+class TestPageBoundaryTiersOcr:
+    """The same rules on the OCR path: two genuine readings, both hard-eligible."""
+
+    @staticmethod
+    def _ocr(pages_text: list[list[str]]) -> verify.ScanReport:
+        doc = fitz.open()
+        for _ in pages_text:
+            doc.new_page()
+        readings = {i: t for i, t in enumerate(pages_text)}
+        return _scan(doc, layer="OCR", hard_variants=2,
+                     extractor=lambda page: readings[page.number])
+
+    def test_seam_is_hard(self) -> None:
+        report = self._ocr([["x\nSSN 123-45-"] * 2, ["6789 end"] * 2])
+        assert [f.location for f in report.findings] == [SEAM.format(2)]
+        assert report.warnings == []
+
+    def test_blank_middle_page_is_manual_review(self) -> None:
+        report = self._ocr([["x\nSSN 123-45-"] * 2, [""] * 2, ["6789 end"] * 2])
+        assert report.findings == []
+        assert [w.split(" — ")[0] for w in report.warnings] == [
+            JOINED.format(3).replace("Text:", "OCR:")]
