@@ -1,7 +1,8 @@
 # Redesign plan
 
-Status: **draft, revision 2** — revised after four independent adversarial
-reviews (soundness, feasibility, migration/evaluation, engineering).
+Status: **draft, revision 3** — revised after four independent adversarial
+reviews (soundness, feasibility, migration/evaluation, engineering) and a
+confirmation pass.
 Nothing here is implemented yet.
 
 This plan replaces `verify.py` — one 3,000-line module — with a package
@@ -48,9 +49,8 @@ A matching problem: built-in pattern classes have no context and raise
 false **hard** findings on 7.5–13% of clean real-world files (dates as
 card numbers, UUID digits as SSNs).
 
-What already works and is kept: fail-closed on tool failure (any
-non-zero qpdf exit, missing OCR, a repaired earlier revision → exit
-`2`), two-tier findings, the xref-chain revision walk, the matching
+What already works and is kept: fail-closed on tool failure (qpdf
+failure, missing OCR, a repaired earlier revision → exit `2`), two-tier findings, the xref-chain revision walk, the matching
 engine and rules formats.
 
 ### The implementation problems
@@ -69,8 +69,7 @@ engine and rules formats.
 ## 2. Goal, threat model, non-goals
 
 **Goal.** Exit `0` means every **obligation** in the ledger was
-discharged and nothing matched. Obligations are registered before
-scanning and start `UNEXAMINED`:
+discharged and nothing matched. Obligations start `UNEXAMINED`:
 
 - one per *unit* of stored content (every object in every revision,
   every child a decoder uncovers, every unindexed byte range);
@@ -83,16 +82,34 @@ A unit's obligation is discharged only when its decoder **consumed** it
 completely — proved by a witness the core checks (§4) — not merely when
 its bytes were attributed to it.
 
+Most unit obligations are discovered while scanning, so the parent
+**anchors** the ledger before it starts the scanning child, from facts
+it can establish independently:
+
+- the file size — the child's reported unit spans must tile `[0, size)`
+  exactly, checked in the parent;
+- the page count as reported by qpdf (separate process) — one view
+  obligation per page;
+- the in-use object numbers of the current revision as reported by qpdf
+  — each must appear as a unit;
+- the tool and rules-scope obligations;
+- a completion sentinel the child must send last, with counts of what
+  it reported.
+
+An empty or short but well-formed report therefore cannot yield exit
+`0`.
+
 **In scope.** Files from any producer, including malformed, repaired,
 linearized, encrypted-with-owner-password and incrementally updated
-files, where the sensitive data was *meant to be removed*.
+files, where the sensitive data was *meant to be removed*. A file that
+needs a user password the tool does not have exits `2`.
 
 **Hostile input.** The PDF is untrusted input to the verifier. Crashes,
 hangs and resource exhaustion are **defended** (exit `2`). Memory-
 corruption exploits in native parsers (MuPDF, qpdf) are **mitigated**,
-not defended: pinned versions, an independent parse in a separate
-process that a forged result would have to match, and an optional OS
-sandbox (no network, no writes).
+not defended: pinned versions, the parent's anchors (a forged result
+must still tile the file and match qpdf's page tree and current-revision
+object set), and an optional OS sandbox (no network, no writes).
 
 **Non-goals** (stated in the README):
 
@@ -116,9 +133,13 @@ In priority order.
 2. **Trust sits in witnesses, not in decoders' word.** `DECODED` is
    accepted only when the decoder's witness balances (bytes consumed,
    glyphs mapped). The **exit-0 audit surface** is listed explicitly:
-   `model`, `verdict`, the inventory byte-tiling check, the witness
-   checks, the font-Unicode classifier, the normalizer and matcher, and
-   each decoder's witness computation.
+   `model`, `verdict`, the parent's anchors and the parent/child
+   protocol, the inventory tokenizer and byte tiling, reference-graph and
+   resource resolution, decryption, the witness checks, the font-Unicode
+   classifier, the normalizer and matcher, and each decoder's witness
+   computation. Where our own code produces text a wrong answer would
+   hide (decryption, resource resolution), it is also cross-checked
+   against MuPDF for the objects both can see (§4).
 3. **Classification is verified, never declared.** A unit's kind and any
    `NOT_APPLICABLE` reason must be confirmed by a successful structural
    parse (font program parses, image sample count matches). If a parse
@@ -260,7 +281,12 @@ are never enumerated via `xref_length()`.
   form). This is what content streams need to decode (below).
 - **Encryption**: per-object decryption using each revision's
   `/Encrypt`; unindexed ranges in an encrypted file cannot be decrypted
-  and are flagged (details in an ADR).
+  and are flagged. Our decrypted strings and streams are compared with
+  MuPDF's for every object MuPDF can reach; any mismatch is a flag (a
+  wrong key yields garbage that still tokenises). Details in an ADR.
+- **Resource resolution** is cross-checked the same way: for content
+  drawn on current pages, the fonts we resolve must match the fonts
+  MuPDF reports in its text trace.
 
 ### Decoding content streams
 
@@ -279,6 +305,12 @@ missing context gives silently wrong text (no error, no warning).
   Unicode source (ToUnicode covering the codes used, a standard encoding,
   or `/Differences` with standard glyph names). MuPDF gives no signal of
   its own.
+- **Consumption witness**: MuPDF's interpreter silently skips malformed
+  operators, unbalanced `BT`/`q` and bad inline images, so our own
+  content tokenizer counts the character codes in every text-show
+  operand (using each font's code length) and this must equal the glyph
+  count in the text trace. Any MuPDF warning while interpreting the
+  stream also means not `DECODED`. Feasibility is part of spike S1.
 - **Every token** is covered: strings outside text-show operators
   (`/ActualText`, marked-content property lists, `BX`/`EX` sections)
   are decoded and searched too.
@@ -286,10 +318,15 @@ missing context gives silently wrong text (no error, no warning).
   images) is also rendered on its scratch page and OCR'd, so text
   converted to outlines is read. If it cannot be rendered in a resolved
   context, it is flagged, never `NOT_APPLICABLE`.
-- A stream **no revision references** has no context: it is decoded
-  under a fallback (the union of document fonts) so a match can still
-  be found, but its status stays `FLAGGED`. A guessed context never
-  counts as `DECODED`.
+- A stream **no revision references** has no context: its strings are
+  searched as they are (as today) and it is also decoded under a
+  fallback (the union of document fonts), so a match is still found —
+  but its status stays `FLAGGED`. A guessed context never counts as
+  `DECODED`. This is stricter than today, where an orphaned stream of
+  plain-looking strings passes; it is exactly the leftover a redactor
+  that saves without garbage collection produces, and "clean up the
+  file" is the right advice. Phase 1 measures how often it fires; an
+  ADR accepts the cost or defines a narrower sound rule.
 - **Deduplication** key: hash(decrypted stream) + hash(resolved
   dependency closure: fonts, resources, colour spaces, masks). Evidence
   keeps every `UnitRef` that shared it.
@@ -305,14 +342,14 @@ missing context gives silently wrong text (no error, no warning).
 | Embedded file | By signature: text → detect and unwrap encoded runs (base64, quoted-printable, hex) then search; PDF → recursive verify (sub-ledger folded as worst status); zip/Office → unpack, per-paragraph text incl. deletions, comments, properties; else flagged | Shared global budget |
 | XMP / Info | XML text / strings | — |
 | Script stream | Raw text | — |
-| Font program | Parse (sfnt / CFF / Type1); search name and metadata strings | Parse fails → treated as unknown stream |
+| Font program | Parse (sfnt / CFF / Type1); search name and metadata strings | Parsed tables must span the whole stream (padding aside); bytes outside them become a `RESIDUE` child; parse fails → unknown stream |
 | Unknown / unverified stream | Every plausible decoder; raw text | Flagged unless a decoder fully consumes it |
 | Unindexed range | Raw text, or object decoders if it parses | Any non-whitespace → flagged |
 
 `NOT_APPLICABLE` reasons (closed list, each confirmed by parse):
-xref-stream field data, object-stream header table, a font program that
-parses and whose strings were searched, image data fully consumed by
-the image decoder. Extended only by ADR.
+xref-stream field data, object-stream header table, a font program
+whose parsed tables span the stream and whose strings were searched,
+image data fully consumed by the image decoder. Extended only by ADR.
 
 **Budget**: one object for the whole run including recursion — depth,
 bytes inflated, units, OCR pixels. Exhaustion → flagged.
@@ -400,8 +437,8 @@ difference fails the gate.
 - **macOS CI (pinned image, e.g. `macos-15`)**: `requires: ocr` cases
   only; OS and Vision versions recorded in the baseline.
 - **Local**: the real-world corpus. The PR commits
-  `eval/results/<tree-hash>.json`; CI fails if the hash does not match
-  the PR's code.
+  `eval/results/<tree-hash>.json`; CI fails if the hash (computed
+  excluding `eval/results/`) does not match the PR's code.
 - Runtime is reported in CI but gated locally (runner timing is noisy).
 
 ### Gallery
@@ -421,10 +458,18 @@ the tool's verdict. Built at the end of Phase 0; it never gates.
 - **Worst-of verdict.** While both exist, the shipped exit is the more
   severe of legacy and new (ordering `0 < 2 < 1`). The tool never
   becomes less strict.
-- **Shadow mode.** The new path first reports a would-be verdict (a JSON
-  field and a scorecard column). Enforcement is switched on per unit
-  kind as each decoder lands, so accounting does not flood exit `2`
-  before decoders exist.
+- **Shadow mode.** Two verdicts are computed from the ledger:
+  - the *shadow* verdict counts every obligation. It is reported (a JSON
+    field and a scorecard column) but never shipped or gated until
+    Phase 6;
+  - the *enforced* verdict counts only the tool, view, rules-scope and
+    cross-check obligations plus units of **enforced kinds**. It is what
+    enters the worst-of.
+
+  No unit kind is enforced until its decoder lands (Phase 4), so
+  accounting cannot flood exit `2` before decoders exist, and nothing
+  needs adapters over the legacy layers. Views are the existing page
+  readings and OCR, moved (not wrapped) in Phase 2.
 - **Legacy retires** only when the new path alone is never less severe
   than legacy on any case, except those in `accepted_diffs.yaml`.
 - **Legacy is otherwise frozen.** Known gaps found meanwhile become
@@ -440,13 +485,13 @@ the tool's verdict. Built at the end of Phase 0; it never gates.
 | **0c. Scorecard** | Runner, differential against `eval-ref-0`, `accepted_diffs.yaml`, real-corpus manifest with strata and large files, CI tiers. | Baseline committed; CI fails on unlisted diffs |
 | **0d. Hygiene** | ruff, mypy (non-strict), coverage report; hash-locked deps; Actions pinned by SHA; Dependabot; subprocess argv (`--`, `-config ''`, absolute paths, minimal env); `CHANGELOG.md`. Independent of 0a–0c. | CI green |
 | **0e. Gallery** | Generated from the case library. | — |
-| **1. Decisions** | ADRs: encryption; benign parser-warning categories; `NOT_APPLICABLE` list; image-OCR envelope method; pattern-class default tier; recursion budget. Measure parser-agreement and unindexed-byte rates on the corpus. | ADRs approved |
+| **1. Decisions** | ADRs: encryption; benign parser-warning categories; `NOT_APPLICABLE` list; image-OCR envelope method; pattern-class default tier; recursion budget; orphaned content streams. Spike S1b: consumption witness (code count vs texttrace glyph count). Measure on the corpus: parser-agreement, unindexed-byte and orphaned-content-stream rates. | ADRs approved |
 | **2. Move** | Move pure parts into the package; port behavioural tests to the case library or CLI; rewrite mutation tests against new module paths. | Per-case differential identical |
 | **3a. Inventory** | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. | Tiling holds on every corpus file; no crashes |
-| **3b. Ledger + verdict** | Obligations, witnesses, single verdict function, worst-of shipping, `--explain`. | Ledger-derived exit equals reference on every case (shadow) |
+| **3b. Ledger + verdict** | Obligations, parent anchors, child protocol and completion sentinel, witnesses, single verdict function, shadow and enforced verdicts, worst-of shipping, `--explain`. | Shipped exit identical to reference on every case; shadow verdict reported; a truncated or empty child report exits `2` |
 | **3c. Parser agreement** | As §4. | Flag rate as measured in Phase 1 |
-| **3d. Sandbox** | Child process, limits, watchdog, private temp dir. Prerequisite for 4b–4c. | Bomb/hang cases exit `2` |
-| **4a. Content decoder** | Scratch-page decoding with contexts, font witness, every token, render pass. Enforce for content kinds. | K3–K6 and the switched-off-layer / hidden-annotation / unused-resource cells closed; review rate not up |
+| **3d. Sandbox** | Limits, watchdog, private temp dir around the child from 3b. Prerequisite for 4b–4c. | Bomb/hang cases exit `2` |
+| **4a. Content decoder** | Scratch-page decoding with contexts, font witness, every token, render pass. Enforce for content kinds. | K3–K6 and the switched-off-layer / hidden-annotation / unused-resource cells closed; every per-case change is stricter and listed; review-rate change within what the orphan ADR accepted |
 | **4b. Image decoder** | Normalisation, OCR, validated envelope. | Leftover-image cells closed inside envelope; recall measured |
 | **4c. Containers** | Recursive PDFs, zip/Office, encoded-run unwrapping; global budget. | Container cells closed |
 | **4d. Filters + residue** | Filter-chain stage, `RESIDUE` children. | K1, K2 closed |
