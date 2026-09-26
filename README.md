@@ -36,6 +36,14 @@ The exit code is the verdict:
 That last row is the whole point: the tool fails *closed*. If it could not
 look somewhere, it says so instead of certifying the document clean.
 
+For scripts, add `--json report.json` to also write a machine-readable
+report: the verdict, each finding (samples masked), and each warning with
+a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
+match to judge), `coverage` (something not fully read) or `scope` (the
+rules ask for something the tool cannot check). The format is
+experimental; `schema_version` changes if a field is renamed or removed.
+`--version` prints the tool version.
+
 ## How it works
 
 New to PDF internals? Unfamiliar terms are defined in the

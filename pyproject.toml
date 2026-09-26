@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-redaction-verifier"
-version = "0.1.0"
+# Single source of truth: verify.__version__ (also printed by --version
+# and recorded in every --json report).
+dynamic = ["version"]
 description = "Forensic CLI that detects sensitive strings and pattern classes inside a PDF across text, OCR, metadata, object, binary-stream and hidden-object layers"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +37,9 @@ pdf-verify = "verify:run_cli"
 
 [tool.setuptools]
 py-modules = ["verify"]
+
+[tool.setuptools.dynamic]
+version = {attr = "verify.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

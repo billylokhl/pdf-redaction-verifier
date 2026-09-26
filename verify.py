@@ -54,6 +54,7 @@ sanitized in the report.
 Usage:
     python verify.py --target document.pdf --secrets secrets.json
     python verify.py --target document.pdf --secrets redact_config.yaml
+    python verify.py --target document.pdf --secrets secrets.json --json out.json
 
 Exit codes:
     0 — PASS: no secret found in any layer, all layers ran clean.
@@ -102,6 +103,12 @@ except ImportError:  # pragma: no cover
 # ──────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────
+# The verdict semantics are versioned with the tool: any change that can
+# move a file from 0 to 1/2, or from 1 to 2, bumps at least the minor.
+__version__ = "0.1.0"
+# Bumped when a field of the --json report is renamed, removed or changes
+# meaning; adding a field does not bump it.
+JSON_SCHEMA_VERSION: int = 1
 SUBPROCESS_TIMEOUT_S: int = 120
 OCR_DPI: int = 300
 # Floor for the visual-line clustering tolerance; the effective tolerance
@@ -187,6 +194,82 @@ class Finding:
     sample: str = field(default="", compare=False)
 
 
+# Every warning carries a stable code, so machine consumers (the --json
+# report, the evaluation harness) never depend on message wording. The
+# kind says why it blocks certification:
+#   review   — a possible match a human must judge
+#   coverage — content that was not (fully) scanned or read
+#   scope    — the rules cannot express or verify what was asked
+WARNING_CODES: dict[str, str] = {
+    # review
+    "REVIEW_CROSS_LINE": "review",
+    "REVIEW_CROSS_PAGE": "review",
+    "REVIEW_FUSED_PATTERN": "review",
+    "REVIEW_HIDDEN_TEXT": "review",
+    "REVIEW_METADATA_RAW": "review",
+    "REVIEW_OBJECT_TEXT": "review",
+    "REVIEW_ADJACENT_LITERALS": "review",
+    "REVIEW_BINARY": "review",
+    # coverage
+    "PAGE_FAILED": "coverage",
+    "LAYER_CRASHED": "coverage",
+    "OCR_UNAVAILABLE": "coverage",
+    "SKIPPED_FAIL_FAST": "coverage",
+    "EMPTY_DOCUMENT": "coverage",
+    "TOOL_MISSING": "coverage",
+    "TOOL_START_FAILED": "coverage",
+    "TOOL_TIMEOUT": "coverage",
+    "TOOL_EXIT_NONZERO": "coverage",
+    "TOOL_NO_OUTPUT": "coverage",
+    "TOOL_OUTPUT_MALFORMED": "coverage",
+    "XMP_UNREADABLE": "coverage",
+    "XREF_UNREADABLE": "coverage",
+    "OBJECT_UNREADABLE": "coverage",
+    "UNTERMINATED_STRING": "coverage",
+    "LEFTOVER_UNDECODABLE_TEXT": "coverage",
+    "LEFTOVER_IMAGE": "coverage",
+    "LEFTOVER_CONTAINER": "coverage",
+    "PAYLOAD_TRUNCATED": "coverage",
+    "REVISIONS_UNREADABLE": "coverage",
+    "REVISION_UNREADABLE": "coverage",
+    "REVISION_CAP": "coverage",
+    "HIDDEN_ITEM_FAILED": "coverage",
+    "ATTACHMENT_TOO_LARGE": "coverage",
+    "ATTACHMENT_EMPTY": "coverage",
+    "ATTACHMENT_NOT_TEXT": "coverage",
+    # scope
+    "RULES_UNKNOWN_KEY": "scope",
+    "RULES_UNQUOTED_VALUE": "scope",
+    "RULES_TRUNCATED_PATTERN": "scope",
+    "RULES_CAPTURING_GROUP": "scope",
+    "SCOPE_PARTIAL_ENTITY": "scope",
+    "SCOPE_UNVERIFIABLE": "scope",
+}
+
+
+class Warn(str):
+    """A warning message with a stable code.
+
+    A str subclass, so the human report and every existing comparison
+    treat it as the message; the code rides along for the JSON report.
+    An unregistered code raises at construction, which a layer turns into
+    a crash warning — never a silent pass.
+    """
+
+    code: str
+
+    def __new__(cls, code: str, message: str) -> "Warn":
+        if code not in WARNING_CODES:
+            raise ValueError(f"unregistered warning code {code!r}")
+        self = super().__new__(cls, message)
+        self.code = code
+        return self
+
+    @property
+    def kind(self) -> str:
+        return WARNING_CODES[self.code]
+
+
 @dataclass
 class ScanReport:
     """Aggregated results across all layers. Findings are unique."""
@@ -194,6 +277,9 @@ class ScanReport:
     findings: list[Finding] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     _seen: set[Finding] = field(default_factory=set, repr=False)
+
+    def warn(self, code: str, message: str) -> None:
+        self.warnings.append(Warn(code, message))
 
     def record(
         self, layer: str, secret_name: str, location: str, sample: str = ""
@@ -787,7 +873,7 @@ def scan_page_layer(
             page = doc.load_page(page_index)
             variants = extractor(page)
         except Exception as exc:  # a corrupt page must not abort the scan
-            report.warnings.append(f"{layer}: page {page_index + 1} failed ({exc})")
+            report.warn("PAGE_FAILED", f"{layer}: page {page_index + 1} failed ({exc})")
             continue
         page_no = page_index + 1
         norm_lines = [
@@ -827,7 +913,7 @@ def scan_page_layer(
                 if secret.name in hard_here or secret.name in page_warned:
                     continue
                 page_warned.add(secret.name)
-                report.warnings.append(CROSS_LINE_WARNING.format(
+                report.warn("REVIEW_CROSS_LINE", CROSS_LINE_WARNING.format(
                     layer=layer, page=page_no, name=secret.name))
 
         # Manual review: anything else crossing into this page from the text
@@ -842,7 +928,7 @@ def scan_page_layer(
                     if name in seam_here or name in crossing_warned:
                         continue
                     crossing_warned.add(name)
-                    report.warnings.append(CROSS_PAGE_WARNING.format(
+                    report.warn("REVIEW_CROSS_PAGE", CROSS_PAGE_WARNING.format(
                         layer=layer, page=page_no, name=name))
             if keep and full:
                 tails[vi] = (tail + full)[-keep:]
@@ -895,7 +981,7 @@ def scan_page_layer(
         if name in layer_hard:
             continue
         where = _pages_label(pages) if pages else "across page boundaries"
-        report.warnings.append(
+        report.warn("REVIEW_FUSED_PATTERN", 
             f"{layer}: {where}: sequence matching pattern rule {name!r} appears "
             f"only when lines, columns or pages are fused (sample {mask(sample)})"
             " — possibly coincidental concatenation; manual review recommended"
@@ -914,11 +1000,11 @@ def _start_tool(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
     except FileNotFoundError:
-        report.warnings.append(
+        report.warn("TOOL_MISSING", 
             f"{layer}: {argv[0]} not installed — layer NOT scanned"
         )
     except OSError as exc:
-        report.warnings.append(
+        report.warn("TOOL_START_FAILED", 
             f"{layer}: {argv[0]} failed to start ({exc}) — layer NOT scanned"
         )
     return None
@@ -973,7 +1059,7 @@ def scan_xmp_metadata(
     try:
         xmp = doc.get_xml_metadata()
     except Exception as exc:
-        report.warnings.append(f"Metadata: XMP packet unreadable ({exc})")
+        report.warn("XMP_UNREADABLE", f"Metadata: XMP packet unreadable ({exc})")
         return
     if not xmp:
         return
@@ -1072,14 +1158,14 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     try:
         names = doc.embfile_names()
     except Exception as exc:
-        yield f"Hidden: embedded-file index unreadable ({exc}) — attachments NOT scanned"
+        yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: embedded-file index unreadable ({exc}) — attachments NOT scanned")
         names = []
     for i, _name in enumerate(names):
         where = f"embedded file #{i}"
         try:
             info = doc.embfile_info(i)
         except Exception as exc:
-            yield f"Hidden: {where} metadata unreadable ({exc}) — NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: {where} metadata unreadable ({exc}) — NOT scanned")
             info = {}
         # Identity fields are discrete values, so they stay hard.
         for key in ("filename", "ufilename", "description"):
@@ -1090,31 +1176,31 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         # stream, so only 'size' bounds what reading will allocate.
         declared = info.get("size") or 0
         if declared > MAX_ATTACHMENT_BYTES:
-            yield (f"Hidden: {where} declares {declared} bytes, over the "
+            yield Warn("ATTACHMENT_TOO_LARGE", (f"Hidden: {where} declares {declared} bytes, over the "
                    f"{MAX_ATTACHMENT_BYTES}-byte scan limit — content NOT "
-                   "scanned")
+                   "scanned"))
             continue
         try:
             content = doc.embfile_get(i)
         except Exception as exc:
-            yield f"Hidden: {where} unreadable ({exc}) — content NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: {where} unreadable ({exc}) — content NOT scanned")
             continue
         if not content and declared:
             # embfile_get returns b"" instead of raising on a stream it
             # cannot decompress; an unread attachment must never pass.
-            yield f"Hidden: {where} declares {declared} bytes but decoded empty — content NOT scanned"
+            yield Warn("ATTACHMENT_EMPTY", f"Hidden: {where} declares {declared} bytes but decoded empty — content NOT scanned")
             continue
         if len(content) > MAX_ATTACHMENT_BYTES:
-            yield (f"Hidden: {where} is {len(content)} bytes; only the first "
-                   f"{MAX_ATTACHMENT_BYTES} were scanned")
+            yield Warn("PAYLOAD_TRUNCATED", (f"Hidden: {where} is {len(content)} bytes; only the first "
+                   f"{MAX_ATTACHMENT_BYTES} were scanned"))
             content = content[:MAX_ATTACHMENT_BYTES]
         if content:
             if not _is_readable_text(content):
                 # A zip, Office file, image or nested PDF is decoded as
                 # garbage below; say so rather than pass it as scanned.
-                yield (f"Hidden: {where} is not text (e.g. zip, Office, "
+                yield Warn("ATTACHMENT_NOT_TEXT", (f"Hidden: {where} is not text (e.g. zip, Office, "
                        "image or PDF) — its contents are NOT scanned; manual "
-                       "review recommended")
+                       "review recommended"))
             yield HiddenItem(
                 f"{where} (content)",
                 content.decode("utf-8", errors="replace"),
@@ -1126,19 +1212,19 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         try:
             page = doc.load_page(page_index)
         except Exception as exc:
-            yield f"Hidden: page {human_page} failed ({exc}) — NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: page {human_page} failed ({exc}) — NOT scanned")
             continue
         try:
             annots = list(page.annots())
         except Exception as exc:
-            yield f"Hidden: page {human_page} annotations failed ({exc}) — NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: page {human_page} annotations failed ({exc}) — NOT scanned")
             annots = []
         for annot in annots:
             try:
                 xref = annot.xref
                 info = annot.info
             except Exception as exc:
-                yield f"Hidden: an annotation on page {human_page} failed ({exc}) — NOT scanned"
+                yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: an annotation on page {human_page} failed ({exc}) — NOT scanned")
                 continue
             for key in ("content", "title", "subject"):
                 value = info.get(key)
@@ -1154,15 +1240,15 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 payload = None
             if payload:
                 if len(payload) > MAX_ATTACHMENT_BYTES:
-                    yield (f"Hidden: attachment on annotation {xref} is "
+                    yield Warn("PAYLOAD_TRUNCATED", (f"Hidden: attachment on annotation {xref} is "
                            f"{len(payload)} bytes; only the first "
-                           f"{MAX_ATTACHMENT_BYTES} were scanned")
+                           f"{MAX_ATTACHMENT_BYTES} were scanned"))
                     payload = payload[:MAX_ATTACHMENT_BYTES]
                 if not _is_readable_text(payload):
-                    yield (f"Hidden: file attached to annotation {xref} on page "
+                    yield Warn("ATTACHMENT_NOT_TEXT", (f"Hidden: file attached to annotation {xref} on page "
                            f"{human_page} is not text (e.g. zip, Office, image or "
                            "PDF) — its contents are NOT scanned; manual review "
-                           "recommended")
+                           "recommended"))
                 yield HiddenItem(
                     f"file attached to annotation {xref} on page {human_page}",
                     payload.decode("utf-8", errors="replace"),
@@ -1171,14 +1257,14 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         try:
             widgets = list(page.widgets())
         except Exception as exc:
-            yield f"Hidden: page {human_page} form fields failed ({exc}) — NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: page {human_page} form fields failed ({exc}) — NOT scanned")
             widgets = []
         for widget in widgets:
             try:
                 xref = widget.xref
                 pairs = (("value", widget.field_value), ("name", widget.field_name))
             except Exception as exc:
-                yield f"Hidden: a form field on page {human_page} failed ({exc}) — NOT scanned"
+                yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: a form field on page {human_page} failed ({exc}) — NOT scanned")
                 continue
             for label, value in pairs:
                 if value:
@@ -1188,7 +1274,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         try:
             links = page.get_links()
         except Exception as exc:
-            yield f"Hidden: page {human_page} links failed ({exc}) — NOT scanned"
+            yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: page {human_page} links failed ({exc}) — NOT scanned")
             links = []
         for n, link in enumerate(links):
             for key in ("uri", "file"):
@@ -1201,12 +1287,12 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     try:
         yield from _js_sources(doc)
     except Exception as exc:
-        yield f"Hidden: JavaScript sweep failed ({exc}) — NOT scanned"
+        yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: JavaScript sweep failed ({exc}) — NOT scanned")
 
     try:
         ocgs = doc.get_ocgs()
     except Exception as exc:
-        yield f"Hidden: optional-content groups failed ({exc}) — NOT scanned"
+        yield Warn("HIDDEN_ITEM_FAILED", f"Hidden: optional-content groups failed ({exc}) — NOT scanned")
         ocgs = {}
     for xref, ocg in ocgs.items():
         name = ocg.get("name") if isinstance(ocg, dict) else None
@@ -1236,12 +1322,12 @@ def scan_hidden_objects(
         except StopIteration:
             break
         except Exception as exc:
-            report.warnings.append(
+            report.warn("LAYER_CRASHED", 
                 f"Hidden: object sweep failed ({exc}) — layer NOT fully scanned"
             )
             break
         if isinstance(item, str):
-            report.warnings.append(item)
+            report.warn(item.code, item)
             continue
         if not item.text:
             continue
@@ -1254,13 +1340,13 @@ def scan_hidden_objects(
                 report.record("Hidden", name, item.location, sample)
         else:
             for name in hits:
-                report.warnings.append(
+                report.warn("REVIEW_HIDDEN_TEXT", 
                     f"Hidden: {item.location} contains a sequence matching "
                     f"{name!r} — this content is a run of arbitrary text, so the "
                     "match may be a coincidental fusion; manual review recommended"
                 )
             for name, sample in samples.items():
-                report.warnings.append(
+                report.warn("REVIEW_HIDDEN_TEXT", 
                     f"Hidden: {item.location} contains a sequence matching "
                     f"pattern rule {name!r} (sample {mask(sample)}) — this content "
                     "is a run of arbitrary text, so the match may be a "
@@ -1279,14 +1365,14 @@ def _collect_exiftool(
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
-        report.warnings.append("Metadata: exiftool timed out — layer NOT scanned")
+        report.warn("TOOL_TIMEOUT", "Metadata: exiftool timed out — layer NOT scanned")
         return
     if proc.returncode != 0:
-        report.warnings.append(
+        report.warn("TOOL_EXIT_NONZERO", 
             f"Metadata: exiftool exited {proc.returncode} — results may be incomplete"
         )
     if not out:
-        report.warnings.append("Metadata: exiftool produced no output — layer NOT scanned")
+        report.warn("TOOL_NO_OUTPUT", "Metadata: exiftool produced no output — layer NOT scanned")
         return
 
     text = out.decode("utf-8", errors="replace")
@@ -1297,7 +1383,7 @@ def _collect_exiftool(
         if isinstance(payload, list):
             non_dict_count = sum(1 for e in payload if not isinstance(e, dict))
             if non_dict_count:
-                report.warnings.append(
+                report.warn("TOOL_OUTPUT_MALFORMED", 
                     f"Metadata: exiftool JSON contained {non_dict_count} "
                     "non-object entry(ies) — skipped; results may be incomplete"
                 )
@@ -1333,7 +1419,7 @@ def _collect_exiftool(
                 "Metadata", name, "exiftool field sweep (XMP/Info/embedded)", sample
             )
     except json.JSONDecodeError:
-        report.warnings.append(
+        report.warn("TOOL_OUTPUT_MALFORMED", 
             "Metadata: exiftool output was not valid JSON — scanned raw output, "
             "which includes filesystem fields (path collisions possible)"
         )
@@ -1344,7 +1430,7 @@ def _collect_exiftool(
         # Raw fallback text includes filesystem paths, so pattern hits
         # here are collision-prone: manual-review warnings, not findings.
         for name, sample in match_patterns(text, patterns).items():
-            report.warnings.append(
+            report.warn("REVIEW_METADATA_RAW", 
                 f"Metadata: raw exiftool output matches pattern rule {name!r} "
                 f"(sample {mask(sample)}) — may originate from filesystem "
                 "fields; manual review recommended"
@@ -1833,7 +1919,7 @@ def _report_payload_hit(report: ScanReport, where: str, name: str,
         report.record("Objects", name, where, sample)
         return
     shown = f" (sample {mask(sample)})" if sample else ""
-    report.warnings.append(
+    report.warn("REVIEW_OBJECT_TEXT", 
         f"Objects: {where} contains a sequence matching {name!r}{shown}"
         " — this content is a run of arbitrary text, so the match may be "
         "a coincidental fusion; manual review recommended"
@@ -1867,7 +1953,7 @@ def scan_pdf_objects(
     try:
         xref_count = doc.xref_length()
     except Exception as exc:
-        report.warnings.append(
+        report.warn("XREF_UNREADABLE", 
             f"Objects: xref table unreadable ({exc}) — layer NOT scanned"
         )
         return
@@ -1919,7 +2005,7 @@ class _ObjectTally:
         # original lives, so "could not read it" must not pass as clean.
         prefix = f"Objects: {scope}" if scope else "Objects: "
         if self.undecodable:
-            report.warnings.append(
+            report.warn("LEFTOVER_UNDECODABLE_TEXT", 
                 f"{prefix}{len(self.undecodable)} {leftover_kind} object(s) draw "
                 "text this tool cannot decode (font codes that are not plain "
                 "characters, or text mixed with binary data): "
@@ -1927,27 +2013,27 @@ class _ObjectTally:
                 "review recommended"
             )
         if self.images:
-            report.warnings.append(
+            report.warn("LEFTOVER_IMAGE", 
                 f"{prefix}{len(self.images)} {leftover_kind} image(s) this tool "
                 f"does not read (stored images are not OCR'd): "
                 f"{_object_list(self.images)} — NOT scanned; manual review "
                 "recommended"
             )
         if self.unreadable_payloads:
-            report.warnings.append(
+            report.warn("LEFTOVER_CONTAINER", 
                 f"{prefix}{leftover_kind} payload(s) this tool cannot read as "
                 f"text (e.g. zip, Office, image): "
                 f"{', '.join(self.unreadable_payloads)} — NOT scanned; manual "
                 "review recommended"
             )
         if self.truncated:
-            report.warnings.append(
+            report.warn("UNTERMINATED_STRING", 
                 f"{prefix}{self.truncated} object(s) held an unterminated "
                 "string literal — content after it was NOT scanned; manual "
                 "review recommended"
             )
         if self.unreadable:
-            report.warnings.append(
+            report.warn("OBJECT_UNREADABLE", 
                 f"{prefix}{self.unreadable} object(s) could not be read — NOT "
                 "fully scanned"
             )
@@ -1971,7 +2057,7 @@ def _read_leftover(doc: fitz.Document, xref: int, where: str,
         tally.unreadable += 1
         return None
     if cut:
-        report.warnings.append(
+        report.warn("PAYLOAD_TRUNCATED", 
             f"Objects: {where} is larger than {MAX_ATTACHMENT_BYTES} bytes "
             "decompressed; only the start was scanned")
     return body
@@ -2072,7 +2158,7 @@ def _scan_object(
     for name, sample in soft_patterns.hits.items():
         if name in hard_patterns.hits:
             continue
-        report.warnings.append(
+        report.warn("REVIEW_ADJACENT_LITERALS", 
             f"Objects: {where}: adjacent literals fuse into a sequence "
             f"matching pattern rule {name!r} (sample {mask(sample)}) — "
             "possibly a coincidental concatenation; manual review recommended"
@@ -2236,13 +2322,13 @@ def scan_earlier_revisions(
     try:
         raw = Path(pdf_path).read_bytes()
     except OSError as exc:
-        report.warnings.append(
+        report.warn("REVISIONS_UNREADABLE", 
             f"Objects: file unreadable for the earlier-revision scan ({exc}) — "
             "earlier revisions NOT scanned")
         return
     revisions = _earlier_revisions(raw)
     if len(revisions) > MAX_EARLIER_REVISIONS:
-        report.warnings.append(
+        report.warn("REVISION_CAP", 
             f"Objects: {len(revisions)} earlier revisions; only the original and "
             f"the latest {MAX_EARLIER_REVISIONS - 1} were scanned")
         # The first revision is where a pre-redaction original lives.
@@ -2261,7 +2347,7 @@ def scan_earlier_revisions(
             # it as unread rather than scan invented content.
             if old is not None:
                 old.close()
-            report.warnings.append(
+            report.warn("REVISION_UNREADABLE", 
                 f"Objects: earlier revision {number} could not be read cleanly — "
                 "NOT scanned; manual review recommended")
             continue
@@ -2326,7 +2412,7 @@ def _collect_qpdf(
     got_output = False
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
     if proc.stdout is None:
-        report.warnings.append("Binary: qpdf stdout unavailable — layer NOT scanned")
+        report.warn("TOOL_NO_OUTPUT", "Binary: qpdf stdout unavailable — layer NOT scanned")
         return
 
     while True:
@@ -2334,7 +2420,7 @@ def _collect_qpdf(
         if remaining <= 0:
             proc.kill()
             proc.communicate()
-            report.warnings.append("Binary: qpdf timed out — scan incomplete")
+            report.warn("TOOL_TIMEOUT", "Binary: qpdf timed out — scan incomplete")
             break
         # Use select() so the deadline is enforced even if qpdf stalls
         # mid-stream — a plain read() would block indefinitely.
@@ -2342,7 +2428,7 @@ def _collect_qpdf(
         if not ready:
             proc.kill()
             proc.communicate()
-            report.warnings.append("Binary: qpdf timed out — scan incomplete")
+            report.warn("TOOL_TIMEOUT", "Binary: qpdf timed out — scan incomplete")
             break
         chunk = os.read(proc.stdout.fileno(), QPDF_CHUNK_BYTES)
         if not chunk:
@@ -2361,12 +2447,12 @@ def _collect_qpdf(
     # while emitting only a partial QDF stream with tail objects silently
     # absent, so exit-3 output cannot be certified complete.
     if proc.returncode != 0:
-        report.warnings.append(
+        report.warn("TOOL_EXIT_NONZERO", 
             f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
             "binary scan may be incomplete"
         )
     if not got_output:
-        report.warnings.append("Binary: qpdf produced no output — layer NOT scanned")
+        report.warn("TOOL_NO_OUTPUT", "Binary: qpdf produced no output — layer NOT scanned")
         return
 
     # Every raw-stream match is a warning: the structural pass owns hard
@@ -2378,7 +2464,7 @@ def _collect_qpdf(
     for secret in sorted(raw.found, key=lambda s: s.name):
         if secret.name in already_found:
             continue
-        report.warnings.append(
+        report.warn("REVIEW_BINARY", 
             f"Binary: raw byte stream contains a sequence matching secret "
             f"{secret.name!r} — possibly a coincidental collision of numeric "
             "operands or binary data; manual review recommended"
@@ -2402,14 +2488,14 @@ def check_hidden_layers(
         try:
             _collect_exiftool(procs["exiftool"], matcher, patterns, report)
         except Exception as exc:
-            report.warnings.append(
+            report.warn("LAYER_CRASHED", 
                 f"Metadata: collection crashed ({exc}) — NOT fully scanned"
             )
     if procs["qpdf"] is not None:
         try:
             _collect_qpdf(procs["qpdf"], matcher, report)
         except Exception as exc:
-            report.warnings.append(
+            report.warn("LAYER_CRASHED", 
                 f"Binary: collection crashed ({exc}) — NOT fully scanned"
             )
 
@@ -2522,6 +2608,9 @@ class RuleSet:
     # clean result untrustworthy (surfaced as warnings -> exit 2).
     warnings: list[str] = field(default_factory=list)
 
+    def warn(self, code: str, message: str) -> None:
+        self.warnings.append(Warn(code, message))
+
 
 def load_rules(rules_path: Path) -> RuleSet:
     """Load verification rules from a JSON rules file or a YAML config.
@@ -2612,7 +2701,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
 
     unknown_keys = sorted(set(raw) - UPSTREAM_CONFIG_KEYS)
     if unknown_keys:
-        rules.warnings.append(
+        rules.warn("RULES_UNKNOWN_KEY", 
             f"Rules: unrecognized config key(s) {', '.join(unknown_keys)} — "
             "if one is a misspelled section its rules were NOT scanned"
         )
@@ -2638,7 +2727,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
     for i, value in enumerate(values):
         spec = literal("exact_values", i, value)
         if i < len(coerced_values) and str(coerced_values[i]) != spec:
-            rules.warnings.append(
+            rules.warn("RULES_UNQUOTED_VALUE", 
                 f"Rules: exact_values[{i}] is unquoted, so YAML reads it as "
                 f"{mask(str(coerced_values[i]))} rather than {mask(spec)} — a "
                 "redactor sharing this file may have removed the wrong "
@@ -2649,7 +2738,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
     for i, value in enumerate(_yaml_section(raw, "patterns")):
         spec = literal("patterns", i, value)
         if f"{spec} #" in text:
-            rules.warnings.append(
+            rules.warn("RULES_TRUNCATED_PATTERN", 
                 f"Rules: patterns[{i}] appears to be truncated at an "
                 "unquoted '#' (YAML comment) — quote the pattern"
             )
@@ -2658,7 +2747,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
         # things in the two tools.
         rule = _make_pattern_rule(f"patterns[{i}]", spec, re.IGNORECASE)
         if rule.regex.groups:
-            rules.warnings.append(
+            rules.warn("RULES_CAPTURING_GROUP", 
                 f"Rules: patterns[{i}] has a capturing group — the redactor "
                 "removes only the group text, so this rule verifies more "
                 "than it removed; manual review recommended"
@@ -2684,7 +2773,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
             continue
         rules.patterns.append(_make_class_rule(f"entity_types:{entity}", mapped))
         if entity in PARTIAL_ENTITY_COVERAGE:
-            rules.warnings.append(
+            rules.warn("SCOPE_PARTIAL_ENTITY", 
                 f"Scope: entity type {entity!r} is only partly verifiable — "
                 f"{PARTIAL_ENTITY_COVERAGE[entity]}"
             )
@@ -2794,6 +2883,74 @@ def print_report(report: ScanReport, pdf_path: Path) -> None:
     print()
 
 
+def build_json_report(
+    report: ScanReport,
+    pdf_path: Path,
+    exit_code: int,
+    error: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """The machine-readable report: the same content as print_report,
+    masked and sanitized the same way, with stable warning codes.
+
+    Findings and warnings are sorted so the output is identical across
+    runs regardless of scan order.
+    """
+    findings = sorted(
+        (
+            {
+                "layer": f.layer,
+                "rule": _sanitize_report_text(f.secret_name),
+                "tier": "hard",
+                "location": _sanitize_report_text(f.location),
+                "sample": _sanitize_report_text(mask(f.sample)) if f.sample else "",
+            }
+            for f in report.findings
+        ),
+        key=lambda d: (d["layer"], d["rule"], d["location"], d["sample"]),
+    )
+    warnings = sorted(
+        (
+            {
+                "code": w.code if isinstance(w, Warn) else "UNCODED",
+                "kind": w.kind if isinstance(w, Warn) else "coverage",
+                "message": _sanitize_report_text(w),
+            }
+            for w in report.warnings
+        ),
+        key=lambda d: (d["code"], d["message"]),
+    )
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "tool": {"name": "pdf-redaction-verifier", "version": __version__},
+        "environment": {
+            "python": sys.version.split()[0],
+            "platform": sys.platform,
+            "pymupdf": fitz.VersionBind,
+            "ocr_available": _OCR_IMPORTS_OK,
+        },
+        "target": _sanitize_report_text(pdf_path.name),
+        "exit_code": exit_code,
+        "verdict": {0: "pass", 1: "fail", 2: "uncertified"}[exit_code],
+        "error": (
+            {"code": error[0], "message": _sanitize_report_text(error[1])}
+            if error else None
+        ),
+        "findings": findings,
+        "warnings": warnings,
+    }
+
+
+def write_json_report(path: Path, data: dict[str, Any]) -> bool:
+    """Write the JSON report; False (and a stderr note) if it cannot be."""
+    try:
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8")
+    except OSError as exc:
+        print(f"[ERROR] Cannot write JSON report {path}: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # The report must never crash on a non-UTF-8 stdout (that would turn a
     # degraded PASS into a bogus exit 1).
@@ -2824,22 +2981,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="stop scanning as soon as any secret is found (default: scan "
         "every layer for a complete forensic report)",
     )
+    parser.add_argument(
+        "--json", type=Path, metavar="FILE",
+        help="also write a machine-readable report to FILE (stable warning "
+        "codes, masked samples); the exit code is unchanged, except that a "
+        "clean result becomes 2 if FILE cannot be written",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
 
     pdf_path: Path = args.target
+    report = ScanReport()
+
+    def finish(code: int, error: tuple[str, str] | None = None) -> int:
+        if error:
+            print(f"[ERROR] {error[1]}", file=sys.stderr)
+        if args.json is not None:
+            data = build_json_report(report, pdf_path, code, error)
+            if not write_json_report(args.json, data) and code == 0:
+                # A caller that asked for the JSON report gates on it; a
+                # missing report must not read as a certified pass.
+                return 2
+        return code
+
     if not pdf_path.is_file():
-        print(f"[ERROR] Target PDF not found: {pdf_path}", file=sys.stderr)
-        return 2
+        return finish(2, ("TARGET_NOT_FOUND", f"Target PDF not found: {pdf_path}"))
 
     try:
         rules = load_rules(args.secrets)
     except VerifyError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
-        return 2
+        return finish(2, ("RULES_INVALID", str(exc)))
     secrets, patterns = rules.secrets, rules.patterns
 
     matcher = SecretMatcher(secrets)
-    report = ScanReport()
 
     # Scope, not coverage: a shared redaction config can ask for entity
     # types this tool has no way to search for. Say so — a PASS that
@@ -2848,7 +3022,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report.warnings.extend(rules.warnings)
 
     if rules.unverifiable:
-        report.warnings.append(
+        report.warn("SCOPE_UNVERIFIABLE", 
             "Scope: the config asks a redactor to remove "
             f"{', '.join(sorted(set(rules.unverifiable)))} — these are "
             "identified by LLM judgement and have no regex equivalent, so "
@@ -2863,17 +3037,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         doc = fitz.open(pdf_path)
     except Exception as exc:
         kill_hidden_tools(procs)
-        print(f"[ERROR] Cannot open PDF {pdf_path}: {exc}", file=sys.stderr)
-        return 2
+        return finish(2, ("PDF_UNREADABLE", f"Cannot open PDF {pdf_path}: {exc}"))
 
     try:
         if doc.needs_pass:
             kill_hidden_tools(procs)
-            print(f"[ERROR] PDF is password-protected: {pdf_path}", file=sys.stderr)
-            return 2
+            return finish(2, ("PDF_PASSWORD", f"PDF is password-protected: {pdf_path}"))
 
         if doc.page_count == 0:
-            report.warnings.append(
+            report.warn("EMPTY_DOCUMENT", 
                 "PDF contains zero pages — Text/OCR content layers cannot "
                 "scan an empty document"
             )
@@ -2894,7 +3066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 scan(doc, matcher, patterns, report)
             except Exception as exc:
-                report.warnings.append(
+                report.warn("LAYER_CRASHED", 
                     f"{layer}: layer crashed ({exc}) — NOT fully scanned"
                 )
 
@@ -2907,12 +3079,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 patterns=patterns, fail_fast=args.fail_fast,
             )
         except Exception as exc:
-            report.warnings.append(f"Text: layer crashed ({exc}) — NOT fully scanned")
+            report.warn("LAYER_CRASHED", f"Text: layer crashed ({exc}) — NOT fully scanned")
 
         if args.fail_fast and report.leaked:
-            report.warnings.append("OCR: skipped (--fail-fast after earlier finding)")
+            report.warn("SKIPPED_FAIL_FAST", "OCR: skipped (--fail-fast after earlier finding)")
         elif not _OCR_IMPORTS_OK:
-            report.warnings.append(
+            report.warn("OCR_UNAVAILABLE", 
                 "OCR: PyObjC Vision bridge not available — visual layer NOT scanned "
                 "(uv pip install pyobjc-framework-Vision pyobjc-framework-Quartz; macOS only)"
             )
@@ -2933,13 +3105,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fail_fast=args.fail_fast,
                 )
             except Exception as exc:
-                report.warnings.append(f"OCR: layer crashed ({exc}) — NOT fully scanned")
+                report.warn("LAYER_CRASHED", f"OCR: layer crashed ({exc}) — NOT fully scanned")
     finally:
         doc.close()
 
     if args.fail_fast and report.leaked:
         kill_hidden_tools(procs)
-        report.warnings.append(
+        report.warn("SKIPPED_FAIL_FAST", 
             "Metadata/Binary: skipped (--fail-fast after earlier finding)"
         )
     else:
@@ -2948,17 +3120,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             check_hidden_layers(procs, matcher, patterns, report)
         except Exception as exc:
             kill_hidden_tools(procs)
-            report.warnings.append(
+            report.warn("LAYER_CRASHED", 
                 f"Metadata/Binary: collection crashed ({exc}) — NOT fully scanned"
             )
 
     print_report(report, pdf_path)
 
     if report.leaked:
-        return 1
+        return finish(1)
     if report.degraded:
-        return 2  # clean-so-far, but not certifiable as a real PASS
-    return 0
+        return finish(2)  # clean-so-far, but not certifiable as a real PASS
+    return finish(0)
 
 
 def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
