@@ -67,12 +67,25 @@ def _parse_entry(raw: dict[str, Any]) -> AcceptedDiff:
         raise ValueError(f"accepted_diffs.yaml entry missing field(s) {sorted(missing)}: {raw}")
     old = NormalizedKey.from_jsonable(raw["old"])
     new = NormalizedKey.from_jsonable(raw["new"])
-    weaker = bool(raw.get("weaker", False))
-    if is_weaker(old.exit, new.exit) and not weaker:
+    raw_weaker = raw.get("weaker", False)
+    if not isinstance(raw_weaker, bool):
+        raise ValueError(
+            f"accepted_diffs.yaml entry for {raw['case']!r}: `weaker` must be a real YAML "
+            f"boolean (true/false), not {raw_weaker!r}"
+        )
+    weaker = raw_weaker
+    actually_weaker = is_weaker(old.exit, new.exit)
+    if actually_weaker and not weaker:
         raise ValueError(
             f"accepted_diffs.yaml entry for {raw['case']!r} moves exit {old.exit} -> "
             f"{new.exit}, which is LESS strict under this project's severity order "
             "(0 < 2 < 1) — mark it `weaker: true` if that is really intended"
+        )
+    if weaker and not actually_weaker:
+        raise ValueError(
+            f"accepted_diffs.yaml entry for {raw['case']!r} is marked `weaker: true`, but "
+            f"exit {old.exit} -> {new.exit} is not actually less strict under this "
+            "project's severity order (0 < 2 < 1) — remove the flag, it's misleading"
         )
     return AcceptedDiff(
         case=raw["case"],

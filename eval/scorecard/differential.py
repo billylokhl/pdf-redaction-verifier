@@ -130,13 +130,25 @@ def _crash_reason(run: CaseRun) -> str:
 def select_cases(case_ids: Iterable[str] | None = None, *, have: frozenset[str] | None = None):
     """The registered cases to run: all of them (or the given ids) whose
     `requires` this environment satisfies. Mirrors
-    `tests/test_case_library.py`'s skip logic."""
+    `tests/test_case_library.py`'s skip logic.
+
+    The default "every case" selection (`case_ids` is None) also excludes
+    any case marked `perf` (a large, multi-minute generator such as a
+    300-page scan) — `getattr(..., "perf", False)` since that attribute
+    may not exist on every `Case` yet. Mirrors pytest/`caselib.run`'s own
+    `RUN_PERF=1` gate: without it, a default `scorecard diff`/`metrics`
+    run (including the weekly workflow) would pick up a perf fixture and
+    very likely time out at `DEFAULT_TIMEOUT`, which reads as a crash, not
+    a deliberate skip. Naming a perf case explicitly still runs it."""
     from caselib import REGISTRY, load
     from caselib.run import available
 
     load()
     have = available() if have is None else have
-    ids = sorted(case_ids) if case_ids is not None else sorted(REGISTRY)
+    if case_ids is None:
+        ids = sorted(i for i in REGISTRY if not getattr(REGISTRY[i], "perf", False))
+    else:
+        ids = sorted(case_ids)
     return [REGISTRY[i] for i in ids if not (REGISTRY[i].requires - have)]
 
 
@@ -229,7 +241,28 @@ def reference_cache_key(reference_ref: str, root: Path, have: frozenset[str]) ->
     ))
 
 
-def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None:
+def compute_input_hash(pdf_bytes: bytes, rules: Sequence[Any]) -> str:
+    """A per-case fingerprint of exactly what the reference was scanned
+    against: the PDF's own bytes plus the rules it was scanned with. A
+    cache entry whose stored `input_hash` does not match today's is
+    treated as a miss — otherwise changing a case's rules (or a
+    generator producing different bytes without the build lock catching
+    it) would silently keep serving a reference result for different
+    input."""
+    digest = hashlib.sha256()
+    digest.update(pdf_bytes)
+    digest.update(b"\0")
+    digest.update(json.dumps(list(rules), sort_keys=True).encode())
+    return digest.hexdigest()[:16]
+
+
+def load_reference_cache(
+    cache_dir: Path, key: str, input_hashes: dict[str, str]
+) -> dict[str, CaseRun] | None:
+    """*input_hashes* is {case_id: compute_input_hash(...)} for every case
+    this run might want from the cache — an entry whose stored input hash
+    does not match (rules or generator output changed) is treated as a
+    miss, same as one that was never cached at all."""
     path = cache_dir / f"{key}.json"
     if not path.exists():
         return None
@@ -247,6 +280,9 @@ def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None
         # future run.
         if entry.get("crashed"):
             continue
+        expected_hash = input_hashes.get(case_id)
+        if expected_hash is None or entry.get("input_hash") != expected_hash:
+            continue
         key_data = entry.get("key")
         normalized = NormalizedKey.from_jsonable(key_data) if key_data is not None else None
         runs[case_id] = CaseRun(
@@ -255,10 +291,13 @@ def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None
     return runs
 
 
-def save_reference_cache(cache_dir: Path, key: str, runs: dict[str, CaseRun]) -> None:
+def save_reference_cache(
+    cache_dir: Path, key: str, runs: dict[str, CaseRun], input_hashes: dict[str, str]
+) -> None:
     """Persist *runs* — silently dropping any crashed or timed-out entry,
     so one flaky reference run never poisons the cache for everyone
-    after it."""
+    after it — each tagged with `compute_input_hash`'s value for that
+    case, so a later run can tell whether its rules/PDF still match."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "key": key,
@@ -268,6 +307,7 @@ def save_reference_cache(cache_dir: Path, key: str, runs: dict[str, CaseRun]) ->
                 "crashed": run.crashed,
                 "timed_out": run.timed_out,
                 "elapsed": run.elapsed,
+                "input_hash": input_hashes[case_id],
             }
             for case_id, run in runs.items()
             if not run.crashed
@@ -311,13 +351,16 @@ def run_differential(
     python_exe = current_python()
     workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
 
+    pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
+    input_hashes = {
+        case.id: compute_input_hash(pdfs[case.id].read_bytes(), case.rules) for case in cases
+    }
+
     cached: dict[str, CaseRun] = {}
     cache_key: str | None = None
     if cache_dir is not None:
         cache_key = reference_cache_key(reference_ref, root, have)
-        cached = load_reference_cache(cache_dir, cache_key) or {}
-
-    pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
+        cached = load_reference_cache(cache_dir, cache_key, input_hashes) or {}
 
     reference_runs: dict[str, CaseRun] = dict(cached)
     missing = [case for case in cases if case.id not in reference_runs]
@@ -337,7 +380,7 @@ def run_differential(
                         case.id, future.result(), have=filter_have
                     )
         if cache_dir is not None and cache_key is not None:
-            save_reference_cache(cache_dir, cache_key, reference_runs)
+            save_reference_cache(cache_dir, cache_key, reference_runs, input_hashes)
 
     candidate_verify = candidate_verify_path(root)
     candidate_runs: dict[str, CaseRun] = {}
@@ -370,21 +413,48 @@ def run_differential(
 
     # Only meaningful on a full run: a filtered subset would flag nearly
     # every entry as unused just because its case never ran.
-    stale = stale_accepted_diffs(accepted, results) if case_ids is None else ()
+    stale: tuple[AcceptedDiff, ...] = ()
+    if case_ids is None:
+        from caselib import REGISTRY
+
+        stale = stale_accepted_diffs(
+            accepted,
+            results,
+            ran_case_ids=frozenset(c.id for c in cases),
+            known_case_ids=frozenset(REGISTRY),
+        )
     return DifferentialRun(results, stale)
 
 
 def stale_accepted_diffs(
-    accepted: dict[str, list[AcceptedDiff]], diffs: Sequence[CaseDiff]
+    accepted: dict[str, list[AcceptedDiff]],
+    diffs: Sequence[CaseDiff],
+    *,
+    ran_case_ids: frozenset[str],
+    known_case_ids: frozenset[str],
 ) -> tuple[AcceptedDiff, ...]:
-    """`accepted_diffs.yaml` entries that none of *diffs* actually matched
-    — the change they describe no longer happens, so the entry is stale
-    and must be removed (or the run that should have produced it is
-    missing). Compare against a full run's diffs; a filtered subset makes
-    every entry not touched by it look unused."""
+    """`accepted_diffs.yaml` entries that are stale: an unused entry for a
+    case id that either doesn't exist in the case library at all (removed
+    or renamed — *known_case_ids* is `caselib.REGISTRY`'s keys), or that
+    *did* run this time (*ran_case_ids*) without producing the entry's
+    change. An unused entry for a case that exists but was skipped this
+    run only because this environment can't run it (`requires: ocr` on
+    Linux, say) is NOT stale here — it may still be exactly right on the
+    environment that does run it.
+
+    Only meaningful against a full run's diffs (every case this
+    environment can run, i.e. *case_ids* was None in `run_differential`):
+    a filtered subset would make every entry for a case outside that
+    subset look unused even though it simply wasn't asked to run."""
     used = {d.accepted for d in diffs if d.accepted is not None}
     all_entries = [entry for entries in accepted.values() for entry in entries]
-    return tuple(entry for entry in all_entries if entry not in used)
+    stale = []
+    for entry in all_entries:
+        if entry in used:
+            continue
+        if entry.case not in known_case_ids or entry.case in ran_case_ids:
+            stale.append(entry)
+    return tuple(stale)
 
 
 def unlisted_diffs(diffs: Sequence[CaseDiff]) -> list[CaseDiff]:

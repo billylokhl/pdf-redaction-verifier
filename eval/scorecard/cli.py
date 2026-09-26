@@ -37,6 +37,14 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         else None,
         cache_dir=args.cache_dir,
     )
+    if not run.diffs:
+        print(
+            "ERROR: zero cases compared — every requested case id was unknown, or none of "
+            "the case library's cases matched this environment. A silent 0/0 would look "
+            "identical to a clean pass; refusing to report it as one.",
+            file=sys.stderr,
+        )
+        return 1
     print(report.render_differential_summary(run.diffs, run.stale))
     if args.json:
         args.json.write_text(

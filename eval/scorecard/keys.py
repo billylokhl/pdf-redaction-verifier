@@ -41,6 +41,15 @@ def _counts(items: Iterable[Any]) -> frozenset[tuple[Any, int]]:
 # caselib.run does").
 _ENVIRONMENTAL_CODES: dict[str, str | None] = {"OCR_UNAVAILABLE": "ocr", "TOOL_MISSING": None}
 
+# The only tool names `have` (caselib.run.available()'s shape) ever uses.
+# A warning's own "tool" field is untrusted input as far as this module is
+# concerned — it must match one of these *exactly* to be treated as
+# environmental at all; anything else (None, an absolute path, different
+# casing, a future tool this code doesn't know about) is kept as a real
+# warning instead of being silently dropped just because it fails to
+# appear in `have`.
+_KNOWN_TOOLS: frozenset[str] = frozenset({"qpdf", "exiftool", "ocr"})
+
 
 def is_environmental(warning: dict[str, Any], have: frozenset[str]) -> bool:
     """True for a warning that only says this machine lacks a tool, per
@@ -54,7 +63,7 @@ def is_environmental(warning: dict[str, Any], have: frozenset[str]) -> bool:
     if code not in _ENVIRONMENTAL_CODES:
         return False
     tool = _ENVIRONMENTAL_CODES[code] or warning.get("tool")
-    return tool not in have
+    return tool in _KNOWN_TOOLS and tool not in have
 
 
 @dataclass(frozen=True)
@@ -132,15 +141,41 @@ def filtered_warnings(
 
 
 def effective_exit(report: dict[str, Any], have: frozenset[str] | None = None) -> int:
-    """The reported exit code, or — when *have* is given and dropping
-    environmental warnings would change the verdict — the exit code the
-    file would have gotten without them (mirrors `caselib.run.judge`)."""
+    """The reported exit code, or — when *have* is given, the report is
+    self-consistent, and dropping environmental warnings would change the
+    verdict — the exit code the file would have gotten without them
+    (mirrors `caselib.run.judge`).
+
+    Two guards keep this from ever manufacturing a "corrected" exit that
+    hides a real bug:
+
+    - An error report (`report["error"]` set) is never touched: the
+      crash escape hatch does not follow the findings/warnings formula
+      at all (verify.py can raise TOOL_MISSING before ever reaching
+      fitz.open, for instance), so recomputing from it would turn a
+      genuine `PDF_PASSWORD`/`INTERNAL_ERROR` exit into a bogus `0`.
+    - The *unfiltered* report must already satisfy this project's own
+      exit formula (`1` if findings, else `2` if any warning, else `0`).
+      If it does not — a fail-open bug reporting `0` despite a warning
+      being present, say — the mismatch is real information: keeping the
+      reported (wrong) exit lets it surface as a difference instead of
+      being silently "fixed" by recomputing from the same warnings that
+      the report itself failed to act on.
+    """
+    reported = int(report["exit_code"])
+    if report.get("error"):
+        return reported
     if have is None:
-        return int(report["exit_code"])
+        return reported
+    findings = report["findings"]
+    all_warnings = report["warnings"]
+    self_consistent = reported == (1 if findings else 2 if all_warnings else 0)
+    if not self_consistent:
+        return reported
     kept = filtered_warnings(report, have)
-    if len(kept) == len(report["warnings"]):
-        return int(report["exit_code"])
-    return 1 if report["findings"] else 2 if kept else 0
+    if len(kept) == len(all_warnings):
+        return reported
+    return 1 if findings else 2 if kept else 0
 
 
 def normalize(report: dict[str, Any], *, have: frozenset[str] | None = None) -> NormalizedKey:

@@ -20,9 +20,24 @@ _ENVIRONMENT = {"OCR_UNAVAILABLE": "ocr", "TOOL_MISSING": None}
 
 
 def available() -> frozenset[str]:
-    import verify
+    """This machine's own capability, independent of which `verify.py` is
+    imported: OCR is probed directly (mirroring verify.py's own Vision
+    import) rather than read off `verify._OCR_IMPORTS_OK`, so this stays
+    the same true answer no matter which git ref's verify.py happens to
+    be the current process's `import verify` (the scorecard's reference
+    and candidate are two different files on disk, but only one of them
+    is ever the in-process `verify` module — the OCR bridge itself is a
+    property of this machine, not of either file)."""
     have = {name for name in ("qpdf", "exiftool") if shutil.which(name)}
-    have.add("ocr" if verify._OCR_IMPORTS_OK else "no-ocr")
+    try:
+        import Quartz  # noqa: F401
+        import Vision  # noqa: F401
+        from Foundation import NSData  # noqa: F401
+
+        ocr_ok = True
+    except ImportError:
+        ocr_ok = False
+    have.add("ocr" if ocr_ok else "no-ocr")
     return frozenset(have)
 
 

@@ -28,6 +28,7 @@ from scorecard.differential import (
     load_reference_cache,
     normalization_have,
     save_reference_cache,
+    select_cases,
     stale_accepted_diffs,
 )
 from scorecard.keys import NormalizedKey, effective_exit, is_environmental, normalize
@@ -237,6 +238,66 @@ def test_normalize_with_have_drops_environmental_warning_from_key():
     assert key.warnings == frozenset()
 
 
+# ── M2: an error report's exit code is never recomputed ───────────────────
+
+
+def test_effective_exit_never_touches_an_error_report():
+    """verify.py can raise TOOL_MISSING before ever reaching fitz.open, so
+    `exit 2, error PDF_PASSWORD, [TOOL_MISSING qpdf]` must stay exit 2 —
+    not get "corrected" to 0 just because its only warning is
+    environmental and it happens to have no findings."""
+    report = _report(
+        exit_code=2,
+        error={"code": "PDF_PASSWORD", "message": "encrypted"},
+        warnings=[_tool_missing("qpdf")],
+    )
+    assert effective_exit(report, NO_OCR) == 2
+    assert normalize(report, have=NO_OCR).exit == 2
+
+
+# ── M1(b): effective_exit never recomputes an already-inconsistent report ─
+
+
+def test_effective_exit_keeps_a_fail_open_reported_exit_instead_of_fixing_it():
+    """A report that disagrees with its own findings/warnings (reported
+    exit 0 despite a real warning being present — a fail-open bug) must
+    not be "corrected" by recomputing from the same warnings the report
+    itself failed to act on; that would hide the very regression the
+    differential exists to catch."""
+    report = _report(exit_code=0, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+    assert effective_exit(report, FULL_ENV) == 0  # kept as reported, not recomputed to 2
+
+
+def test_reference_vs_fail_open_candidate_is_a_visible_diff_on_linux():
+    """Regression for the exact scenario the review reproduced: reference
+    `exit 2 [OCR_UNAVAILABLE, LEFTOVER_IMAGE]` vs a fail-open candidate
+    `exit 0 [same warnings]` must NOT normalise to equal keys on a no-OCR
+    machine just because OCR_UNAVAILABLE is dropped from both sides."""
+    leftover_image = {"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}
+    reference_report = _report(exit_code=2, warnings=[_ocr_unavailable(), leftover_image])
+    fail_open_candidate_report = _report(exit_code=0, warnings=[_ocr_unavailable(), leftover_image])
+    ref_key = normalize(reference_report, have=NO_OCR)
+    cand_key = normalize(fail_open_candidate_report, have=NO_OCR)
+    assert ref_key.exit == 2
+    assert cand_key.exit == 0  # kept as reported: the report is self-inconsistent
+    assert ref_key != cand_key
+    assert any("exit 2 -> 0" in p for p in ref_key.diff(cand_key))
+
+
+# ── M3: TOOL_MISSING's "tool" field is untrusted input ─────────────────────
+
+
+def test_is_environmental_tool_missing_requires_an_exact_known_tool_name():
+    have_without_qpdf = frozenset({"exiftool", "no-ocr"})
+    assert is_environmental(_tool_missing("qpdf"), have_without_qpdf)
+    # None, an absolute path, or the wrong case must never be treated as
+    # environmental just because they also fail to appear in `have` —
+    # that would silently drop every TOOL_MISSING warning unconditionally.
+    assert not is_environmental(_tool_missing(None), have_without_qpdf)
+    assert not is_environmental(_tool_missing("/usr/bin/qpdf"), have_without_qpdf)
+    assert not is_environmental(_tool_missing("QPDF"), have_without_qpdf)
+
+
 def test_normalize_reference_vs_candidate_on_a_no_ocr_machine():
     """Regression for the scorecard-diff CI failure: on Linux (no OCR),
     every scan carries an OCR_UNAVAILABLE warning, which used to bump
@@ -385,7 +446,37 @@ def test_load_accepted_diffs_accepts_weaker_entry_with_the_flag(tmp_path):
     assert loaded["leak.now-review"][0].weaker is True
 
 
-def test_stale_accepted_diffs_flags_an_entry_no_diff_used():
+def test_load_accepted_diffs_rejects_weaker_true_on_a_non_weaker_entry(tmp_path):
+    """weaker: true is a claim, not just a permission slip — an entry that
+    isn't actually less strict but is marked weaker anyway is misleading
+    and must be rejected too."""
+    path = tmp_path / "accepted_diffs.yaml"
+    path.write_text(
+        "- case: leftover.example\n"
+        "  old: {exit: 0, error: null, findings: [], warnings: []}\n"
+        "  new: {exit: 2, error: null, findings: [], "
+        "warnings: [[[LEFTOVER_IMAGE, Objects, null], 1]]}\n"
+        "  reason: not actually weaker\n"
+        "  weaker: true\n"
+    )
+    with pytest.raises(ValueError, match="not actually less strict"):
+        load_accepted_diffs(path)
+
+
+def test_load_accepted_diffs_rejects_a_non_boolean_weaker_field(tmp_path):
+    path = tmp_path / "accepted_diffs.yaml"
+    path.write_text(
+        "- case: leak.now-review\n"
+        "  old: {exit: 1, error: null, findings: [[[SSN, hard, live], 1]], warnings: []}\n"
+        "  new: {exit: 2, error: null, findings: [], warnings: []}\n"
+        "  reason: a downgrade\n"
+        "  weaker: \"true\"\n"
+    )
+    with pytest.raises(ValueError, match="real YAML boolean"):
+        load_accepted_diffs(path)
+
+
+def test_stale_accepted_diffs_flags_an_entry_no_diff_used_for_a_case_that_ran():
     old = normalize(_report(0))
     new = normalize(
         _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
@@ -393,10 +484,15 @@ def test_stale_accepted_diffs_flags_an_entry_no_diff_used():
     entry = AcceptedDiff(case="leftover.example", old=old, new=new, reason="a fix")
     accepted = {"leftover.example": [entry]}
     # No CaseDiff in this run's results references the entry at all (the
-    # case might have been removed, or no longer produces this change).
+    # case might have been removed, or no longer produces this change),
+    # but the entry's case id DID run this time.
     unrelated = CaseDiff("other.case", _run("other.case", _cli_result(_report(0))),
                           _run("other.case", _cli_result(_report(0))), accepted=None)
-    stale = stale_accepted_diffs(accepted, [unrelated])
+    stale = stale_accepted_diffs(
+        accepted, [unrelated],
+        ran_case_ids=frozenset({"other.case", "leftover.example"}),
+        known_case_ids=frozenset({"other.case", "leftover.example"}),
+    )
     assert stale == (entry,)
 
 
@@ -415,13 +511,102 @@ def test_stale_accepted_diffs_empty_when_entry_is_used():
         )),
         accepted=entry,
     )
-    assert stale_accepted_diffs(accepted, [used]) == ()
+    stale = stale_accepted_diffs(
+        accepted, [used],
+        ran_case_ids=frozenset({"leftover.example"}),
+        known_case_ids=frozenset({"leftover.example"}),
+    )
+    assert stale == ()
+
+
+# ── D1: stale entries skipped for a case this environment can't run ───────
+
+
+def test_stale_accepted_diffs_not_flagged_when_case_exists_but_did_not_run():
+    """A case that still exists but was skipped this run only because this
+    environment can't run it (e.g. `requires: ocr` on Linux) must not be
+    flagged — it may be exactly right on the environment that does run
+    it (the weekly macOS job)."""
+    old = normalize(_report(0))
+    new = normalize(
+        _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+    )
+    entry = AcceptedDiff(case="live.pixels-ocr-only", old=old, new=new, reason="a fix")
+    accepted = {"live.pixels-ocr-only": [entry]}
+    stale = stale_accepted_diffs(
+        accepted, [],
+        ran_case_ids=frozenset(),  # nothing ran this environment's differential
+        known_case_ids=frozenset({"live.pixels-ocr-only"}),  # but the case still exists
+    )
+    assert stale == ()
+
+
+def test_stale_accepted_diffs_flagged_when_case_no_longer_in_registry():
+    old = normalize(_report(0))
+    new = normalize(
+        _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+    )
+    entry = AcceptedDiff(case="removed.case", old=old, new=new, reason="a fix")
+    accepted = {"removed.case": [entry]}
+    stale = stale_accepted_diffs(
+        accepted, [], ran_case_ids=frozenset(), known_case_ids=frozenset(),
+    )
+    assert stale == (entry,)
+
+
+# ── select_cases: perf fixtures excluded from the default selection ──────
+
+
+def test_select_cases_excludes_a_perf_case_by_default():
+    """A `perf` case (a large, multi-minute generator such as a 300-page
+    scan) must not be picked up by a default `scorecard diff`/`metrics`
+    run — it would very likely time out at DEFAULT_TIMEOUT, which reads
+    as a crash rather than a deliberate skip. Uses getattr(...,
+    "perf", False) since the attribute may not exist on every Case."""
+    import types
+
+    import caselib
+
+    fake = types.SimpleNamespace(id="perf.fake-huge-scan", requires=frozenset(), perf=True)
+    caselib.REGISTRY["perf.fake-huge-scan"] = fake
+    try:
+        selected_ids = {c.id for c in select_cases(None, have=frozenset({"qpdf", "exiftool", "ocr"}))}
+        assert "perf.fake-huge-scan" not in selected_ids
+
+        # Naming it explicitly still runs it.
+        explicit_ids = {
+            c.id for c in select_cases(["perf.fake-huge-scan"], have=frozenset({"qpdf", "exiftool", "ocr"}))
+        }
+        assert explicit_ids == {"perf.fake-huge-scan"}
+    finally:
+        del caselib.REGISTRY["perf.fake-huge-scan"]
+
+
+def test_select_cases_includes_a_case_with_no_perf_attribute():
+    """A case predating the `perf` field entirely (getattr's default)
+    behaves exactly as before — included by default."""
+    import types
+
+    import caselib
+
+    fake = types.SimpleNamespace(id="ordinary.fake-case", requires=frozenset())  # no .perf at all
+    caselib.REGISTRY["ordinary.fake-case"] = fake
+    try:
+        selected_ids = {c.id for c in select_cases(None, have=frozenset({"qpdf", "exiftool", "ocr"}))}
+        assert "ordinary.fake-case" in selected_ids
+    finally:
+        del caselib.REGISTRY["ordinary.fake-case"]
 
 
 # ── CaseDiff (differential.py) ───────────────────────────────────────────
 
 
-def _cli_result(report=None, timed_out=False, returncode=0, elapsed=0.1):
+def _cli_result(report=None, timed_out=False, returncode=None, elapsed=0.1):
+    """A CliResult whose returncode matches report["exit_code"] by default
+    (as a real subprocess's would) — pass returncode explicitly to build a
+    deliberately mismatched one for a crash test."""
+    if returncode is None:
+        returncode = report["exit_code"] if report is not None else 0
     return CliResult(returncode=returncode, report=report, elapsed=elapsed, timed_out=timed_out, stderr_tail="")
 
 
@@ -481,9 +666,10 @@ def test_case_diff_crashed_is_never_ok_even_with_accepted():
 
 def test_reference_cache_round_trip(tmp_path):
     run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
-    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok})
+    hashes = {"case-a": "hash-a"}
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok}, hashes)
 
-    loaded = load_reference_cache(tmp_path, "key-1")
+    loaded = load_reference_cache(tmp_path, "key-1", hashes)
     assert loaded is not None
     assert loaded["case-a"].key == run_ok.key
     assert loaded["case-a"].crashed is False
@@ -495,9 +681,10 @@ def test_reference_cache_never_saves_a_crashed_or_timed_out_run(tmp_path):
     it: it is retried next time, not frozen in as the answer."""
     run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
     run_crashed = CaseRun.from_result("case-b", _cli_result(report=None, timed_out=True, elapsed=9.0))
-    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok, "case-b": run_crashed})
+    hashes = {"case-a": "hash-a", "case-b": "hash-b"}
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok, "case-b": run_crashed}, hashes)
 
-    loaded = load_reference_cache(tmp_path, "key-1")
+    loaded = load_reference_cache(tmp_path, "key-1", hashes)
     assert loaded is not None
     assert "case-a" in loaded
     assert "case-b" not in loaded  # never trusted from cache
@@ -513,23 +700,64 @@ def test_reference_cache_load_ignores_a_crashed_entry_even_if_present(tmp_path):
             {
                 "key": "key-1",
                 "cases": {
-                    "case-b": {"key": None, "crashed": True, "timed_out": True, "elapsed": 9.0},
+                    "case-b": {
+                        "key": None, "crashed": True, "timed_out": True, "elapsed": 9.0,
+                        "input_hash": "hash-b",
+                    },
                 },
             }
         )
     )
-    loaded = load_reference_cache(tmp_path, "key-1")
+    loaded = load_reference_cache(tmp_path, "key-1", {"case-b": "hash-b"})
     assert loaded == {}
 
 
 def test_reference_cache_miss_on_wrong_key(tmp_path):
     run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
-    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok})
-    assert load_reference_cache(tmp_path, "key-2") is None
+    hashes = {"case-a": "hash-a"}
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok}, hashes)
+    assert load_reference_cache(tmp_path, "key-2", hashes) is None
 
 
 def test_reference_cache_missing_file_is_none(tmp_path):
-    assert load_reference_cache(tmp_path, "no-such-key") is None
+    assert load_reference_cache(tmp_path, "no-such-key", {}) is None
+
+
+# ── M4: a cache entry is scoped to the exact rules/PDF it was built from ──
+
+
+def test_reference_cache_miss_when_input_hash_does_not_match(tmp_path):
+    """Changing a case's rules (or its generator's output) must not keep
+    serving a stale reference result — the cached entry's input_hash has
+    to match what this run would actually scan."""
+    run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok}, {"case-a": "hash-old"})
+
+    # Same cache file, but the rules (or PDF bytes) changed since it was
+    # written, so today's input hash for case-a differs.
+    loaded = load_reference_cache(tmp_path, "key-1", {"case-a": "hash-new"})
+    assert loaded is not None
+    assert "case-a" not in loaded  # treated as a miss, not trusted
+
+
+def test_reference_cache_hit_when_input_hash_matches(tmp_path):
+    run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok}, {"case-a": "hash-same"})
+    loaded = load_reference_cache(tmp_path, "key-1", {"case-a": "hash-same"})
+    assert loaded is not None
+    assert "case-a" in loaded
+
+
+def test_compute_input_hash_changes_with_rules_or_bytes():
+    from scorecard.differential import compute_input_hash
+
+    base = compute_input_hash(b"%PDF-1.4 same bytes", [{"name": "SSN", "value": "123-45-6789"}])
+    different_rules = compute_input_hash(b"%PDF-1.4 same bytes", [{"name": "SSN", "value": "000-00-0000"}])
+    different_bytes = compute_input_hash(b"%PDF-1.4 different bytes", [{"name": "SSN", "value": "123-45-6789"}])
+    same_again = compute_input_hash(b"%PDF-1.4 same bytes", [{"name": "SSN", "value": "123-45-6789"}])
+    assert base == same_again
+    assert base != different_rules
+    assert base != different_bytes
 
 
 # ── metrics.compute_metrics ───────────────────────────────────────────────
@@ -693,4 +921,65 @@ def test_run_cli_crashed_when_report_missing(tmp_path):
         sys.executable, script, target, [], tmp_path / "work", "case-3", timeout=10,
     )
     assert result.report is None
+    assert result.crashed
+
+
+# ── M1(a): the process's own exit code must match the report's ────────────
+
+
+def test_cli_result_crashed_when_returncode_disagrees_with_report():
+    """A process that exits 0 while its own --json report claims exit 2
+    (or vice versa) is a crash, mirroring caselib.run.judge's "report says
+    exit X, process Y" check — this must be caught even when the report
+    otherwise looks perfectly normal."""
+    result = CliResult(
+        returncode=0,
+        report={"exit_code": 2, "error": None, "findings": [], "warnings": []},
+        elapsed=0.1,
+        timed_out=False,
+        stderr_tail="",
+    )
+    assert result.crashed
+
+
+def test_cli_result_not_crashed_when_returncode_matches_report():
+    result = CliResult(
+        returncode=2,
+        report={"exit_code": 2, "error": None, "findings": [], "warnings": []},
+        elapsed=0.1,
+        timed_out=False,
+        stderr_tail="",
+    )
+    assert not result.crashed
+
+
+_STAND_IN_MISMATCHED_EXIT = textwrap.dedent(
+    """
+    import argparse, json, sys
+    p = argparse.ArgumentParser()
+    p.add_argument("--target")
+    p.add_argument("--secrets")
+    p.add_argument("--json")
+    args = p.parse_args()
+    # The report claims exit 2, but the process itself exits 0 — exactly
+    # the process-boundary bug the scorecard must never silently trust.
+    report = {"exit_code": 2, "error": None, "findings": [], "warnings": []}
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(report, f)
+    sys.exit(0)
+    """
+)
+
+
+def test_run_cli_crashed_when_subprocess_exit_disagrees_with_its_own_report(tmp_path):
+    script = tmp_path / "mismatched_exit.py"
+    script.write_text(_STAND_IN_MISMATCHED_EXIT)
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"%PDF-1.4\n")
+    result = run_cli(
+        sys.executable, script, target, [], tmp_path / "work", "case-4", timeout=10,
+    )
+    assert result.returncode == 0
+    assert result.report == {"exit_code": 2, "error": None, "findings": [], "warnings": []}
     assert result.crashed

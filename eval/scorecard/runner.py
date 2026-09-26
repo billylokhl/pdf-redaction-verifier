@@ -29,9 +29,14 @@ class CliResult:
     *report* is the parsed `--json` output, or None if the process timed
     out, was killed, or did not write a (valid) report. *crashed* is true
     for any process outcome the scorecard cannot judge normally: a
-    timeout, or an exit code / report that disagree in a way that means
-    the report cannot be trusted (missing, malformed, or an exit code
-    outside 0/1/2).
+    timeout; an exit code outside 0/1/2; a missing or malformed report;
+    or the process's own exit code disagreeing with what the report
+    itself claims (`report["exit_code"]`) — mirroring
+    `caselib.run.judge`'s "report says exit X, process Y" check. That
+    last case matters on its own: a fail-open bug where the process
+    actually returns 0 while its report still (correctly) lists a
+    warning would otherwise slip through as a plain report to normalise,
+    not a crash.
     """
 
     returncode: int | None
@@ -42,7 +47,9 @@ class CliResult:
 
     @property
     def crashed(self) -> bool:
-        return self.timed_out or self.report is None or self.returncode not in (0, 1, 2)
+        if self.timed_out or self.report is None or self.returncode not in (0, 1, 2):
+            return True
+        return self.report.get("exit_code") != self.returncode
 
 
 def run_cli(
