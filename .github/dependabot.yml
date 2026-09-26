@@ -1,0 +1,39 @@
+version: 2
+updates:
+  # Python dependencies
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    grouped:
+      patterns:
+        - "*"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    pull-request-branch-name:
+      separator: "/"
+    reviewers:
+      - billylokhl
+    labels:
+      - dependencies
+    body: |
+      Any dependency bump needs the full test suite (the case library's build lock will flag PyMuPDF output changes).
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    grouped:
+      patterns:
+        - "*"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    pull-request-branch-name:
+      separator: "/"
+    reviewers:
+      - billylokhl
+    labels:
+      - ci

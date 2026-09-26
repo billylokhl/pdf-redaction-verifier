@@ -314,7 +314,7 @@ class TestTiering:
             verify.scan_page_layer(
                 doc, verify.SecretMatcher([verify.Secret("unused", "zzzz")]), report,
                 layer="OCR",
-                extractor=lambda page: [f"SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
+                extractor=lambda page: ["SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
                 note="test", patterns=patterns, hard_variants=2,
             )
             assert [f.secret_name for f in report.findings] == ["ssn"]

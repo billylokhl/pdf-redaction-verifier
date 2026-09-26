@@ -122,7 +122,7 @@ def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
         problems.append(f"no {layer} finding for {rule!r}")
 
     listed = {(w["code"], w["storage"]) for w in warnings}
-    for code, storage in sorted(want.warnings, key=str):
+    for code, storage in sorted(want.warnings, key=str):  # type: ignore[assignment]
         if (code, storage) not in listed:
             problems.append(f"missing warning {code} ({storage})")
     expected_codes = {code for code, _ in want.warnings}

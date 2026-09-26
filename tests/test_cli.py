@@ -13,7 +13,6 @@ import shutil
 from pathlib import Path
 
 import fitz
-import pytest
 
 import verify
 

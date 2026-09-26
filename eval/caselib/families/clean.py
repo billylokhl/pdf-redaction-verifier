@@ -188,7 +188,7 @@ def incr_edit(path: Path) -> None:
 def ten_revisions(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page()); save(doc, path)
     for i in range(10):
-        update(path, lambda d, i=i: d[0].add_text_annot((100 + 10 * i, 500), f"note {i}"))
+        update(path, lambda d, i=i: d[0].add_text_annot((100 + 10 * i, 500), f"note {i}"))  # type: ignore[misc]
 
 
 @clean("revision.eof-marker-in-text", "superseded.plain",
@@ -236,7 +236,7 @@ def big_images(path: Path) -> None:
         page.insert_image(fitz.Rect(72, 200, 500, 628), pixmap=pix)
     save(doc, path)
     for i in range(8):
-        update(path, lambda d, i=i: d[0].add_text_annot((100 + 10 * i, 700), f"note {i}"))
+        update(path, lambda d, i=i: d[0].add_text_annot((100 + 10 * i, 700), f"note {i}"))  # type: ignore[misc]
 
 
 @clean("revision.fifty-five-saves", "superseded.plain.revision-cap",
@@ -245,4 +245,4 @@ def big_images(path: Path) -> None:
 def many_revisions(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page()); save(doc, path)
     for i in range(55):
-        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))
+        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))  # type: ignore[misc]

@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest==9.0.3"]
+test = ["pytest==9.0.3", "pytest-cov==6.0.0"]
 
 [project.scripts]
 pdf-verify = "verify:run_cli"
@@ -45,3 +45,16 @@ version = {attr = "verify.__version__"}
 testpaths = ["tests"]
 # eval/ holds the case library (import caselib), which the tests judge.
 pythonpath = [".", "eval"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F", "E9"]
+per-file-ignores = {}
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["eval/caselib"]

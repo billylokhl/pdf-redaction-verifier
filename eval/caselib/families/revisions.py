@@ -171,7 +171,7 @@ def first_of_many(path: Path) -> None:
     save(doc, path)
     update(path, lambda d: d.set_metadata({**d.metadata, "title": "Case file"}))
     for i in range(55):
-        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))
+        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))  # type: ignore[misc]
 
 
 @leak("revision.secret-past-the-cap", "superseded.plain.revision-cap",
@@ -181,7 +181,7 @@ def first_of_many(path: Path) -> None:
 def past_the_cap(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page()); save(doc, path)
     update(path, lambda d: d.set_metadata({**d.metadata, "title": f"Case {SSN}",
-                                           "creationDate": "", "modDate": ""}))
+                                           "creationDate": "", "modDate": ""}))  # type: ignore[misc]
     update(path, lambda d: d.set_metadata({**d.metadata, "title": "Case file"}))
     for i in range(55):
-        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))
+        update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))  # type: ignore[misc]
