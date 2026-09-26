@@ -38,6 +38,9 @@ look somewhere, it says so instead of certifying the document clean.
 
 ## How it works
 
+New to PDF internals? Unfamiliar terms are defined in the
+[Glossary](#glossary) at the end.
+
 You give it the secrets that should be gone; it looks for them everywhere
 they could still be hiding and reports what it finds.
 
@@ -70,7 +73,7 @@ Each layer looks at a different place that can happen:
 
 | Layer | Looks at | Catches a redaction that… |
 | --- | --- | --- |
-| **DOM** | layout-aware text, in horizontal and vertical reading order | left the text selectable, out of draw order, rotated, or split into per-character boxes |
+| **Text** | layout-aware text, in horizontal and vertical reading order | left the text selectable, out of draw order, rotated, or split into per-character boxes |
 | **OCR** | the rendered page pixels, via Apple Vision (correction on and off) | flattened the secret into an image or outlined vector text |
 | **Metadata** | XMP / Info / embedded metadata, via `exiftool` | scrubbed the page but not the document properties |
 | **Objects** | every PDF object walked structurally — dictionary strings and text stream bodies, with images/fonts/binary excluded by type *and* by content | drew a box over the text but left the original object in the file (reported as **ORPHANED** when nothing references it) |
@@ -175,3 +178,63 @@ To exercise **real vendor PDFs** without committing binaries, drop a
 `foo.pdf` plus a `foo.pdf.secrets.json` sidecar (a list of `[name, value]`
 pairs) into `tests/corpus_pdfs/`; `test_corpus.py` picks them up
 automatically.
+
+## Glossary
+
+### What is inside a PDF
+
+A PDF is a pile of numbered **objects**. A **cross-reference (xref)
+table** at the end of the file records where each one lives. Some objects
+are **dictionaries** — key–value records like `<< /Title (Tax Return) >>`
+— whose text values are **strings**, written `(like this)` or as hex
+`<4A6F…>`. A **stream** is an object carrying a blob of (usually
+compressed) data; a page's **content stream** holds its drawing
+instructions ("set font, move here, draw these characters"). Objects
+**reference** one another starting from the file's root; an object
+nothing references is an **orphan** — still stored in the file, never
+shown. Most redaction leaks live in that gap between what a page shows
+and what the file stores.
+
+### Terms
+
+| Term | Meaning |
+| --- | --- |
+| **Annotation** | Something layered on a page: comment, sticky note, highlight, link. |
+| **Apple Vision** | macOS's built-in text-recognition engine, used by the OCR layer. |
+| **Carrier surface** | Any place in a PDF a secret can be stored (content stream, metadata, form field, …). |
+| **Casefold** | Aggressive lowercasing that also handles non-English cases (`ß` → `ss`). |
+| **Correction on/off** | Vision's autocorrect. It helps words but can "fix" digits wrongly, so both modes run. |
+| **Decompressed** | File contents with compression undone, so the stored text is visible. |
+| **Draw order** | The order a PDF paints characters in, which need not match reading order. |
+| **Exit code** | Number a program returns when it ends; scripts and CI read it as the verdict. |
+| **Fail closed** | When unsure, report "cannot certify" rather than "clean" — silence never counts as success. |
+| **Fixture** | A sample PDF generated for a test. |
+| **Flattened** | A page converted to a picture, leaving no text data. |
+| **Form-field value** | Data typed into a fillable form. |
+| **Fused** | Separate pieces of text joined together (e.g. two table cells), which can accidentally form a digit sequence. |
+| **Garbage-collected rewrite** | Saving a PDF so unreferenced (orphaned) objects are dropped. The fix for leftover-content leaks. |
+| **Guard** | A check in the code that prevents a known bug. |
+| **Hard finding** | A match on one genuinely contiguous piece of text; exits `1`. |
+| **Incremental update** | Edits appended to the end of a file; earlier versions of objects stay inside it. |
+| **Info / XMP** | The two places PDFs store metadata: the older Info dictionary and the newer XML block. |
+| **Layout-aware** | Rebuilds lines from where characters sit on the page, not the order the file draws them. |
+| **LLM** | Large language model — the AI the redactor uses to find names and addresses. |
+| **Luhn** | Checksum built into credit-card numbers; random 16-digit strings usually fail it. |
+| **Manual-review warning** | A possible match that needs a human to check it; exits `2`. |
+| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. |
+| **Mutation testing** | Deliberately breaking a guard to prove the tests notice. |
+| **NANP** | North American Numbering Plan — the rules for valid US/Canada phone numbers. |
+| **NFKD fold** | Unicode step turning look-alike characters into plain ones (fullwidth `１` → `1`, `é` → `e`). |
+| **Normalized** | Text reduced to a canonical form before comparing, so formatting can't hide a match. |
+| **Object streams / xref stream** | The PDF 1.5+ layout that packs many objects into one compressed container — the default for Acrobat and Chrome. |
+| **OCR** | Optical character recognition: reading text from pixels. |
+| **Octal coercion** | YAML gotcha: an unquoted `00123456` is read as a base-8 number, changing its value. |
+| **Optional-content group** | A PDF "layer" that can be switched on or off; its name alone can leak data. |
+| **ORPHANED** | Label for a finding in an object nothing references — present in the file, never displayed. |
+| **Outlined vector text** | Letters converted into drawn shapes: looks like text, isn't text data. |
+| **Regex** | A text-search pattern language. |
+| **Rendered page** | The page drawn as an image — what a viewer sees. |
+| **Sidecar** | A small companion file next to a PDF listing the secrets it contains. |
+| **Surface** | One real piece of text: a line, a decoded string, a metadata value. |
+| **Validator** | A check that a match is structurally real (e.g. SSNs never start with `000` or `666`). |
+| **Walked structurally** | Reading objects one by one through the PDF's own structure rather than scanning raw bytes. |
