@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pdf-redaction-verifier"
 version = "0.1.0"
-description = "Forensic CLI that detects sensitive strings and pattern classes inside a PDF across DOM, OCR, metadata, and binary-stream layers"
+description = "Forensic CLI that detects sensitive strings and pattern classes inside a PDF across text, OCR, metadata, object, binary-stream and hidden-object layers"
 readme = "README.md"
 requires-python = ">=3.10"
 

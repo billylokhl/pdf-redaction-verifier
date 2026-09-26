@@ -39,7 +39,7 @@ jobs:
 
   # Partial suite on Linux across the supported Python range (README
   # promises 3.10+): OCR-dependent tests skip with a reason; the
-  # normalizer, DOM extraction, exit-code contract, and qpdf degradation
+  # normalizer, text-layer extraction, exit-code contract, and qpdf degradation
   # tests still run. Guards the cross-platform degrade-loudly behavior.
   partial-linux:
     runs-on: ubuntu-latest

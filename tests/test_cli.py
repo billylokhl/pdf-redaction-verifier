@@ -119,7 +119,7 @@ class TestBaselines:
         # backstop, which can only raise manual-review warnings.
         result = run_verify(leaky_pdf, secrets_file)
         assert result.returncode == 1
-        for layer in ("LAYER: DOM", "LAYER: OCR", "LAYER: Metadata", "LAYER: Objects"):
+        for layer in ("LAYER: Text", "LAYER: OCR", "LAYER: Metadata", "LAYER: Objects"):
             assert layer in result.stdout, f"expected a Finding for {layer}"
 
     def test_clean_pdf_certified(self, clean_pdf, secrets_file) -> None:
@@ -216,7 +216,7 @@ class TestLayerCrashesDegrade:
         self, clean_pdf, secrets_file, monkeypatch, capsys
     ) -> None:
         # Regression: the Metadata/Hidden/Objects calls were unguarded
-        # while DOM and OCR were not, so a crash there printed a
+        # while Text and OCR were not, so a crash there printed a
         # traceback and exited 1 — the leak code — on a clean document.
         monkeypatch.setattr(verify, "scan_pdf_objects", _boom)
         code = verify.main(["--target", str(clean_pdf), "--secrets", str(secrets_file)])

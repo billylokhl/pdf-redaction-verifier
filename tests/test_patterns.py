@@ -172,7 +172,7 @@ class TestPatternDetection:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
         # The report must never leak the full match — only the masked tail.
         assert "123-45" not in result.stdout
         assert "6789" in result.stdout
@@ -187,7 +187,7 @@ class TestPatternDetection:
         # Not exit 1: the invalid card must produce no finding. (Exit 0
         # or 2 depending on environment completeness.)
         assert result.returncode in (0, 2), result.stdout
-        assert "LAYER: DOM" not in result.stdout
+        assert "LAYER: Text" not in result.stdout
         assert "Scanning" in result.stdout  # the scan actually ran
 
     def test_custom_pattern(self, tmp_path) -> None:
@@ -195,7 +195,7 @@ class TestPatternDetection:
         rules = _rules_file(tmp_path, [{"name": "case id", "pattern": r"CASE-\d{4}"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
 
     @requires_metadata_tools
     def test_pattern_in_metadata(self, tmp_path) -> None:
@@ -268,7 +268,7 @@ class TestTiering:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(path, rules)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
 
     def test_space_separated_ssn_on_one_line_still_hard(self, tmp_path) -> None:
         # Guard against over-fencing: ordinary word spaces are narrower
@@ -277,7 +277,7 @@ class TestTiering:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
 
     def test_adjacent_metadata_values_do_not_fuse(self, tmp_path) -> None:
         # Regression: metadata string values were joined with a single
@@ -396,7 +396,7 @@ scrub_metadata: true
         path = self._yaml(tmp_path, 'exact_values:\n  - "123-45-6789"\n')
         result = run_verify(pdf, path)
         assert result.returncode == 1
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
 
     def test_yaml_patterns_are_case_insensitive(self, tmp_path) -> None:
         # The redactor compiles its patterns IGNORECASE; a shared file
@@ -458,7 +458,7 @@ class TestYamlScalarCoercion:
         path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
         result = run_verify(pdf, path)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: DOM" in result.stdout
+        assert "LAYER: Text" in result.stdout
 
 
 class TestYamlAdapterFidelity:
