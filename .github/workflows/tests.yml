@@ -18,7 +18,8 @@ jobs:
   # environment-gated tests can never silently skip on this job.
   full-macos:
     runs-on: macos-latest
-    timeout-minutes: 15
+    # The case library OCRs ~100 generated PDFs: about 9 minutes here.
+    timeout-minutes: 25
     env:
       REQUIRE_FULL_ENV: "1"
     steps:

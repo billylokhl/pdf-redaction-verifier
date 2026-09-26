@@ -381,7 +381,7 @@ pytest
 Every regression test pins a previously confirmed bug; fixtures are
 generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
-absent. Two suites go further and test robustness directly:
+absent. Three suites go further and test robustness directly:
 
 - **`test_corpus.py`** scans the same planted secret across the on-disk
   layouts real producers emit — classic xref, object streams + xref
@@ -392,6 +392,11 @@ absent. Two suites go further and test robustness directly:
   asserts detection, then neutralizes each guard in turn and asserts the
   bug it prevents comes back — so a guard whose removal changes nothing is
   caught, not just an outright regression.
+
+- **`test_case_library.py`** judges every case in the case library
+  ([eval/README.md](eval/README.md)): generated PDFs, each with the
+  correct verdict and the story of how its redaction failed — including
+  real redaction-tool output and the tool's known gaps (strict xfails).
 
 To exercise **real vendor PDFs** without committing binaries, drop a
 `foo.pdf` plus a `foo.pdf.secrets.json` sidecar (a list of `[name, value]`

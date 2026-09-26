@@ -43,3 +43,5 @@ version = {attr = "verify.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# eval/ holds the case library (import caselib), which the tests judge.
+pythonpath = [".", "eval"]
