@@ -112,3 +112,94 @@ zlib versions). After changing a case, regenerate it:
 ```bash
 PYTHONPATH=eval:. python -m caselib.lock
 ```
+
+## The scorecard (`scorecard/`)
+
+The scorecard (docs/REDESIGN.md §5, Phase 0c) is the case library run a
+different way: instead of judging each case against its label in-process
+(`caselib.run`, above, used by `tests/test_case_library.py`), it runs the
+verifier's real CLI as a subprocess per file, with a timeout — the same
+runner for pytest's speed and the scorecard's realism, just pointed at
+two different git refs.
+
+**Differential**: compare the working tree (the candidate) against the
+pinned `eval-ref-0` tag (the reference, checked out into a disposable
+worktree — never the live code) on a normalised key: exit, `error.code`,
+findings as (rule, tier, storage), review warnings as (rule, "review",
+storage, adjacency), other warnings as (code, layer, tool). Exact legacy
+warning codes and messages are deliberately not part of the key.
+
+```bash
+PYTHONPATH=eval:. python -m scorecard diff                      # every case
+PYTHONPATH=eval:. python -m scorecard diff page.visible          # some
+PYTHONPATH=eval:. python -m scorecard diff --json /tmp/diff.json --verbose
+```
+
+Exits non-zero if any case crashed or timed out, or changed in a way not
+listed in `eval/accepted_diffs.yaml`.
+
+**`eval/accepted_diffs.yaml`**: every intended per-case change between
+the reference and the candidate — case id, the reference's normalised
+key ("old"), the candidate's ("new"), a reason, the COVERAGE.md cell, and
+the PR. A difference the file does not list exactly (both sides) fails
+the differential. When a fix or a regression changes a case's key,
+`scorecard diff --json` prints both keys for the case; copy them into a
+new entry (or update the existing one, if this is a further change to a
+case already listed) with a reason for the change, and review it in the
+PR like any other test change.
+
+**Metrics**: the same case library, run through the candidate CLI alone
+and judged against case labels — no reference needed:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard metrics --json /tmp/metrics.json
+```
+
+Reports silent miss (leak case, exit 0), downgrade (expected 1, got 2),
+false hard (clean case with a hard finding), review rate (clean case,
+exit 2), crashes, timeouts, and runtime p50/p95 — all against `expected`
+labels, so a documented `known_gap` still counts as a miss here (that is
+the point: it tracks how many gaps are left, not just whether they are
+labelled).
+
+**Reference result caching**: `--cache-dir DIR` skips the reference
+worktree and subprocess runs entirely for any case whose result is
+already cached under today's key (the reference commit plus a hash of
+`caselib/cases.lock.json` — so it invalidates itself whenever the
+reference moves or a case generator changes). CI passes a persistent
+cache directory (`actions/cache`) so most PRs never re-run the reference
+at all.
+
+### The real-world corpus (local only)
+
+Clean-side metrics (false hard, review rate) on real files, stratified
+by whether they carry a text layer, have more than one revision, and
+producer family (from `/Producer`). Nothing here is committed: the
+manifest and results live under `eval/scorecard/real_corpus/`
+(gitignored), keyed by SHA-256 with paths relative to a root directory
+you configure — that root itself is never recorded anywhere.
+
+```bash
+# Build the manifest from a directory of real PDFs (never committed):
+PYTHONPATH=eval:. python -m scorecard corpus build --root ~/corpus
+
+# Report files the manifest expects that are missing or have changed:
+PYTHONPATH=eval:. python -m scorecard corpus check --root ~/corpus
+
+# Scan every manifest file, report clean-side metrics per stratum:
+PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
+    --secrets secrets.json --json /tmp/corpus.json
+```
+
+### Where each gate runs
+
+- **Linux CI, every PR**: the non-OCR case library and the differential
+  against `eval-ref-0` (`.github/workflows/tests.yml`, job
+  `scorecard-diff`) — cases needing OCR are skipped automatically (no
+  Vision bridge on Linux), matching `requires: ocr`/`no-ocr` filtering.
+- **Scheduled, weekly, macOS**: the full case library including grids,
+  with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
+  checked to still hold with OCR present
+  (`.github/workflows/scorecard-weekly.yml`).
+- **Local**: the real-world corpus (above) — never in CI, since the
+  files never leave your machine.

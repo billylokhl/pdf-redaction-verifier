@@ -126,6 +126,13 @@ def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
         if (code, storage) not in listed:
             problems.append(f"missing warning {code} ({storage})")
     expected_codes = {code for code, _ in want.warnings}
+    # For a code the case expects, where it is filed is exact too (mirrors
+    # the findings check above): the same code also appearing under a
+    # storage class the case does not list — e.g. a review warning filed
+    # under both "live" and "orphaned" — is a mislabel, not just noise.
+    for code, storage in sorted(listed - want.warnings):
+        if code in expected_codes:
+            problems.append(f"unexpected {code} ({storage}) — expected a different storage")
     for w in warnings:
         if verify.WARNING_CODES[w["code"]] == "coverage" and w["code"] not in expected_codes:
             problems.append(f"unexpected {w['code']} ({w['storage']}): {w['message'][:80]}")

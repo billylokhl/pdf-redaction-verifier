@@ -503,6 +503,20 @@ the tool's verdict. Built at the end of Phase 0; it never gates.
 ADRs are required only for the Phase 1 questions and for any change to
 compatibility or exit semantics.
 
+**Phase 0c status**: landed — `eval/scorecard/` (runner, per-case
+differential against `eval-ref-0` via a worktree, the normalised key
+above, `eval/accepted_diffs.yaml` seeded from the real reference-vs-main
+differences found by running it, label-based metrics, the local-only
+real-corpus manifest and stratified clean-side metrics, a reference
+result cache keyed by ref commit + build-lock hash); the Linux
+every-PR differential job and the weekly full-environment macOS job
+(`.github/workflows/tests.yml`, `.github/workflows/scorecard-weekly.yml`);
+the judge's exact-storage check extended to warnings
+(`eval/caselib/run.py`). Not yet done, left for a later PR: the additive
+`--json` fields this phase calls for (a per-layer status block,
+`target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
+performance files the real corpus wants.
+
 ## 8. Known gaps found by this review
 
 All exit `0` on today's tool with the secret present (reproduced):

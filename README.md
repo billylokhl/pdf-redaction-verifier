@@ -387,7 +387,7 @@ contract, the two-tier matching model, and the known limitations.
 ```bash
 pytest                                    # Run the test suite
 ruff check .                              # Lint code
-mypy                                      # Type check (eval/caselib only)
+mypy                                      # Type check (eval/caselib, eval/scorecard)
 pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
 ```
 
@@ -419,6 +419,12 @@ automatically.
 Any change that can move a file's exit code (clean → uncertifiable, or
 certified → leak) must be listed under **Verdict changes** in
 [CHANGELOG.md](CHANGELOG.md).
+
+The **scorecard** (`PYTHONPATH=eval:. python -m scorecard diff`) runs
+this same case library through the real CLI as a subprocess and diffs it
+against a pinned reference version, so every intended verdict change is
+reviewed explicitly in `eval/accepted_diffs.yaml` — see
+[eval/README.md](eval/README.md#the-scorecard-scorecard).
 
 ## Glossary
 
