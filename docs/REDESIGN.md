@@ -1,0 +1,490 @@
+# Redesign plan
+
+Status: **draft, revision 2** — revised after four independent adversarial
+reviews (soundness, feasibility, migration/evaluation, engineering).
+Nothing here is implemented yet.
+
+This plan replaces `verify.py` — one 3,000-line module — with a package
+built around an explicit ledger of everything that must be checked
+before a file can be certified, and uses the move to adopt the
+engineering practices a release-gating security tool needs. It is staged
+so the tool never becomes less strict than it is today.
+
+## 1. Why
+
+### What the tool is today
+
+Six layers (Text, Objects, Metadata, Hidden, OCR, Binary) each extract
+text their own way and feed one matcher (known values + pattern classes).
+Exit `0` = certified clean, `1` = finding, `2` = cannot certify. Coverage
+is documented by hand in `COVERAGE.md`.
+
+### The design problem
+
+Absence is a negative claim, but the tool is **enumerative**: it searches
+the places it knows about and certifies whatever it did not find. Each
+recent round of adversarial review found a new place (earlier revisions,
+off-page text, orphaned XMP, leftover glyph-coded text, non-text
+attachments), each patched as a special case. The review of this plan
+found seven more that exit `0` today while holding the secret (§8,
+cases K1–K7). Structural causes:
+
+1. **No accounting.** Nothing checks that every part of the file was
+   looked at, or that a layer which says "read" consumed everything it
+   was given. Data after a compressed stream's end marker, plain text
+   after the final `%%EOF`, or a text stream labelled as a font all pass.
+2. **Layers are organised by extraction tool, not by storage.** Coverage
+   is the accidental union of six techniques; `COVERAGE.md` describes it
+   after the fact. Most gaps sit between layers.
+3. **Decoding is tied to rendering.** Font-coded text is decoded only
+   when drawn on a live page; pixels are read only by OCR of the
+   rendered page. Stored-but-undrawn content — including text converted
+   to outlines — is flagged or missed.
+4. **Classification is taken on the file's word.** A stream's kind
+   (font, image, page content) is decided from its own keys or by
+   heuristics, and the chosen decoder is trusted to have read it.
+
+A matching problem: built-in pattern classes have no context and raise
+false **hard** findings on 7.5–13% of clean real-world files (dates as
+card numbers, UUID digits as SSNs).
+
+What already works and is kept: fail-closed on tool failure (any
+non-zero qpdf exit, missing OCR, a repaired earlier revision → exit
+`2`), two-tier findings, the xref-chain revision walk, the matching
+engine and rules formats.
+
+### The implementation problems
+
+- One module mixing parsing, decoding, matching, policy and I/O.
+- Tuned magic numbers, each a bypass (0.8 readable-code ratio, 8×32 px
+  image gate, fewer than 3 content operators, 16 MB, 50 revisions).
+- Objects are enumerated via `xref_length()`, which runs to the
+  trailer's `/Size` and makes 1.4% of real files exit `2` for entries
+  that do not exist.
+- The evaluation harness that gated recent PRs lives in a temporary
+  scratch directory, scrapes English warning text, and bypasses the CLI.
+- Fail-closed is enforced by each layer remembering to warn.
+- No type checking, linting, hash-locked dependencies or coverage in CI.
+
+## 2. Goal, threat model, non-goals
+
+**Goal.** Exit `0` means every **obligation** in the ledger was
+discharged and nothing matched. Obligations are registered before
+scanning and start `UNEXAMINED`:
+
+- one per *unit* of stored content (every object in every revision,
+  every child a decoder uncovers, every unindexed byte range);
+- one per *view* (each page's text readings, each page's OCR);
+- one per *external tool* (qpdf, exiftool, OCR engine) and per rules
+  scope (e.g. entity types the tool cannot verify);
+- one per *cross-check* (parser agreement).
+
+A unit's obligation is discharged only when its decoder **consumed** it
+completely — proved by a witness the core checks (§4) — not merely when
+its bytes were attributed to it.
+
+**In scope.** Files from any producer, including malformed, repaired,
+linearized, encrypted-with-owner-password and incrementally updated
+files, where the sensitive data was *meant to be removed*.
+
+**Hostile input.** The PDF is untrusted input to the verifier. Crashes,
+hangs and resource exhaustion are **defended** (exit `2`). Memory-
+corruption exploits in native parsers (MuPDF, qpdf) are **mitigated**,
+not defended: pinned versions, an independent parse in a separate
+process that a forged result would have to match, and an optional OS
+sandbox (no network, no writes).
+
+**Non-goals** (stated in the README):
+
+- Steganography: data in glyph spacing, image low-order bits, font
+  outlines, or deliberately encrypted payloads — beyond flagging what
+  cannot be read.
+- Secrets not described by the rules file.
+- Zeroing secrets in memory (Python cannot).
+- Judging whether a box covers a glyph's pixels beyond what OCR of the
+  rendered page reports.
+
+## 3. Principles
+
+In priority order.
+
+1. **Fail closed by construction.** One function computes the exit code
+   from the ledger. Every obligation starts `UNEXAMINED`; statuses are a
+   closed enum; `NOT_APPLICABLE` requires a reason from a closed list
+   (§4); an unhandled status cannot produce `0` (exhaustive `match`,
+   mypy). A decoder that raises is `FAILED`, via one wrapper.
+2. **Trust sits in witnesses, not in decoders' word.** `DECODED` is
+   accepted only when the decoder's witness balances (bytes consumed,
+   glyphs mapped). The **exit-0 audit surface** is listed explicitly:
+   `model`, `verdict`, the inventory byte-tiling check, the witness
+   checks, the font-Unicode classifier, the normalizer and matcher, and
+   each decoder's witness computation.
+3. **Classification is verified, never declared.** A unit's kind and any
+   `NOT_APPLICABLE` reason must be confirmed by a successful structural
+   parse (font program parses, image sample count matches). If a parse
+   fails or the kind is uncertain, run every plausible decoder and take
+   the union; guessing a kind never reduces coverage.
+4. **Hostile input handling.** Parsing and decoding run in a child
+   process (spawned, not forked; one per file) under: CPU-time rlimit,
+   file-size rlimit, core dumps off, a parent-side wall-clock kill, and
+   a parent-side memory watchdog polling the child's physical footprint
+   (macOS ignores memory rlimits). Decompression we do ourselves is
+   capped; MuPDF-internal decoding is bounded by the watchdog. Any kill
+   → the child's unreported obligations are `FAILED`.
+5. **Secrets stay secret.** Rule values and extracted document text never
+   appear in logs, exception text, debug output or reports — only masked
+   samples. Temporary files live in a private `0700` directory removed
+   before exit.
+6. **Deterministic.** Output is sorted and byte-identical across runs.
+   Limits are work-based (bytes inflated, operators interpreted, pixels
+   OCR'd); wall clock is only a backstop.
+7. **Reproducible environment.** A hash-locked dependency file; GitHub
+   Actions pinned by commit SHA; external tools resolved once to absolute
+   paths, called with `--` before file arguments and a minimal
+   environment (exiftool with `-config ''`); the report records tool,
+   dependency, external-tool and OS versions and the rules file's
+   SHA-256, and the tool refuses (exit `2`) below minimum versions.
+8. **Provenance on everything.** Every finding, flag and warning carries
+   a stable code and names its source: revision, object, byte span,
+   decoder or view. `--explain` lists every undischarged obligation
+   with provenance (never text).
+9. **Every threshold is a named parameter** with its reason and a test
+   pinning the trade-off.
+10. **Generated coverage.** `COVERAGE.md`'s table is generated by joining
+    the decoder registry (claims) with case-library results (evidence);
+    a ✓ cell with no passing case fails CI.
+11. **Verdict changes are versioned.** `CHANGELOG.md` has a mandatory
+    "Verdict changes" section; any change that can move a file from `0`
+    to `1`/`2` or `1` to `2` is at least a minor version bump.
+12. **Compatibility.** Same CLI, exit codes and rules formats. A bare JSON
+    array stays rules schema v1 forever; v2+ is `{"version": N, "rules":
+    [...]}`. The redactor YAML is another project's schema: unknown
+    keys stay exit `2` and its hash is recorded.
+
+## 4. Architecture
+
+### Process boundary
+
+- **Parent** (holds the secrets): CLI, rules, the list of expected
+  obligations, matching, verdict, report.
+- **Child** (touches the PDF): inventory, decoders, views. Streams
+  obligations and evidence back over a pipe. A missing, truncated or
+  malformed stream, or a non-zero child exit, makes every unreported
+  obligation `FAILED`.
+- **qpdf** runs as its own process for the independent parse.
+
+Matching stays in the parent so the child never holds secrets.
+
+### Package layout
+
+```
+redaction_verifier/
+  cli.py          argv → Config → exit code
+  rules/          schema, load, validate
+  model.py        frozen types (below)
+  inventory/      own xref/object parser: byte tiling, revisions, units,
+                  per-revision reference graph and resource scopes
+  decoders/       registry; one decoder per unit kind
+  views/          page readings, rendered-page OCR
+  fonts.py        Unicode-source classifier (pure)
+  matching/       values, patterns, tiers (pure)
+  verdict.py      ledger → Verdict (pure; only place exit codes are made)
+  report/         human, JSON (with schema_version, experimental), --explain
+  sandbox.py      child process, limits, watchdog, external-tool runner
+```
+
+### Core types (sketch)
+
+```python
+class Status(Enum): UNEXAMINED; DECODED; NOT_APPLICABLE; FLAGGED; UNREADABLE; FAILED
+
+@dataclass(frozen=True)
+class Obligation:
+    id: UnitRef | ViewRef | ToolRef | RuleScopeRef | CheckRef
+    status: Status
+    reason: Reason | None          # closed enum; required unless DECODED
+    witness: Witness | None
+
+@dataclass(frozen=True)
+class DecodeContext:
+    revision: int
+    referrer: UnitRef | None       # the object that draws/uses this unit
+    resources: ResourceScope | None  # resolved, incl. inherited
+    crypt: CryptHandler | None
+    depth: int
+
+@dataclass(frozen=True)
+class DecodeResult:
+    status: Status
+    reason: Reason | None
+    witness: Witness               # consumed ranges, glyphs shown/mapped
+    evidence: tuple[Evidence, ...]
+    children: tuple[Unit, ...]     # object-stream members, residue,
+                                   # zip entries, nested PDFs, SMasks
+
+Decoder = Callable[[Unit, DecodeContext, Budget], DecodeResult]
+
+@dataclass(frozen=True)
+class Evidence:
+    source: UnitRef | ViewRef
+    text: str
+    adjacency: Adjacency           # GENUINE | JOINED_LINES | JOINED_LITERALS
+                                   # | JOINED_PAGES | NOISY_SOURCE
+    provenance: tuple[UnitRef, ...]
+```
+
+Tier = f(rule kind, `evidence.adjacency`) — today's two-tier model made
+explicit.
+
+### Inventory
+
+Our own parser (~200 lines in the feasibility probe; it accounted every
+byte of 1,224 real files in 1.6 s total). It replaces the current
+hand-written xref code rather than adding a fourth parser, and objects
+are never enumerated via `xref_length()`.
+
+- **Chain grammar**: `startxref`, trailer `/Prev`, `/XRefStm` (hybrid
+  files), linearized first-page sections (`startxref 0`, forward
+  `/Prev`). An unknown form is a flag.
+- **Byte tiling**: every byte belongs to exactly one of header (incl.
+  the binary-marker comment), object, xref section/stream + trailer,
+  `%%EOF`, or PDF whitespace. Anything else is an `UNINDEXED` unit — any
+  non-whitespace byte is flagged; a range that parses as `obj…endobj`
+  goes through the object decoders. Overlapping spans are a flag.
+- **Ambiguity detection** (the tokenizer is the authority): duplicate
+  dictionary keys, `/Length` disagreeing with `endstream` (fall back to
+  scanning, record a flag-worthy note), xref offsets not landing on
+  `N G obj`, the same object defined twice in one section.
+- **Reference graph per revision**: which object draws or uses which,
+  with resolved resources (inherited from the page tree or a parent
+  form). This is what content streams need to decode (below).
+- **Encryption**: per-object decryption using each revision's
+  `/Encrypt`; unindexed ranges in an encrypted file cannot be decrypted
+  and are flagged (details in an ADR).
+
+### Decoding content streams
+
+A content stream decodes correctly only with the fonts and resources in
+scope where it is *used*, in *that* revision. Probes showed a wrong or
+missing context gives silently wrong text (no error, no warning).
+
+- The decoding unit is **(stream, context)**; the driver is a worklist:
+  pop a unit, decode it under each context it is reached from, push its
+  children.
+- Mechanism (spike S1, confirmed): attach the stream to a scratch page
+  with the resolved resources, optional-content switched on, the form
+  BBox reset and a large MediaBox; extract with `get_texttrace()`.
+- **Font witness**: `DECODED` only if no character is U+FFFD, every font
+  resolves, and the pure `fonts.py` classifier confirms each font's
+  Unicode source (ToUnicode covering the codes used, a standard encoding,
+  or `/Differences` with standard glyph names). MuPDF gives no signal of
+  its own.
+- **Every token** is covered: strings outside text-show operators
+  (`/ActualText`, marked-content property lists, `BX`/`EX` sections)
+  are decoded and searched too.
+- **Render pass**: a stream that paints (fills/strokes paths, draws
+  images) is also rendered on its scratch page and OCR'd, so text
+  converted to outlines is read. If it cannot be rendered in a resolved
+  context, it is flagged, never `NOT_APPLICABLE`.
+- A stream **no revision references** has no context: it is decoded
+  under a fallback (the union of document fonts) so a match can still
+  be found, but its status stays `FLAGGED`. A guessed context never
+  counts as `DECODED`.
+- **Deduplication** key: hash(decrypted stream) + hash(resolved
+  dependency closure: fonts, resources, colour spaces, masks). Evidence
+  keeps every `UnitRef` that shared it.
+
+### Decoder registry
+
+| Unit kind | Decoder | Witness / cannot-finish |
+| --- | --- | --- |
+| Filtered stream (any) | Explicit filter-chain stage | Bytes after a filter's end marker become a `RESIDUE` child (raw-searched, flagged if non-whitespace); unknown filter → `UNREADABLE` |
+| Content stream, form XObject, annotation appearance, Type3 glyph proc | Scratch page, per context (above) | Font witness; unrendered paint → flagged |
+| String / name / key in a dictionary | PDF token decoding | Whole object tokenised |
+| Image (incl. each SMask as its own unit) | Normalise (stencil + `/Decode`, CMYK/Indexed/ICC → grey, JBIG2/JPX), OCR the image; composited masks/strips OCR'd as rendered | `DECODED` only inside a recall-validated envelope (format, size, mask type); outside it, or conversion failure → flagged; per-image cap in pixels, ≥ 35 Mpx |
+| Embedded file | By signature: text → detect and unwrap encoded runs (base64, quoted-printable, hex) then search; PDF → recursive verify (sub-ledger folded as worst status); zip/Office → unpack, per-paragraph text incl. deletions, comments, properties; else flagged | Shared global budget |
+| XMP / Info | XML text / strings | — |
+| Script stream | Raw text | — |
+| Font program | Parse (sfnt / CFF / Type1); search name and metadata strings | Parse fails → treated as unknown stream |
+| Unknown / unverified stream | Every plausible decoder; raw text | Flagged unless a decoder fully consumes it |
+| Unindexed range | Raw text, or object decoders if it parses | Any non-whitespace → flagged |
+
+`NOT_APPLICABLE` reasons (closed list, each confirmed by parse):
+xref-stream field data, object-stream header table, a font program that
+parses and whose strings were searched, image data fully consumed by
+the image decoder. Extended only by ADR.
+
+**Budget**: one object for the whole run including recursion — depth,
+bytes inflated, units, OCR pixels. Exhaustion → flagged.
+
+### Views
+
+Kept for what storage cannot see: layout (values split across lines,
+columns, page seams), glyphs drawn out of order, and wrong-but-present
+Unicode maps (rendered-page OCR cross-checks them). Each page's view is
+an obligation.
+
+### Parser agreement
+
+Compare the inventory's in-use object set and page tree against PyMuPDF
+and against qpdf (separate process) for the current revision. "Repair"
+means parse-level warnings (`qpdf <file> --object-streams=disable
+/dev/null`, MuPDF warnings) — **not** `qpdf --check`'s linearization
+lint, which fires on 12% of real Acrobat files. Measured flag rate with
+this definition: ~1.5%. Benign warning categories are listed in an ADR.
+
+## 5. Evaluation: the case library
+
+The case library is the backbone of Phase 0 and serves three purposes:
+test fixtures and scorecard corpus, the evidence behind `COVERAGE.md`,
+and a gallery of how redaction fails.
+
+### Cases
+
+Each case is a generator (fake data only) plus metadata:
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `cells` | Stable IDs of the `COVERAGE.md` cells it exercises (cells get IDs) |
+| `family`, parameters | Parameterised families (the 780 page-layer cases are one family) |
+| `writer` | fitz, pikepdf/qpdf raw objects, hand-assembled bytes, reportlab, LibreOffice/Ghostscript, or a real redaction tool |
+| `expected` | Correct verdict: exit, tier, rule |
+| `known_gap` | Cell ID if today's tool is known to get it wrong — strict xfail: closing the gap fails the test until the label is updated |
+| `story`, `mistake`, `recovery` | For the gallery: what went wrong, which tool or habit causes it, how the secret is recovered |
+| `requires` | ocr / macos / fonts |
+| `output_sha256` | Catches generator drift (fixed metadata dates and IDs) |
+
+Guards against same-author bias:
+
+- Each cell needs at least one case from a **non-fitz writer** (fitz is
+  also the library the tool reads with).
+- A committed **real-redactor tier**: small binaries with fake data and
+  recorded provenance — a redactor POC, Acrobat Redact, a macOS
+  Preview box, Word export with a shape over text.
+- A **blind red-team slot**: cases written from `COVERAGE.md` and the
+  threat model by someone (or an agent) who has not read the code.
+
+Generators are portable: built-in or vendored OFL fonts, tools from
+`PATH`, no absolute paths.
+
+### Scorecard
+
+Run only through the CLI's `--json` output, one subprocess per file,
+with a timeout. Compared **per case** against a pinned reference (a git
+tag, checked out in a worktree — never the live code) on the normalised
+key {exit, set of (rule, tier, storage class), set of warning codes}.
+
+| Metric | Definition | Measured on |
+| --- | --- | --- |
+| Silent miss | Leak case, actual exit `0` | Labelled cases only |
+| Downgrade | Expected `1`, actual `2` | Labelled cases only |
+| False hard | Clean case with a hard finding | Labelled clean cases + real corpus |
+| Review rate | Clean case with exit `2` | Labelled clean cases + real corpus |
+| Crash / timeout | As named | All |
+| Runtime | Per file, p50 / p95 | All; budget p95 ≤ 2× baseline |
+
+The real-world corpus is local-only, keyed by SHA-256 in a manifest
+(paths relative to a configured root, no personal filenames), and
+reports clean-side metrics by stratum: text-bearing, multi-revision,
+producer family. It needs representative files — the current local set
+is 76% text-free system resources — including a ~300-page scan, a
+~500-page Word export and an image-heavy ~50 MB file.
+
+Every intended per-case change is listed in `eval/accepted_diffs.yaml`
+(case, old → new, reason, cell) and reviewed in its PR; any unlisted
+difference fails the gate.
+
+### Where each gate runs
+
+- **Linux CI, every PR**: the non-OCR catalogue and the differential.
+- **macOS CI (pinned image, e.g. `macos-15`)**: `requires: ocr` cases
+  only; OS and Vision versions recorded in the baseline.
+- **Local**: the real-world corpus. The PR commits
+  `eval/results/<tree-hash>.json`; CI fails if the hash does not match
+  the PR's code.
+- Runtime is reported in CI but gated locally (runner timing is noisy).
+
+### Gallery
+
+Generated from case metadata: what a reader sees, the recovered secret,
+the tool's verdict. Built at the end of Phase 0; it never gates.
+
+## 6. Transition
+
+- **Move, don't wrap.** The reusable pure parts (normalizer, matcher,
+  pattern classes and validators, rules loaders, report masking) move
+  into the package; `verify.py` re-exports them until no test needs it,
+  then shrinks to a ~5-line CLI entry (the README and `pyproject` use
+  `verify.py`). A ruff banned-import rule stops new internal imports.
+- **New path beside the old.** The ledger pipeline is built as a
+  separate path, not as adapters over today's layers.
+- **Worst-of verdict.** While both exist, the shipped exit is the more
+  severe of legacy and new (ordering `0 < 2 < 1`). The tool never
+  becomes less strict.
+- **Shadow mode.** The new path first reports a would-be verdict (a JSON
+  field and a scorecard column). Enforcement is switched on per unit
+  kind as each decoder lands, so accounting does not flood exit `2`
+  before decoders exist.
+- **Legacy retires** only when the new path alone is never less severe
+  than legacy on any case, except those in `accepted_diffs.yaml`.
+- **Legacy is otherwise frozen.** Known gaps found meanwhile become
+  `known_gap` cases closed by the new path; a legacy hotfix is the
+  owner's call per gap.
+
+## 7. Plan
+
+| Phase | Work | Gate |
+| --- | --- | --- |
+| **0a. Reference** | `--json` on today's `verify.py` (exit, findings with layer/masked rule/tier/location, warnings with stable codes); `--version`; no behaviour change. Tag it `eval-ref-0`. | Existing suite passes; JSON validated |
+| **0b. Case library** | Schema and cell IDs; migrate `corpus_builders`, the 85 end-to-end cases (labels corrected), page-layer families, and the PDFs from past review probes; add K1–K7 (§8) as `known_gap`; non-fitz writers; real-redactor tier. | Every ✓ cell has a case; strict xfail in place |
+| **0c. Scorecard** | Runner, differential against `eval-ref-0`, `accepted_diffs.yaml`, real-corpus manifest with strata and large files, CI tiers. | Baseline committed; CI fails on unlisted diffs |
+| **0d. Hygiene** | ruff, mypy (non-strict), coverage report; hash-locked deps; Actions pinned by SHA; Dependabot; subprocess argv (`--`, `-config ''`, absolute paths, minimal env); `CHANGELOG.md`. Independent of 0a–0c. | CI green |
+| **0e. Gallery** | Generated from the case library. | — |
+| **1. Decisions** | ADRs: encryption; benign parser-warning categories; `NOT_APPLICABLE` list; image-OCR envelope method; pattern-class default tier; recursion budget. Measure parser-agreement and unindexed-byte rates on the corpus. | ADRs approved |
+| **2. Move** | Move pure parts into the package; port behavioural tests to the case library or CLI; rewrite mutation tests against new module paths. | Per-case differential identical |
+| **3a. Inventory** | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. | Tiling holds on every corpus file; no crashes |
+| **3b. Ledger + verdict** | Obligations, witnesses, single verdict function, worst-of shipping, `--explain`. | Ledger-derived exit equals reference on every case (shadow) |
+| **3c. Parser agreement** | As §4. | Flag rate as measured in Phase 1 |
+| **3d. Sandbox** | Child process, limits, watchdog, private temp dir. Prerequisite for 4b–4c. | Bomb/hang cases exit `2` |
+| **4a. Content decoder** | Scratch-page decoding with contexts, font witness, every token, render pass. Enforce for content kinds. | K3–K6 and the switched-off-layer / hidden-annotation / unused-resource cells closed; review rate not up |
+| **4b. Image decoder** | Normalisation, OCR, validated envelope. | Leftover-image cells closed inside envelope; recall measured |
+| **4c. Containers** | Recursive PDFs, zip/Office, encoded-run unwrapping; global budget. | Container cells closed |
+| **4d. Filters + residue** | Filter-chain stage, `RESIDUE` children. | K1, K2 closed |
+| **5. Matching precision** | Context rules for pattern classes or demote built-ins to review; geometry-based matching for values split by columns or page furniture. | False hard < 1% on text-bearing real files |
+| **6. Retire** | Legacy path removed; strict mypy on the core; 100% branch coverage on `model` and `verdict`. | New path alone passes every gate |
+
+ADRs are required only for the Phase 1 questions and for any change to
+compatibility or exit semantics.
+
+## 8. Known gaps found by this review
+
+All exit `0` on today's tool with the secret present (reproduced):
+
+| ID | Case |
+| --- | --- |
+| K1 | Text-show operators after the zlib end marker in a **live** page's content stream (both parsers agree, qpdf reports no error) |
+| K2 | Same, in an orphaned stream |
+| K3 | Plain-text orphan stream carrying `/Length1` (taken for a font) |
+| K4 | Plain-text orphan labelled as a 1×1 image |
+| K5 | Text converted to outlines, in an orphaned stream |
+| K6 | Same, in a switched-off optional-content layer |
+| K7 | Plain text after the final `%%EOF` |
+
+To check in Phase 0b:
+
+- Font-coded (e.g. Identity-H) text in a drawn form whose BBox clips it
+  away. The plain-text version is caught today (exit `1`), but the page
+  text misses clipped glyphs, so a font-coded one may not be.
+- `/XRefStm` in hybrid files is not followed by the revision walk.
+
+## 9. Risks
+
+| Risk | Mitigation |
+| --- | --- |
+| A regression slips through | Pinned reference, per-case differential, worst-of verdict during transition |
+| Review rate rises before decoders exist | Shadow mode; enforcement per unit kind |
+| Decoders claim `DECODED` wrongly | Witnesses checked by the core; verified classification; envelopes for OCR |
+| Runtime grows (render pass, stored-image OCR) | Measured: storage decoding is seconds per thousand files; image OCR ~1 s per scanned page — budget p95 ≤ 2×; caps are flags |
+| Corpora unrepresentative | Non-fitz writers, real-redactor tier, blind red-team, representative large files |
+| Scope creep | Each phase justified by named cells, K-cases or scorecard metrics |
+| OCR is macOS-only | Unchanged; a portable OCR backend is out of scope |
