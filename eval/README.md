@@ -31,7 +31,10 @@ def redacted_no_gc(path):
 - **`expected`**: the correct verdict — the exit code, hard findings as
   `(rule, storage)`, warnings as `(code, storage)`, and optionally
   `layers` as `(rule, layer)` when the cell is about one layer's reading.
-  Any coverage warning ("could not read") not listed fails the case.
+  For a rule the case lists, where it is found is exact: the same rule
+  found in a storage class not listed (a live object also called
+  ORPHANED) fails the case. Any coverage warning ("could not read") not
+  listed fails it too.
 - **`known_gap`**: `KnownGap(cell, today=expect(...))` when today's tool
   gets it wrong. The case is judged against `today`, so a fix, a partial
   fix or a broken generator fails the test until the label is updated.
@@ -40,7 +43,8 @@ def redacted_no_gc(path):
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
-  needs to be judged is missing; other cases are judged with only the
+  needs to be judged is missing — or, with `no-ocr`, where OCR is present
+  (for a text-layer gap that OCR happens to cover); other cases are judged with only the
   missing tools' "not available" warnings left out (none on a full
   environment, `REQUIRE_FULL_ENV=1`).
 
@@ -52,8 +56,9 @@ glyph.
 
 **Grids** (`grid=`, `params=`) are parameterised families: `carriers`
 (six carrier surfaces × four producer layouts) and `page-text` (27 page
-layouts × three rule sets × with or without the SSN pattern rule, labels
-in `families/page_text_labels.py`). Their tests carry the `grid` marker;
+layouts × three rule sets × with or without the SSN pattern rule, plus the
+pattern rule alone; labels and known gaps in
+`families/page_text_labels.py`). Their tests carry the `grid` marker;
 CI runs them on Linux, where OCR is absent — their labels hold with and
 without OCR.
 
