@@ -1,5 +1,5 @@
 """Secrets left in objects the document no longer uses: orphaned by a
-deletion or a redaction saved without garbage collection."""
+deletion, or by a redaction saved without garbage collection."""
 
 from __future__ import annotations
 
@@ -7,56 +7,89 @@ from pathlib import Path
 
 import fitz
 
-from ..model import CODE, SSN, case, expect
-from ..pdfkit import (FILLER, body, cjk_font, embedded_font, orphan, png_of,
-                      redact, save, zipbytes)
+from ..model import CODE, SSN, KnownGap, case, expect
+from ..pdfkit import (FILLER, body, cjk_font, compressed, embedded_font, orphan,
+                      png_of, redact, save)
 
 ORPHANED = expect(1, findings=(("SSN", "orphaned"),))
+UNDECODABLE = expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),))
 NO_GC = "Saving without garbage collection (PyMuPDF's default garbage=0)."
-RECOVER_ORPHAN = "Decompress the file (mutool clean -d) and search the raw bytes."
+RECOVER_HEX = ("Decompress the file (mutool clean -d), find the leftover content stream, and "
+               "decode its hex strings — each pair of hex digits is one character.")
+RECOVER_GLYPHS = ("Decompress the file, then map the leftover stream's glyph codes to characters "
+                  "through the font's ToUnicode table.")
 
 
-def _deleted_page(path: Path, font=None) -> None:
+def leak(id: str, cells, story: str, expected=ORPHANED, **kw):
+    return case(id, truth="leak", cells=cells, expected=expected, story=story, **kw)
+
+
+def _deleted_page(path: Path, font=None, compact: bool = False) -> None:
     doc = fitz.open(); body(doc.new_page())
     page = doc.new_page()
     body(page, font(page) if font else "helv", lines=[f"SSN {SSN}", f"Code {CODE}"])
+    if compact:
+        # Rewrite the page as a compact content stream (as clean_contents,
+        # Acrobat and many producers write it) and drop the verbose copy.
+        page.clean_contents()
+        doc = fitz.open("pdf", doc.tobytes(garbage=4, no_new_id=True))
     doc.delete_page(1); save(doc, path)
 
 
-@case("leak.orphan.deleted-page", cells="orphaned.plain", expected=ORPHANED,
-      story="A page with the SSN was deleted; its content stream stayed in the file.",
-      mistake=NO_GC, recovery=RECOVER_ORPHAN)
+@leak("leftover.deleted-page", "orphaned.plain",
+      "A page with the SSN was deleted; its content stream stayed in the file.",
+      mistake=NO_GC, recovery=RECOVER_HEX)
 def deleted_page(path: Path) -> None:
     _deleted_page(path)
 
 
-@case("leak.orphan.deleted-page-embedded-font", cells="orphaned.font",
-      expected=expect(2, warnings=("LEFTOVER_UNDECODABLE_TEXT",)),
-      story="A deleted page set in an embedded font: its glyph codes are left behind.",
-      mistake=NO_GC, recovery="Decode the leftover stream with the font's ToUnicode map.")
+@leak("leftover.deleted-page-embedded-font", "orphaned.font",
+      "A deleted page set in an embedded font: its glyph codes are left behind.",
+      expected=UNDECODABLE, mistake=NO_GC, recovery=RECOVER_GLYPHS)
 def deleted_page_embedded(path: Path) -> None:
     _deleted_page(path, embedded_font)
 
 
-@case("leak.orphan.deleted-page-cjk", cells="orphaned.font",
-      expected=expect(2, warnings=("LEFTOVER_UNDECODABLE_TEXT",)),
-      story="A deleted page set in an embedded CJK font.")
+@leak("leftover.deleted-page-embedded-font-compact", "orphaned.font.compact-syntax",
+      "The same deleted page, its content written compactly (\"BT/EM 11 Tf\", no space "
+      "after BT): the leftover glyph codes are neither read nor flagged.",
+      expected=UNDECODABLE, known_gap=KnownGap("orphaned.font.compact-syntax", expect(0)),
+      mistake=NO_GC, recovery=RECOVER_GLYPHS)
+def deleted_page_embedded_compact(path: Path) -> None:
+    _deleted_page(path, embedded_font, compact=True)
+
+
+@leak("leftover.deleted-page-cjk", "orphaned.font",
+      "A deleted page set in an embedded CJK font.", expected=UNDECODABLE)
 def deleted_page_cjk(path: Path) -> None:
     _deleted_page(path, cjk_font)
 
 
-@case("leak.orphan.redacted-no-gc", cells="orphaned.plain", expected=ORPHANED,
-      story="The SSN was redacted properly on the page, but the file was saved without "
-            "garbage collection, so the original content stream is still inside.",
-      mistake=NO_GC, recovery=RECOVER_ORPHAN)
+@leak("leftover.redacted-no-gc", "orphaned.plain",
+      "The SSN was redacted properly on the page, but the file was saved without "
+      "garbage collection, so the original content stream is still inside.",
+      mistake=NO_GC, recovery=RECOVER_HEX)
 def redacted_no_gc(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page(), lines=[*FILLER, f"SSN {SSN}"])
     redact(doc, SSN); save(doc, path)
 
 
-@case("leak.orphan.mixed-fonts", cells="orphaned.font",
-      expected=expect(2, warnings=("LEFTOVER_UNDECODABLE_TEXT",)),
-      story="A deleted page mostly in a standard font, with the secret in an embedded font.")
+@leak("leftover.redacted-no-gc-embedded-font-compact", "orphaned.font.compact-syntax",
+      "The same, with the page in an embedded font written compactly: the original "
+      "stream's glyph codes stay in the file, neither read nor flagged.",
+      expected=UNDECODABLE, known_gap=KnownGap("orphaned.font.compact-syntax", expect(0)),
+      mistake=NO_GC, recovery=RECOVER_GLYPHS)
+def redacted_no_gc_compact(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    body(page, embedded_font(page), lines=[*FILLER, f"SSN {SSN}"])
+    page.clean_contents()
+    doc = fitz.open("pdf", doc.tobytes(garbage=4, no_new_id=True))
+    redact(doc, SSN); save(doc, path)
+
+
+@leak("leftover.mixed-fonts", "orphaned.font",
+      "A deleted page mostly in a standard font, with the secret in an embedded font.",
+      expected=UNDECODABLE)
 def mixed_fonts(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     page = doc.new_page(); font = embedded_font(page)
@@ -66,8 +99,16 @@ def mixed_fonts(path: Path) -> None:
     doc.delete_page(1); save(doc, path)
 
 
-@case("leak.orphan.xmp", cells="leftover-xmp.plain", expected=ORPHANED,
-      story="An old XMP metadata packet with the SSN in its title, no longer referenced.")
+@leak("leftover.single-stream-mixed", "orphaned.font",
+      "One leftover stream: many lines of plain text, and the SSN as glyph codes.",
+      expected=UNDECODABLE)
+def single_stream_mixed(path: Path) -> None:
+    doc = fitz.open(); body(doc.new_page())
+    orphan(doc, "<< >>", mixed_stream(embedded_glyphs(f"SSN {SSN}"))); save(doc, path)
+
+
+@leak("leftover.xmp", "leftover-xmp.plain",
+      "An old XMP metadata packet with the SSN in its title, no longer referenced.")
 def orphan_xmp(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     xmp = ('<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
@@ -78,34 +119,43 @@ def orphan_xmp(path: Path) -> None:
     orphan(doc, "<< /Type /Metadata /Subtype /XML >>", xmp.encode()); save(doc, path)
 
 
-@case("leak.orphan.attachment-text", cells="orphaned-attachment.plain",
-      expected=expect(2, warnings=("REVIEW_OBJECT_TEXT",)),
-      story="A removed attachment's text is still stored, unreferenced.")
+@leak("leftover.attachment-text", "orphaned-attachment.plain",
+      "A removed attachment's text is still stored, unreferenced (manual review: a run "
+      "of arbitrary text).",
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)))
 def orphan_attachment_text(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Type /EmbeddedFile >>", f"Employee SSN {SSN}\n".encode()); save(doc, path)
 
 
-@case("leak.orphan.attachment-untyped", cells="orphaned-attachment.plain",
-      expected=expect(2, warnings=("REVIEW_OBJECT_TEXT",)),
-      story="A removed attachment stored without a /Type.")
+@leak("leftover.attachment-untyped", "orphaned-attachment.plain",
+      "A removed attachment stored without a /Type.",
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)))
 def orphan_attachment_untyped(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     orphan(doc, "<< /Params << /Size 22 >> >>", f"Employee SSN {SSN}\n".encode())
     save(doc, path)
 
 
-@case("leak.orphan.attachment-zip", cells=("orphaned.container", "orphaned-attachment.container"),
-      expected=expect(2, warnings=("LEFTOVER_CONTAINER",)),
-      story="A removed zip attachment holding the SSN, still stored.")
+@leak("leftover.attachment-zip", ("orphaned-attachment.container", "orphaned.container"),
+      "A removed zip attachment holding the SSN, still stored.",
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
 def orphan_attachment_zip(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
-    orphan(doc, "<< /Type /EmbeddedFile >>", zipbytes(f"SSN {SSN}")); save(doc, path)
+    orphan(doc, "<< /Type /EmbeddedFile >>", compressed("zip", f"SSN {SSN}")); save(doc, path)
 
 
-@case("leak.orphan.inline-image", cells="orphaned.pixels",
-      expected=expect(2, warnings=("LEFTOVER_IMAGE",)),
-      story="A leftover content stream drawing the SSN as an inline image.")
+@leak("leftover.attachment-png", "orphaned-attachment.pixels",
+      "A removed PNG attachment showing the SSN, still stored.",
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+def orphan_attachment_png(path: Path) -> None:
+    doc = fitz.open(); body(doc.new_page())
+    orphan(doc, "<< /Type /EmbeddedFile >>", png_of(f"SSN {SSN}")); save(doc, path)
+
+
+@leak("leftover.inline-image", "orphaned.pixels",
+      "A leftover content stream drawing the SSN as an inline image.",
+      expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)))
 def orphan_inline_image(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(f"SSN {SSN}")))
@@ -113,14 +163,6 @@ def orphan_inline_image(path: Path) -> None:
     data = (f"q {w / 2} 0 0 {h / 2} 72 400 cm BI /W {w} /H {h} /BPC 8 /CS /G ID ".encode()
             + gray.samples + b"\nEI Q")
     orphan(doc, "<< >>", data); save(doc, path)
-
-
-@case("leak.orphan.single-stream-mixed", cells="orphaned.font",
-      expected=expect(2, warnings=("LEFTOVER_UNDECODABLE_TEXT",)),
-      story="One leftover stream: many lines of plain text, and the SSN as glyph codes.")
-def single_stream_mixed(path: Path) -> None:
-    doc = fitz.open(); body(doc.new_page())
-    orphan(doc, "<< >>", mixed_stream(embedded_glyphs(f"SSN {SSN}"))); save(doc, path)
 
 
 def embedded_glyphs(text: str) -> str:
@@ -136,11 +178,3 @@ def mixed_stream(secret_hex: str | None) -> bytes:
     if secret_hex:
         lines.append(f"BT /EM 11 Tf 72 {y} Td {secret_hex} Tj ET")
     return "\n".join(lines).encode()
-
-
-@case("leak.orphan.attachment-png", cells="orphaned-attachment.pixels",
-      expected=expect(2, warnings=("LEFTOVER_CONTAINER",)),
-      story="A removed PNG attachment showing the SSN, still stored.")
-def orphan_attachment_png(path: Path) -> None:
-    doc = fitz.open(); body(doc.new_page())
-    orphan(doc, "<< /Type /EmbeddedFile >>", png_of(f"SSN {SSN}")); save(doc, path)

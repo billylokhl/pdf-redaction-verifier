@@ -7,11 +7,15 @@ from pathlib import Path
 
 import fitz
 
-from ..model import SSN, case, expect
+from ..model import SSN, KnownGap, case, expect
 from ..pdfkit import body, embedded_font, save
 
 SPLIT_CODE = expect(1, findings=(("Code", "live"),))
-WRAPPED = expect(2, warnings=("REVIEW_CROSS_LINE",))
+WRAPPED = expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),))
+
+
+def leak(id: str, cells, story: str, expected=SPLIT_CODE, **kw):
+    return case(id, truth="leak", cells=cells, expected=expected, story=story, **kw)
 
 
 def _boxed(page: fitz.Page, pos: tuple[float, float], text: str) -> None:
@@ -33,25 +37,25 @@ def _split_pages(path: Path, first, second, crop: bool = False, extra=None) -> N
     save(doc, path)
 
 
-@case("leak.split.page-break", cells="match.page-break", expected=SPLIT_CODE,
-      story="A code name split across a page break: BLUE at the bottom, HERON at the top.")
+@leak("layout.page-break", "match.page-break",
+      "A code name split across a page break: BLUE at the bottom, HERON at the top.")
 def page_break(path: Path) -> None:
     _split_pages(path, lambda p: p.insert_text((72, 760), "Project code BLUE"),
                  lambda p: p.insert_text((72, 60), "HERON continues here"))
 
 
-@case("leak.split.page-break-slug-outside-crop", cells="match.page-break", expected=SPLIT_CODE,
-      story="The same split, with a printer's slug outside the crop box between the halves.")
+@leak("layout.page-break-slug-outside-crop", "match.page-break",
+      "The same split, with a printer's slug outside the crop box between the halves.")
 def page_break_slug(path: Path) -> None:
     _split_pages(path, lambda p: p.insert_text((72, 690), "Project code BLUE"),
                  lambda p: p.insert_text((72, 60), "HERON continues here"), crop=True,
                  extra=lambda p: p.insert_text((72, 780), "SLUG job 4471 proof 2"))
 
 
-@case("leak.split.page-break-offpage-bates", cells="match.page-break-furniture",
-      expected=expect(1, findings=(("Code", "live"),)), known_gap="match.page-break-furniture",
-      story="The split, with a Bates number below the page between the halves: the seam "
-            "reading puts the Bates line between BLUE and HERON.")
+@leak("layout.page-break-bates-footer", "match.page-break-furniture",
+      "A code name split across a page break, with a Bates number printed as a footer "
+      "between the halves: the joined reading puts the footer between BLUE and HERON.",
+      known_gap=KnownGap("match.page-break-furniture", expect(0)))
 def page_break_bates(path: Path) -> None:
     def extra(p: fitz.Page) -> None:
         p.insert_text((72, 830), "bates 000123"); p.insert_text((72, 860), "x")
@@ -59,7 +63,7 @@ def page_break_bates(path: Path) -> None:
                  lambda p: p.insert_text((72, 60), "HERON continues here"), extra=extra)
 
 
-@case("leak.split.ssn-page-break", cells="match.page-break",
+@leak("layout.ssn-page-break", "match.page-break",
       expected=expect(1, findings=(("SSN", "live"),)),
       story="An SSN split across a page break after its second dash.")
 def ssn_page_break(path: Path) -> None:
@@ -67,8 +71,8 @@ def ssn_page_break(path: Path) -> None:
                  lambda p: p.insert_text((72, 60), "6789 end"))
 
 
-@case("leak.split.boxed-page-break-slug", cells="match.page-break", expected=SPLIT_CODE,
-      story="Boxed halves of a split code name, a slug outside the crop box between them.",
+@leak("layout.boxed-page-break-slug", "match.page-break",
+      "Boxed halves of a split code name, a slug outside the crop box between them.",
       mistake="Boxes drawn over text on both pages.")
 def boxed_slug(path: Path) -> None:
     _split_pages(path, lambda p: _boxed(p, (72, 690), "Project code BLUE"),
@@ -76,23 +80,22 @@ def boxed_slug(path: Path) -> None:
                  extra=lambda p: p.insert_text((72, 780), "SLUG job 4471 proof 2"))
 
 
-@case("leak.split.boxed-page-break", cells="match.page-break", expected=SPLIT_CODE,
-      story="Boxed halves of a split code name, cropped pages, nothing between them.")
+@leak("layout.boxed-page-break", "match.page-break",
+      "Boxed halves of a split code name, cropped pages, nothing between them.")
 def boxed_split(path: Path) -> None:
     _split_pages(path, lambda p: _boxed(p, (72, 690), "Project code BLUE"),
                  lambda p: _boxed(p, (72, 60), "HERON continues here"), crop=True)
 
 
-@case("leak.split.boxed-page-break-offpage-bates", cells="match.page-break",
-      expected=SPLIT_CODE,
-      story="Boxed halves, first half near the bottom, a Bates number below the page.")
+@leak("layout.boxed-page-break-offpage-bates", "match.page-break",
+      "Boxed halves, first half near the bottom, a Bates number below the page.")
 def boxed_bates(path: Path) -> None:
     _split_pages(path, lambda p: _boxed(p, (72, 800), "Project code BLUE"),
                  lambda p: _boxed(p, (72, 60), "HERON continues here"),
                  extra=lambda p: p.insert_text((72, 870), "bates 000123"))
 
 
-@case("leak.split.boxed-ssn-page-break-slug", cells="match.page-break",
+@leak("layout.boxed-ssn-page-break-slug", "match.page-break",
       expected=expect(1, findings=(("SSN", "live"),)),
       story="A boxed SSN split across a page break, a slug outside the crop box.")
 def boxed_ssn(path: Path) -> None:
@@ -101,7 +104,7 @@ def boxed_ssn(path: Path) -> None:
                  extra=lambda p: p.insert_text((72, 780), "SLUG job 4471 proof 2"))
 
 
-@case("leak.wrap.boxed-lines", cells="match.line-wrap", expected=WRAPPED,
+@leak("layout.wrap-boxed-lines", "match.line-wrap", expected=WRAPPED,
       story="A code name wrapped across two boxed lines (manual review: a joined reading).")
 def boxed_wrap(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
@@ -109,7 +112,8 @@ def boxed_wrap(path: Path) -> None:
     save(doc, path)
 
 
-@case("leak.wrap.boxed-lines-offpage-label", cells="match.line-wrap", expected=WRAPPED,
+@leak("layout.wrap-boxed-lines-offpage-label", "match.line-wrap", expected=WRAPPED,
+      features="off-page.plain",
       story="The same wrap, with an off-page label on the first line's baseline.")
 def boxed_wrap_label(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
@@ -132,14 +136,27 @@ def _tight(path: Path, offpage: bool) -> None:
     save(doc, path)
 
 
-@case("leak.tight-lines-boxed", cells="live.font", expected=expect(1, findings=(("SSN", "live"),)),
+@leak("layout.tight-lines-boxed", "live.font", expected=expect(1, findings=(("SSN", "live"),)),
       story="A boxed SSN among tightly spaced ledger lines.")
 def tight(path: Path) -> None:
     _tight(path, False)
 
 
-@case("leak.tight-lines-boxed-offpage-label", cells=("live.font", "off-page.font"),
+@leak("layout.tight-lines-boxed-offpage-label", "live.font", features="off-page.font",
       expected=expect(1, findings=(("SSN", "live"),)),
       story="The same, with a colour-bar label off the page between two lines.")
 def tight_label(path: Path) -> None:
     _tight(path, True)
+
+
+@leak("layout.undashed-ssn-wrapped", "match.undashed-wrap",
+      "An SSN written with spaces instead of dashes, wrapped after its second group; "
+      "searched for by the built-in SSN pattern. The joined reading should raise it for "
+      "review, but the pattern only accepts the dashed form across a line break.",
+      rules=({"name": "Any SSN", "class": "ssn"},),
+      expected=expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),)),
+      known_gap=KnownGap("match.undashed-wrap", expect(0)))
+def undashed_wrap(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page(); body(page)
+    page.insert_text((72, 300), "Applicant number 123 45")
+    page.insert_text((72, 316), "6789 on file"); save(doc, path)

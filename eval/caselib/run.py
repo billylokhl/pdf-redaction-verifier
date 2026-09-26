@@ -12,14 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .model import Case
+from .model import Case, Expect
 from .pdfkit import finalize
 
-# Warnings that only say the environment lacks a tool. A run without OCR
-# or without qpdf/exiftool can still judge a case that does not need
-# them, by leaving these out of the verdict (the exit code is exactly
-# 1 if findings, else 2 if warnings, else 0 — tests/test_json.py).
-_ENVIRONMENT_CODES = frozenset({"OCR_UNAVAILABLE", "TOOL_MISSING"})
+# Warnings that only say the environment lacks a tool, and which tool.
+_ENVIRONMENT = {"OCR_UNAVAILABLE": "ocr", "TOOL_MISSING": None}
 
 
 def available() -> frozenset[str]:
@@ -51,18 +48,26 @@ def _utc() -> Iterator[None]:
 def build(case: Case, path: Path) -> Path:
     with _utc():
         case.build(path)
-    finalize(path)
+    if case.writer == "fitz":
+        finalize(path)          # raw and committed files are used exactly as written
     return path
 
 
-def scan(case: Case, pdf: Path, workdir: Path) -> dict[str, Any]:
+@dataclass(frozen=True)
+class Scan:
+    report: dict[str, Any]
+    exit_code: int              # what the process returned
+
+
+def scan(case: Case, pdf: Path, workdir: Path) -> Scan:
     """Run the verifier's CLI entry point in-process with --json."""
     import verify
     rules = workdir / f"{case.id}.rules.json"
     rules.write_text(json.dumps(list(case.rules)))
     report = workdir / f"{case.id}.report.json"
-    verify.main(["--target", str(pdf), "--secrets", str(rules), "--json", str(report)])
-    return json.loads(report.read_text())
+    report.unlink(missing_ok=True)          # never judge an earlier run's report
+    code = verify.main(["--target", str(pdf), "--secrets", str(rules), "--json", str(report)])
+    return Scan(json.loads(report.read_text()), code)
 
 
 @dataclass(frozen=True)
@@ -75,25 +80,50 @@ class Judgement:
         return not self.problems
 
 
-def effective_exit(report: dict[str, Any]) -> int:
+def _environmental(warning: dict[str, Any], have: frozenset[str]) -> bool:
+    """A "not available" warning for a tool this machine lacks. On a full
+    environment nothing is environmental: a missing tool there is a bug."""
+    if warning["code"] not in _ENVIRONMENT or os.environ.get("REQUIRE_FULL_ENV") == "1":
+        return False
+    tool = _ENVIRONMENT[warning["code"]] or warning.get("tool")
+    return tool not in have
+
+
+def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
+          want: Expect | None = None) -> Judgement:
+    """Judge a scan against *want* (default: the case's correct verdict)."""
+    import verify
+    have = available() if have is None else have
+    want = case.expected if want is None else want
+    report = result.report
+    problems: list[str] = []
     if report["error"] is not None:
-        return report["exit_code"]
-    warnings = [w for w in report["warnings"] if w["code"] not in _ENVIRONMENT_CODES]
-    return 1 if report["findings"] else 2 if warnings else 0
+        return Judgement(result.exit_code, (f"error {report['error']['code']}",))
+    if report["exit_code"] != result.exit_code:
+        problems.append(f"report says exit {report['exit_code']}, process {result.exit_code}")
 
-
-def judge(case: Case, report: dict[str, Any]) -> Judgement:
-    exit_code = effective_exit(report)
-    problems = []
-    want = case.expected
+    warnings = [w for w in report["warnings"] if not _environmental(w, have)]
+    exit_code = 1 if report["findings"] else 2 if warnings else 0
+    if len(warnings) == len(report["warnings"]) and exit_code != result.exit_code:
+        problems.append(f"exit {result.exit_code} disagrees with the report ({exit_code})")
     if exit_code != want.exit:
         problems.append(f"exit {exit_code}, expected {want.exit}")
+
     found = {(f["rule"], f["storage"]) for f in report["findings"]}
     for rule, storage in sorted(want.findings - found):
         problems.append(f"missing finding {rule!r} ({storage})")
-    codes = {w["code"] for w in report["warnings"]}
-    for code in sorted(want.warnings - codes):
-        problems.append(f"missing warning {code}")
+    by_layer = {(f["rule"], f["layer"]) for f in report["findings"]}
+    for rule, layer in sorted(want.layers - by_layer):
+        problems.append(f"no {layer} finding for {rule!r}")
+
+    listed = {(w["code"], w["storage"]) for w in warnings}
+    for code, storage in sorted(want.warnings, key=str):
+        if (code, storage) not in listed:
+            problems.append(f"missing warning {code} ({storage})")
+    expected_codes = {code for code, _ in want.warnings}
+    for w in warnings:
+        if verify.WARNING_CODES[w["code"]] == "coverage" and w["code"] not in expected_codes:
+            problems.append(f"unexpected {w['code']} ({w['storage']}): {w['message'][:80]}")
     return Judgement(exit_code, tuple(problems))
 
 
@@ -108,9 +138,14 @@ def main(argv: list[str] | None = None) -> int:
     for case_id in ids:
         case = REGISTRY[case_id]
         pdf = build(case, out / f"{case.id}.pdf")
-        verdict = judge(case, scan(case, pdf, out))
-        status = "ok" if verdict.ok else ("known gap" if case.known_gap else "FAIL")
-        failed += status == "FAIL"
+        result = scan(case, pdf, out)
+        if case.known_gap:
+            verdict = judge(case, result, want=case.known_gap.today)
+            status = "gap" if verdict.ok else "GAP MOVED"
+        else:
+            verdict = judge(case, result)
+            status = "ok" if verdict.ok else "FAIL"
+        failed += not verdict.ok
         print(f"{status:9} {case.id:48} exit {verdict.exit}  {'; '.join(verdict.problems)}")
     return 1 if failed else 0
 

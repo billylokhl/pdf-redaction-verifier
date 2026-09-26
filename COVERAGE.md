@@ -26,17 +26,17 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
-| `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise | ✗ | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
+| `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise, or running across the page edge | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
 | `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
-| `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
-| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ · ✗ after a stream's end marker⁹, or labelled as a font or image | ⚑ Objects⁴ · ✗ ordinary-looking codes⁴, compact syntax¹⁰ | ⚑ Objects⁵ · ✗ small images⁵, text as outlines | ⚑ Objects |
+| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ · ✗ compact syntax¹⁰ | ⚑ Objects⁵ | ⚑ Objects |
 | `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
 | `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
 | `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
-| `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ |
+| `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ · ✗ encoded as text² |
 | `embedded-other` | **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
 | `orphaned-attachment` | **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) | — | ⚑ Objects | ⚑ Objects⁸ |
 | `annot-fields` | **Annotation text, form fields, link targets, layer names** | ✓ Hidden, Objects | — | — | — |
@@ -77,17 +77,17 @@ and the latest 49.
 ⁸ Leftover payloads are read up to 16 MB decompressed; a warning says
 when a larger one was cut.
 
-Also ✗, found by the review of the redesign plan (cases `gap.*` in the
-case library; `docs/REDESIGN.md` §8):
+⁹ Data inside a compressed stream's declared length but after its end
+marker: both parsers stop at the marker, so it is never read.
 
-- Data after a compressed stream's end marker, inside its declared
-  length — on a live page (`live.after-stream-end`) or in a leftover
-  object (`orphaned.after-stream-end`). Both parsers stop at the marker.
-- Leftover plain text in a stream labelled as a font program or an image
-  (`orphaned.mislabelled`): skipped as binary.
-- Text converted to outlines (filled paths) in a leftover stream or a
-  switched-off layer (`orphaned.outlines`, `oc-off.pixels`): nothing
-  renders it and nothing flags it.
+¹⁰ Leftover content written without whitespace after `BT` (`BT/F1 11 Tf`,
+as `clean_contents`, redactor and many producers write it) is not
+recognised as page content, so its glyph codes are neither read nor
+flagged.
+
+The ✗ parts of mixed cells and the gaps above have their own ids and,
+where one exists, a case pinning today's wrong answer (`known_gap` in the
+case library; `docs/REDESIGN.md` §8).
 
 ## Matching limits
 

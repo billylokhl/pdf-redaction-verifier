@@ -26,7 +26,7 @@ LOCK = Path(__file__).resolve().parent / "cases.lock.json"
 
 
 def lockable(case: Case) -> bool:
-    return "qpdf" not in case.requires
+    return case.writer != "qpdf"
 
 
 def digest(case: Case, workdir: Path) -> str:
