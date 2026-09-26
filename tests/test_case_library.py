@@ -18,7 +18,8 @@ import pytest
 from caselib import CELLS, NONFITZ_PENDING, REGISTRY, UNDOCUMENTED_GAPS, load
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.lock import LOCK, lockable
-from caselib.run import available, build, judge, scan
+from caselib.model import Case, expect
+from caselib.run import Scan, available, build, judge, scan
 
 from .conftest import REPO_ROOT
 
@@ -53,6 +54,39 @@ def test_case(case, tmp_path) -> None:
     else:
         verdict = judge(case, result)
         assert verdict.ok, f"{case.id}: {'; '.join(verdict.problems)}"
+
+
+# ── judge()'s warning-storage check ──────────────────────────────────────
+
+
+def test_judge_sorts_mixed_none_and_string_storage_without_crashing():
+    """A code the case does not expect at all (want.warnings names a
+    storage that never appears) can still be reported at more than one
+    storage, one of them None (e.g. HIDDEN_ITEM_FAILED, raised both with
+    and without a storage class) — sorting that residual set used to
+    crash with TypeError (None is not orderable against str) before
+    comparing by str."""
+    synthetic = Case(
+        id="file.warning-storage-mix",
+        truth="clean",
+        cells=(),
+        expected=expect(2, warnings=(("HIDDEN_ITEM_FAILED", "orphaned"),)),
+        story="unit test for judge()'s warning-storage check",
+        build=lambda path: None,
+    )
+    report = {
+        "error": None,
+        "exit_code": 2,
+        "findings": [],
+        "warnings": [
+            {"code": "HIDDEN_ITEM_FAILED", "storage": "live", "layer": "Hidden", "message": "m1"},
+            {"code": "HIDDEN_ITEM_FAILED", "storage": None, "layer": "Hidden", "message": "m2"},
+        ],
+    }
+    verdict = judge(synthetic, Scan(report=report, exit_code=2), have=frozenset({"qpdf", "exiftool", "ocr"}))
+    assert not verdict.ok
+    assert any("missing warning HIDDEN_ITEM_FAILED (orphaned)" in p for p in verdict.problems)
+    assert any("HIDDEN_ITEM_FAILED" in p and "expected a different storage" in p for p in verdict.problems)
 
 
 # ── The library ────────────────────────────────────────────────────────

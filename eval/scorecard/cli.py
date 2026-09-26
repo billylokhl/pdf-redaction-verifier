@@ -25,7 +25,7 @@ from .refs import REFERENCE_REF
 
 
 def _cmd_diff(args: argparse.Namespace) -> int:
-    diffs = run_differential(
+    run = run_differential(
         args.case_id or None,
         out_dir=args.out,
         reference_ref=args.reference,
@@ -37,10 +37,12 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         else None,
         cache_dir=args.cache_dir,
     )
-    print(report.render_differential_summary(diffs))
+    print(report.render_differential_summary(run.diffs, run.stale))
     if args.json:
-        args.json.write_text(report.dump_json(report.differential_to_jsonable(diffs)) + "\n")
-    return 0 if all(d.ok for d in diffs) else 1
+        args.json.write_text(
+            report.dump_json(report.differential_to_jsonable(run.diffs, run.stale)) + "\n"
+        )
+    return 0 if all(d.ok for d in run.diffs) and not run.stale else 1
 
 
 def _cmd_metrics(args: argparse.Namespace) -> int:
@@ -55,13 +57,15 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
 
 
 def _cmd_corpus_build(args: argparse.Namespace) -> int:
-    entries = corpus_mod.build_manifest(args.root, manifest_path=args.manifest)
-    print(f"wrote {len(entries)} entries to {args.manifest}")
+    manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
+    entries = corpus_mod.build_manifest(args.root, manifest_path=manifest)
+    print(f"wrote {len(entries)} entries to {manifest}")
     return 0
 
 
 def _cmd_corpus_check(args: argparse.Namespace) -> int:
-    entries = corpus_mod.load_manifest(args.manifest)
+    manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
+    entries = corpus_mod.load_manifest(manifest)
     check = corpus_mod.check_manifest(entries, args.root)
     for path in check.missing:
         print(f"MISSING  {path}")
@@ -75,9 +79,12 @@ def _cmd_corpus_check(args: argparse.Namespace) -> int:
 def _cmd_corpus_run(args: argparse.Namespace) -> int:
     from caselib.run import available
 
+    from .differential import normalization_have
     from .refs import candidate_verify_path, repo_root
 
-    entries = corpus_mod.load_manifest(args.manifest)
+    manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
+    out = corpus_mod.ensure_local_only(args.out, allow_outside=args.allow_outside)
+    entries = corpus_mod.load_manifest(manifest)
     check = corpus_mod.check_manifest(entries, args.root)
     if not check.ok:
         for path in check.missing:
@@ -92,10 +99,10 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         args.root,
         rules,
         verify_path=candidate_verify_path(repo_root()),
-        workdir=args.out,
+        workdir=out,
         timeout=args.timeout,
     )
-    strata = corpus_mod.stratify(runs, have=available())
+    strata = corpus_mod.stratify(runs, have=normalization_have(available()))
     print(report.render_stratified_table(strata))
     if args.json:
         payload = {name: sc.to_jsonable() for name, sc in strata.items()}
@@ -135,23 +142,33 @@ def build_parser() -> argparse.ArgumentParser:
     corpus_p = sub.add_parser("corpus", help="the local-only real-world corpus")
     corpus_sub = corpus_p.add_subparsers(dest="corpus_command", required=True)
 
+    def add_allow_outside(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--allow-outside", action="store_true",
+            help="allow --manifest/--out outside the gitignored eval/scorecard/real_corpus/ "
+            "(you are then responsible for never committing or sharing that path)",
+        )
+
     build_p = corpus_sub.add_parser("build", help="scan a directory into the manifest")
     build_p.add_argument("--root", type=Path, required=True, help="directory of real PDFs")
     build_p.add_argument("--manifest", type=Path, default=corpus_mod.DEFAULT_MANIFEST)
+    add_allow_outside(build_p)
     build_p.set_defaults(func=_cmd_corpus_build)
 
     check_p = corpus_sub.add_parser("check", help="report missing/changed manifest files")
     check_p.add_argument("--root", type=Path, required=True)
     check_p.add_argument("--manifest", type=Path, default=corpus_mod.DEFAULT_MANIFEST)
+    add_allow_outside(check_p)
     check_p.set_defaults(func=_cmd_corpus_check)
 
     run_p = corpus_sub.add_parser("run", help="scan the manifest, report clean-side metrics")
     run_p.add_argument("--root", type=Path, required=True)
     run_p.add_argument("--manifest", type=Path, default=corpus_mod.DEFAULT_MANIFEST)
     run_p.add_argument("--secrets", type=Path, required=True, help="rules file (see README)")
-    run_p.add_argument("--out", type=Path, default=Path("/tmp/scorecard-corpus"))
+    run_p.add_argument("--out", type=Path, default=corpus_mod.REAL_CORPUS_DIR / "scan-workdir")
     run_p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     run_p.add_argument("--json", type=Path, default=None)
+    add_allow_outside(run_p)
     run_p.set_defaults(func=_cmd_corpus_run)
 
     return parser

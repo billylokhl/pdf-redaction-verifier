@@ -9,13 +9,27 @@ they run identically with or without qpdf/exiftool/OCR installed.
 
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 
 import pytest
 
-from scorecard.accepted import AcceptedDiff, dump_accepted_diffs, find_accepted, load_accepted_diffs
-from scorecard.differential import CaseDiff, CaseRun, load_reference_cache, save_reference_cache
+from scorecard.accepted import (
+    AcceptedDiff,
+    dump_accepted_diffs,
+    find_accepted,
+    is_weaker,
+    load_accepted_diffs,
+)
+from scorecard.differential import (
+    CaseDiff,
+    CaseRun,
+    load_reference_cache,
+    normalization_have,
+    save_reference_cache,
+    stale_accepted_diffs,
+)
 from scorecard.keys import NormalizedKey, effective_exit, is_environmental, normalize
 from scorecard.metrics import CaseMetricRow, compute_metrics
 from scorecard.runner import CliResult, run_cli
@@ -37,7 +51,7 @@ def test_normalize_findings_key_is_rule_tier_storage():
     key = normalize(report)
     assert key.exit == 1
     assert key.error is None
-    assert key.findings == frozenset({("SSN", "hard", "orphaned")})
+    assert key.findings == frozenset({(("SSN", "hard", "orphaned"), 1)})
     assert key.warnings == frozenset()
 
 
@@ -56,7 +70,7 @@ def test_normalize_review_warning_key_includes_adjacency():
         ],
     )
     key = normalize(report)
-    assert key.warnings == frozenset({("SSN", "review", "live", "JOINED_LINES")})
+    assert key.warnings == frozenset({(("SSN", "review", "live", "JOINED_LINES"), 1)})
 
 
 def test_normalize_other_warning_key_is_code_layer_tool():
@@ -73,7 +87,7 @@ def test_normalize_other_warning_key_is_code_layer_tool():
         ],
     )
     key = normalize(report)
-    assert key.warnings == frozenset({("TOOL_EXIT_NONZERO", "Binary", "qpdf")})
+    assert key.warnings == frozenset({(("TOOL_EXIT_NONZERO", "Binary", "qpdf"), 1)})
 
 
 def test_normalize_ignores_message_and_sample_text():
@@ -87,6 +101,49 @@ def test_normalize_ignores_message_and_sample_text():
 def test_normalize_error_uses_code_only():
     report = _report(exit_code=2, error={"code": "INTERNAL_ERROR", "message": "boom at line 42"})
     assert normalize(report).error == "INTERNAL_ERROR"
+
+
+def test_normalize_findings_are_a_multiset_not_a_set():
+    """The same (rule, tier, storage) twice — e.g. the SSN in two separate
+    orphaned streams — must count as two findings, not collapse into one:
+    losing one of them is a real regression the differential must catch."""
+    report = _report(
+        exit_code=1,
+        findings=[
+            {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+            {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+        ],
+    )
+    key = normalize(report)
+    assert key.findings == frozenset({(("SSN", "hard", "orphaned"), 2)})
+
+
+def test_diff_catches_a_finding_count_dropping_from_two_to_one():
+    old = normalize(
+        _report(
+            1,
+            findings=[
+                {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+                {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+            ],
+        )
+    )
+    new = normalize(_report(1, findings=[{"rule": "SSN", "tier": "hard", "storage": "orphaned"}]))
+    assert old != new
+    diff = old.diff(new)
+    assert any("count changed" in p and "2 -> 1" in p for p in diff)
+
+
+def test_diff_silent_on_identical_duplicate_findings():
+    report = _report(
+        1,
+        findings=[
+            {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+            {"rule": "SSN", "tier": "hard", "storage": "orphaned"},
+        ],
+    )
+    key = normalize(report)
+    assert key.diff(key) == ()
 
 
 def test_normalized_key_jsonable_roundtrip():
@@ -124,14 +181,36 @@ def test_is_environmental_false_when_tool_present():
     assert not is_environmental(_ocr_unavailable(), FULL_ENV)
 
 
-def test_is_environmental_false_under_require_full_env(monkeypatch):
+def test_is_environmental_depends_only_on_its_arguments(monkeypatch):
+    """is_environmental must never consult the process environment itself
+    — REQUIRE_FULL_ENV is applied by the orchestration layer
+    (`differential.normalization_have`), which decides what `have` to
+    pass in, not by this function noticing the variable on its own. A
+    real host's ambient REQUIRE_FULL_ENV (e.g. set by the full-macos CI
+    job) must never change this function's answer for a given `have`."""
     monkeypatch.setenv("REQUIRE_FULL_ENV", "1")
-    assert not is_environmental(_ocr_unavailable(), NO_OCR)
+    assert is_environmental(_ocr_unavailable(), NO_OCR)
+    monkeypatch.delenv("REQUIRE_FULL_ENV", raising=False)
+    assert is_environmental(_ocr_unavailable(), NO_OCR)
 
 
 def test_is_environmental_uses_warning_tool_field_for_tool_missing():
     assert is_environmental(_tool_missing("qpdf"), frozenset({"exiftool", "no-ocr"}))
     assert not is_environmental(_tool_missing("qpdf"), frozenset({"qpdf", "exiftool", "no-ocr"}))
+
+
+def test_normalization_have_passes_through_by_default(monkeypatch):
+    monkeypatch.delenv("REQUIRE_FULL_ENV", raising=False)
+    assert normalization_have(NO_OCR) == NO_OCR
+
+
+def test_normalization_have_is_none_under_require_full_env(monkeypatch):
+    """This is where REQUIRE_FULL_ENV is actually read (docs/REDESIGN.md
+    §5) — the orchestration layer, not keys.is_environmental — so a
+    missing tool on a full-environment job shows up as a real difference
+    instead of being dropped as this machine's own limitation."""
+    monkeypatch.setenv("REQUIRE_FULL_ENV", "1")
+    assert normalization_have(NO_OCR) is None
 
 
 def test_effective_exit_drops_solely_environmental_warning():
@@ -272,6 +351,73 @@ def test_load_accepted_diffs_rejects_incomplete_entry(tmp_path):
         load_accepted_diffs(path)
 
 
+# ── "never less strict" (weaker diffs, stale entries) ─────────────────────
+
+
+def test_is_weaker_for_each_named_transition():
+    assert is_weaker(1, 2)   # leak -> review: less certain
+    assert is_weaker(1, 0)   # leak -> clean: less certain
+    assert is_weaker(2, 0)   # review -> clean: less certain
+    assert not is_weaker(0, 2)   # clean -> review: MORE cautious, not weaker
+    assert not is_weaker(2, 1)   # review -> leak: MORE cautious, not weaker
+    assert not is_weaker(0, 1)
+    assert not is_weaker(1, 1)
+    assert not is_weaker(0, 0)
+
+
+def test_load_accepted_diffs_rejects_weaker_entry_without_the_flag(tmp_path):
+    old = normalize(_report(1, findings=[{"rule": "SSN", "tier": "hard", "storage": "live"}]))
+    new = normalize(_report(2))
+    entry = AcceptedDiff(case="leak.now-review", old=old, new=new, reason="a downgrade")
+    path = tmp_path / "accepted_diffs.yaml"
+    dump_accepted_diffs([entry], path)
+    with pytest.raises(ValueError, match="weaker"):
+        load_accepted_diffs(path)
+
+
+def test_load_accepted_diffs_accepts_weaker_entry_with_the_flag(tmp_path):
+    old = normalize(_report(1, findings=[{"rule": "SSN", "tier": "hard", "storage": "live"}]))
+    new = normalize(_report(2))
+    entry = AcceptedDiff(case="leak.now-review", old=old, new=new, reason="a downgrade", weaker=True)
+    path = tmp_path / "accepted_diffs.yaml"
+    dump_accepted_diffs([entry], path)
+    loaded = load_accepted_diffs(path)
+    assert loaded["leak.now-review"][0].weaker is True
+
+
+def test_stale_accepted_diffs_flags_an_entry_no_diff_used():
+    old = normalize(_report(0))
+    new = normalize(
+        _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+    )
+    entry = AcceptedDiff(case="leftover.example", old=old, new=new, reason="a fix")
+    accepted = {"leftover.example": [entry]}
+    # No CaseDiff in this run's results references the entry at all (the
+    # case might have been removed, or no longer produces this change).
+    unrelated = CaseDiff("other.case", _run("other.case", _cli_result(_report(0))),
+                          _run("other.case", _cli_result(_report(0))), accepted=None)
+    stale = stale_accepted_diffs(accepted, [unrelated])
+    assert stale == (entry,)
+
+
+def test_stale_accepted_diffs_empty_when_entry_is_used():
+    old = normalize(_report(0))
+    new = normalize(
+        _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+    )
+    entry = AcceptedDiff(case="leftover.example", old=old, new=new, reason="a fix")
+    accepted = {"leftover.example": [entry]}
+    used = CaseDiff(
+        "leftover.example",
+        _run("leftover.example", _cli_result(_report(0))),
+        _run("leftover.example", _cli_result(
+            _report(2, warnings=[{"code": "LEFTOVER_IMAGE", "kind": "coverage", "layer": "Objects"}])
+        )),
+        accepted=entry,
+    )
+    assert stale_accepted_diffs(accepted, [used]) == ()
+
+
 # ── CaseDiff (differential.py) ───────────────────────────────────────────
 
 
@@ -335,17 +481,45 @@ def test_case_diff_crashed_is_never_ok_even_with_accepted():
 
 def test_reference_cache_round_trip(tmp_path):
     run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
-    run_crashed = CaseRun.from_result("case-b", _cli_result(report=None, timed_out=True, elapsed=9.0))
-    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok, "case-b": run_crashed})
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok})
 
     loaded = load_reference_cache(tmp_path, "key-1")
     assert loaded is not None
     assert loaded["case-a"].key == run_ok.key
     assert loaded["case-a"].crashed is False
     assert loaded["case-a"].result is None  # nothing was actually re-run
-    assert loaded["case-b"].crashed is True
-    assert loaded["case-b"].timed_out is True
-    assert loaded["case-b"].key is None
+
+
+def test_reference_cache_never_saves_a_crashed_or_timed_out_run(tmp_path):
+    """A flaky reference run must not poison the cache for everyone after
+    it: it is retried next time, not frozen in as the answer."""
+    run_ok = CaseRun.from_result("case-a", _cli_result(_report(0)))
+    run_crashed = CaseRun.from_result("case-b", _cli_result(report=None, timed_out=True, elapsed=9.0))
+    save_reference_cache(tmp_path, "key-1", {"case-a": run_ok, "case-b": run_crashed})
+
+    loaded = load_reference_cache(tmp_path, "key-1")
+    assert loaded is not None
+    assert "case-a" in loaded
+    assert "case-b" not in loaded  # never trusted from cache
+
+
+def test_reference_cache_load_ignores_a_crashed_entry_even_if_present(tmp_path):
+    """Defence in depth: even a cache file written by an older version of
+    this code (before crashed runs were excluded on save) must not be
+    trusted for a crashed entry on load."""
+    path = tmp_path / "key-1.json"
+    path.write_text(
+        json.dumps(
+            {
+                "key": "key-1",
+                "cases": {
+                    "case-b": {"key": None, "crashed": True, "timed_out": True, "elapsed": 9.0},
+                },
+            }
+        )
+    )
+    loaded = load_reference_cache(tmp_path, "key-1")
+    assert loaded == {}
 
 
 def test_reference_cache_miss_on_wrong_key(tmp_path):
@@ -409,6 +583,52 @@ def test_compute_metrics_to_jsonable_has_expected_keys():
         "total", "leak_cases", "clean_cases", "silent_miss", "downgrade", "false_hard",
         "review_rate", "crashes", "timeouts", "runtime_p50_s", "runtime_p95_s",
     }
+
+
+# ── corpus.py: local-only path guard, producer-family-only privacy ───────
+
+
+def test_producer_family_never_stored_raw():
+    """CorpusEntry has no field that could hold the raw /Producer string —
+    only the coarse bucket producer_family() computes."""
+    import dataclasses
+
+    from scorecard.corpus import CorpusEntry
+
+    field_names = {f.name for f in dataclasses.fields(CorpusEntry)}
+    assert "producer_family" in field_names
+    assert "producer" not in field_names
+
+
+def test_producer_family_buckets_known_producers():
+    from scorecard.corpus import producer_family
+
+    assert producer_family("Adobe Acrobat 24.1") == "acrobat"
+    assert producer_family("Microsoft: Word") == "office"
+    assert producer_family("LibreOffice 7.6") == "libreoffice"
+    assert producer_family(None) == "unknown"
+    assert producer_family("Some Bespoke Tool 3.0") == "other"
+
+
+def test_ensure_local_only_allows_a_path_inside_real_corpus_dir():
+    from scorecard.corpus import REAL_CORPUS_DIR, ensure_local_only
+
+    path = REAL_CORPUS_DIR / "manifest.json"
+    assert ensure_local_only(path) == path
+
+
+def test_ensure_local_only_refuses_a_path_outside(tmp_path):
+    from scorecard.corpus import ensure_local_only
+
+    with pytest.raises(SystemExit):
+        ensure_local_only(tmp_path / "manifest.json")
+
+
+def test_ensure_local_only_allows_outside_when_flagged(tmp_path):
+    from scorecard.corpus import ensure_local_only
+
+    path = tmp_path / "manifest.json"
+    assert ensure_local_only(path, allow_outside=True) == path
 
 
 # ── runner.run_cli: timeout handling ──────────────────────────────────────

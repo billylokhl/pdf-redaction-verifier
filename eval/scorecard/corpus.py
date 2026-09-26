@@ -1,14 +1,22 @@
 """The real-world corpus: local-only, clean-side metrics (docs/REDESIGN.md
 §5). Nothing here is committed: the manifest and every scan result live
-under `eval/scorecard/real_corpus/` (gitignored), keyed by SHA-256 with
-paths relative to a *configured root* that is never itself recorded —
-only the caller who already has that root can turn a manifest entry back
-into a file.
+under `eval/scorecard/real_corpus/` (gitignored — see `ensure_local_only`,
+which refuses a manifest or output path outside it by default), keyed by
+SHA-256 with paths relative to a *configured root* that is never itself
+recorded — only the caller who already has that root can turn a manifest
+entry back into a file. The manifest's own `path` field IS a relative
+file name from that root (needed to re-open the file for a re-scan), so
+it must never be committed or shared outside this machine, same as the
+root itself.
 
 The corpus is assumed clean (no planted secret), so only two metrics
 apply: false hard (a hard finding) and review rate (exit 2), reported
-per stratum — text-bearing, multi-revision, and producer family (from
-`/Producer`) — as well as overall.
+per stratum — text-bearing, multi-revision, and producer family — as
+well as overall. Only the coarse producer *family* (e.g. "acrobat",
+"office") is ever stored; the raw `/Producer` string is read, classified,
+and discarded on the spot — it can hold a username, hostname or email
+address a real producer app embeds, none of which belongs even in a
+local-only file.
 """
 
 from __future__ import annotations
@@ -23,7 +31,29 @@ from .keys import effective_exit
 from .metrics import CaseMetricRow, Scorecard, compute_metrics
 from .runner import CliResult, current_python, run_cli
 
-DEFAULT_MANIFEST = Path(__file__).resolve().parent / "real_corpus" / "manifest.json"
+REAL_CORPUS_DIR = Path(__file__).resolve().parent / "real_corpus"
+DEFAULT_MANIFEST = REAL_CORPUS_DIR / "manifest.json"
+
+
+def ensure_local_only(path: Path, *, allow_outside: bool = False) -> Path:
+    """Refuse a manifest or output *path* outside the gitignored
+    `real_corpus/` directory, unless the caller explicitly opts out. The
+    whole point of that directory is that its contents — SHA-256s,
+    relative file names, and scan artifacts that can carry a target's own
+    basename — never get committed or shared by accident; a path outside
+    it loses that guarantee silently."""
+    if allow_outside:
+        return path
+    resolved = path.resolve()
+    boundary = REAL_CORPUS_DIR.resolve()
+    if resolved != boundary and boundary not in resolved.parents:
+        raise SystemExit(
+            f"refusing to use {path} — it is outside the local-only, gitignored "
+            f"{REAL_CORPUS_DIR} (docs: eval/README.md, \"The real-world corpus\").\n"
+            "Pass --allow-outside if you really mean this (e.g. an external drive) — "
+            "you are then responsible for never committing or sharing that path."
+        )
+    return path
 
 # Coarse producer-family buckets from a lowercased /Producer string.
 # Order matters: the first match wins.
@@ -60,28 +90,27 @@ class CorpusEntry:
     path: str  # relative to the caller's configured root
     text_bearing: bool
     multi_revision: bool
-    producer: str | None
-
-    @property
-    def producer_family(self) -> str:
-        return producer_family(self.producer)
+    producer_family: str  # coarse bucket only — never the raw /Producer string
 
 
-def classify(pdf_path: Path) -> tuple[bool, bool, str | None]:
-    """(text_bearing, multi_revision, producer) via a quick probe."""
+def classify(pdf_path: Path) -> tuple[bool, bool, str]:
+    """(text_bearing, multi_revision, producer_family) via a quick probe.
+    The raw `/Producer` string is read here and immediately reduced to a
+    coarse family — it is never returned or stored (it can hold a
+    username, hostname, or email address some producers embed)."""
     import fitz
 
     text_bearing = False
-    producer = None
+    raw_producer = None
     doc = fitz.open(pdf_path)
     try:
         text_bearing = any(page.get_text().strip() for page in doc)
         if doc.metadata:
-            producer = doc.metadata.get("producer") or None
+            raw_producer = doc.metadata.get("producer") or None
     finally:
         doc.close()
     multi_revision = pdf_path.read_bytes().count(b"%%EOF") > 1
-    return text_bearing, multi_revision, producer
+    return text_bearing, multi_revision, producer_family(raw_producer)
 
 
 def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
@@ -92,14 +121,14 @@ def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> lis
     for path in sorted(root.rglob("*.pdf")):
         data = path.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
-        text_bearing, multi_revision, producer = classify(path)
+        text_bearing, multi_revision, family = classify(path)
         entries.append(
             CorpusEntry(
                 sha256=sha256,
                 path=str(path.relative_to(root)),
                 text_bearing=text_bearing,
                 multi_revision=multi_revision,
-                producer=producer,
+                producer_family=family,
             )
         )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
+from .accepted import AcceptedDiff
 from .differential import CaseDiff
 from .metrics import Scorecard
 
@@ -35,17 +36,26 @@ def render_stratified_table(strata: Mapping[str, Scorecard]) -> str:
     return "\n\n".join(blocks)
 
 
-def render_differential_summary(diffs: list[CaseDiff]) -> str:
+def render_differential_summary(
+    diffs: list[CaseDiff], stale: Sequence[AcceptedDiff] = ()
+) -> str:
     total = len(diffs)
     changed = [d for d in diffs if d.changed]
     unlisted = [d for d in diffs if d.unlisted]
     crashed = [d for d in diffs if d.crashed]
+    weaker = [d for d in diffs if d.accepted is not None and d.accepted.weaker]
     lines = [
         f"cases compared : {total}",
         f"changed        : {len(changed)} ({len(changed) - len(unlisted)} accepted, "
         f"{len(unlisted)} unlisted)",
         f"crashed        : {len(crashed)}",
+        f"stale accepted : {len(stale)}",
     ]
+    if weaker:
+        lines.append("")
+        lines.append("WEAKER (accepted, but the verdict got LESS strict — 1->2, 1->0, or 2->0):")
+        for d in weaker:
+            lines.append(f"  {d.case_id}: {d.describe()}")
     if unlisted:
         lines.append("")
         lines.append("UNLISTED DIFFERENCES (not in eval/accepted_diffs.yaml):")
@@ -56,15 +66,23 @@ def render_differential_summary(diffs: list[CaseDiff]) -> str:
         lines.append("CRASHES:")
         for d in crashed:
             lines.append(f"  {d.case_id}: {d.describe()}")
+    if stale:
+        lines.append("")
+        lines.append("STALE accepted_diffs.yaml entries (no case in this run produced them):")
+        for entry in stale:
+            lines.append(f"  {entry.case}: {entry.reason}")
     return "\n".join(lines)
 
 
-def differential_to_jsonable(diffs: list[CaseDiff]) -> dict[str, Any]:
+def differential_to_jsonable(
+    diffs: list[CaseDiff], stale: Sequence[AcceptedDiff] = ()
+) -> dict[str, Any]:
     return {
         "total": len(diffs),
         "changed": sum(1 for d in diffs if d.changed),
         "unlisted": sum(1 for d in diffs if d.unlisted),
         "crashed": sum(1 for d in diffs if d.crashed),
+        "stale_accepted": [entry.case for entry in stale],
         "cases": [
             {
                 "case": d.case_id,
@@ -72,6 +90,7 @@ def differential_to_jsonable(diffs: list[CaseDiff]) -> dict[str, Any]:
                 "candidate": d.candidate.key.to_jsonable() if d.candidate.key else None,
                 "changed": d.changed,
                 "accepted": d.accepted is not None,
+                "weaker": bool(d.accepted and d.accepted.weaker),
                 "reason": d.accepted.reason if d.accepted else None,
                 "crashed": d.crashed,
                 "description": d.describe() if (d.changed or d.crashed) else None,

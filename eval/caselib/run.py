@@ -130,7 +130,7 @@ def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
     # the findings check above): the same code also appearing under a
     # storage class the case does not list — e.g. a review warning filed
     # under both "live" and "orphaned" — is a mislabel, not just noise.
-    for code, storage in sorted(listed - want.warnings):
+    for code, storage in sorted(listed - want.warnings, key=str):  # storage may be None
         if code in expected_codes:
             problems.append(f"unexpected {code} ({storage}) — expected a different storage")
     for w in warnings:

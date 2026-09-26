@@ -21,6 +21,19 @@ from .keys import NormalizedKey
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "accepted_diffs.yaml"
 
+# This project's verdict severity order (README: "the severity order is
+# 0 < 2 < 1" — clean, then cannot-certify, then confirmed leak).
+_SEVERITY: dict[int, int] = {0: 0, 2: 1, 1: 2}
+
+
+def is_weaker(old_exit: int, new_exit: int) -> bool:
+    """True when the candidate's exit is less certain/safe than the
+    reference's under the severity order above — i.e. 1->2, 1->0, or
+    2->0. Every accepted entry that is weaker must say so explicitly
+    (`weaker: true`), so a change that quietly loosens the verdict can
+    never hide among ordinary accepted diffs."""
+    return _SEVERITY[new_exit] < _SEVERITY[old_exit]
+
 
 @dataclass(frozen=True)
 class AcceptedDiff:
@@ -30,6 +43,7 @@ class AcceptedDiff:
     reason: str
     cell: str | None = None
     pr: str | None = None
+    weaker: bool = False
 
     def to_jsonable(self) -> dict[str, Any]:
         entry: dict[str, Any] = {
@@ -42,6 +56,8 @@ class AcceptedDiff:
             entry["cell"] = self.cell
         if self.pr is not None:
             entry["pr"] = self.pr
+        if self.weaker:
+            entry["weaker"] = True
         return entry
 
 
@@ -49,13 +65,23 @@ def _parse_entry(raw: dict[str, Any]) -> AcceptedDiff:
     missing = {"case", "old", "new", "reason"} - raw.keys()
     if missing:
         raise ValueError(f"accepted_diffs.yaml entry missing field(s) {sorted(missing)}: {raw}")
+    old = NormalizedKey.from_jsonable(raw["old"])
+    new = NormalizedKey.from_jsonable(raw["new"])
+    weaker = bool(raw.get("weaker", False))
+    if is_weaker(old.exit, new.exit) and not weaker:
+        raise ValueError(
+            f"accepted_diffs.yaml entry for {raw['case']!r} moves exit {old.exit} -> "
+            f"{new.exit}, which is LESS strict under this project's severity order "
+            "(0 < 2 < 1) — mark it `weaker: true` if that is really intended"
+        )
     return AcceptedDiff(
         case=raw["case"],
-        old=NormalizedKey.from_jsonable(raw["old"]),
-        new=NormalizedKey.from_jsonable(raw["new"]),
+        old=old,
+        new=new,
         reason=raw["reason"],
         cell=raw.get("cell"),
         pr=raw.get("pr"),
+        weaker=weaker,
     )
 
 

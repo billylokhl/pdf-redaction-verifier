@@ -504,12 +504,20 @@ ADRs are required only for the Phase 1 questions and for any change to
 compatibility or exit semantics.
 
 **Phase 0c status**: landed — `eval/scorecard/` (runner, per-case
-differential against `eval-ref-0` via a worktree, the normalised key
-above, `eval/accepted_diffs.yaml` seeded from the real reference-vs-main
-differences found by running it, label-based metrics, the local-only
-real-corpus manifest and stratified clean-side metrics, a reference
-result cache keyed by ref commit + build-lock hash); the Linux
-every-PR differential job and the weekly full-environment macOS job
+differential against `eval-ref-0` via a worktree, the normalised
+*multiset* key above — same rule/tier/storage twice counts as two, not
+one — with `OCR_UNAVAILABLE`/`TOOL_MISSING` dropped and the exit
+recomputed before comparing, so the key holds across environments;
+`eval/accepted_diffs.yaml` seeded from the real reference-vs-main
+differences found by running it, with a `weaker: true` requirement on
+any entry that loosens the verdict (`1`→`2`, `1`→`0`, `2`→`0`) and a
+stale-entry check on a full run; label-based metrics; the local-only
+real-corpus manifest — producer *family* only, path-guarded to its own
+gitignored directory — and stratified clean-side metrics; a reference
+result cache keyed by ref commit, build-lock hash, the scorecard's own
+code hash, and this machine's tool versions/OCR availability, never
+saving a crashed or timed-out run). The Linux every-PR differential job
+and the weekly full-environment macOS job
 (`.github/workflows/tests.yml`, `.github/workflows/scorecard-weekly.yml`);
 the judge's exact-storage check extended to warnings
 (`eval/caselib/run.py`). Not yet done, left for a later PR: the additive

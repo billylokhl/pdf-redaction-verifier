@@ -9,9 +9,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -20,9 +21,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
-  pr: "#13"
+  pr: '#13'
 - case: leftover.deleted-page-long-text-object
   old:
     exit: 0
@@ -34,9 +37,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -45,9 +49,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font
-  pr: "#13"
+  pr: '#13'
 - case: leftover.font-set-before-text-object
   old:
     exit: 0
@@ -59,9 +65,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -70,9 +77,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font
-  pr: "#13"
+  pr: '#13'
 - case: leftover.inline-image-compact
   old:
     exit: 0
@@ -84,9 +93,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_IMAGE
-      - Objects
-      - null
+    - - - LEFTOVER_IMAGE
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -95,9 +105,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.pixels
-  pr: "#13"
+  pr: '#13'
 - case: leftover.kerned-glyph-codes
   old:
     exit: 0
@@ -109,9 +121,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -120,9 +133,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font
-  pr: "#13"
+  pr: '#13'
 - case: leftover.raw-compact-glyphs
   old:
     exit: 0
@@ -134,9 +149,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -145,9 +161,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
-  pr: "#13"
+  pr: '#13'
 - case: leftover.redacted-no-gc-embedded-font-compact
   old:
     exit: 0
@@ -159,9 +177,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -170,9 +189,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
-  pr: "#13"
+  pr: '#13'
 - case: revision.raw-rewritten-font-compact
   old:
     exit: 0
@@ -184,9 +205,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -195,9 +217,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: superseded.font.compact-syntax
-  pr: "#13"
+  pr: '#13'
 - case: revision.redacted-incremental-compact
   old:
     exit: 0
@@ -209,9 +233,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -220,9 +245,11 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
-  pr: "#13"
+  pr: '#13'
 - case: revision.truncated-stream-embedded-font
   old:
     exit: 0
@@ -234,9 +261,10 @@
     error: null
     findings: []
     warnings:
-    - - LEFTOVER_UNDECODABLE_TEXT
-      - Objects
-      - null
+    - - - LEFTOVER_UNDECODABLE_TEXT
+        - Objects
+        - null
+      - 1
   reason: 'K8 fix (4c2af1e, then generalised by c5342ff): the leftover-content tokenizer used
     to require whitespace around BT/Tf/ET and matched leftover text with windowed regexes.
     It now tokenizes a content stream the way a PDF parser does (delimiter- and NUL-aware,
@@ -245,6 +273,8 @@
     as page content instead of silently passing as unreadable binary. The reference tool (eval-ref-0)
     never read these bytes at all and exited 0; the candidate reads them, cannot decode the
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
-    instead.'
+    instead. This holds regardless of environment: the key drops OCR_UNAVAILABLE/TOOL_MISSING
+    and recomputes the exit without them, so a Linux (no-OCR) run and a full-environment run
+    normalise to the same before/after pair.'
   cell: superseded.font.compact-syntax
-  pr: "#13"
+  pr: '#13'

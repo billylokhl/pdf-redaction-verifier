@@ -21,6 +21,8 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -56,6 +58,19 @@ class CaseRun:
     ) -> "CaseRun":
         key = None if result.crashed else normalize(result.report, have=have)  # type: ignore[arg-type]
         return CaseRun(case_id, key, result.crashed, result.timed_out, result.elapsed, result)
+
+
+@dataclass(frozen=True)
+class DifferentialRun:
+    """The result of `run_differential`: one `CaseDiff` per case, plus any
+    `accepted_diffs.yaml` entry that no case in this run actually
+    produced — "stale", and itself a gate failure, so the file cannot
+    silently accumulate entries for changes that no longer happen (only
+    computed on a full run, i.e. *case_ids* was None; a filtered run of
+    a handful of cases would flag nearly everything as unused)."""
+
+    diffs: list[CaseDiff]
+    stale: tuple[AcceptedDiff, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -125,7 +140,28 @@ def select_cases(case_ids: Iterable[str] | None = None, *, have: frozenset[str] 
     return [REGISTRY[i] for i in ids if not (REGISTRY[i].requires - have)]
 
 
+def normalization_have(available_tools: frozenset[str]) -> frozenset[str] | None:
+    """What `keys.normalize`/`effective_exit` should treat as *have*: the
+    real availability, or None (drop nothing, use the exit exactly as
+    reported) on a full-environment job (`REQUIRE_FULL_ENV=1`), where a
+    missing tool must show up as a real difference rather than being
+    silently absorbed as "this machine's own limitation".
+
+    This is where REQUIRE_FULL_ENV is read — deliberately not inside
+    `keys.is_environmental`/`effective_exit` themselves, which are pure
+    functions of their arguments so their behaviour never depends on
+    which job happens to be running them (mirrors
+    `caselib.run._environmental`'s REQUIRE_FULL_ENV check, but applied at
+    the orchestration layer instead of inside the pure comparison)."""
+    return None if os.environ.get("REQUIRE_FULL_ENV") == "1" else available_tools
+
+
 # ── reference result cache ──────────────────────────────────────────────
+
+# Bump whenever the cache *file's own JSON shape* changes in a way the
+# code hash below would not catch on its own (belt and braces — the code
+# hash already invalidates on any scorecard source change).
+CACHE_SCHEMA_VERSION = 2
 
 
 def _lock_hash(root: Path) -> str:
@@ -134,12 +170,63 @@ def _lock_hash(root: Path) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def reference_cache_key(reference_ref: str, root: Path) -> str:
-    """A key that changes whenever the reference commit moves or the case
-    library's generators change (the build lock's hash) — never a mutable
-    ref name, and never anything about the candidate."""
+def _scorecard_code_hash() -> str:
+    """Hash of every eval/scorecard/*.py file — invalidates the cache the
+    moment the normalisation logic itself changes, even without anyone
+    remembering to bump CACHE_SCHEMA_VERSION."""
+    pkg_dir = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(pkg_dir.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+def _tool_version(tool: str) -> str:
+    exe = shutil.which(tool)
+    if not exe:
+        return "absent"
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    text = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return text[0] if text else "unknown"
+
+
+def _environment_fingerprint(have: frozenset[str]) -> str:
+    """qpdf/exiftool versions, OCR availability, the PyMuPDF version, and
+    whether REQUIRE_FULL_ENV changes what gets cached (it changes the
+    `have` passed to `normalize` — see `normalization_have` — so it
+    changes the stored keys, not just this machine's raw capability) —
+    the reference's own results depend on all of these, so a cache entry
+    from a different environment or mode must never be reused."""
+    import fitz
+
+    parts = [
+        f"ocr={'1' if 'ocr' in have else '0'}",
+        f"qpdf={_tool_version('qpdf')}",
+        f"exiftool={_tool_version('exiftool')}",
+        f"pymupdf={fitz.VersionBind}",
+        f"require_full_env={'1' if normalization_have(have) is None else '0'}",
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def reference_cache_key(reference_ref: str, root: Path, have: frozenset[str]) -> str:
+    """A key that changes whenever the reference commit moves, the case
+    library's generators change, the scorecard's own comparison logic
+    changes, or this machine's tool versions/OCR availability differ —
+    never a mutable ref name, and never anything about the candidate."""
     commit = resolve_commit(reference_ref, root)
-    return f"{commit}-{_lock_hash(root)}"
+    return "-".join((
+        str(CACHE_SCHEMA_VERSION),
+        commit,
+        _lock_hash(root),
+        _scorecard_code_hash(),
+        _environment_fingerprint(have),
+    ))
 
 
 def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None:
@@ -154,6 +241,12 @@ def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None
         return None
     runs: dict[str, CaseRun] = {}
     for case_id, entry in payload.get("cases", {}).items():
+        # A crashed/timed-out run is never trusted from cache, even if an
+        # older version of this code once wrote one: treat it as a miss
+        # so it is retried, rather than freezing a flake into every
+        # future run.
+        if entry.get("crashed"):
+            continue
         key_data = entry.get("key")
         normalized = NormalizedKey.from_jsonable(key_data) if key_data is not None else None
         runs[case_id] = CaseRun(
@@ -163,6 +256,9 @@ def load_reference_cache(cache_dir: Path, key: str) -> dict[str, CaseRun] | None
 
 
 def save_reference_cache(cache_dir: Path, key: str, runs: dict[str, CaseRun]) -> None:
+    """Persist *runs* — silently dropping any crashed or timed-out entry,
+    so one flaky reference run never poisons the cache for everyone
+    after it."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "key": key,
@@ -174,6 +270,7 @@ def save_reference_cache(cache_dir: Path, key: str, runs: dict[str, CaseRun]) ->
                 "elapsed": run.elapsed,
             }
             for case_id, run in runs.items()
+            if not run.crashed
         },
     }
     (cache_dir / f"{key}.json").write_text(json.dumps(payload, sort_keys=True) + "\n")
@@ -192,9 +289,11 @@ def run_differential(
     max_workers: int | None = None,
     progress: Callable[[CaseDiff], None] | None = None,
     cache_dir: Path | None = None,
-) -> list[CaseDiff]:
+) -> DifferentialRun:
     """Build every selected case once, then scan it with the reference and
-    the candidate CLI. Returns one `CaseDiff` per case, sorted by case id.
+    the candidate CLI. Returns one `CaseDiff` per case (sorted by case
+    id) plus any stale `accepted_diffs.yaml` entry (only computed when
+    *case_ids* is None, i.e. every case ran).
 
     When *cache_dir* is given and already holds every selected case's
     reference result under today's `reference_cache_key`, the reference
@@ -205,7 +304,8 @@ def run_differential(
 
     root = repo_root()
     accepted = load_accepted_diffs(accepted_path or DEFAULT_PATH)
-    have = available()
+    have = available()               # true capability: which cases can run at all
+    filter_have = normalization_have(have)   # what normalize()/effective_exit() should use
     cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
@@ -214,7 +314,7 @@ def run_differential(
     cached: dict[str, CaseRun] = {}
     cache_key: str | None = None
     if cache_dir is not None:
-        cache_key = reference_cache_key(reference_ref, root)
+        cache_key = reference_cache_key(reference_ref, root, have)
         cached = load_reference_cache(cache_dir, cache_key) or {}
 
     pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
@@ -234,7 +334,7 @@ def run_differential(
                 for future in concurrent.futures.as_completed(futures):
                     case = futures[future]
                     reference_runs[case.id] = CaseRun.from_result(
-                        case.id, future.result(), have=have
+                        case.id, future.result(), have=filter_have
                     )
         if cache_dir is not None and cache_key is not None:
             save_reference_cache(cache_dir, cache_key, reference_runs)
@@ -251,7 +351,9 @@ def run_differential(
         }
         for future in concurrent.futures.as_completed(futures):
             case = futures[future]
-            candidate_runs[case.id] = CaseRun.from_result(case.id, future.result(), have=have)
+            candidate_runs[case.id] = CaseRun.from_result(
+                case.id, future.result(), have=filter_have
+            )
 
     results: list[CaseDiff] = []
     for case in cases:
@@ -264,8 +366,25 @@ def run_differential(
         results.append(diff)
         if progress is not None:
             progress(diff)
+    results.sort(key=lambda d: d.case_id)
 
-    return sorted(results, key=lambda d: d.case_id)
+    # Only meaningful on a full run: a filtered subset would flag nearly
+    # every entry as unused just because its case never ran.
+    stale = stale_accepted_diffs(accepted, results) if case_ids is None else ()
+    return DifferentialRun(results, stale)
+
+
+def stale_accepted_diffs(
+    accepted: dict[str, list[AcceptedDiff]], diffs: Sequence[CaseDiff]
+) -> tuple[AcceptedDiff, ...]:
+    """`accepted_diffs.yaml` entries that none of *diffs* actually matched
+    — the change they describe no longer happens, so the entry is stale
+    and must be removed (or the run that should have produced it is
+    missing). Compare against a full run's diffs; a filtered subset makes
+    every entry not touched by it look unused."""
+    used = {d.accepted for d in diffs if d.accepted is not None}
+    all_entries = [entry for entries in accepted.values() for entry in entries]
+    return tuple(entry for entry in all_entries if entry not in used)
 
 
 def unlisted_diffs(diffs: Sequence[CaseDiff]) -> list[CaseDiff]:
@@ -313,6 +432,7 @@ def run_candidate(
 
     root = repo_root()
     have = available()
+    filter_have = normalization_have(have)
     cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
@@ -338,5 +458,5 @@ def run_candidate(
             ] = case
         for future in concurrent.futures.as_completed(futures):
             case = futures[future]
-            rows.append(to_metric_row(case, future.result(), have=have))
+            rows.append(to_metric_row(case, future.result(), have=filter_have))
     return rows

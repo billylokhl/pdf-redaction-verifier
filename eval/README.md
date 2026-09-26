@@ -126,8 +126,17 @@ two different git refs.
 pinned `eval-ref-0` tag (the reference, checked out into a disposable
 worktree — never the live code) on a normalised key: exit, `error.code`,
 findings as (rule, tier, storage), review warnings as (rule, "review",
-storage, adjacency), other warnings as (code, layer, tool). Exact legacy
-warning codes and messages are deliberately not part of the key.
+storage, adjacency), other warnings as (code, layer, tool) — each as a
+*multiset*, so losing one of two otherwise-identical findings (the same
+rule in two separate orphaned streams) is a real, visible difference.
+Exact legacy warning codes and messages are deliberately not part of the
+key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
+recomputed without them first (mirroring `caselib.run.judge`), so the key
+is comparable across environments — a case that goes from a clean exit
+`0` to a flagged `2` compares the same on a full-environment run and on
+Linux, where an unrelated `OCR_UNAVAILABLE` would otherwise already sit
+on both sides. `REQUIRE_FULL_ENV=1` disables this: a missing tool there
+is a bug, not noise to drop.
 
 ```bash
 PYTHONPATH=eval:. python -m scorecard diff                      # every case
@@ -135,8 +144,10 @@ PYTHONPATH=eval:. python -m scorecard diff page.visible          # some
 PYTHONPATH=eval:. python -m scorecard diff --json /tmp/diff.json --verbose
 ```
 
-Exits non-zero if any case crashed or timed out, or changed in a way not
-listed in `eval/accepted_diffs.yaml`.
+Exits non-zero if any case crashed or timed out, changed in a way not
+listed in `eval/accepted_diffs.yaml`, or an accepted entry is now stale
+(see below) — the last check only runs when every case ran (no case ids
+given on the command line).
 
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
@@ -147,6 +158,19 @@ the differential. When a fix or a regression changes a case's key,
 new entry (or update the existing one, if this is a further change to a
 case already listed) with a reason for the change, and review it in the
 PR like any other test change.
+
+Two rules keep the file honest:
+
+- **Never less strict, silently.** This project's severity order is
+  `0 < 2 < 1` (clean, then cannot-certify, then confirmed leak). An
+  entry that moves the *other* way — `1`→`2`, `1`→`0`, or `2`→`0` — must
+  say so with `weaker: true`; loading the file without that flag on such
+  an entry is an error. `scorecard diff` prints every matched weaker
+  entry in its own **WEAKER** section so it cannot be missed in review.
+- **No stale entries.** An entry that no case in a full run actually
+  produced (the case was removed, or it no longer changes that way) is
+  itself a gate failure, so the file cannot silently accumulate entries
+  for changes that no longer happen.
 
 **Metrics**: the same case library, run through the candidate CLI alone
 and judged against case labels — no reference needed:
@@ -164,20 +188,34 @@ labelled).
 
 **Reference result caching**: `--cache-dir DIR` skips the reference
 worktree and subprocess runs entirely for any case whose result is
-already cached under today's key (the reference commit plus a hash of
-`caselib/cases.lock.json` — so it invalidates itself whenever the
-reference moves or a case generator changes). CI passes a persistent
-cache directory (`actions/cache`) so most PRs never re-run the reference
-at all.
+already cached under today's key: the reference commit, a hash of
+`caselib/cases.lock.json`, a hash of every `eval/scorecard/*.py` file
+(so the cache invalidates itself the moment the comparison logic
+changes, not just when someone remembers to bump a version), and this
+machine's qpdf/exiftool versions, OCR availability, and PyMuPDF version
+(so a cache entry from a different environment is never reused). A
+crashed or timed-out reference run is never written to the cache (and
+never trusted back out of it), so one flaky run doesn't poison every run
+after it. CI passes a persistent cache directory (`actions/cache`) so
+most PRs never re-run the reference at all.
 
 ### The real-world corpus (local only)
 
 Clean-side metrics (false hard, review rate) on real files, stratified
 by whether they carry a text layer, have more than one revision, and
-producer family (from `/Producer`). Nothing here is committed: the
-manifest and results live under `eval/scorecard/real_corpus/`
-(gitignored), keyed by SHA-256 with paths relative to a root directory
-you configure — that root itself is never recorded anywhere.
+producer family. Nothing here is committed: the manifest and results
+live under `eval/scorecard/real_corpus/` (gitignored) — every `--manifest`
+and `--out` path is refused outside it unless you pass `--allow-outside`
+(for, say, an external drive; you are then responsible for never
+committing or sharing that path). Entries are keyed by SHA-256, with
+paths relative to a root directory you configure — that root itself is
+never recorded anywhere, but **the manifest's own `path` field is a
+relative file name from it**, so the manifest is exactly as sensitive as
+a directory listing of your corpus and must never be committed, emailed,
+or pasted anywhere. Only the coarse producer *family* (e.g. `"acrobat"`,
+`"office"`) is stored — the raw `/Producer` string is read, classified,
+and discarded on the spot, since real producer apps sometimes embed a
+username, hostname, or email address in it.
 
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
