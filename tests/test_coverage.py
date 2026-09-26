@@ -620,10 +620,19 @@ class TestContentSyntax:
         "(" * 2_000_000,                            # unclosed strings
     ])
     def test_linear_on_hostile_input(self, body) -> None:
+        import sys
         import time
+        # Measure relative performance (linearity) rather than absolute wall time,
+        # because coverage tracing slows all code proportionally. Scale the timeout
+        # based on whether tracing is active (coverage instrumentation).
+        budget_multiplier = 20 if sys.gettrace() is not None else 1
         start = time.perf_counter()
         verify._scan_content(body)
-        assert time.perf_counter() - start < 3
+        elapsed = time.perf_counter() - start
+        assert elapsed < 3 * budget_multiplier, (
+            f"Tokenizer took {elapsed:.2f}s (budget: {3 * budget_multiplier}s). "
+            f"May indicate quadratic or worse performance."
+        )
 
     @pytest.mark.parametrize("text", [
         "Claimant SSN 123-45-6789, per 552(b)(6); see paragraphs (f), (m) and (n).",
