@@ -92,17 +92,20 @@ def _last_size(pdf: bytes) -> int:
     return int(matches[-1].group(1))
 
 
-def incremental_update(pdf: bytes, objects: dict[int, bytes | None], root: int = 1,
+def incremental_update(pdf: bytes, objects: dict[int, bytes], root: int = 1,
                         info: int | None = None) -> bytes:
-    """*pdf* with one more incremental update appended: the given objects
-    (a body of ``None`` marks the object free — deleted, not rewritten), a
-    classic cross-reference section listing exactly those object numbers,
-    and a trailer with ``/Prev`` pointing at *pdf*'s own latest section.
+    """*pdf* with one more incremental update appended: the given objects,
+    a classic cross-reference section listing exactly those object
+    numbers, and a trailer with ``/Prev`` pointing at *pdf*'s own latest
+    section.
 
     Every earlier version — including any object this update redefines
     under the same number — stays at its old offset, exactly as a real
     incremental save leaves it, which is what lets the verifier's earlier-
-    revision scan find it again.
+    revision scan find it again. Freeing an object correctly needs the
+    file's whole free-list chain (object 0's entry, rewritten to point at
+    it), not just this update's own section, so it is not offered here —
+    no case has needed it yet.
     """
     prev = _last_startxref(pdf)
     size = max(_last_size(pdf), max(objects) + 1)
@@ -110,15 +113,13 @@ def incremental_update(pdf: bytes, objects: dict[int, bytes | None], root: int =
     if not out.endswith(b"\n"):
         out += b"\n"
     offsets: dict[int, int] = {}
-    for number in sorted(n for n, body in objects.items() if body is not None):
+    for number in sorted(objects):
         offsets[number] = len(out)
         out += b"%d 0 obj\n" % number + objects[number] + b"\nendobj\n"
     xref = len(out)
     out += b"xref\n"
     for number in sorted(objects):
-        out += b"%d 1\n" % number
-        out += (b"%010d 00000 n \n" % offsets[number] if number in offsets
-                else b"0000000000 65535 f \n")
+        out += b"%d 1\n" % number + b"%010d 00000 n \n" % offsets[number]
     extra = b" /Info %d 0 R" % info if info is not None else b""
     out += (b"trailer\n<< /Size %d /Root %d 0 R%s /Prev %d >>\nstartxref\n%d\n%%%%EOF\n"
             % (size, root, extra, prev, xref))
@@ -167,6 +168,12 @@ def build_objstm(objects: dict[int, bytes], root: int = 1,
         offsets[number] = len(out)
         out += b"%d 0 obj\n" % number + objects[number] + b"\nendobj\n"
 
+    # The xref stream is itself an in-use, uncompressed object: its offset
+    # must be in *offsets* — and known — before the entries are built,
+    # since one of those entries describes the xref stream's own object.
+    xref_offset = len(out)
+    offsets[xref_num] = xref_offset
+
     index_in_objstm = {number: i for i, number in enumerate(packed)}
     entries = bytearray()
     for number in range(size):
@@ -179,7 +186,6 @@ def build_objstm(objects: dict[int, bytes], root: int = 1,
         else:
             entries += _XREF_ENTRY.pack(0, 0, 65535)   # a gap: unused object number
 
-    xref_offset = len(out)
     xref_dict = b"/Type /XRef /W [1 4 2] /Size %d /Root %d 0 R" % (size, root)
     xref_obj = flate(xref_dict, bytes(entries)) if compress else stream(xref_dict, bytes(entries))
     out += b"%d 0 obj\n" % xref_num + xref_obj + b"\nendobj\n"

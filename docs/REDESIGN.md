@@ -394,7 +394,9 @@ Each case is a generator (fake data only) plus metadata:
 Guards against same-author bias:
 
 - Each cell needs at least one case from a **non-fitz writer** (fitz is
-  also the library the tool reads with).
+  also the library the tool reads with) — done for every claimed (✓/⚑)
+  cell; `caselib.NONFITZ_PENDING` tracks what is left and may only
+  shrink.
 - A committed **real-redactor tier**: small binaries with fake data and
   recorded provenance — a redactor POC, Acrobat Redact, a macOS
   Preview box, Word export with a shape over text.

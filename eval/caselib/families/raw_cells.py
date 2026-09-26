@@ -17,11 +17,15 @@ from pathlib import Path
 import fitz
 
 from ..model import SSN, case, expect
-from ..pdfkit import compressed, png_of, zipbytes
-from ..rawpdf import build, build_objstm, incremental_update, one_page, page, stream, text
+from ..pdfkit import FILLER, compressed, png_of, zipbytes
+from ..rawpdf import (CATALOG, HELVETICA, build, build_objstm, incremental_update, one_page,
+                      page, stream, text)
 
 SECRET = f"SSN {SSN}"
-LIVE_SSN = expect(1, findings=(("SSN", "live"),))
+# Pins the Text layer specifically: page.raw-font-coded's OCR finding alone
+# would let its font decoding break unnoticed, matching families/live.py's
+# fitz siblings (e.g. page.visible-embedded-font).
+LIVE_SSN = expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),))
 ORPHAN_SSN = expect(1, findings=(("SSN", "orphaned"),))
 SUPERSEDED_SSN = expect(1, findings=(("SSN", "superseded"),))
 UNDECODABLE_ORPHAN = expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),))
@@ -344,6 +348,61 @@ case(
           "pile up, that one falls outside what gets scanned, and the tool says so "
           "rather than pass the file.",
 )(_many_revisions)
+
+
+# ── Matching limits: a page break, a line wrap ──────────────────────────
+# Both need the value's two halves in separate content-stream objects, not
+# one combined stream: the Objects layer's literal-adjacency join
+# (RollingScanner) works within a single object, joining any two literals
+# there regardless of what lies between them — which is right for a value
+# split to dodge string-boundary matching, but would turn these into a
+# hard Objects finding instead of the reading-order join the Text/OCR
+# layers do. fitz's own pages happen to keep every insert_text call in its
+# own content-stream object, which is why the fitz siblings never hit this;
+# a hand-assembled page has to split them on purpose.
+
+def two_page(first: bytes, second: bytes) -> dict[int, bytes]:
+    """A two-page document: page 1's contents is object 4, page 2's is
+    object 6, sharing one font (8)."""
+    resources = b"<< /Font << /F1 8 0 R >> >>"
+    return {
+        1: CATALOG,
+        2: b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+        3: page(contents=b"4 0 R", resources=resources),
+        4: first,
+        5: page(contents=b"6 0 R", resources=resources),
+        6: second,
+        8: HELVETICA,
+    }
+
+
+def _lines(entries: list[tuple[str, int]]) -> bytes:
+    return b" ".join(text(s, y) for s, y in entries)
+
+
+@leak("layout.raw-page-break", "match.page-break",
+      "A code name split across a page break, in a hand-assembled two-page document: "
+      "\"Project code BLUE\" at the bottom of page 1, \"HERON continues here\" at the "
+      "top of page 2.", expected=expect(1, findings=(("Code", "live"),)))
+def raw_page_break(path: Path) -> None:
+    page1 = [(f, 748 - 16 * i) for i, f in enumerate(FILLER)]
+    page1.append(("Project code BLUE", 60))
+    page2 = [("HERON continues here", 740)]
+    page2 += [(f, 700 - 16 * i) for i, f in enumerate(FILLER)]
+    path.write_bytes(build(two_page(stream(b"", _lines(page1)), stream(b"", _lines(page2)))))
+
+
+@leak("layout.raw-line-wrap", "match.line-wrap",
+      "A value wrapped across two consecutive lines, kept as separate content-stream "
+      "objects: \"total 123-45-\" then \"6789 units\" — the joined reading matches, but "
+      "only as a coincidental fusion (manual review).",
+      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)))
+def raw_line_wrap(path: Path) -> None:
+    filler = [(f, 700 - 16 * i) for i, f in enumerate(FILLER)]
+    objects = one_page(stream(b"", _lines(filler) + b" " + text("total 123-45-", 400)),
+                        o5=stream(b"", text("6789 units", 384)))
+    objects[3] = page(contents=b"[4 0 R 5 0 R]")
+    _write(path, objects)
 
 
 # ── Object streams and cross-reference streams (PDF 1.5) ────────────────
