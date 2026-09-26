@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import fitz
@@ -505,27 +506,6 @@ class TestSubprocessHardening:
             assert marker not in result.stdout
 
     @requires_exiftool
-    def test_exiftool_config_in_callers_cwd_is_not_honored(
-        self, clean_pdf, secrets_file, tmp_path
-    ) -> None:
-        # Regression target for #4. exiftool's own manual: it searches
-        # EXIFTOOL_HOME, then HOME, then HOMEDRIVE+HOMEPATH, and FALLS
-        # BACK TO ITS WORKING DIRECTORY when none of those is set — and
-        # our minimal subprocess environment strips HOME entirely, which
-        # makes the working directory the live threat, not $HOME. Without
-        # cwd= hardening, exiftool would inherit THIS process's cwd (here,
-        # deliberately set to a directory holding a hostile config) and
-        # choke on it; with it, exiftool never runs from this directory
-        # at all.
-        evil_cwd = tmp_path / "attacker-controlled-cwd"
-        evil_cwd.mkdir()
-        (evil_cwd / ".ExifTool_config").write_text("this is not valid Perl {{{\n")
-        result = run_verify(clean_pdf, secrets_file, cwd=evil_cwd)
-        assert result.returncode in (0, 2)
-        assert "TOOL_EXIT_NONZERO" not in result.stdout
-        assert "TOOL_OUTPUT_MALFORMED" not in result.stdout
-
-    @requires_exiftool
     def test_metadata_secret_found_through_hardened_exiftool(
         self, secrets_file, tmp_path
     ) -> None:
@@ -540,3 +520,171 @@ class TestSubprocessHardening:
         result = run_verify(path, secrets_file)
         assert result.returncode == 1, result.stdout
         assert "LAYER: Metadata" in result.stdout
+
+
+# A config file with an OBSERVABLE effect when exiftool actually loads it:
+# it registers a user-defined Composite tag (exiftool's own documented
+# extension mechanism — see its example.config) that ALWAYS evaluates to
+# a fixed string. If the config is read, that tag — and its value —
+# appears as a new key in every '-json' output; if it is not, the key is
+# simply absent. This was verified empirically (a config that instead
+# called die() was NOT what it first appeared to be: exiftool wraps
+# config loading in its own eval and merely warns on a die or a syntax
+# error, still exiting 0 with unchanged JSON either way — no more
+# observable than the original "not valid Perl" fixture this replaces).
+# A defined-tag config's effect is unambiguous because it does not depend
+# on exiftool's own error handling at all.
+_EXIFTOOL_TAG_CONFIG = """\
+%Image::ExifTool::UserDefined = (
+    'Image::ExifTool::Composite' => {
+        PWNEDConfigLoaded => {
+            Require => 'FileType',
+            ValueConv => '"PWNED-CONFIG-LOADED"',
+        },
+    },
+);
+1;  #end
+"""
+
+
+def _run_real_exiftool(
+    pdf: Path, cwd: Path, *, config_override: bool
+) -> subprocess.CompletedProcess[str]:
+    """Invoke the real exiftool binary the same way verify.py's own argv
+    does — or, with config_override=False, without the '-config ""' guard
+    — from a given working directory, with the same minimal environment
+    verify.py uses (no HOME, so a config search can only ever find
+    something via EXIFTOOL_HOME or the cwd fallback, never the real
+    tester's home directory).
+    """
+    exe = shutil.which("exiftool")
+    argv = [exe]
+    if config_override:
+        argv += ["-config", ""]
+    argv += ["-json", "--", str(pdf.resolve())]
+    return subprocess.run(
+        argv, capture_output=True, text=True, cwd=str(cwd), timeout=30,
+        env={"PATH": os.environ.get("PATH", ""), "LANG": "C", "LC_ALL": "C"},
+    )
+
+
+@requires_exiftool
+class TestExiftoolConfigOverrideIsTheRealProtection:
+    """Confirmation-review follow-up on #4: the original cwd-hardening
+    test planted a config that was merely invalid Perl, which exiftool
+    only warns about (to stderr, which verify.py discards) while still
+    exiting 0 with identical JSON whether or not it was read — so that
+    test could never fail even if the fix were reverted. This plants a
+    config whose effect (a new JSON key) is unambiguous, and proves each
+    protection independently: that the fixture itself would be caught if
+    nothing protected against it, and that '-config ""' — not the private
+    cwd, which is defence in depth — is what actually stops it. Every
+    path used here lives under tmp_path; nothing touches the real HOME or
+    this process's own cwd.
+    """
+
+    def _hostile_cwd(self, tmp_path: Path) -> Path:
+        cwd = tmp_path / "evil-cwd"
+        cwd.mkdir()
+        (cwd / ".ExifTool_config").write_text(_EXIFTOOL_TAG_CONFIG)
+        return cwd
+
+    def _tiny_pdf(self, tmp_path: Path) -> Path:
+        path = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing sensitive here")
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_planted_config_is_detected_when_actually_loaded(self, tmp_path) -> None:
+        # Proves the fixture is meaningful: WITHOUT '-config ""', exiftool
+        # run from a cwd holding this file really does pick it up — the
+        # user-defined tag's value shows up as a new JSON key.
+        cwd = self._hostile_cwd(tmp_path)
+        pdf = self._tiny_pdf(tmp_path)
+        result = _run_real_exiftool(pdf, cwd, config_override=False)
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload[0].get("PWNEDConfigLoaded") == "PWNED-CONFIG-LOADED"
+
+    def test_config_override_stops_it_even_from_the_hostile_cwd(self, tmp_path) -> None:
+        # This is the actual protection (#4): '-config ""' alone means
+        # exiftool never attempts to load the file, regardless of cwd —
+        # the tag never gets registered, so the key is simply absent.
+        cwd = self._hostile_cwd(tmp_path)
+        pdf = self._tiny_pdf(tmp_path)
+        result = _run_real_exiftool(pdf, cwd, config_override=True)
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload
+        assert "PWNEDConfigLoaded" not in payload[0]
+
+    def test_end_to_end_through_verify_is_unaffected(
+        self, secrets_file, tmp_path
+    ) -> None:
+        # The real CLI, run from that same hostile cwd, must scan
+        # normally and never surface the planted tag — proving the actual
+        # hardened invocation (not just the isolated exiftool call above)
+        # is protected.
+        cwd = self._hostile_cwd(tmp_path)
+        pdf = self._tiny_pdf(tmp_path)
+        result = run_verify(pdf, secrets_file, cwd=cwd)
+        assert result.returncode in (0, 2)
+        assert "TOOL_EXIT_NONZERO" not in result.stdout
+        assert "TOOL_NO_OUTPUT" not in result.stdout
+        assert "TOOL_OUTPUT_MALFORMED" not in result.stdout
+        assert "PWNEDConfigLoaded" not in result.stdout
+        assert "PWNED-CONFIG-LOADED" not in result.stdout
+
+
+class TestCleanupIsBestEffort:
+    """Cheap fix from the confirmation review: kill_hidden_tools() and the
+    scratch directory's cleanup() run in main()'s outer `finally` — AFTER
+    print_report has already printed the verdict. If either raised, it
+    used to propagate into the `except BaseException` guard (#1/#2),
+    replacing an already-decided, already-printed 0/1 with a fresh
+    INTERNAL_ERROR at exit 2. Cleanup problems are still worth reporting,
+    so they print a stderr note — they just must never change what was
+    already decided.
+    """
+
+    def test_kill_hidden_tools_failure_never_overrides_the_verdict(
+        self, clean_pdf, secrets_file, monkeypatch, capsys
+    ) -> None:
+        baseline = verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        )
+        capsys.readouterr()  # discard the baseline run's output
+
+        def _boom_kill(procs):
+            raise OSError("simulated cleanup failure")
+
+        monkeypatch.setattr(verify, "kill_hidden_tools", _boom_kill)
+        code = verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        )
+        out, err = capsys.readouterr()
+        assert code == baseline
+        assert "[PASS]" in out or "[FAIL]" in out
+        assert "simulated cleanup failure" in err
+
+    def test_scratch_cleanup_failure_never_overrides_the_verdict(
+        self, clean_pdf, secrets_file, monkeypatch, capsys
+    ) -> None:
+        baseline = verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        )
+        capsys.readouterr()
+
+        def _boom_cleanup(self):
+            raise OSError("simulated scratch cleanup failure")
+
+        monkeypatch.setattr(verify.tempfile.TemporaryDirectory, "cleanup", _boom_cleanup)
+        code = verify.main(
+            ["--target", str(clean_pdf), "--secrets", str(secrets_file)]
+        )
+        out, err = capsys.readouterr()
+        assert code == baseline
+        assert "[PASS]" in out or "[FAIL]" in out
+        assert "simulated scratch cleanup failure" in err

@@ -332,16 +332,28 @@ The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
 rather than letting `exec()` search `PATH`, the target is always passed
 as that same absolute path so a filename starting with `-` can never be
-read as an option, exiftool gets `-config ""` plus its own documented
-`--` end-of-options convention so no config file is ever consulted, and
-both run with a minimal environment (`PATH`, `LANG=C`, `LC_ALL=C`) from a
-private, empty scratch directory — exiftool falls back to its *working
-directory* for `.ExifTool_config` once none of `EXIFTOOL_HOME`/`HOME`/
-`HOMEDRIVE`+`HOMEPATH` is set (which the minimal environment guarantees),
-so the cwd has to be closed separately from `-config ""`, not by it.
-Every exit from the scan that started them — normal completion, an early
-`return`, or any exception — kills whichever of the two are still running
-and removes that scratch directory, so neither survives as an orphan.
+read as an option, and exiftool gets `-config ""` plus its own documented
+`--` end-of-options convention. `-config ""` is what actually stops
+exiftool from consulting any config file at all — `EXIFTOOL_HOME`,
+`HOME`, `HOMEDRIVE`+`HOMEPATH`, or its own *working-directory* fallback
+once none of those is set — verified directly against the real binary in
+`tests/test_cli.py` (a planted config registers a user-defined tag whose
+value shows up as an unambiguous new JSON key when the config is actually
+read; an earlier version of that test instead planted invalid Perl, which
+exiftool — and, it turns out, even an explicit `die` inside a config —
+only warns about on stderr while still exiting 0 with unchanged JSON
+either way, so it could never have caught a regression). Both also run
+with a minimal
+environment (`PATH`, `LANG=C`, `LC_ALL=C`) from a private, empty scratch
+directory, but that is defence in depth rather than the fix itself: if
+`-config ""` were ever dropped, or a future exiftool version behaved
+differently, the working directory it would then fall back to must still
+not be the caller's own. Every exit from the scan that started them —
+normal completion, an early `return`, or any exception — kills whichever
+of the two are still running and removes that scratch directory
+(best-effort: a cleanup failure is reported but never allowed to
+overwrite an already-decided, already-printed verdict), so neither
+survives as an orphan.
 
 ## Sharing a config with the redactor
 

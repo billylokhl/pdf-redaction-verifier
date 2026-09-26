@@ -1183,17 +1183,19 @@ def start_hidden_tools(
       a bare filename — so a file literally named "-something.pdf" can
       never be read as an option by either tool (a resolved path is
       always rooted at "/", so it can never itself start with "-");
-    - exiftool additionally gets its documented '-- FILE' convention (its
-      own manual recommends this for exactly this threat) and '-config
-      ""' first, so it never loads a config file from EXIFTOOL_HOME, HOME,
-      or (see below) its own working directory;
-    - both run inside a private, empty scratch directory rather than this
-      process's own current directory: exiftool's *.ExifTool_config*
-      search falls back to its WORKING DIRECTORY when none of
-      EXIFTOOL_HOME/HOME/HOMEDRIVE+HOMEPATH is set (or, with the minimal
-      environment below, none of them is), so a hostile config file
-      sitting in the caller's cwd must not be reachable at all — '-config
-      ""' alone does not close that door, the cwd does;
+    - exiftool additionally gets '-config ""' first — this is what
+      actually stops it from consulting ANY per-user config file at all
+      (EXIFTOOL_HOME, HOME, HOMEDRIVE+HOMEPATH, or its own working-
+      directory fallback once none of those is set — see below), verified
+      directly against the real binary in tests/test_cli.py — plus its
+      own documented '--' end-of-options convention;
+    - both ALSO run inside a private, empty scratch directory rather than
+      this process's own current directory, as DEFENCE IN DEPTH rather
+      than the fix itself: exiftool's *.ExifTool_config* search falls
+      back to its WORKING DIRECTORY once none of EXIFTOOL_HOME/HOME/
+      HOMEDRIVE+HOMEPATH is set, so if '-config ""' were ever dropped (or
+      a future exiftool version behaved differently), the directory it
+      would fall back to must still not be the caller's own;
     - both run with a minimal environment (_minimal_subprocess_env), so
       no other inherited variable can steer them either.
 
@@ -3954,9 +3956,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             # once main() has decided to leave, and the private scratch
             # directory they ran in (see start_hidden_tools) never
             # outlives them. Both calls are idempotent.
-            kill_hidden_tools(procs)
+            #
+            # Each is best-effort: if a `return finish(...)` above already
+            # decided the verdict, print_report has already printed it —
+            # letting a cleanup failure raise past this `finally` would
+            # replace that already-computed, already-PRINTED verdict with
+            # a fresh crash (caught by the `except BaseException` below),
+            # silently turning a genuine 0 or 1 into a spurious 2. A
+            # cleanup problem is real and worth knowing about, so it is
+            # still reported — just never allowed to overrule the verdict.
+            try:
+                kill_hidden_tools(procs)
+            except Exception as exc:
+                print(
+                    f"[ERROR] could not clean up a hidden-tool subprocess: {exc}",
+                    file=sys.stderr,
+                )
             if tools_scratch is not None:
-                tools_scratch.cleanup()
+                try:
+                    tools_scratch.cleanup()
+                except Exception as exc:
+                    print(
+                        f"[ERROR] could not remove the tool scratch directory: {exc}",
+                        file=sys.stderr,
+                    )
     except BaseException as exc:
         # BaseException, not Exception: a SystemExit (or other
         # BaseException) raised somewhere inside the pipeline above must
