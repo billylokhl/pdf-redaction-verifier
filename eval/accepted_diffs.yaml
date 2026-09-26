@@ -22,7 +22,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font.compact-syntax
-  pr: pending
+  pr: "#13"
 - case: leftover.deleted-page-long-text-object
   old:
     exit: 0
@@ -47,7 +47,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font
-  pr: pending
+  pr: "#13"
 - case: leftover.font-set-before-text-object
   old:
     exit: 0
@@ -72,7 +72,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font
-  pr: pending
+  pr: "#13"
 - case: leftover.inline-image-compact
   old:
     exit: 0
@@ -97,7 +97,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.pixels
-  pr: pending
+  pr: "#13"
 - case: leftover.kerned-glyph-codes
   old:
     exit: 0
@@ -122,7 +122,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font
-  pr: pending
+  pr: "#13"
 - case: leftover.raw-compact-glyphs
   old:
     exit: 0
@@ -147,7 +147,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font.compact-syntax
-  pr: pending
+  pr: "#13"
 - case: leftover.redacted-no-gc-embedded-font-compact
   old:
     exit: 0
@@ -172,7 +172,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font.compact-syntax
-  pr: pending
+  pr: "#13"
 - case: revision.raw-rewritten-font-compact
   old:
     exit: 0
@@ -197,7 +197,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: superseded.font.compact-syntax
-  pr: pending
+  pr: "#13"
 - case: revision.redacted-incremental-compact
   old:
     exit: 0
@@ -222,7 +222,7 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: orphaned.font.compact-syntax
-  pr: pending
+  pr: "#13"
 - case: revision.truncated-stream-embedded-font
   old:
     exit: 0
@@ -247,4 +247,4 @@
     text with confidence, and reports the leftover coverage warning under Objects (exit 2)
     instead.'
   cell: superseded.font.compact-syntax
-  pr: pending
+  pr: "#13"
