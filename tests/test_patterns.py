@@ -123,6 +123,14 @@ class TestMatchSemantics:
     def _patterns(self, tmp_path, rules):
         return verify.load_rules(_rules_file(tmp_path, rules)).patterns
 
+    def test_soft_hyphen_is_folded_to_a_dash(self, tmp_path) -> None:
+        # Regression: fonts embedded by some producers (PyMuPDF with Arial)
+        # extract '-' as U+00AD, which NFKC keeps, so the ssn class missed
+        # 'SSN 123-45-6789' drawn in such a font — exit 0 on a leak.
+        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        assert verify.match_patterns("SSN 123­45­6789", patterns) == {
+            "ssn": "123-45-6789"}
+
     def test_greedy_rejection_retries_embedded_match(self, tmp_path) -> None:
         # Regression: validator-rejected greedy superspan swallowed the
         # embedded valid card and finditer never retried inside it.

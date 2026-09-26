@@ -218,29 +218,31 @@ The resolution is that **not all matches are equally trustworthy**:
   that required fusing separate things: multi-line text, vertical column
   reconstructions, adjacent literals, page boundaries.
 
-Neither tier is silent. A pattern match split across a page break still
-surfaces — as a `2` demanding review rather than a `1` asserting a
-breach. That is the correct confidence level for the evidence.
+Demotion is never silence: a match the tool finds by joining text is
+reported as a `2` demanding review rather than a `1` asserting a breach,
+which is the correct confidence for that evidence. (What the tool cannot
+see at all is a different matter — see Known limitations.)
 
 **Value rules relax two joins, and only two.** A known value is exact and
 specific, so a split at a *structural* seam is treated as deliberate, not
 coincidental: across the strings of one PDF object, and from the last
-line of one page onto the first line of the next adjacent page — the
-natural reading continuation, extended through pages that hold a single
-line, so a value spread over three pages is still one continuation. A
-page with no text, or one that failed to extract, breaks that adjacency:
-what lies between the halves is unseen. Every other join — two lines
-within a page, a page break reached only by also joining other lines, a
-break across a blank or image-only page — stays manual-review.
+line of one page onto the first line of the next page, in a genuine
+reading — the natural continuation of the text. Every other join stays
+manual review: two lines within a page, a vertical column of an ordinary
+page, a page break reached only by also joining other lines, or a break
+across a blank, image-only or unreadable page (what lies between the
+halves is unseen).
 
-Nothing is silent either way. Behind the seam check, a whole-document
-rolling scan per reading reports anything that spans a page break any
-other way, as manual review. An earlier version fed that rolling scan
-straight to the hard tier, which escalated ordinary same-page joins to
-hard findings labelled "across page boundaries"; a first fix that
-checked only adjacent pages then silently lost values spread over three
-or more. The seam-plus-backstop split keeps the confidence honest
-without ever being less sensitive than the plain rolling scan.
+Each page break is checked on its own. For every reading the tool keeps
+the last few characters read so far, and asks one positional question at
+each break: does a secret *straddle* this join? Asking by position rather
+than by which names appear on each side matters twice over: a whole copy
+of a value on one side cannot mask a separate copy crossing the join, and
+every place a value crosses a break is reported where it happens. Earlier
+designs got this wrong in instructive ways — a rolling scan fed straight
+to the hard tier escalated same-page joins; a seam-only check lost values
+spread over three pages; and suppressing the backstop by secret name let
+one coincidental warning hide a real split elsewhere in the document.
 
 **Fences** are how the hard tier stays honest. The class regexes allow at
 most one separator character between digit groups, so inserting *two*
@@ -269,14 +271,17 @@ a fixed 4pt tolerance split 30pt digits with 6pt baseline jitter into
 interleaved pseudo-lines — with a ceiling so a large watermark cannot
 inflate the tolerance enough to merge body text.
 
-Because rotated text produces vertical glyph runs that a horizontal sort
-scrambles, three variants are produced: horizontal, vertical top-down,
-and vertical bottom-up. Only the horizontal one is a genuine reading
-order, so only it feeds the hard tier *for pattern rules*; their matches
-in the vertical reconstructions are soft. Known values are hard on a
-single line of any reading — a specific value is unlikely to assemble by
-accident within one line — though that assumption fails for short values
-(see Known limitations).
+Text is read along the direction it was written. PyMuPDF reports each
+line's writing direction, so horizontally written glyphs form the
+horizontal reading and glyphs written vertically (a rotated matrix) are
+read in their own columns, top-down and bottom-up: three *genuine*
+readings, all eligible for hard findings. Two more readings stack *every*
+glyph into vertical columns. They are *reconstructions*: the only way to
+read a value written one character per line, but on an ordinary page a
+column stacks one glyph from each of many lines — a ledger's last digits,
+a numbered list's numbers — which assembled the README's own example
+value out of a clean numbered list. Their matches are only ever manual
+review, for values and patterns alike.
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,
@@ -323,19 +328,30 @@ the gap is stated rather than implied away.
 - **Pattern rules cannot span pages as hard findings** — they surface as
   review warnings. Value rules are hard only at a page seam (see the
   two-tier model).
-- **Silent misses — places no layer reads:** earlier revisions of an
-  incrementally saved file; leftover content set in Identity-H fonts;
-  pixels hidden under a box drawn over a scanned image; JavaScript on
-  links, form fields or pages (only document-level scripts are read); a
-  leftover content stream carrying an inline image; text placed outside
-  the page area when the Objects layer cannot decode it; and a value
-  split across a page break with a header, footer or page number between
-  its halves, or where the page's last line is not its reading-order
-  last line (two columns, 270° rotation).
-- **Short values raise false hard findings.** A 5-digit value can be
-  assembled at a page seam (a page number followed by the next page's
-  first line) or down a vertical reading (a numbered list's first
-  column). Prefer longer, more specific values.
+- **Silent misses — places no layer reads:** an object rewritten under the
+  same number by an incremental update (the earlier version stays in the
+  file; objects the update merely stopped referencing *are* found, as
+  ORPHANED); orphaned content in a font whose codes are not plain
+  characters (Identity-H, custom encodings, Type3); orphaned attachments
+  and orphaned XMP packets; attachments in compressed containers (zip,
+  Office, nested PDF); pixels under a box drawn over a scanned image; a
+  leftover content stream dominated by an inline image; text outside the
+  page area when the Objects layer cannot decode it; a value split across
+  a page break with a header, footer or page number between its halves,
+  or where the page's last line is not its reading-order last line (two
+  columns, 270° rotation); a value wrapped inside one column of a
+  multi-column page; and pattern-class numbers written without dashes
+  and wrapped at a line or page break.
+- **Most of those silent misses share one cause.** The tool reads the
+  content, cannot decode it, and says nothing. Fail-closed is enforced
+  when a layer cannot *run*, not yet when it runs and cannot *read* what
+  it found — the next design step.
+- **Some false positives remain.** A short value (a 5-digit ZIP) can be
+  assembled as a hard finding at a page seam — a page number followed by
+  the next page's first line — and decompressed font tables in the
+  Binary sweep can raise coincidental manual-review warnings for a
+  sequential value such as `123456789`. Prefer longer, more specific
+  values.
 - **Custom regexes are trusted.** A pathological pattern can be slow; the
   built-in classes are anchored to avoid quadratic backtracking, but a
   user-supplied one is the user's responsibility.
