@@ -40,10 +40,12 @@ found missing and that must be stated explicitly, because ADR 0004
 > counts as searched only if nothing was lost decoding it: after a
 > decode error, or any warning that suggests lost data (truncation, a
 > corrupt or premature end of a codestream, a zlib or flate error), the
-> stage is only partly searched and the unit is `FLAGGED`. A warning
-> nobody has reviewed also means `FLAGGED`. Only an image-decoder
-> warning reviewed as harmless may be excused, and only by the image's
-> own witness from Phase 4b (owner decision C, below).**
+> stage is only partly searched and the unit is `FLAGGED`. At a filter
+> or codec stage, a warning nobody has reviewed also means `FLAGGED`,
+> and the only warning that may be excused there is an image-decoder
+> warning reviewed as harmless, and then only by the image's own witness
+> from Phase 4b (owner decision C, below). Interpreter warnings raised
+> while running a content stream are governed by docs/adr/0009.**
 
 The concrete case that makes the rule necessary: consider a 10×10 DeviceGray
 image whose 100 raw sample bytes are literally the ASCII codes for
@@ -63,10 +65,12 @@ Verified directly against `verify.py` (not a claim taken on faith):
 | No (unreferenced) | class | `0` (same reason; `2` at 10×40) |
 
 The unreferenced rows exit `0` today only because of the 8×32
-`_text_sized` floor. In the new design a leftover (unreferenced) image
-is always `FLAGGED`, whatever its size or what OCR finds (owner decision
-D, 2026-09-27; docs/adr/0004), and a used one has no size excusal
-(owner decision A; see reason 4 and docs/adr/0004): a 10×10 image is
+`_text_sized` floor. In the new design a leftover image (one no reached
+content stream or appearance draws, whether unreferenced or only listed
+as a resource) is always `FLAGGED`, whatever its size or what OCR finds
+(owner decision D, 2026-09-27; docs/adr/0004), and a drawn one has no
+size excusal (owner decision A; see reason 4 and docs/adr/0004): a
+10×10 image is
 treated like any other image -- enlarged and OCR'd, `FLAGGED` until
 Phase 4b's recall bound covers small images. Either way its bytes are
 still raw-searched under the governing rule above, so none of the four
@@ -82,6 +86,10 @@ tool (REDESIGN §8, K21). Removing the excusal closes the single small
 image. It does not close the same render cut into strips: OCR'd one at
 a time, each strip reads as nothing, so leftover strips are closed by
 decision D (every leftover image is `FLAGGED`), not by enlargement.
+Strips that are drawn but covered by something painted over them, or
+drawn apart, are not closed by either: they are a known miss of
+per-image OCR and an open question for the owner before Phase 4b
+(docs/adr/0004).
 
 So three of the four already exit `0` today, not one. Under ADR 0003's
 reason 4 ("image data fully consumed by the image decoder") composed
@@ -109,16 +117,15 @@ extension segment are the same shape. Today's `verify.py` exits `2`
 sweep sees the encoded stream; a rewrite that searched only decoded
 samples would regress it to `0` once that sweep retires in Phase 6.
 
-**Embedded extra images are `FLAGGED`** (owner decision B, 2026-09-27).
-A codec payload can carry image data beyond the main frame the decoder
-returns: a JPEG APP1 (EXIF) or APP13 thumbnail, additional JPEG 2000
-codestreams, extra JBIG2 pages or regions. Decoded sample data beyond
-`/Width`×`/Height`×components×bits per component, or a codec frame
-larger than the dictionary declares, is the same thing: rows the image
-dictionary does not declare are never drawn, so OCR never sees them.
-Text drawn in such an image is pixels, so the raw matcher cannot find
-it, and the image decoder never OCRs it. Any such data means the image
-is `FLAGGED` (exit `2`), not discharged.
+**An image that decodes to more than declared is `FLAGGED`** (owner
+decision B, 2026-09-27). An image can carry data beyond the main
+decoded picture: an EXIF or other thumbnail (a JPEG APP1 or APP13
+segment), additional JPEG 2000 codestreams, extra JBIG2 pages, decoded
+samples beyond `/Width`×`/Height`×components×bits per component, or a
+codec frame larger than the dictionary declares. None of it is ever
+drawn, so OCR never sees it, and text in it is pixels, so the raw
+matcher cannot find it either. Any such data means the image is
+`FLAGGED` (exit `2`), not discharged.
 
 **Whether pattern classes should run over raw image sample bytes at all
 is a separate, real gap the hidden-image case exposes, not fixed by the
@@ -154,8 +161,10 @@ restated by the owner's decisions of 2026-09-27):
    the name/metadata strings inside those tables must still go through
    the matcher.
 4. **Image data fully consumed by the image decoder.** One path: the
-   image is used by the document (a leftover image nothing uses is
-   always `FLAGGED`, owner decision D), it is inside docs/adr/0004's
+   image is used by the document, meaning drawn by some reached content
+   stream or appearance (a leftover image, including one listed as a
+   resource that nothing draws, is always `FLAGGED`, owner decision D),
+   it is inside docs/adr/0004's
    recall-validated envelope and its recall bound is satisfied
    (docs/adr/0004, accepted: geometry and a
    completed OCR pass are *not* enough on their own -- REDESIGN §4
@@ -169,10 +178,10 @@ restated by the owner's decisions of 2026-09-27):
    stage may have lost data (a decode error, a warning that suggests
    lost data, or an unrecognised warning means `FLAGGED`; a warning on
    the reviewed-harmless allowlist is excused only by the image's own
-   witness -- owner decision C); and the payload must hold no image data
-   beyond the main frame (an EXIF/APP13 thumbnail, an extra JPEG 2000
-   codestream, an extra JBIG2 page or region, or decoded samples beyond
-   the declared frame means `FLAGGED`). Until Phase 4b's recall
+   witness -- owner decision C); and the image must not decode to more
+   than declared (a thumbnail, an extra JPEG 2000 codestream or JBIG2
+   page, samples beyond the declared frame, or a larger codec frame
+   means `FLAGGED` -- owner decision B). Until Phase 4b's recall
    measurement exists, this reason cannot actually be reached -- image
    evidence stays `FLAGGED`, consistent with ADR 0004.
 
@@ -204,7 +213,9 @@ whose declared frame is blank but whose stream holds 20 more rows with
 an SSN render; the image must be `FLAGGED`), and the pixel-text-under-the-floor
 case (a leftover image under 8×32 holding pixel-drawn text; caselib's
 `leftover.small-image`, K21, already expects `LEFTOVER_IMAGE`; the
-strips variant is not yet a case of its own; Phase 3a adds it).
+strips variant is not yet a case of its own; Phase 3a adds it, with a
+strips-under-a-box variant: both strips drawn, a box painted over
+them).
 
 **Deferred, not implemented here:** xref-stream free-entry bytes (reason
 1) still need to go through the raw matcher under the same governing
@@ -259,16 +270,13 @@ decisions):
   the decoded pixels) is scheduled next to the hidden-image case.
 - Cases for the owner decisions below, all in Phase 3a before Phase 4b:
   the strips variant of K21 (two leftover 90×7 strips of one SSN
-  render; the strips variant is not yet a case of its own; Phase 3a
-  adds it), the EXIF-thumbnail case (a small JPEG whose EXIF thumbnail
+  render), a strips-under-a-box case next to it (both strips drawn, a
+  black box painted over them; today's `verify.py` exits `0`), the
+  EXIF-thumbnail case (a small JPEG whose EXIF thumbnail
   shows the SSN) next to the JPEG-comment case, and beside it the
   extra-rows case (a referenced 200×20 DeviceGray image with a blank
   declared frame plus 20 extra rows holding an SSN render; today's
   `verify.py` exits `0` on it and MuPDF gives no warning).
-- Under decision B, decoded sample data beyond
-  `/Width`×`/Height`×components×bits per component, or a codec frame
-  larger than declared, counts as image data beyond the main frame, and
-  the image is `FLAGGED`.
 
 An earlier revision of this section also recorded here, as wording,
 that any filter or codec error or warning means `FLAGGED` (a
@@ -293,10 +301,14 @@ images (recorded in full in docs/adr/0004).
   cannot find text drawn as pixels. It is also today's tool's gap
   (REDESIGN §8, K21). A closes the single small image; the strips
   variant is closed by D, not by A.
-- **B. Embedded extra images are `FLAGGED`.** Any image data in the
-  codec payload beyond the decoded main frame (a JPEG APP1/EXIF or APP13
-  thumbnail, additional JPEG 2000 codestreams, extra JBIG2 pages or
-  regions) means the image is `FLAGGED` (exit `2`).
+- **B. An image that decodes to more than declared is `FLAGGED`.** In
+  the owner's words: "Any image data in the file beyond the main decoded picture
+  (EXIF/other thumbnails, extra JPEG 2000 codestreams, extra JBIG2
+  pages) counts as 'decodes to more than declared', so the image is
+  flagged." Decoded samples
+  beyond `/Width`×`/Height`×components×bits per component, and a codec
+  frame larger than declared, decode to more than declared, so they are
+  within B itself. The image is `FLAGGED` (exit `2`).
 - **C. Image-decoder warnings, split by kind.** A decode error, or any
   warning that suggests lost data (truncation, a corrupt or premature
   end of a codestream, a zlib or flate error), means the image is always
@@ -308,10 +320,14 @@ images (recorded in full in docs/adr/0004).
   3.
 - **D. Leftover images are always `FLAGGED`.** An image nothing in the
   document uses is `FLAGGED` whatever its size and whatever OCR finds,
-  like docs/adr/0007's orphaned content streams. Reason: an SSN image
-  cut into 7 px strips cannot be read strip by strip, and nothing
-  reassembles unreferenced strips. See docs/adr/0004 for the evidence
-  and the cost, which Phase 3a measures.
+  like docs/adr/0007's orphaned content streams. "Uses" is read as
+  *draws*: an image is used only if some reached content stream or
+  appearance draws it, so one referenced only as a resource and never
+  drawn is leftover. Reason: an SSN image cut into 7 px strips cannot be
+  read strip by strip, and nothing reassembles strips that nothing
+  draws. See docs/adr/0004 for the evidence, for drawn strips (not
+  covered by D; an open question before Phase 4b), and for the cost,
+  which Phase 3a measures.
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
 recall bound is a scheduling gate (it cannot actually be reached until

@@ -84,6 +84,15 @@ The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
 case library; `docs/REDESIGN.md` §8).
 
+Two image gaps have no case yet (`docs/REDESIGN.md` §8, below the
+K-table; Phase 3a adds them). **Image data beyond the declared size**:
+rows past an image's declared `/Height` are never drawn, so a secret
+rendered there is never OCR'd, and MuPDF gives no warning. **One render
+cut into strips**, each too thin to read alone: the page's OCR reads
+them only when they are drawn next to each other and nothing covers
+them; under a drawn box, drawn apart, or listed as a resource but never
+drawn, they are not detected.
+
 ## Matching limits
 
 These are not storage places but ways a value can be split so that no

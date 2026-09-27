@@ -104,6 +104,10 @@ fail-closed way round: a warning family is eligible for the witness test
 only once it has been reviewed and recorded as a text-interpretation
 warning; any warning the implementation does not recognise (including a
 filter warning renamed by a MuPDF update) keeps its unit flagged.
+The allowlist of image-decoder warnings reviewed as harmless (owner
+decision C, below) is a separate reviewed list: an image-decoder
+warning is never eligible through the text-interpretation list, and a
+text-interpretation warning is never eligible through the image list.
 
 **Re-measured on every PyMuPDF/MuPDF update.** The rate moved materially
 between two point releases (Measurement), so this measurement is re-run
@@ -216,7 +220,7 @@ Owner decision: "approve all recommendations."
   text-bearing files still flagged, 7.6% of all 484 text-bearing files
   (raw rule: 45.7%).
 - **The three exit-`0` guards are requirements, not tuning**: never
-  excuse a filter/decode warning, never accept 0 = 0 as balance, and
+  excuse a filter/decode error or data-loss warning, never accept 0 = 0 as balance, and
   vouch for an image-decoder warning only with the image's own witness
   (and, per decision C below, only for a warning reviewed as harmless).
 - **Unrecognised warning names fail closed** (guard 2 implemented as an

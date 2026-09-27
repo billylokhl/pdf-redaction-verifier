@@ -119,9 +119,14 @@ Owner decision: "approve all recommendations."
   3a**, to establish the added (not gross) review-rate cost.
 
 **Owner decision D (2026-09-27), taken after the approval, recorded in
-docs/adr/0004.** Leftover (orphaned) images, images nothing in the
-document uses, are always `FLAGGED` too, like the orphaned content
-streams above and regardless of OCR: an SSN image cut into 7 px strips
-cannot be read strip by strip, and nothing reassembles unreferenced
-strips. Its cost is not part of this ADR's 11.4%, which counts content
+docs/adr/0004.** Leftover images, images nothing in the document
+uses, are always `FLAGGED` too, like the orphaned content streams above
+and regardless of OCR: an SSN image cut into 7 px strips cannot be read
+strip by strip, and nothing reassembles strips that nothing draws.
+"Uses" means *draws*: an image is used only if some reached content
+stream or appearance draws it, so one referenced only as a resource and
+never drawn is leftover, and `FLAGGED`, even though it is not orphaned
+in this ADR's sense (it has a reference). Strips that are drawn but
+covered are not closed by D; docs/adr/0004 records them as a known miss
+and an open question before Phase 4b. Its cost is not part of this ADR's 11.4%, which counts content
 streams only; it is unmeasured, and Phase 3a measures it.

@@ -272,7 +272,11 @@ secret can still be **not detected** (exit `0`). In short:
 
 - **Pixels the tool does not OCR:** under a box drawn over an image, off
   the page, in page or XMP thumbnails, in embedded files other than
-  listed attachments.
+  listed attachments, and in image data beyond an image's declared size
+  (rows past its declared height are never drawn). One picture cut into
+  thin strips, each too small to read alone, is also missed when a box
+  covers the strips, when they are not drawn next to each other, or when
+  they are never drawn.
 - **Content no page shows:** font-coded text or images in a switched-off
   optional-content layer, a hidden annotation's appearance, or a page
   resource that is never drawn (plain text there *is* read).
