@@ -20,6 +20,9 @@ import verify
 import subprocess
 import sys
 
+from redaction_verifier.matching import PatternRule, SecretMatcher, normalize_string
+from redaction_verifier.model import ScanReport, Secret
+
 from .conftest import (
     REPO_ROOT,
     SSN,
@@ -442,9 +445,9 @@ class TestRawSweepIsNotAnEquivalentBackstop:
         # normalize_string keeps the escape's digits.
         source = r"(123\05545\0556789)"          # \055 is '-'
         decoded = verify._unescape_pdf_literal(source[1:-1])
-        key = verify.normalize_string("123-45-6789")
-        assert verify.normalize_string(decoded) == key       # decoded: found
-        assert key not in verify.normalize_string(source)    # raw: not found
+        key = normalize_string("123-45-6789")
+        assert normalize_string(decoded) == key       # decoded: found
+        assert key not in normalize_string(source)    # raw: not found
 
     def test_raw_sweep_is_never_given_pattern_rules(self, tmp_path) -> None:
         # Patterns over raw latin-1 byte soup would false-positive on
@@ -457,12 +460,12 @@ class TestRawSweepIsNotAnEquivalentBackstop:
         doc.new_page().insert_text((72, 72), "Applicant SSN: 123-45-6789")
         doc.save(path)
         doc.close()
-        report = verify.ScanReport()
+        report = ScanReport()
         doc = fitz.open(path)
         try:
             verify.scan_pdf_objects(
-                doc, verify.SecretMatcher([verify.Secret("z", "zzzz")]),
-                [verify.PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))],
+                doc, SecretMatcher([Secret("z", "zzzz")]),
+                [PatternRule("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"))],
                 report)
         finally:
             doc.close()
@@ -613,7 +616,7 @@ class TestSubprocessHardening:
 
         monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
 
-        report = verify.ScanReport()
+        report = ScanReport()
         procs, scratch = verify.start_hidden_tools(target, report)
         try:
             assert report.warnings == []      # both "found": no TOOL_MISSING
@@ -647,7 +650,7 @@ class TestSubprocessHardening:
 
     def test_missing_tools_still_warn_tool_missing(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(verify.shutil, "which", lambda name: None)
-        report = verify.ScanReport()
+        report = ScanReport()
         procs, scratch = verify.start_hidden_tools(tmp_path / "doc.pdf", report)
         try:
             assert procs == {"exiftool": None, "qpdf": None}
@@ -680,7 +683,7 @@ class TestSubprocessHardening:
 
         monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
 
-        report = verify.ScanReport()
+        report = ScanReport()
         procs, scratch = verify.start_hidden_tools(Path("/nonexistent/target.pdf"), report)
         try:
             assert captured["/opt/tools/exiftool"][1:3] == ["-config", ""]

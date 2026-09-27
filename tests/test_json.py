@@ -21,6 +21,19 @@ import pytest
 
 import verify
 
+from redaction_verifier.matching import SecretMatcher, mask, normalize_string
+from redaction_verifier.model import (
+    LAYERS,
+    STORAGE_CLASSES,
+    WARNING_CODES,
+    WARNING_FIELDS,
+    ScanReport,
+    Secret,
+    Warn,
+)
+from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
+from redaction_verifier.rules import RuleSet
+
 from .conftest import REPO_ROOT, SSN, run_verify
 
 # verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
@@ -71,7 +84,7 @@ class TestVerdict:
         assert code in (0, 2)
         assert data["findings"] == []
         assert data["error"] is None
-        assert data["schema_version"] == verify.JSON_SCHEMA_VERSION
+        assert data["schema_version"] == JSON_SCHEMA_VERSION
         assert data["tool"]["version"] == verify.__version__
         assert data["target"] == "clean.pdf"
 
@@ -361,12 +374,12 @@ class TestStructuredFields:
         codes = {w["code"] for w in data["warnings"]}
         assert {"ATTACHMENT_NOT_TEXT", "RULES_UNQUOTED_VALUE", "SCOPE_UNVERIFIABLE",
                 "SCOPE_PARTIAL_ENTITY"} <= codes
-        shape = {"code", "kind", "layer", "message", *verify.WARNING_FIELDS}
+        shape = {"code", "kind", "layer", "message", *WARNING_FIELDS}
         for w in data["warnings"]:
             assert set(w) == shape
-            assert w["kind"] == verify.WARNING_CODES[w["code"]]
-            assert w["layer"] in verify.LAYERS
-            assert w["storage"] in verify.STORAGE_CLASSES | {None}
+            assert w["kind"] == WARNING_CODES[w["code"]]
+            assert w["layer"] in LAYERS
+            assert w["storage"] in STORAGE_CLASSES | {None}
 
 
 class TestToolReturnCodeField:
@@ -385,19 +398,19 @@ class TestToolReturnCodeField:
             [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 64); sys.exit(3)"],
             stdout=subprocess.PIPE,
         )
-        report = verify.ScanReport()
-        verify._collect_qpdf(proc, verify.SecretMatcher([]), report)
+        report = ScanReport()
+        verify._collect_qpdf(proc, SecretMatcher([]), report)
         (warn,) = [w for w in report.warnings if w.code == "TOOL_EXIT_NONZERO"]
         assert warn.fields["returncode"] == 3
-        assert "returncode" in verify.WARNING_FIELDS
+        assert "returncode" in WARNING_FIELDS
 
     def test_exiftool_nonzero_exit_carries_returncode(self) -> None:
         proc = subprocess.Popen(
             [sys.executable, "-c", "import sys; sys.stdout.write('[]'); sys.exit(2)"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        report = verify.ScanReport()
-        verify._collect_exiftool(proc, verify.SecretMatcher([]), [], report)
+        report = ScanReport()
+        verify._collect_exiftool(proc, SecretMatcher([]), [], report)
         (warn,) = [w for w in report.warnings if w.code == "TOOL_EXIT_NONZERO"]
         assert warn.fields["returncode"] == 2
 
@@ -406,9 +419,9 @@ class TestToolReturnCodeField:
             [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 64); sys.exit(3)"],
             stdout=subprocess.PIPE,
         )
-        report = verify.ScanReport()
-        verify._collect_qpdf(proc, verify.SecretMatcher([]), report)
-        data = verify.build_json_report(
+        report = ScanReport()
+        verify._collect_qpdf(proc, SecretMatcher([]), report)
+        data = build_json_report(
             report, 2, target=Path("t.pdf"), tool_version=verify.__version__
         )
         (warning,) = [w for w in data["warnings"] if w["code"] == "TOOL_EXIT_NONZERO"]
@@ -437,7 +450,7 @@ class TestWarningsAreAlwaysCoded:
         lambda ws: ws.__setitem__(slice(0, 0), ["plain"]),
     ])
     def test_plain_strings_rejected(self, add) -> None:
-        for holder in (verify.ScanReport(), verify.RuleSet()):
+        for holder in (ScanReport(), RuleSet()):
             with pytest.raises(TypeError):
                 add(holder.warnings)
 
@@ -449,18 +462,18 @@ class TestWarningsAreAlwaysCoded:
             (("PAGE_FAILED", "Text", "m"), {"storage": "elsewhere"}),
         ]:
             with pytest.raises(ValueError):
-                verify.Warn(*args, **fields)
+                Warn(*args, **fields)
 
     def test_warn_compares_as_its_message(self) -> None:
-        w = verify.Warn("PAGE_FAILED", "Text", "Text: page 1 failed (x)", page=1)
+        w = Warn("PAGE_FAILED", "Text", "Text: page 1 failed (x)", page=1)
         assert w == "Text: page 1 failed (x)" and w.code == "PAGE_FAILED"
 
     def test_hidden_plain_string_is_coded_not_a_crash(self, monkeypatch) -> None:
         item = verify.HiddenItem(location="link #0 on page 1 (uri)", text=SSN)
         monkeypatch.setattr(verify, "_hidden_objects",
                             lambda doc: iter(["Hidden: something failed", item]))
-        report = verify.ScanReport()
-        matcher = verify.SecretMatcher([verify.Secret("s", verify.normalize_string(SSN))])
+        report = ScanReport()
+        matcher = SecretMatcher([Secret("s", normalize_string(SSN))])
         verify.scan_hidden_objects(fitz.open(), matcher, [], report)
         assert [w.code for w in report.warnings] == ["HIDDEN_ITEM_FAILED"]
         assert report.findings                  # the rest of the layer still ran
@@ -483,8 +496,8 @@ class TestWarningsAreAlwaysCoded:
             first = node.args[0]
             if name in ("Warn", "warn") and isinstance(first, ast.Constant):
                 used.add(first.value)
-        assert used <= set(verify.WARNING_CODES)
-        assert set(verify.WARNING_CODES) <= used
+        assert used <= set(WARNING_CODES)
+        assert set(WARNING_CODES) <= used
 
 
 class TestNothingSecretLeaks:
@@ -495,7 +508,7 @@ class TestNothingSecretLeaks:
         rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn"}])
         code, data = _run(pdf, rules, tmp_path)
         assert code == 1
-        assert {f["sample"] for f in data["findings"]} == {verify.mask(SSN)}
+        assert {f["sample"] for f in data["findings"]} == {mask(SSN)}
         assert not self.DIGITS.search(json.dumps(data))
 
     def test_review_samples_are_masked(self, tmp_path) -> None:

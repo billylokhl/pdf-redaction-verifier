@@ -22,14 +22,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-import verify  # noqa: E402
+from redaction_verifier.views import _OCR_IMPORTS_OK  # noqa: E402
 
 SSN = "123-45-6789"
 # Placeholder values only — never a real person's data. 123-45-6789 is
 # the canonical example SSN; the DOB is the Unix epoch.
 DOB = "01/01/1970"
 
-HAS_OCR = verify._OCR_IMPORTS_OK
+HAS_OCR = _OCR_IMPORTS_OK
 HAS_EXIFTOOL = shutil.which("exiftool") is not None
 HAS_QPDF = shutil.which("qpdf") is not None
 # A clean document can only exit 0 when every layer can actually run.

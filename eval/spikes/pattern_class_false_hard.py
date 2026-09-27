@@ -38,7 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import fitz  # noqa: E402
 
 import corpus  # noqa: E402
-import verify  # noqa: E402
+from redaction_verifier.matching import _fold_for_patterns  # noqa: E402
+from redaction_verifier.rules import _make_class_rule  # noqa: E402
 
 CLASSES = ("ssn", "credit-card", "email", "us-phone")
 
@@ -54,7 +55,7 @@ def _empty_bucket() -> dict[str, Any]:
 
 
 def measure(files: list[Path]) -> dict[str, Any]:
-    rules = {c: verify._make_class_rule(f"class:{c}", c) for c in CLASSES}
+    rules = {c: _make_class_rule(f"class:{c}", c) for c in CLASSES}
     hit_lines = {c: 0 for c in CLASSES}
     buckets = {"all_files": _empty_bucket(), "text_bearing": _empty_bucket()}
     encrypted = 0
@@ -74,7 +75,7 @@ def measure(files: list[Path]) -> dict[str, Any]:
             except Exception:
                 continue
             for line in text.splitlines():
-                norm = verify._fold_for_patterns(line)
+                norm = _fold_for_patterns(line)
                 for name, rule in rules.items():
                     for m in rule.regex.finditer(norm):
                         if rule.validator and not rule.validator(m.group()):

@@ -25,6 +25,7 @@ from caselib.lock import LOCK, lockable
 from caselib.model import Case, expect
 from caselib.run import Scan, available, build, judge, scan
 from check_ratchets import RATCHET_SETS, _frozenset_literal
+from redaction_verifier.matching import normalize_string
 
 from .conftest import REPO_ROOT
 
@@ -288,13 +289,12 @@ class TestLibrary:
         import fitz
 
         from caselib import SSN
-        import verify
         path = build(REGISTRY["document.annotation-objstm"], tmp_path / "objstm.pdf")
         doc = fitz.open(path)
         assert any(
             doc.xref_get_key(x, "Type")[1] == "/ObjStm"
-            and verify.normalize_string(SSN)
-            in verify.normalize_string(doc.xref_stream(x).decode("latin-1"))
+            and normalize_string(SSN)
+            in normalize_string(doc.xref_stream(x).decode("latin-1"))
             for x in range(1, doc.xref_length()) if doc.xref_is_stream(x))
 
 

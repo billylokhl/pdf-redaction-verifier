@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from redaction_verifier.model import WARNING_CODES
+
 from .model import Case, Expect
 from .pdfkit import finalize
 
@@ -106,7 +108,6 @@ def _environmental(warning: dict[str, Any], have: frozenset[str]) -> bool:
 def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
           want: Expect | None = None) -> Judgement:
     """Judge a scan against *want* (default: the case's correct verdict)."""
-    import verify
     have = available() if have is None else have
     want = case.expected if want is None else want
     report = result.report
@@ -149,7 +150,7 @@ def judge(case: Case, result: Scan, have: frozenset[str] | None = None,
         if code in expected_codes:
             problems.append(f"unexpected {code} ({storage}) — expected a different storage")
     for w in warnings:
-        if verify.WARNING_CODES[w["code"]] == "coverage" and w["code"] not in expected_codes:
+        if WARNING_CODES[w["code"]] == "coverage" and w["code"] not in expected_codes:
             problems.append(f"unexpected {w['code']} ({w['storage']}): {w['message'][:80]}")
     return Judgement(exit_code, tuple(problems))
 
