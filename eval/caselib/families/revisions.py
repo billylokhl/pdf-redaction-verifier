@@ -36,7 +36,9 @@ def redacted_incremental(path: Path) -> None:
       "Redacted and saved incrementally, page in an embedded font: the original "
       "stream's glyph codes stay in the file.",
       expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
-      mistake=INCREMENTAL)
+      mistake=INCREMENTAL,
+      recovery="Cut the file at the earlier revision's %%EOF and map the glyph codes "
+               "through the font's Unicode table.")
 def redacted_incremental_embedded(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, embedded_font(page), lines=[*FILLER, f"SSN {SSN}"]); save(doc, path)
@@ -45,7 +47,10 @@ def redacted_incremental_embedded(path: Path) -> None:
 
 @leak("revision.redacted-incremental-cjk", "orphaned.font",
       "The same, with the page in an embedded CJK font.",
-      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
+      mistake=INCREMENTAL,
+      recovery="Cut the file at the earlier revision's %%EOF and map the glyph codes "
+               "through the font's Unicode table.")
 def redacted_incremental_cjk(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, cjk_font(page), lines=[*FILLER, f"SSN {SSN}"]); save(doc, path)
@@ -67,7 +72,8 @@ def redacted_incremental_compact(path: Path) -> None:
 
 @leak("revision.redacted-after-object-streams", "orphaned.plain",
       "Redacted incrementally after an object-stream save.",
-      expected=expect(1, findings=(("SSN", "orphaned"),)), mistake=INCREMENTAL)
+      expected=expect(1, findings=(("SSN", "orphaned"),)), mistake=INCREMENTAL,
+      recovery=RECOVER_REVISION)
 def redacted_after_objstm(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page(), lines=[*FILLER, f"SSN {SSN}"])
     save(doc, path, garbage=4, deflate=True, use_objstms=1)
@@ -76,7 +82,8 @@ def redacted_after_objstm(path: Path) -> None:
 
 @leak("revision.deleted-annotation", "orphaned.plain",
       "A sticky note with the SSN was deleted in an incremental save.",
-      expected=expect(1, findings=(("SSN", "orphaned"),)), mistake=INCREMENTAL)
+      expected=expect(1, findings=(("SSN", "orphaned"),)), mistake=INCREMENTAL,
+      recovery=RECOVER_REVISION)
 def deleted_annotation(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     page.add_text_annot((300, 300), f"Customer SSN {SSN}"); save(doc, path)
@@ -98,7 +105,8 @@ def overwritten_title(path: Path) -> None:
 
 @leak("revision.deleted-page-embedded-font", "orphaned.font",
       "A page in an embedded font deleted in an incremental save.",
-      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
+      mistake=INCREMENTAL, recovery=RECOVER_REVISION)
 def deleted_page_embedded(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     page = doc.new_page(); body(page, embedded_font(page), lines=[f"SSN {SSN}"])
@@ -123,7 +131,8 @@ def replaced_image(path: Path) -> None:
 @leak("revision.rewritten-stream-mixed", "superseded.font",
       "A content stream rewritten in place by an incremental save; the old version "
       "held the SSN as glyph codes among plain lines.",
-      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "superseded"),)))
+      expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "superseded"),)),
+      mistake=INCREMENTAL, recovery=RECOVER_REVISION)
 def rewritten_mixed(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); embedded_font(page); body(page)
     xref = page.get_contents()[0]
@@ -135,7 +144,7 @@ def rewritten_mixed(path: Path) -> None:
       "A page in an embedded font, compacted, then its content stream cut short in an "
       "incremental save to drop the SSN line: only the earlier version holds it.",
       expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "superseded"),)),
-      mistake=INCREMENTAL)
+      mistake=INCREMENTAL, recovery=RECOVER_REVISION)
 def truncated_stream(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page()
     body(page, embedded_font(page), lines=[*FILLER, f"SSN {SSN}"])
@@ -164,7 +173,8 @@ def rewritten_stream(path: Path) -> None:
       "The SSN only in the first revision, followed by 55 incremental saves: the "
       "original is still scanned even past the revision cap.",
       expected=expect(1, findings=(("SSN", "superseded"),), warnings=(("REVISION_CAP", "superseded"),)),
-      features="superseded.plain.revision-cap")
+      features="superseded.plain.revision-cap", mistake=INCREMENTAL,
+      recovery="Cut the file at the first revision's %%EOF and open it.")
 def first_of_many(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page())
     doc.set_metadata({"title": f"Case {SSN}", "creationDate": "", "modDate": ""})
@@ -177,7 +187,8 @@ def first_of_many(path: Path) -> None:
 @leak("revision.secret-past-the-cap", "superseded.plain.revision-cap",
       "The SSN only in the second of 58 revisions — one of those the cap leaves "
       "unscanned: the tool cannot see it, and says so rather than passing the file.",
-      expected=expect(2, warnings=(("REVISION_CAP", "superseded"),)))
+      expected=expect(2, warnings=(("REVISION_CAP", "superseded"),)), mistake=INCREMENTAL,
+      recovery="Cut the file at the second revision's %%EOF and open it.")
 def past_the_cap(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page()); save(doc, path)
     update(path, lambda d: d.set_metadata({**d.metadata, "title": f"Case {SSN}",

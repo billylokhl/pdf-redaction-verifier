@@ -1,0 +1,39 @@
+{
+  "file": "redactor-hex-compacted.pdf",
+  "sha256": "041804ea725041a5ca3600d841138b523e264d1f228e329df803abac5c72b2e0",
+  "size_bytes": 1104,
+  "size_cap_bytes": 100000,
+  "origin": "redactor",
+  "case_id": "leftover.redactor-compacted",
+  "source_case": null,
+  "source_case_note": "The input to this save was redactor-hex.pdf's own output, re-saved by PyMuPDF with garbage collection — not a caselib case.",
+  "tool": {
+    "description": "a PyMuPDF-based redaction tool",
+    "version": "0.1.0",
+    "date": "2026-09-13",
+    "settings": {
+      "llm_detection": false,
+      "output_encoding": "hex-string",
+      "garbage_collection": 4,
+      "note": "redactor-hex.pdf re-saved by PyMuPDF with garbage=4: the leftover orphaned stream is dropped."
+    }
+  },
+  "fabricated_data_statement": "Every value in this document — the name, SSN, date of birth, address and account number — is fabricated. None belongs to a real person.",
+  "redacted_values": [
+    {"name": "Name", "value": "Jordan Q. Testperson"},
+    {"name": "SSN", "value": "123-45-6789"},
+    {"name": "DOB", "value": "01/01/1970"},
+    {"name": "Address", "value": "1600 Fictional Ave"},
+    {"name": "Account", "value": "000123456789"}
+  ],
+  "metadata_fields_scrubbed": [],
+  "metadata_fields_scrubbed_note": "The Info dictionary and XMP were already empty in the tool's output; nothing needed scrubbing.",
+  "labels_summary": {
+    "truth": "clean",
+    "cells": [],
+    "features": ["orphaned.plain"],
+    "storage": null,
+    "expected_exit": 0,
+    "story": "The hex-coded output re-saved with garbage collection: the leftovers are gone."
+  }
+}

@@ -1,0 +1,398 @@
+"""check_ratchets.py's own checks, fed two fake in-memory trees — no git,
+no filesystem — so the actual comparison logic is verified in isolation
+from CI's git-history plumbing (which tests/test_case_library.py already
+covers from a single checkout's point of view)."""
+
+from __future__ import annotations
+
+from check_ratchets import (DictTree, check_ratchet_set, check_redteam_anchors,
+                            determine_base_ref, run_all_checks)
+
+CELLS_TEMPLATE = """
+UNDOCUMENTED_GAPS: frozenset[str] = frozenset({{
+{gaps}
+}})
+NONFITZ_PENDING: frozenset[str] = frozenset()
+"""
+
+
+def _cells_source(gaps: tuple[str, ...]) -> str:
+    body = "\n".join(f'    "{g}",' for g in gaps)
+    return CELLS_TEMPLATE.format(gaps=body)
+
+
+# ── check_ratchet_set: frozenset may-only-shrink ─────────────────────────
+
+class TestCheckRatchetSet:
+    def test_shrinking_is_fine(self) -> None:
+        old = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        new = DictTree({"cells.py": _cells_source(("a.gap",))})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+    def test_unchanged_is_fine(self) -> None:
+        old = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        new = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+    def test_growing_fails(self) -> None:
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert len(problems) == 1
+        assert "b.gap" in problems[0]
+        assert "may only shrink" in problems[0]
+
+    def test_swap_same_size_is_still_growth(self) -> None:
+        """Same length, different member: still growth of the new element,
+        even though the shrink of the old one happened at the same time."""
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": _cells_source(("c.gap",))})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert len(problems) == 1
+        assert "c.gap" in problems[0]
+
+    def test_file_missing_in_old_tree_is_not_a_failure(self) -> None:
+        # A brand new file: nothing to have grown from.
+        new = DictTree({"cells.py": _cells_source(("a.gap",))})
+        old = DictTree({})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+    def test_file_missing_in_new_tree_is_not_a_failure(self) -> None:
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+    def test_empty_frozenset_literal_parses(self) -> None:
+        old = DictTree({"model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n"})
+        new = DictTree({"model.py": 'GALLERY_FIELDS_PENDING: frozenset[str] = frozenset({"x"})\n'})
+        problems = check_ratchet_set(old, new, "model.py", "GALLERY_FIELDS_PENDING")
+        assert len(problems) == 1
+        assert "x" in problems[0]
+
+    def test_non_literal_assignment_is_reported_not_silently_skipped(self) -> None:
+        """If a future refactor computes the set instead of writing a
+        literal, the check must fail loudly (fail-closed) rather than
+        pass by accident."""
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": "UNDOCUMENTED_GAPS = frozenset(some_function())\n"})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0]
+
+    def test_newly_introduced_non_literal_in_old_tree_does_not_fail(self) -> None:
+        # The name didn't exist as a literal in the old tree at all (e.g.
+        # it's brand new in this diff) — nothing to compare against.
+        old = DictTree({"cells.py": "SOMETHING_ELSE = 1\n"})
+        new = DictTree({"cells.py": _cells_source(("a.gap",))})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+
+# ── check_redteam_anchors: initial_labels_sha256 must never move,      ──
+# ── and a round's identity may not be renamed or removed out from under ──
+# ── it (the reviewer's confirmed bypass: `git mv` the round dir, forge  ──
+# ── a fresh anchor at the new path, and the old glob-by-path comparison ──
+# ── never notices the old path is gone).                                ──
+
+class TestCheckRedteamAnchors:
+    ROUND = "eval/caselib/redteam/round-0-example/round.json"
+    RENAMED = "eval/caselib/redteam/round-0-renamed/round.json"
+
+    def _round_json(self, initial: str, labels: str | None = None,
+                    round_id: str = "round-0-example") -> str:
+        import json
+        return json.dumps({
+            "round": round_id, "initial_labels_sha256": initial,
+            "labels_sha256": labels or initial,
+        })
+
+    def test_unchanged_anchor_is_fine(self) -> None:
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.ROUND: self._round_json("abc123")})
+        assert check_redteam_anchors(old, new) == []
+
+    def test_moved_anchor_fails(self) -> None:
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.ROUND: self._round_json("def456", labels="def456")})
+        problems = check_redteam_anchors(old, new)
+        assert len(problems) == 1
+        assert "abc123" in problems[0] and "def456" in problems[0]
+
+    def test_labels_sha256_alone_moving_is_fine_here(self) -> None:
+        """This check is only about the anchor; labels_sha256 drifting
+        from initial (a legitimate, adjudicated relabel) is
+        families/redteam.py's check_label_lock's job, not this one's."""
+        old = DictTree({self.ROUND: self._round_json("abc123", labels="abc123")})
+        new = DictTree({self.ROUND: self._round_json("abc123", labels="def456")})
+        assert check_redteam_anchors(old, new) == []
+
+    def test_new_identity_has_nothing_to_compare_against(self) -> None:
+        # A genuinely new round: its identity did not exist in the old
+        # tree at all (which is empty here), so there is nothing to have
+        # moved from.
+        old = DictTree({})
+        new = DictTree({self.ROUND: self._round_json("abc123")})
+        assert check_redteam_anchors(old, new) == []
+
+    def test_removed_round_fails(self) -> None:
+        """A round's identity existing in the old tree and not the new
+        one is always a failure — a round's history may not simply
+        vanish, whether that is an outright deletion or (see the rename
+        tests below) a rename that also changes what round.json's own
+        "round" field says."""
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({})
+        problems = check_redteam_anchors(old, new)
+        assert len(problems) == 1
+        assert "round-0-example" in problems[0]
+        assert "missing from the new tree" in problems[0]
+
+    def test_pure_rename_with_unchanged_anchor_is_fine(self) -> None:
+        """Renaming the round's directory changes nothing this check
+        cares about, as long as the identity (round.json's "round" field)
+        and the anchor both come along unchanged: rounds are matched by
+        identity, never by path."""
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.RENAMED: self._round_json("abc123")})
+        assert check_redteam_anchors(old, new) == []
+
+    def test_rename_with_forged_anchor_still_fails(self) -> None:
+        """The confirmed bypass: rename the round's directory *and*
+        rewrite labels.json, setting both labels_sha256 and
+        initial_labels_sha256 to match the new content. Because rounds
+        are matched by identity (the "round" field, left unchanged by the
+        rename) rather than by path, the old anchor for that identity is
+        still found and still compared — the path moving does not let the
+        forged anchor slip through unnoticed."""
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.RENAMED: self._round_json("forged999", labels="forged999")})
+        problems = check_redteam_anchors(old, new)
+        assert len(problems) == 1
+        assert "round-0-example" in problems[0]
+        assert "abc123" in problems[0] and "forged999" in problems[0]
+
+    def test_rename_that_also_changes_identity_fails_as_a_removal(self) -> None:
+        """Renaming the directory *and* the "round" field inside it is
+        indistinguishable from deleting the old identity and creating an
+        unrelated new one — the old identity still disappears, so this
+        still fails, just under the "removed" message rather than
+        "anchor changed"."""
+        old = DictTree({self.ROUND: self._round_json("abc123", round_id="round-0-example")})
+        new = DictTree({self.RENAMED: self._round_json("abc123", round_id="round-0-renamed")})
+        problems = check_redteam_anchors(old, new)
+        assert len(problems) == 1
+        assert "round-0-example" in problems[0]
+        assert "missing from the new tree" in problems[0]
+
+    def test_multiple_rounds_checked_independently(self) -> None:
+        other_old, other_new = "eval/caselib/redteam/round-1/round.json", \
+            "eval/caselib/redteam/round-1/round.json"
+        old = DictTree({
+            self.ROUND: self._round_json("abc123"),
+            other_old: self._round_json("zzz", round_id="round-1"),
+        })
+        new = DictTree({
+            self.ROUND: self._round_json("abc123"),
+            other_new: self._round_json("yyy", labels="yyy", round_id="round-1"),
+        })
+        problems = check_redteam_anchors(old, new)
+        assert len(problems) == 1
+        assert "round-1" in problems[0]
+
+    def test_malformed_json_fails_rather_than_crashes(self) -> None:
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.ROUND: "{not json"})
+        problems = check_redteam_anchors(old, new)
+        assert problems and "JSON" in problems[0]
+
+    def test_missing_round_field_fails_rather_than_crashes(self) -> None:
+        import json
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({self.ROUND: json.dumps({"initial_labels_sha256": "abc123",
+                                                "labels_sha256": "abc123"})})
+        problems = check_redteam_anchors(old, new)
+        assert problems and "round" in problems[0].lower()
+
+    def test_duplicate_identity_in_one_tree_fails_rather_than_crashes(self) -> None:
+        other = "eval/caselib/redteam/round-1/round.json"
+        old = DictTree({self.ROUND: self._round_json("abc123")})
+        new = DictTree({
+            self.ROUND: self._round_json("abc123", round_id="round-0-example"),
+            other: self._round_json("zzz", round_id="round-0-example"),  # same identity twice
+        })
+        problems = check_redteam_anchors(old, new)
+        assert problems and "unique" in problems[0]
+
+
+# ── run_all_checks: everything together ──────────────────────────────────
+
+def test_run_all_checks_combines_every_ratchet() -> None:
+    old = DictTree({
+        "eval/caselib/cells.py": _cells_source(("a.gap",)),
+        "eval/caselib/model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n",
+        "eval/caselib/redteam/round-0-example/round.json":
+            TestCheckRedteamAnchors()._round_json("abc123"),
+    })
+    new = DictTree({
+        "eval/caselib/cells.py": _cells_source(("a.gap", "b.gap")),
+        "eval/caselib/model.py": 'GALLERY_FIELDS_PENDING: frozenset[str] = frozenset({"x.y"})\n',
+        "eval/caselib/redteam/round-0-example/round.json":
+            TestCheckRedteamAnchors()._round_json("def456", labels="def456"),
+    })
+    problems = run_all_checks(old, new)
+    # One problem each: UNDOCUMENTED_GAPS grew, GALLERY_FIELDS_PENDING
+    # grew, and the round-0-example anchor moved. NONFITZ_PENDING is
+    # unset in both fakes and parses as empty in both, so it's silent.
+    assert len(problems) == 3
+
+
+def test_run_all_checks_clean_when_nothing_changed() -> None:
+    files = {
+        "eval/caselib/cells.py": _cells_source(("a.gap",)),
+        "eval/caselib/model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n",
+    }
+    assert run_all_checks(DictTree(files), DictTree(dict(files))) == []
+
+
+# ── is_ci_context: only a genuinely local run may skip cleanly ──────────
+
+class TestIsCiContext:
+    def test_github_actions_flag(self) -> None:
+        from check_ratchets import is_ci_context
+        assert is_ci_context({"GITHUB_ACTIONS": "true"})
+
+    def test_base_ref_alone_counts(self) -> None:
+        from check_ratchets import is_ci_context
+        assert is_ci_context({"GITHUB_BASE_REF": "main"})
+
+    def test_event_name_alone_counts(self) -> None:
+        from check_ratchets import is_ci_context
+        assert is_ci_context({"GITHUB_EVENT_NAME": "push"})
+
+    def test_empty_env_is_not_ci(self) -> None:
+        from check_ratchets import is_ci_context
+        assert not is_ci_context({})
+
+
+# ── determine_base_ref: which base to diff against, and whether failing ──
+# ── to resolve one is a skip or a hard failure ────────────────────────────
+
+class TestDetermineBaseRef:
+    def test_pull_request_uses_merge_base(self, monkeypatch) -> None:
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: ref == "origin/main")
+        monkeypatch.setattr(check_ratchets, "merge_base",
+                            lambda a, b: "deadbeef" if b == "origin/main" else None)
+        ref, message, fatal = determine_base_ref({"GITHUB_BASE_REF": "main"})
+        assert ref == "deadbeef"
+        assert "pull request" in message
+        assert fatal is False
+
+    def test_pull_request_with_unreachable_base_fails_closed_in_ci(self, monkeypatch) -> None:
+        """The reviewer's second confirmed bypass: an unresolvable base
+        (origin/main not fetched, no merge-base, ...) used to return
+        (None, "...skipping") and main() would exit 0 — silently passing
+        the whole check. GITHUB_BASE_REF being set at all means this is a
+        pull request build, i.e. always CI, so this must now be fatal."""
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        ref, message, fatal = determine_base_ref({"GITHUB_BASE_REF": "main"})
+        assert ref is None
+        assert fatal is True
+
+    def test_push_to_main_uses_head_minus_one(self, monkeypatch) -> None:
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: ref == "HEAD~1")
+        ref, message, fatal = determine_base_ref({
+            "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+        })
+        assert ref == "HEAD~1"
+        assert "single-commit" in message
+        assert fatal is False
+
+    def test_push_to_main_first_commit_fails_closed_in_ci(self, monkeypatch) -> None:
+        """GITHUB_EVENT_NAME being set at all is also a CI signal, so no
+        HEAD~1 to fall back to (e.g. the repository's very first commit)
+        must be fatal here too, not a silent skip."""
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        ref, message, fatal = determine_base_ref({
+            "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+        })
+        assert ref is None
+        assert fatal is True
+
+    def test_local_run_prefers_origin_main_merge_base(self, monkeypatch) -> None:
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: ref == "origin/main")
+        monkeypatch.setattr(check_ratchets, "merge_base", lambda a, b: "cafef00d")
+        monkeypatch.setattr(check_ratchets, "rev_parse", lambda ref: "current-head")
+        ref, message, fatal = determine_base_ref({})
+        assert ref == "cafef00d"
+        assert "local run" in message
+        assert fatal is False
+
+    def test_local_run_on_main_itself_falls_back(self, monkeypatch) -> None:
+        """merge-base with origin/main equals HEAD itself (we ARE main):
+        nothing to diff there, fall back to HEAD~1."""
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists",
+                            lambda ref: ref in ("origin/main", "HEAD~1"))
+        monkeypatch.setattr(check_ratchets, "merge_base", lambda a, b: "same-as-head")
+        monkeypatch.setattr(check_ratchets, "rev_parse", lambda ref: "same-as-head")
+        ref, message, fatal = determine_base_ref({})
+        assert ref == "HEAD~1"
+        assert fatal is False
+
+    def test_nothing_available_in_a_local_run_skips_cleanly(self, monkeypatch) -> None:
+        """No CI env vars at all (a bare local invocation) and nothing to
+        compare against: this is the one case that may still skip."""
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        ref, message, fatal = determine_base_ref({})
+        assert ref is None
+        assert fatal is False
+
+    def test_nothing_available_in_ci_fails_closed(self, monkeypatch) -> None:
+        """The same unresolvable situation, but GITHUB_ACTIONS=true is
+        set (e.g. some future job shape hitting this final fallback):
+        must fail, not skip."""
+        import check_ratchets
+
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        ref, message, fatal = determine_base_ref({"GITHUB_ACTIONS": "true"})
+        assert ref is None
+        assert fatal is True
+
+
+class TestMain:
+    def test_explicit_base_runs_against_head(self) -> None:
+        """A thin smoke test of main() against the real repo: --base HEAD
+        (comparing the working tree against itself) must always be clean."""
+        import check_ratchets
+
+        assert check_ratchets.main(["--base", "HEAD"]) == 0
+
+    def test_unresolvable_base_in_ci_env_fails_the_process(self, monkeypatch) -> None:
+        """End-to-end: simulate the exact CI shape from the confirmed
+        bypass (a pull request whose base can't be resolved) and check
+        main() itself now exits non-zero instead of silently returning 0."""
+        import check_ratchets
+
+        monkeypatch.setenv("GITHUB_BASE_REF", "main")
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        assert check_ratchets.main([]) == 1
+
+    def test_unresolvable_base_locally_exits_zero(self, monkeypatch) -> None:
+        import check_ratchets
+
+        monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+        monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        monkeypatch.setattr(check_ratchets, "ref_exists", lambda ref: False)
+        assert check_ratchets.main([]) == 0

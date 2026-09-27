@@ -1,0 +1,22 @@
+[
+  {
+    "id": "page.redteam-round0-visible",
+    "truth": "leak",
+    "cells": ["live.plain"],
+    "features": [],
+    "expected": {
+      "exit": 1,
+      "findings": [["SSN", "live"]],
+      "warnings": [],
+      "layers": [["SSN", "Text"]]
+    },
+    "story": "An SSN typed directly onto the page next to unrelated filler text: nobody redacted it.",
+    "mistake": "Nobody redacted it.",
+    "recovery": "Read the page.",
+    "rules": null,
+    "requires": [],
+    "known_gap": null,
+    "pdf": "example.pdf",
+    "privacy_allowlist": []
+  }
+]

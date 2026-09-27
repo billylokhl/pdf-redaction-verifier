@@ -113,6 +113,24 @@ CARRIERS: dict[str, tuple[Callable[[fitz.Document], None], str, str, str]] = {
                          "a content stream nothing references"),
 }
 
+# carrier -> (mistake, recovery), independent of the on-disk layout.
+MISTAKE: dict[str, str] = {
+    "content-stream": "Nobody redacted it.",
+    "dict-string": "A tool left a reference value in a dictionary the catalog reaches.",
+    "info": "Redacting the page but not the document properties.",
+    "annotation": "Leaving a free-text annotation with the value in its /Contents.",
+    "form-field": "Redacting the page but not the form field's stored value.",
+    "orphaned-content": "Saving without garbage collection.",
+}
+RECOVERY: dict[str, str] = {
+    "content-stream": "Read the page.",
+    "dict-string": "Walk the catalog's dictionaries and read the string.",
+    "info": "File > Properties in any viewer.",
+    "annotation": "Open the annotation and read its contents.",
+    "form-field": "Open the form in any PDF editor and inspect the field's value.",
+    "orphaned-content": "Decompress the file and read the leftover content stream.",
+}
+
 
 def _builder(plant, layout):
     def build(path: Path) -> None:
@@ -143,7 +161,9 @@ for carrier, (plant, cell, storage, where) in CARRIERS.items():
         case(f"{family}.{carrier}-{name}",
              truth="leak", cells=cell,
              expected=expect(1, findings=found, layers=(("SSN", "Objects"),)),
-             story=f"The SSN in {where}, saved as {how}.", **common)(_builder(plant, layout))  # type: ignore[arg-type]
+             story=f"The SSN in {where}, saved as {how}.",
+             mistake=MISTAKE[carrier], recovery=RECOVERY[carrier],
+             **common)(_builder(plant, layout))  # type: ignore[arg-type]
 
 for name, (layout, how) in LAYOUTS.items():
     case(f"document.clean-{name}", truth="clean", features="live.plain", expected=expect(0),

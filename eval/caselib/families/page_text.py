@@ -104,6 +104,44 @@ LAYOUTS: dict[str, tuple[str, list]] = {
 }
 
 
+# layout -> how a human recovers the value by hand. The mistake is the same
+# throughout the grid: nobody redacted it, the value merely spans a layout
+# the tool's reading may or may not join.
+MISTAKE = "Nobody redacted it; the value simply spans the layout described."
+RECOVERY: dict[str, str] = {
+    "single-line": "Read the line.",
+    "split-lines": "Read the two consecutive lines together.",
+    "split-three-lines": "Read the three consecutive lines together.",
+    "split-pages": "Read the last line of one page and the first line of the next.",
+    "split-pages-needs-earlier-lines": "Read the last two lines of one page and the "
+                                        "first line of the next.",
+    "split-pages-needs-later-lines": "Read the last line of one page and the first "
+                                      "two lines of the next.",
+    "split-over-blank-page": "Read the page before and the page after the blank one.",
+    "split-three-pages": "Read the last line of each of the three pages in order.",
+    "split-four-pages": "Read one line from each of the four pages in order.",
+    "rotated": "Rotate the page view and read the text.",
+    "rotated-split-pages": "Rotate the page view and read across the page break.",
+    "rotated270-split-pages": "Rotate the page view and read across the page break.",
+    "form-boxes": "Read each form box's character in order.",
+    "form-boxes-split-pages": "Read the form boxes on both pages in order.",
+    "vertical-stack": "Read each line's single character from top to bottom.",
+    "vertical-stack-split-pages": "Read the stacked characters across the page break.",
+    "table-rows": "Read the table's cells row by row.",
+    "table-rows-split-pages": "Read the table's rows across the page break.",
+    "several-values": "Read the three pages in order.",
+    "overlapping-values": "Read the line; the SSN is a substring of the longer number.",
+    "overlapping-split-pages": "Read across the page break; the SSN is a substring of "
+                               "the longer number.",
+    "overlapping-split-short-tail": "Read across the page break; the SSN is a substring "
+                                    "of the longer number.",
+    "repeated-line-wraps": "Read each page's wrapped lines together.",
+    "two-page-breaks": "Read across each of the two page breaks in turn.",
+    "name-split-pages": "Read the last line of one page and the first line of the next.",
+    "name-split-three-pages": "Read the three consecutive pages together.",
+}
+
+
 def _build(pages: list):
     def build(path: Path) -> None:
         doc = fitz.open()
@@ -188,4 +226,6 @@ for layout, (description, pages) in LAYOUTS.items():
                        f"{' plus the SSN pattern' if pattern else ''}.",
                  grid="page-text",
                  params=(("layout", layout), ("rules", rule_set), ("pattern", pattern or "none")),
+                 mistake=MISTAKE if leak else "",
+                 recovery=RECOVERY.get(layout, "") if leak else "",
                  )(_build(pages))

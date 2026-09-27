@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .cells import CELLS
+from .cells import CELLS, NEW_CELL_ALLOWLIST
 
 # The values every case plants unless it brings its own rules. Fabricated:
 # the SSN is the canonical example number, never a real person's.
@@ -39,13 +39,28 @@ WRITERS = frozenset({
     "qpdf",        # fitz output rewritten by qpdf
     "file",        # a committed file (real tool output), used as is
 })
-ORIGINS = frozenset({"generated", "redactor"})
+ORIGINS = frozenset({"generated", "redactor", "redteam"})
 # "no-ocr": judged only where OCR is absent — for a gap in the text layer
 # that OCR happens to cover on macOS.
 REQUIREMENTS = frozenset({"ocr", "qpdf", "exiftool", "no-ocr"})
 STORAGE = frozenset({"live", "orphaned", "unreferenced", "superseded"})
 
 _ID_RE = re.compile(r"^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$")
+# A red-team case may cite a storage place COVERAGE.md has no row for yet
+# (cells.py otherwise rejects unknown ids outright). It must still be
+# listed in cells.NEW_CELL_ALLOWLIST with a tracking issue, or CI fails —
+# see eval/README.md and eval/caselib/redteam/README.md.
+_NEW_CELL_RE = re.compile(r"^new\.[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+# Leak cases missing a gallery field (mistake, recovery) they should
+# eventually carry, kept for cases nobody has filled in yet. May only
+# shrink — filling either field must remove the id here.
+GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()
+
+# The kinds tests/test_case_library.py's privacy scrub reports. A
+# Case.privacy_allowlist entry must name exactly one of these — matched
+# only against a finding of that same kind, never any other.
+PRIVACY_KINDS = frozenset({"home-path", "email", "hostname", "xmp-id"})
 
 
 @dataclass(frozen=True)
@@ -116,6 +131,17 @@ class Case:
     # this member's parameters). The id is the grid's slug plus the values.
     grid: str | None = None
     params: tuple[tuple[str, str], ...] = ()
+    # Explicit exceptions for tests/test_case_library.py's privacy scrub
+    # (a committed binary's bytes, or its decompressed streams, matching a
+    # home-directory path, an email, a hostname or a machine-generated XMP
+    # id): ({"kind": <one of PRIVACY_KINDS>, "pattern": <full-match regex>,
+    # "reason": <why it's fine>}, ...). "kind" must match the finding's own
+    # kind exactly (an "email" entry never excuses a "hostname" finding);
+    # "pattern" is matched with re.fullmatch against the finding's text, not
+    # as a substring, and must not be trivially broad (bare "." or ".*").
+    # Only meaningful for a case whose bytes are committed as-is
+    # (writer="file"); every entry is checked by the scrub test itself.
+    privacy_allowlist: tuple[dict[str, str], ...] = ()
 
     @property
     def family(self) -> str:
@@ -133,7 +159,16 @@ class Case:
         if self.truth == "clean" and self.expected.exit == 1:
             raise ValueError(f"{self.id}: a clean file's correct verdict is never 1")
         ids = [*self.cells, *self.features, *([self.known_gap.cell] if self.known_gap else [])]
-        unknown = [c for c in ids if c not in CELLS]
+
+        def known(cell_id: str) -> bool:
+            if cell_id in CELLS:
+                return True
+            # A red-team case may name a storage place COVERAGE.md has no
+            # row for yet, but only through the tracked allowlist.
+            return (self.origin == "redteam" and bool(_NEW_CELL_RE.match(cell_id))
+                    and cell_id in NEW_CELL_ALLOWLIST)
+
+        unknown = [c for c in ids if not known(c)]
         if unknown:
             raise ValueError(f"{self.id}: unknown cell id(s) {unknown}")
         if self.writer not in WRITERS or self.origin not in ORIGINS:
@@ -162,6 +197,7 @@ def case(
     requires: tuple[str, ...] = (),
     grid: str | None = None,
     params: tuple[tuple[str, str], ...] = (),
+    privacy_allowlist: tuple[dict[str, str], ...] = (),
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -176,6 +212,7 @@ def case(
             build=build, features=as_tuple(features), writer=writer, origin=origin,
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
             requires=frozenset(requires), grid=grid, params=params,
+            privacy_allowlist=privacy_allowlist,
         )
         return build
     return register

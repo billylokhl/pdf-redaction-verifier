@@ -80,14 +80,16 @@ def coded(chars: str) -> bytes:
     return b"<" + "".join("%02X" % (i + 1) for i in range(len(chars))).encode() + b">"
 
 
-@leak("page.raw-visible", "live.plain", "The SSN drawn directly on the page.")
+@leak("page.raw-visible", "live.plain", "The SSN drawn directly on the page.",
+      mistake="Nobody redacted it.", recovery="Read the page.")
 def visible(path: Path) -> None:
     _write(path, one_page(stream(b"", text(SECRET))))
 
 
 @leak("page.raw-font-coded", "live.font",
       "The SSN on the page in a font with a custom /Differences encoding: the codes "
-      "are not the characters shown, but the font's own map recovers them.")
+      "are not the characters shown, but the font's own map recovers them.",
+      mistake="Nobody redacted it.", recovery="Read the page.")
 def font_coded(path: Path) -> None:
     content = stream(b"", b"BT /F1 12 Tf 72 700 Td " + coded(SECRET) + b" Tj ET")
     _write(path, one_page(content, o6=differences_font(SECRET)))
@@ -97,7 +99,8 @@ def font_coded(path: Path) -> None:
       "A scanned-looking strip of pixels showing the SSN, drawn directly on the page "
       "as an inline image.",
       expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "OCR"),)),
-      requires=("ocr",), mistake="Redacting the text layer and forgetting the scan.")
+      requires=("ocr",), mistake="Redacting the text layer and forgetting the scan.",
+      recovery="Look at the page.")
 def pixels(path: Path) -> None:
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
     w, h = gray.width, gray.height
@@ -108,6 +111,7 @@ def pixels(path: Path) -> None:
 
 @leak("page.raw-above-page", "off-page.plain",
       "The SSN drawn above the top edge of the page, where no viewer shows it.",
+      mistake="Nobody redacted it; the value simply sits off the visible page.",
       recovery="Copy all text, or enlarge the page box.")
 def above_page(path: Path) -> None:
     _write(path, one_page(stream(b"", text(SECRET, -40))))
@@ -115,7 +119,9 @@ def above_page(path: Path) -> None:
 
 @leak("page.raw-off-page-font-coded", "off-page.font",
       "The SSN off the right edge of the page, in a font with a custom /Differences "
-      "encoding — the map still resolves it, wherever it is drawn.")
+      "encoding — the map still resolves it, wherever it is drawn.",
+      mistake="Nobody redacted it; the value simply sits off the visible page.",
+      recovery="Enlarge the page box and read the font's Encoding /Differences.")
 def off_page_font_coded(path: Path) -> None:
     content = stream(b"", b"BT /F1 12 Tf 700 100 Td " + coded(SECRET) + b" Tj ET")
     _write(path, one_page(content, o6=differences_font(SECRET)))
@@ -127,7 +133,8 @@ def off_page_font_coded(path: Path) -> None:
       "The SSN in the Info dictionary's title.",
       expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Metadata"),)),
       requires=("exiftool",),
-      mistake="Redacting the page but not the document properties.")
+      mistake="Redacting the page but not the document properties.",
+      recovery="File > Properties in any viewer.")
 def info_title(path: Path) -> None:
     objects = one_page(PAGE, o7=b"<< /Title (Case " + SSN.encode() + b") >>")
     _write(path, objects, info=7)
@@ -135,7 +142,9 @@ def info_title(path: Path) -> None:
 
 @leak("leftover.raw-xmp", "leftover-xmp.plain",
       "An old XMP metadata packet with the SSN in its title, no longer referenced.",
-      expected=ORPHAN_SSN)
+      expected=ORPHAN_SSN,
+      mistake="Rewriting metadata without garbage-collecting the old XMP packet.",
+      recovery="Decompress the file and read the earlier /Metadata stream's XML.")
 def orphan_xmp(path: Path) -> None:
     xmp = ('<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
@@ -147,7 +156,9 @@ def orphan_xmp(path: Path) -> None:
 
 @leak("document.raw-javascript", "javascript.plain",
       "The SSN inside the document's open-action JavaScript.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)),
+      mistake="Leaving a debug or prefill script with the value hard-coded.",
+      recovery="Open the catalog's /OpenAction and read the /JS string.")
 def javascript(path: Path) -> None:
     objects = one_page(PAGE)
     objects[1] = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 7 0 R >>"
@@ -156,7 +167,9 @@ def javascript(path: Path) -> None:
 
 
 @leak("document.raw-form-field", "annot-fields.plain", "The SSN as a form field's value.",
-      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)))
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Hidden"),)),
+      mistake="Redacting the page but not the form field's stored value.",
+      recovery="Open the form in any PDF editor and inspect the field's value.")
 def form_field(path: Path) -> None:
     objects = one_page(PAGE)
     objects[1] = b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [7 0 R] >> >>"
@@ -192,7 +205,8 @@ def zip_attachment(path: Path) -> None:
 
 
 @leak("attachment.raw-scan-png", "attachment.pixels",
-      "A scan of the SSN attached as a PNG.", expected=NOT_TEXT, mistake=FORGOT)
+      "A scan of the SSN attached as a PNG.", expected=NOT_TEXT, mistake=FORGOT,
+      recovery="Open the attachments panel and view the image.")
 def png_attachment(path: Path) -> None:
     objects = one_page(PAGE)
     objects.update(attachment_objects("scan.png", png_of(SECRET)))
@@ -202,7 +216,8 @@ def png_attachment(path: Path) -> None:
 @leak("attachment.raw-notes", "attachment.plain",
       "Notes with the SSN attached as plain text (a run of arbitrary text: manual "
       "review).",
-      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)), mistake=FORGOT)
+      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)), mistake=FORGOT,
+      recovery="Open the attachments panel and read the text file.")
 def notes_attachment(path: Path) -> None:
     objects = one_page(PAGE)
     objects.update(attachment_objects("notes.txt", f"memo {SECRET}\n".encode()))
@@ -213,14 +228,18 @@ def notes_attachment(path: Path) -> None:
 
 @leak("leftover.raw-orphaned-container", "orphaned.container",
       "An orphaned zip payload, stored but referenced by nothing.",
-      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)),
+      mistake="Saving without garbage collection.",
+      recovery="Decompress the file, find the leftover stream, and extract the zip.")
 def orphaned_container(path: Path) -> None:
     _write(path, one_page(PAGE, o5=stream(b"", compressed("zip", SECRET))))
 
 
 @leak("leftover.raw-attachment-zip", "orphaned-attachment.container",
       "A removed zip attachment holding the SSN, still stored.",
-      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)),
+      mistake="Removing an attachment by deleting its listing, not with garbage collection.",
+      recovery="Decompress the file, find the leftover stream, and extract the zip.")
 def orphan_attachment_zip(path: Path) -> None:
     _write(path, one_page(PAGE, o5=stream(b"/Type /EmbeddedFile", compressed("zip", SECRET))))
 
@@ -228,14 +247,18 @@ def orphan_attachment_zip(path: Path) -> None:
 @leak("leftover.raw-attachment-text", "orphaned-attachment.plain",
       "A removed attachment's text is still stored, unreferenced (manual review: a run "
       "of arbitrary text).",
-      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)))
+      expected=expect(2, warnings=(("REVIEW_OBJECT_TEXT", "orphaned"),)),
+      mistake="Removing an attachment by deleting its listing, not with garbage collection.",
+      recovery="Decompress the file and read the leftover /EmbeddedFile stream.")
 def orphan_attachment_text(path: Path) -> None:
     _write(path, one_page(PAGE, o5=stream(b"/Type /EmbeddedFile", f"Employee {SECRET}\n".encode())))
 
 
 @leak("leftover.raw-attachment-png", "orphaned-attachment.pixels",
       "A removed PNG attachment showing the SSN, still stored.",
-      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)))
+      expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "orphaned"),)),
+      mistake="Removing an attachment by deleting its listing, not with garbage collection.",
+      recovery="Decompress the file, find the leftover stream, and view the PNG.")
 def orphan_attachment_png(path: Path) -> None:
     _write(path, one_page(PAGE, o5=stream(b"/Type /EmbeddedFile", png_of(SECRET))))
 
@@ -243,7 +266,9 @@ def orphan_attachment_png(path: Path) -> None:
 @leak("leftover.raw-compact-glyphs", "orphaned.font.compact-syntax",
       "An orphaned stream sets its font and shows the SSN's glyph codes right after "
       "BT with no separating space (\"BT/EM 11 Tf\"), as a minimizer or redactor "
-      "writes it.", expected=UNDECODABLE_ORPHAN)
+      "writes it.", expected=UNDECODABLE_ORPHAN,
+      mistake="Saving without garbage collection.",
+      recovery="Decompress the file and map the glyph codes through the font's Unicode table.")
 def compact_glyphs(path: Path) -> None:
     content = b"BT/EM 11 Tf 72 700 Td" + GLYPHS + b"Tj ET"
     _write(path, one_page(PAGE, o5=stream(b"", content)))
@@ -279,7 +304,7 @@ case(
     expected=UNDECODABLE_SUPERSEDED, writer="raw",
     story="A content stream showing the SSN's glyph codes, rewritten by an incremental "
           "update to plain filler text: the earlier version is undecodable, but still there.",
-    mistake=INCREMENTAL,
+    mistake=INCREMENTAL, recovery=RECOVER_REVISION,
 )(_incremental(build(one_page(stream(b"", b"BT /EM 11 Tf 72 700 Td " + GLYPHS + b" Tj ET"))),
                {4: stream(b"", text("clean now"))}))
 
@@ -288,7 +313,7 @@ case(
     expected=UNDECODABLE_SUPERSEDED, writer="raw",
     story="The same, written compactly (\"BT/EM 11 Tf\", no space after BT) before the "
           "incremental update replaces it.",
-    mistake=INCREMENTAL,
+    mistake=INCREMENTAL, recovery=RECOVER_REVISION,
 )(_incremental(build(one_page(stream(b"", b"BT/EM 11 Tf 72 700 Td" + GLYPHS + b"Tj ET"))),
                {4: stream(b"", text("clean now"))}))
 
@@ -324,6 +349,8 @@ case(
     story="A zip attachment holding the SSN, replaced by a clean one in an incremental "
           "update.",
     mistake="Replacing an attachment incrementally keeps the original.",
+    recovery="Decompress the file, read the earlier revision's embedded-file stream, "
+             "and extract the zip.",
 )(_incremental(build(_ATTACHMENT_BASE),
                {8: stream(b"/Type /EmbeddedFile /Params << /Size %d >>" % len(_CLEAN_ZIP),
                           _CLEAN_ZIP)}))
@@ -347,6 +374,8 @@ case(
     story="The SSN sits only in the second of 57 earlier revisions; once more than 50 "
           "pile up, that one falls outside what gets scanned, and the tool says so "
           "rather than pass the file.",
+    mistake=INCREMENTAL,
+    recovery="Cut the file at the second revision's %%EOF and open it.",
 )(_many_revisions)
 
 
@@ -383,7 +412,9 @@ def _lines(entries: list[tuple[str, int]]) -> bytes:
 @leak("layout.raw-page-break", "match.page-break",
       "A code name split across a page break, in a hand-assembled two-page document: "
       "\"Project code BLUE\" at the bottom of page 1, \"HERON continues here\" at the "
-      "top of page 2.", expected=expect(1, findings=(("Code", "live"),)))
+      "top of page 2.", expected=expect(1, findings=(("Code", "live"),)),
+      mistake="Nobody redacted it; the value simply straddles a page break.",
+      recovery="Read the last line of one page and the first line of the next.")
 def raw_page_break(path: Path) -> None:
     page1 = [(f, 748 - 16 * i) for i, f in enumerate(FILLER)]
     page1.append(("Project code BLUE", 60))
@@ -396,7 +427,9 @@ def raw_page_break(path: Path) -> None:
       "A value wrapped across two consecutive lines, kept as separate content-stream "
       "objects: \"total 123-45-\" then \"6789 units\" — the joined reading matches, but "
       "only as a coincidental fusion (manual review).",
-      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)))
+      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+      mistake="Nobody redacted it; the value simply wraps across two lines.",
+      recovery="Read the two consecutive lines together.")
 def raw_line_wrap(path: Path) -> None:
     filler = [(f, 700 - 16 * i) for i, f in enumerate(FILLER)]
     objects = one_page(stream(b"", _lines(filler) + b" " + text("total 123-45-", 400)),
@@ -421,7 +454,9 @@ def clean_objstm(path: Path) -> None:
 @leak("leftover.raw-orphaned-objstm", "orphaned.plain",
       "An orphaned stream holding the SSN, in a file whose objects are packed into an "
       "object stream and whose cross-reference is itself a stream.",
-      expected=ORPHAN_SSN)
+      expected=ORPHAN_SSN,
+      mistake="Saving without garbage collection.",
+      recovery="Decompress the file's object streams and read the leftover stream.")
 def orphaned_objstm(path: Path) -> None:
     objects = one_page(PAGE, o5=stream(b"", text(SECRET)))
     path.write_bytes(build_objstm(objects))
@@ -438,4 +473,5 @@ case(
     story="The same overwritten content stream, on a base file written as an object "
           "stream with a cross-reference stream, then updated with a classic "
           "incremental section — the two formats chain together correctly.",
+    mistake=INCREMENTAL, recovery=RECOVER_REVISION,
 )(_superseded_objstm)

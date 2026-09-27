@@ -32,28 +32,32 @@ def zip_attachment(path: Path) -> None:
 
 
 @leak("attachment.scan-png", "attachment.pixels",
-      "A scan of the SSN attached as a PNG.", mistake=FORGOT)
+      "A scan of the SSN attached as a PNG.", mistake=FORGOT,
+      recovery="Open the attachments panel and view the image.")
 def png_attachment(path: Path) -> None:
     _attach(path, "scan.png", png_of(f"SSN {SSN}"))
 
 
 @leak("attachment.ssn-notes-utf8", "attachment.plain",
       "Notes with the SSN attached as UTF-8 text (a run of arbitrary text: manual review).",
-      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)), mistake=FORGOT)
+      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)), mistake=FORGOT,
+      recovery="Open the attachments panel and read the text file.")
 def utf8_text(path: Path) -> None:
     _attach(path, "notes.txt", f"メモ SSN {SSN}\n".encode())
 
 
 @leak("attachment.ssn-notes-utf16le", "attachment.plain",
       "Notes attached as UTF-16LE without a byte-order mark.",
-      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)))
+      expected=expect(2, warnings=(("REVIEW_HIDDEN_TEXT", "live"),)), mistake=FORGOT,
+      recovery="Open the attachment and decode it as UTF-16LE.")
 def utf16(path: Path) -> None:
     _attach(path, "notes.txt", f"SSN {SSN}\r\n".encode("utf-16-le"))
 
 
 @leak("attachment.original-pdf", "attachment.container",
       "The unredacted original PDF attached to the redacted one.",
-      mistake="Attaching the source document for reference.")
+      mistake="Attaching the source document for reference.",
+      recovery="Open the attachments panel and read the inner PDF directly.")
 def nested_pdf(path: Path) -> None:
     inner = fitz.open(); body(inner.new_page(), lines=[f"SSN {SSN}"])
     data = inner.tobytes(garbage=4, deflate=True, no_new_id=True); inner.close()
@@ -61,7 +65,8 @@ def nested_pdf(path: Path) -> None:
 
 
 @leak("attachment.receipt-pdf", "attachment.container",
-      "A small receipt PDF with the SSN attached.")
+      "A small receipt PDF with the SSN attached.", mistake=FORGOT,
+      recovery="Open the attachments panel and read the inner PDF directly.")
 def nested_pdf_small(path: Path) -> None:
     inner = fitz.open(); inner.new_page().insert_text((72, 72), f"Code {CODE} SSN {SSN}")
     data = inner.tobytes(deflate=True, no_new_id=True); inner.close()
@@ -69,7 +74,8 @@ def nested_pdf_small(path: Path) -> None:
 
 
 @leak("attachment.stored-zip-deflated-member", "attachment.container",
-      "A stored (uncompressed) zip whose second member is itself zlib-compressed.")
+      "A stored (uncompressed) zip whose second member is itself zlib-compressed.",
+      mistake=FORGOT, recovery="Open the attached zip and extract the second member.")
 def stored_zip(path: Path) -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
@@ -79,13 +85,15 @@ def stored_zip(path: Path) -> None:
     _attach(path, "mix.zip", buf.getvalue())
 
 
-@leak("attachment.notes-gzip", "attachment.container", "Notes attached gzip-compressed.")
+@leak("attachment.notes-gzip", "attachment.container", "Notes attached gzip-compressed.",
+      mistake=FORGOT, recovery="Open the attachments panel and decompress the .gz file.")
 def gzip_attachment(path: Path) -> None:
     _attach(path, "notes.txt.gz", compressed("gzip", f"SSN {SSN}\n"))
 
 
 @leak("attachment.annotation-zip", "attachment.container",
-      "A zip attached to a file annotation (paperclip icon) on the page.")
+      "A zip attached to a file annotation (paperclip icon) on the page.",
+      mistake=FORGOT, recovery="Double-click the paperclip icon and extract the zip.")
 def annotation_zip(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     page.add_file_annot((300, 300), compressed("zip", f"SSN {SSN}"), "rec.zip"); save(doc, path)
@@ -95,7 +103,9 @@ def annotation_zip(path: Path) -> None:
       "A zip attachment holding the SSN replaced by a clean one in an incremental save.",
       expected=expect(2, warnings=(("LEFTOVER_CONTAINER", "superseded"),
                                    ("ATTACHMENT_NOT_TEXT", "live"))),
-      mistake="Replacing an attachment incrementally keeps the original.")
+      mistake="Replacing an attachment incrementally keeps the original.",
+      recovery="Decompress the file, read the earlier revision's embedded-file stream, "
+               "and extract the zip.")
 def replaced_attachment(path: Path) -> None:
     _attach(path, "records.zip", compressed("zip", f"SSN {SSN}"))
 

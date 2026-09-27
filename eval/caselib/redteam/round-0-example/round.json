@@ -1,0 +1,10 @@
+{
+  "round": "round-0-example",
+  "status": "example",
+  "author": "caselib maintainers",
+  "date": "2026-09-26",
+  "coverage_md_commit": "e2e67ff",
+  "no_code_access_statement": "This round is a worked example committed with the red-team machinery itself, not a real blind round: it exists only to exercise the loader, the hash lock and the adjudication path in CI. A real round's README must carry its own author, date, the COVERAGE.md commit that author was given, and their own no-code-access statement.",
+  "initial_labels_sha256": "7e4701e5064dfaa6a0960bb336ebf9da7262113776b19284508c9b65fdffdfeb",
+  "labels_sha256": "7e4701e5064dfaa6a0960bb336ebf9da7262113776b19284508c9b65fdffdfeb"
+}
