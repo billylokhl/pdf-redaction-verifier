@@ -15,7 +15,7 @@ from pathlib import Path
 import fitz
 
 from ..model import SSN, Expect, KnownGap, case, expect
-from ..pdfkit import png_of, compressed
+from ..pdfkit import compressed, embedded_font, png_of
 from ..rawpdf import build, one_page, page, stream, text
 from .raw_cells import attachment_objects, coded, differences_font
 
@@ -78,31 +78,57 @@ def pixels_under_box(path: Path) -> None:
     doc.close()
 
 
+# ── live.font.overprinted ───────────────────────────────────────────────
+
+@leak_fitz(
+    "page.overprinted-embedded-font", "live.font.overprinted",
+    "The SSN in an embedded (Identity-H) font, drawn starting at the exact same "
+    "point as other page text: the two runs' glyphs share one baseline and "
+    "interleave by x-position in both the Text layer's own reading and OCR's "
+    "rendered pixels, so neither line comes out intact (verified: a plain, "
+    "non-embedded Helvetica at the same point is still caught by the Objects "
+    "layer's literal-string scan regardless of position, and a 20pt vertical "
+    "offset — no more overlap — is read normally by both Text and OCR).",
+    expected=LIVE_SSN,
+    known_gap=KnownGap("live.font.overprinted", expect(0)),
+    mistake="A redaction overlay or annotation reusing the exact insertion point of the text it covers.",
+    recovery="Extract the page's raw glyph list with positions and separate the two overlapping runs by font/encoding.",
+)
+def overprinted_embedded_font(path: Path) -> None:
+    doc = fitz.open()
+    pg = doc.new_page()
+    font = embedded_font(pg)
+    pg.insert_text((72, 300), "Quarterly report", fontname=font)
+    pg.insert_text((72, 300), SECRET, fontname=font)
+    doc.save(str(path), no_new_id=True)
+    doc.close()
+
+
 # ── off-page.font.no-unicode ────────────────────────────────────────────
 
-@leak_raw(
+@leak_fitz(
     "page.off-page-no-unicode-font", "off-page.font.no-unicode",
-    "The SSN off the right edge of the page, in an embedded CID font with no "
-    "/ToUnicode map at all: even a reader that looked past the page edge could "
-    "not turn the glyph codes back into characters.",
+    "The SSN off the right edge of the page, in a real embedded (Identity-H) "
+    "font whose /ToUnicode map has been stripped: the glyphs are genuine — "
+    "rendering the page (widening the media box) and OCRing it reads the SSN "
+    "plainly — but with no /ToUnicode, no character-based reading (on or off "
+    "the page) can turn the codes back into text; with the map kept, the same "
+    "file is read (exit 1) by the Text layer today.",
     expected=LIVE_SSN,
     known_gap=KnownGap("off-page.font.no-unicode", expect(0)),
 )
 def off_page_no_unicode(path: Path) -> None:
-    descendant = (b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Fake /CIDSystemInfo "
-                  b"<< /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> "
-                  b"/FontDescriptor 9 0 R /CIDToGIDMap /Identity /DW 600 >>")
-    descriptor = (b"<< /Type /FontDescriptor /FontName /Fake /Flags 4 "
-                  b"/FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 "
-                  b"/CapHeight 700 /StemV 80 >>")
-    type0 = (b"<< /Type /Font /Subtype /Type0 /BaseFont /Fake /Encoding /Identity-H "
-             b"/DescendantFonts [7 0 R] >>")
-    codes = b"".join(bytes([0, i]) for i in range(1, len(SECRET) + 1))
-    content = stream(b"", b"BT /F1 12 Tf 700 100 Td <" + codes.hex().encode() + b"> Tj ET")
-    objects = one_page(content, o6=type0)
-    objects[7] = descendant
-    objects[9] = descriptor
-    _write(path, objects)
+    doc = fitz.open()
+    pg = doc.new_page()
+    pg.insert_text((72, 72), "Quarterly report")
+    font = embedded_font(pg)
+    pg.insert_text((700, 100), SECRET, fontname=font)
+    for xref in range(1, doc.xref_length()):
+        kind, subtype = doc.xref_get_key(xref, "Subtype")
+        if kind == "name" and subtype == "/Type0":
+            doc.xref_set_key(xref, "ToUnicode", "null")
+    doc.save(str(path), no_new_id=True)
+    doc.close()
 
 
 # ── off-page.pixels ─────────────────────────────────────────────────────
@@ -137,7 +163,10 @@ def hidden_layer_font(path: Path) -> None:
     objects[1] = HIDDEN_LAYER_CATALOG
     objects[3] = page(b"[4 0 R 5 0 R]",
                       b"<< /Font << /F1 6 0 R >> /Properties << /oc1 7 0 R >> >>")
-    objects[5] = stream(b"", b"/OC /oc1 BDC BT /F1 12 Tf 72 700 Td "
+    # y=500, not 700: PAGE already draws "Quarterly report" at 72 700 — drawn
+    # at the same point, the SSN's glyphs would overlap it and (verified)
+    # even a human turning the layer on could not read either line.
+    objects[5] = stream(b"", b"/OC /oc1 BDC BT /F1 12 Tf 72 500 Td "
                         + coded(SECRET) + b" Tj ET EMC")
     objects[6] = differences_font(SECRET)
     objects[7] = b"<< /Type /OCG /Name (Layer 1) >>"
@@ -248,16 +277,18 @@ def ordinary_looking_codes(path: Path) -> None:
 
 @leak_raw(
     "leftover.small-image", "orphaned.pixels.small",
-    "An orphaned image of the SSN just under the size gate (7 px tall): still a "
-    "readable line of text, but the cutoff that filters out icons and masks "
-    "skips it too.",
-    expected=ORPHAN_SSN,
+    "An orphaned image of the SSN just under the size gate (7 px tall, still "
+    "fully readable — upscaled 10x, OCR reads it back exactly): the cutoff "
+    "meant for icons and masks skips it too. Its sibling above the gate is "
+    "correctly flagged (LEFTOVER_IMAGE) rather than decoded, so that is the "
+    "honest tier a lowered gate should give this one too.",
+    expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)),
     known_gap=KnownGap("orphaned.pixels.small", expect(0)),
 )
 def small_orphaned_image(path: Path) -> None:
     tmp = fitz.open()
-    tiny = tmp.new_page(width=31, height=7)
-    tiny.insert_text((0, 5), SECRET, fontsize=5)
+    tiny = tmp.new_page(width=60, height=7)
+    tiny.insert_text((0, 6), SECRET, fontsize=7)
     png = tiny.get_pixmap(dpi=72).tobytes("png")
     tmp.close()
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png))
@@ -303,8 +334,10 @@ def xmp_thumbnail(path: Path) -> None:
 @leak_raw(
     "leftover.xmp-thumbnail", "leftover-xmp.pixels",
     "An old XMP metadata packet, no longer referenced, holding the SSN only as "
-    "a base64 thumbnail image.",
-    expected=ORPHAN_SSN,
+    "a base64 thumbnail image — the same honest flagged tier as an orphaned "
+    "pixel image, once a lowered gate or a decoder reads it as pixels rather "
+    "than only as XMP text.",
+    expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)),
     known_gap=KnownGap("leftover-xmp.pixels", expect(0)),
 )
 def orphan_xmp_thumbnail(path: Path) -> None:
@@ -415,7 +448,7 @@ def af_container(path: Path) -> None:
     "to raw stream bytes — only to PDF string-literal syntax.",
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("javascript.plain.pattern-rules-in-streams", expect(0)),
-    rules=PATTERN_RULE,
+    rules=PATTERN_RULE, requires=("qpdf",),
 )
 def js_stream_pattern(path: Path) -> None:
     objects = one_page(PAGE)
@@ -451,13 +484,16 @@ def piece_info_pattern(path: Path) -> None:
 
 @leak_raw(
     "file.after-final-eof-font-coded", "unindexed.font",
-    "Font-coded glyph codes for the SSN, appended after the file's final "
-    "%%EOF: entirely outside any indexed object, so nothing reads it at all.",
+    "A /Differences-encoded font and the SSN's glyph codes, both appended after "
+    "the file's final %%EOF: entirely outside any indexed object, so nothing "
+    "reads either of them — even though, taken together, they are exactly the "
+    "font-coded text a redactor's forensic reviewer could decode by hand.",
     expected=expect(1),
     known_gap=KnownGap("unindexed.font", expect(0)),
 )
 def unindexed_font(path: Path) -> None:
-    _write(path, one_page(PAGE), after_eof=b"\n" + coded(SECRET) + b"\n")
+    trailing = b"\n" + differences_font(SECRET) + b"\n" + coded(SECRET) + b"\n"
+    _write(path, one_page(PAGE), after_eof=trailing)
 
 
 @leak_raw(
@@ -471,9 +507,11 @@ def unindexed_pixels(path: Path) -> None:
     # A small strip (well under qpdf's 1024-byte end-of-file lookback), so
     # the trailing bytes demonstrate the unindexed blind spot without also
     # pushing the real startxref out of qpdf's damaged-file recovery window.
+    # Sized to actually fit "SSN 123-45-6789" (fontsize=7 needs ~60pt of
+    # width; a narrower page truncated it to "SSN 123-45-6").
     tmp = fitz.open()
-    tiny = tmp.new_page(width=31, height=7)
-    tiny.insert_text((0, 5), SECRET, fontsize=5)
+    tiny = tmp.new_page(width=60, height=7)
+    tiny.insert_text((0, 6), SECRET, fontsize=7)
     png = tiny.get_pixmap(dpi=72).tobytes("png")
     tmp.close()
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png))
@@ -498,9 +536,11 @@ def unindexed_container(path: Path) -> None:
     "page, with an unrelated line of the right column sitting between them at "
     "the same height: joining the page's lines top-to-bottom (not column by "
     "column) puts that unrelated text between the two halves. OCR happens to "
-    "read this particular page column by column and would find it anyway, so "
-    "the gap is judged only where OCR is absent.",
-    expected=expect(1, findings=(("SSN", "live"),)),
+    "read this particular page column by column and gives the honest "
+    "line-wrap review warning anyway (REVIEW_CROSS_LINE, as in "
+    "layout.py's match.line-wrap), so the silent-miss gap is judged only "
+    "where OCR is absent.",
+    expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
     known_gap=KnownGap("match.columns", expect(0)),
     requires=("no-ocr",),
 )
@@ -519,18 +559,22 @@ def two_column_wrap(path: Path) -> None:
 
 @leak_raw(
     "page.extreme-coordinates", "match.extreme-coordinates",
-    "The SSN split across two content-stream objects on one page, both drawn at "
-    "coordinates around 10^9 points: PyMuPDF's text extraction does not return "
-    "glyphs placed that far out, so neither half is read at all, and the "
-    "Objects layer's per-object literal scan never sees either half whole.",
+    "The SSN split across two content-stream objects on one page, both on the "
+    "same baseline (the second starting 56pt right of the first, right where it "
+    "ends) at coordinates around 10^9 points: PyMuPDF's text extraction returns "
+    "no glyphs placed that far out, so neither half is read at all, and the "
+    "Objects layer's per-object literal scan never sees either half whole. The "
+    "same split at ordinary coordinates (x=700) is read normally (Text) — the "
+    "coordinates, not the split, are what defeats it here.",
     expected=LIVE_SSN,
     known_gap=KnownGap("match.extreme-coordinates", expect(0)),
 )
 def extreme_coordinates(path: Path) -> None:
+    x = 1_000_000_000
     first, second = SECRET[:8], SECRET[8:]
-    content_a = stream(b"", b"BT /F1 12 Tf 1000000000 1000000000 Td ("
+    content_a = stream(b"", b"BT /F1 12 Tf %d %d Td (" % (x, x)
                        + first.encode() + b") Tj ET")
-    content_b = stream(b"", b"BT /F1 12 Tf 1000000000 999999950 Td ("
+    content_b = stream(b"", b"BT /F1 12 Tf %d %d Td (" % (x + 56, x)
                        + second.encode() + b") Tj ET")
     objects = one_page(content_a)
     objects[3] = page(contents=b"[4 0 R 5 0 R]")
@@ -541,28 +585,39 @@ def extreme_coordinates(path: Path) -> None:
 # ── false-alarm.binary-value-collision ──────────────────────────────────
 
 @case(
-    "page.binary-digit-collision", truth="clean", features="live.plain", writer="raw",
+    "page.binary-digit-collision", truth="clean",
+    features=("live.plain", "unused-resource.pixels"), writer="raw",
     expected=expect(0),
-    story="An opaque image payload happens to contain the byte sequence for "
-          "\"123456789\" (the SSN's digits, no separators): the Binary layer's "
-          "raw byte sweep cannot tell a coincidental run inside binary data from "
-          "a real leak, so a clean file gets a manual-review warning anyway.",
+    story="A correctly formed, undrawn image's raw byte ramp (0..255, repeated) "
+          "happens to contain the byte sequence for \"0123456789\" (the SSN's "
+          "digits, no separators) purely because consecutive byte values include "
+          "the ASCII codes for '0'-'9' in order: the Binary layer's raw byte "
+          "sweep cannot tell that coincidence inside binary data from a real "
+          "leak, so a clean file gets a manual-review warning anyway.",
     known_gap=KnownGap("false-alarm.binary-value-collision",
                         expect(2, warnings=(("REVIEW_BINARY", "live"),))),
     requires=("qpdf",),
 )
 def binary_digit_collision(path: Path) -> None:
-    # qpdf's QDF rewrite (like the reachability walk the Objects layer
-    # trusts) drops objects nothing references — an orphaned image would
-    # never reach the Binary layer's sweep at all. Referencing it from the
-    # page's resources (undrawn, like unused-resource.*) keeps it live and
-    # opaque (an /Image XObject: never parsed as text by the Objects layer)
-    # so only the Binary layer's raw byte sweep ever sees these bytes.
-    noise = bytes(range(256)) * 4
-    payload = noise + b"123456789" + noise
+    # qpdf's QDF rewrite only emits objects reachable from the trailer — an
+    # orphaned image would never reach the Binary layer's sweep at all
+    # (verify.py's own module docstring: "Orphaned objects ... are not in
+    # its output"). This is already recorded elsewhere in the suite, not new
+    # here: every orphaned.* known-gap case (e.g. K3/K4, orphaned.plain.
+    # mislabelled, in families/raw.py) is judged without requires=("qpdf",)
+    # or any Binary-layer expectation, and PyMuPDF's own garbage collection
+    # on save shows the same reachability-only rule (families/carriers.py:
+    # "the rewrite drops the unreferenced object, so nothing is left").
+    # Referencing this image from the page's resources (undrawn, like
+    # unused-resource.*) keeps it live and opaque (an /Image XObject: never
+    # parsed as text by the Objects layer) so only the Binary layer's raw
+    # byte sweep ever sees these bytes. A correctly sized image (no bytes
+    # beyond its declared Width*Height) keeps the file honestly clean: the
+    # ramp itself, not anything spliced into padding, is what collides.
+    samples = bytes(range(256)) * 4          # 256 x 4, 1 byte/pixel: exactly sized
     objects = one_page(PAGE)
     objects[3] = page(resources=b"<< /Font << /F1 6 0 R >> /XObject << /Im1 7 0 R >> >>")
     objects[7] = stream(
-        b"/Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 "
-        b"/ColorSpace /DeviceGray", payload)
+        b"/Type /XObject /Subtype /Image /Width 256 /Height 4 /BitsPerComponent 8 "
+        b"/ColorSpace /DeviceGray", samples)
     _write(path, objects)

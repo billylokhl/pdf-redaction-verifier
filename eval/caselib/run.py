@@ -163,9 +163,14 @@ def main(argv: list[str] | None = None) -> int:
     # Perf cases are large on purpose (eval/README.md); a bare invocation
     # with no case ids must not build all of them by surprise.
     ids = args[1:] or sorted(cid for cid, c in REGISTRY.items() if not c.perf)
+    have = available()
     failed = 0
     for case_id in ids:
         case = REGISTRY[case_id]
+        missing = case.requires - have
+        if missing:
+            print(f"{'skip':9} {case.id:48} needs {', '.join(sorted(missing))}")
+            continue
         pdf = build(case, out / f"{case.id}.pdf")
         result = scan(case, pdf, out)
         if case.known_gap:

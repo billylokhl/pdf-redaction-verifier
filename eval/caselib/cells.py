@@ -43,6 +43,8 @@ def _cells() -> dict[str, Cell]:
         "live.plain": Cell(read, "text drawn on a page"),
         "live.plain.after-stream-end": Cell(gap, "page content after a compressed stream's end marker"),
         "live.font": Cell(read, "font-coded text drawn on a page"),
+        "live.font.overprinted": Cell(
+            gap, "font-coded text drawn starting at the same point as other text"),
         "live.pixels": Cell(read, "text as pixels on a page (OCR)"),
         "live.pixels.under-box": Cell(gap, "pixels under a box drawn over an image"),
         # off-page — outside the visible crop/media box

@@ -569,7 +569,7 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K10 | Leftover glyph codes shown one character per `Tj`: no string is long enough to judge |
 | K11 | An untyped leftover text with three stand-alone words that are content operators (`n`, `m`, `q`) is taken for page content and never searched (pre-existing) |
 | K12 | A scanned image with a box drawn over it on the same page: OCR only ever sees the rendered, composited page, never the image object itself |
-| K13 | Font-coded text off the page in a CID font with no `/ToUnicode` map at all: no reading recovers characters that were never mapped to any |
+| K13 | Font-coded text off the page in a real embedded font whose `/ToUnicode` map has been stripped: the glyphs are genuine (rendering the page with a widened media box and OCRing it reads the secret plainly), but no character-based reading, on or off the page, can turn the codes back into text without the map |
 | K14 | Pixels drawn entirely outside the page's media box: never rendered, so OCR never sees them |
 | K15 | Font-coded text in a switched-off optional-content layer: the layer is never rendered, and the Objects layer's literal scan does not apply a font's map |
 | K16 | A hidden annotation's appearance drawing font-coded text |
@@ -577,7 +577,7 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K18 | A form XObject in a page's resources, never drawn, showing font-coded text |
 | K19 | A form XObject in a page's resources, never drawn, showing pixels |
 | K20 | An orphaned stream shows a plain-looking string; a font mapping those exact (ordinary) codes to other glyphs would render it as the secret, but nothing flags plain-looking codes as undecodable and the literal characters do not match |
-| K21 | An orphaned image just under the leftover-image size gate (still a readable line of text) |
+| K21 | An orphaned image just under the leftover-image size gate (7 px tall; still fully readable — OCR reads it back exactly once upscaled 10x) |
 | K22 | The secret as a base64 thumbnail image inside the document's own (live) XMP metadata packet |
 | K23 | Same, inside an orphaned/superseded XMP packet |
 | K24 | The secret as a page's own `/Thumb` preview image: referenced (live), but never rendered or OCR'd |
@@ -587,20 +587,23 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K28 | Same, a `/AF` file that is a zip container |
 | K29 | A link's JavaScript action stores its code in a stream (`/JS 8 0 R`) rather than an inline string; a pattern rule never matches it because pattern rules are applied to PDF string-literal syntax, not raw stream bytes |
 | K30 | An editor's private data (`/PieceInfo`) matched only by a pattern rule, for the same reason the Binary sweep is value-only |
-| K31 | Font-coded bytes appended after the file's final `%%EOF` |
-| K32 | Raw pixel bytes appended after the file's final `%%EOF` |
+| K31 | A `/Differences`-encoded font and its glyph codes for the secret, both appended after the file's final `%%EOF` — together exactly what a forensic reviewer could decode by hand, but entirely outside any indexed object |
+| K32 | Raw pixel bytes for a scan of the secret, appended after the file's final `%%EOF` |
 | K33 | A zip container appended after the file's final `%%EOF` |
-| K34 | A value wrapped across two lines of a two-column page's left column, with an unrelated right-column line sitting between them: joining a page's lines top-to-bottom (not column by column) breaks the adjacency (judged only where OCR is absent — Apple Vision happens to read this specific layout column by column) |
-| K35 | Text drawn at coordinates around 10⁹ points, split across two content-stream objects: PyMuPDF's extraction returns no glyphs that far out, and the Objects layer's per-object literal scan never sees either half whole |
+| K34 | A value wrapped across two lines of a two-column page's left column, with an unrelated right-column line sitting between them: joining a page's lines top-to-bottom (not column by column) breaks the adjacency (judged only where OCR is absent — Apple Vision happens to read this specific layout column by column and gives the honest line-wrap review warning instead) |
+| K35 | Text drawn at coordinates around 10⁹ points, split across two content-stream objects on the same baseline: PyMuPDF's extraction returns no glyphs that far out, and the Objects layer's per-object literal scan never sees either half whole (the same split at ordinary coordinates is read normally) |
+| K36 | Font-coded text in a real embedded font, drawn starting at the exact same point as other page text: the two runs' glyphs share one baseline and interleave by x-position in both the Text layer's own reading and OCR's rendered pixels, so neither line comes out intact (a plain, non-embedded font at the same point is still caught by the Objects layer regardless of position, and a 20pt vertical offset — no more overlap — is read normally) |
 
-K12-K35 are pinned in `eval/caselib/families/gaps.py` (the remaining
+K12-K36 are pinned in `eval/caselib/families/gaps.py` (the remaining
 `UNDOCUMENTED_GAPS`, now empty). One more case there is the opposite
 problem — a **false alarm**, not a silent miss: a clean document whose
-only planted content is a live (referenced) image XObject whose opaque
-bytes happen to contain the literal digits `123456789`. The Binary
-(qpdf) layer's raw byte sweep cannot distinguish that coincidence from a
-real leak inside binary data, so it warns (exit `2`) on a genuinely clean
-file (`false-alarm.binary-value-collision`).
+only planted content is a live (referenced), correctly sized image
+XObject whose byte ramp (0..255, repeated) happens to contain the ASCII
+codes for '0'-'9' in order — the literal digits `0123456789` — purely as
+a byproduct of the ramp itself. The Binary (qpdf) layer's raw byte sweep
+cannot distinguish that coincidence from a real leak inside binary data,
+so it warns (exit `2`) on a genuinely clean file
+(`false-alarm.binary-value-collision`).
 
 To check in Phase 0b:
 

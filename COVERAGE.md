@@ -26,7 +26,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR | ✓ OCR · ✗ under a box drawn over an image | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR · ✗ under a box drawn over an image | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise, or running across the page edge | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |

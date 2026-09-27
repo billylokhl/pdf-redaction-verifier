@@ -443,6 +443,12 @@ Three large, generated files representative of real workloads
   large, incompressible images), for throughput and memory on a
   big-but-few-objects file.
 
+These are synthetic runtime proxies checked into this repository, not the
+real-world corpus files docs/REDESIGN.md §5 asks for in Phase 0c (a local,
+SHA-256-keyed, non-fabricated manifest of representative vendor files) —
+they exercise the same per-page/per-object cost shapes without needing
+any real document.
+
 They are excluded from the default test run — `pytest` skips anything
 marked `perf` unless `RUN_PERF=1` is set:
 
