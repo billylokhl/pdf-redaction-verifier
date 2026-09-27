@@ -15,6 +15,7 @@ from caselib import REGISTRY, load
 from caselib.cells import parts as cell_parts
 from gallery.build import REDESIGN_MD, build
 from gallery.knumbers import CASE_TO_K, documented_k_numbers
+from gallery.verdicts import REFERENCE_CRASHED_NOTE
 
 load()
 
@@ -155,6 +156,90 @@ def test_caption_matches_the_cells_own_row_taxonomy() -> None:
         assert expect_caption == (case_id == "document.xmp-thumbnail")
 
 
+# ── "match" is not decisive on its own: the value is on SOME page, but ──
+# ── page 1 may hold all of it on one line, all of it only across lines, ──
+# ── part of it (the rest later), none of it (all on a later page), or  ──
+# ── it may be in no page's text at all. The                             ──
+# ── reviewer found 57 of ~150 match.* cases captioned wrongly; this     ──
+# ── pins every one of them against a hand-checked table.                ──
+
+_VISIBILITY_TABLE_PATH = Path(__file__).parent / "gallery_visibility.json"
+_VISIBILITY_TABLE: dict[str, str] = json.loads(_VISIBILITY_TABLE_PATH.read_text())
+
+
+def _match_leak_ids() -> set[str]:
+    return {cid for cid, case in REGISTRY.items()
+            if case.truth == "leak" and case.cells and cell_parts(case.cells[0])[0] == "match"}
+
+
+def test_visibility_table_covers_every_match_leak_case() -> None:
+    assert sorted(set(_VISIBILITY_TABLE) ^ _match_leak_ids()) == [], (
+        f"{_VISIBILITY_TABLE_PATH.name} must list exactly the match.* leak cases")
+    assert set(_VISIBILITY_TABLE.values()) <= {"full", "wrapped", "partial", "later", "none"}
+    assert _VISIBILITY_TABLE["page.extreme-coordinates"] == "none"
+
+
+def test_secret_visibility_matches_the_table_for_every_match_case(tmp_path) -> None:
+    """Every entry was checked by hand against what page 1's extracted
+    text holds: "full" (the whole value on one line: the overlapping
+    short-tail grid, and the several-values grid's card number),
+    "wrapped" (on page 1 but only across lines: split-lines, table-rows,
+    repeated-line-wraps, vertical-stack, raw-line-wrap, wrap-boxed-lines,
+    two-column-wrap, ...), "partial" (a prefix on page 1, the rest on a
+    later page: every split-pages / form-boxes / split-four-pages /
+    vertical-stack-split-pages variant, page-break, ...), "later" (none
+    of it on page 1, but on a later page: the several-values variants
+    whose only rules are for the SSN, which sits on pages 2-3), "none" (in
+    no page's text: page.extreme-coordinates)."""
+    from caselib.run import build as build_case
+    from gallery.build import _secret_visibility
+    wrong = []
+    for case_id, expected in sorted(_VISIBILITY_TABLE.items()):
+        pdf = tmp_path / f"{case_id}.pdf"
+        build_case(REGISTRY[case_id], pdf)
+        got = _secret_visibility(REGISTRY[case_id], pdf)
+        if got != expected:
+            wrong.append(f"{case_id}: expected {expected}, got {got}")
+    assert wrong == []
+
+
+_VISIBILITY_SUBSET = (
+    "page.extreme-coordinates",  # row "match", but nothing of the value is on page 1 at all
+    "layout.page-break",         # row "match", but only half the value is on page 1
+    "layout.raw-line-wrap",      # row "match": all of it on page 1, split across two lines
+    "layout.several-values-ssn", # row "match": the SSN is only on pages 2-3
+    "page.box-over-text",        # row "live": uncaptioned by design
+)
+
+
+@pytest.fixture(scope="module")
+def visibility_built(tmp_path_factory: pytest.TempPathFactory):
+    out = tmp_path_factory.mktemp("gallery-visibility")
+    build(out, case_ids=_VISIBILITY_SUBSET)
+    return (out / "index.html").read_text()
+
+
+_ALL_CAPTIONS = ("Nothing visible here", "Only part of the value", "split across lines",
+                 "Not on page 1")
+
+
+@pytest.mark.parametrize(("case_id", "caption"), [
+    ("page.extreme-coordinates", "Nothing visible here"),
+    ("layout.page-break", "Only part of the value is on page 1"),
+    ("layout.raw-line-wrap", "The value is on this page, split across lines"),
+    ("layout.several-values-ssn", "Not on page 1: the value appears later in the document"),
+    ("page.box-over-text", None),
+])
+def test_each_visibility_gets_its_own_caption(visibility_built, case_id: str,
+                                              caption: str | None) -> None:
+    section = _section(visibility_built, case_id)
+    for other in _ALL_CAPTIONS:
+        if caption is None or other not in caption:
+            assert other not in section, (case_id, other)
+    if caption:
+        assert caption in section
+
+
 # ── the badge follows the measured verdict, not just the pinned label ───
 
 def _write_results(path: Path, entries: dict[str, int | None]) -> None:
@@ -230,6 +315,63 @@ def test_crashed_result_is_never_a_miss(tmp_path) -> None:
     assert "crashed" in section
     # document.xmp-thumbnail's own (unmeasured) known-gap miss still counts.
     assert result.misses == 1
+
+
+# ── a reference-only crash must never launder a real candidate result   ──
+# ── into "crashed" (reviewer-confirmed: scorecard's own "crashed" is     ──
+# ── reference-OR-candidate, differential.CaseDiff.crashed, but the old   ──
+# ── code keyed load_results off that combined flag instead of off        ──
+# ── whether the CANDIDATE itself crashed). ───────────────────────────────
+
+def _write_reference_crash_row(path: Path, case_id: str, candidate_exit: int) -> None:
+    """A synthetic ``scorecard diff --json`` report where the reference
+    crashed but the candidate ran fine and actually missed (exit 0) — the
+    reviewer's exact reproduction shape."""
+    path.write_text(json.dumps({"cases": [{
+        "case": case_id,
+        "reference": None,       # None here means the reference crashed
+        "candidate": {"exit": candidate_exit, "findings": [], "warnings": []},
+        "crashed": True,         # reference.crashed or candidate.crashed — true either way
+    }]}))
+
+
+def test_load_results_uses_the_candidate_not_the_combined_crashed_flag(tmp_path) -> None:
+    from gallery.verdicts import load_results
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=0)
+    loaded = load_results(results)
+    assert loaded["page.box-over-text"] == {"exit": 0, "findings": [], "warnings": []}
+
+
+def test_reference_only_crash_still_surfaces_the_candidates_real_miss(tmp_path) -> None:
+    # page.box-over-text has no known_gap and is normally caught (exit 1);
+    # a measured candidate exit 0 is a real, undocumented miss. The old
+    # code hid this behind "crashed" just because the reference crashed.
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=0)
+    out = tmp_path / "gallery"
+    result = build(out, results_path=results, case_ids=_SUBSET)
+    html = (out / "index.html").read_text()
+    section = _section(html, "page.box-over-text")
+    assert 'class="verdict crashed"' not in section
+    assert "NEW MISS (not a known gap)" in section
+    assert REFERENCE_CRASHED_NOTE in section  # a note, not a substitute for the real verdict
+    assert result.misses == 3  # same count as the ordinary undocumented-miss test above
+
+
+def test_reference_only_crash_with_a_caught_candidate_is_not_a_miss_or_a_crash(tmp_path) -> None:
+    # The candidate genuinely caught it (exit 1) even though the reference
+    # crashed — must show as an ordinary caught verdict, not "crashed".
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=1)
+    out = tmp_path / "gallery"
+    build(out, results_path=results, case_ids=_SUBSET)
+    html = (out / "index.html").read_text()
+    section = _section(html, "page.box-over-text")
+    assert 'class="verdict crashed"' not in section
+    assert "NEW MISS" not in section
+    assert "MISSES IT TODAY" not in section
+    assert REFERENCE_CRASHED_NOTE in section
 
 
 # ── K-numbers: an explicit, hand-verified table, checked against §8 ─────

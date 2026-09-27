@@ -126,22 +126,24 @@ description. It looks for home-directory paths (`/Users/…`, `/home/…`,
 XMP document/instance ids that look machine-generated (a real UUID in
 `xmpMM:DocumentID` or `xmpMM:InstanceID`).
 
-A genuine exception is a `Case.privacy_allowlist` entry naming a
-`"kind"` (one of `model.PRIVACY_KINDS`), a `"pattern"` matched with
-`re.fullmatch` against the finding's own text (a regex, not a
-substring), and a `"reason"`. `"kind"` must equal the finding's own kind
-exactly: an entry allowlisting an `"email"` finding never excuses the
-same text reported as a `"hostname"`. `"pattern"` must not be too broad
-to mean anything: rather than a denylist of specific spellings (trivially
-dodged — `[\s\S]*`, `.*?` and `(?s)^.*$` all "mean" the same thing as
-`.*` without saying it), a pattern is rejected if it `re.fullmatch`es any
-of a handful of fixed probe strings — an arbitrary 40-character mix of
-letters, digits and punctuation, one containing a newline, and per-kind
-ones a plausible instance would look like (`/Users/probe/x.txt` for
-`"home-path"`, `probe@probe.invalid` for `"email"`, …). A pattern tied to
-one already-known fixture value (`re.escape("ci@example.com")`) never
-matches any of these; a pattern that actually means "anything at all", or
-"anything shaped like this kind", always does.
+A genuine exception is a `Case.privacy_allowlist` entry of exactly
+`{"kind": ..., "text": ..., "reason": ...}`: `"kind"` one of
+`model.PRIVACY_KINDS`, `"text"` the finding's text exactly as the scrub
+reports it, and a `"reason"`. A home-path finding stops at the username
+(`/Users/jsmith`, never the full path), so a home-path entry excuses
+every path under that one home directory — all of `/Users/jsmith/...` —
+not a single file. An entry excuses a
+finding only when both its kind and its text are equal (`==`) to the
+finding's: it is a literal, never a pattern, so it can excuse nothing but
+the one finding it names, and an `"email"` entry never excuses the same
+text reported as a `"hostname"`. `model.Case` rejects any other shape at
+construction, and `TestPrivacyScrub` also requires every entry to match
+a finding its case actually produces, so a dead entry — or a regex
+written where the literal belongs — fails. (Entries used to be
+`re.fullmatch` patterns screened for breadth against fixed probe
+strings; every screen tried was defeatable — `/Users/[^/]+`, `.+\.home`,
+`[^@]+@acme\.com`, a conditional group — and no case used the
+allowlist, so it is literal-only now.)
 
 ### The blind red-team slot (`caselib/redteam/`)
 
@@ -195,11 +197,14 @@ Each is checked for internal consistency by
 checkout, so nothing there stops a single commit from editing one of
 these *and* loosening its own check to match, in lockstep. Catching that
 needs a second, different commit to compare against:
+
 `eval/check_ratchets.py` diffs every ratchet against the merge-base with
 `main` (a pull request) or `HEAD~1` (a direct push to `main`, which
 only catches a single-commit rewrite — see the script's docstring for
-what that does and doesn't cover) and fails if anything grew, or if an
-`initial_labels_sha256` moved. It is CI's `ratchets` job
+what that does and doesn't cover) and fails if anything grew, if an
+`initial_labels_sha256` moved, if a ratchet the base's own registry
+lists is no longer checked (`check_registry`, below), or if the base
+can't be read well enough to tell. It is CI's `ratchets` job
 (`.github/workflows/tests.yml`, needs `fetch-depth: 0` for the history to
 diff against) and can also be run locally:
 
@@ -207,6 +212,68 @@ diff against) and can also be run locally:
 python eval/check_ratchets.py                 # resolves the base itself
 python eval/check_ratchets.py --base <ref>     # or name one explicitly
 ```
+
+The check reads each ratchet statically from its module's source,
+never by importing it, so it must be sure the literal it reads is the
+value Python ends up binding. It fails closed ("cannot verify") unless a
+ratchet name has **exactly one** possible writer anywhere in its module,
+and that writer is a top-level `NAME = frozenset({...})` (or annotated)
+literal assignment. Everything in the module is walked, not just its top
+level, and anything that could bind the name counts as a writer: a
+store or delete in any block (`if`/`try`/`with`/`for`/`while`, a class
+body, a function), tuple or starred unpacking, `for`/`with ... as`/
+walrus targets, augmented assignment, `global NAME`, `def`/`class NAME`,
+an import binding it (including an alias), `except ... as NAME`, a
+`match` capture, a parameter or keyword argument named it
+(`globals().update(NAME=...)`), any star import, and any string or bytes
+constant containing it other than a docstring (`globals()["NAME"]`,
+`vars()`/`locals()` subscripts, `setattr(sys.modules[__name__], "NAME",
+...)`, `exec("NAME = ...")`). Rebinding `frozenset` itself also fails.
+The string rule is deliberately broad: even an error message or comment
+string that mentions the name outside a docstring counts, and the
+failure names each writer and why it counts ("a string constant
+mentioning UNDOCUMENTED_GAPS at line 12", "def UNDOCUMENTED_GAPS at line
+40", ...), so a harmless one is quick to spot and reword.
+Consumers import the sets through the `caselib` package, so
+`eval/caselib/__init__.py` is checked too (`check_reexports`): it may
+bind a ratchet name only by re-exporting it unchanged
+(`from .cells import UNDOCUMENTED_GAPS`), nothing else.
+
+The tests that use the sets (`test_every_gap_has_a_pinned_case`,
+`test_claimed_cells_have_non_fitz_evidence`, `TestGalleryFields`) don't
+read an imported global: they call `_verified(NAME)`, which parses the
+literal from the defining file with the same `_frozenset_literal` — the
+value this check verified — so nothing that rebinds a global at runtime
+changes what they compare against. Separately,
+`test_ratchet_sets_in_effect_equal_their_literal` asserts that
+`caselib.<NAME>` and the defining module's attribute (after every family
+has loaded) equal that literal, which catches a rebind done while caselib
+imports (a name built at runtime, `exec` of a computed string) for any
+other importer. It cannot catch code that rebinds them later.
+
+The base's own list of ratchets counts too (`check_registry`): the
+`RATCHET_SETS` and `RATCHET_REEXPORTS` in the base's copy of
+`eval/check_ratchets.py` — read from the base ref, not the running
+script — must all still be checked. Deleting an entry, or renaming or
+moving a set along with a matching entry, would otherwise pass ("nothing
+to shrink from") and let the set grow unseen. A ratchet the base lists
+must also be readable in the base, so a set that is missing there was
+renamed or moved, not introduced. An unreadable base registry fails, and
+so does a base that has ratchet files but no copy of the checker at all
+(only a base that predates the ratchets entirely has nothing to compare).
+**Retiring or renaming a ratchet is unsupported by design**: an emptied
+ratchet stays, with its test, for good — it costs nothing and guards the
+"no exceptions" state. Adding a new ratchet is always fine.
+
+**Threat model.** The ratchets guard against accidental or unreviewed
+growth: a set grown by any ordinary edit, a rebind in some block or
+form the author didn't think of, a rename, move or removal of a ratchet,
+or a re-export that changes it. They do not defend against deliberately
+malicious code in a pull request: edits to this checker's own logic, or
+runtime code planted to mutate state the tests read (monkeypatching
+`_frozenset_literal`, say). Both are visible in the diff, and adversarial
+review of every pull request is mandatory on this repository; that is
+what those rely on.
 
 Its comparison logic (`run_all_checks` and friends) takes an abstract
 "tree" (`read(path)`, `glob(pattern)`), so `tests/test_check_ratchets.py`
@@ -481,14 +548,42 @@ wrong) and the **recovery** (how a person actually gets the secret back
 out), a page-1 PNG rendered fresh at build time (never committed —
 "what a reader sees"), the pinned secret(s) planted in it (fabricated:
 the canonical example SSN, 123-45-6789), and today's verdict. Clean and
-false-alarm cases get their own section. A case whose primary cell isn't
-drawn on the page at all (off-page, a switched-off layer, an orphaned or
-superseded object, metadata, an attachment, a script, private data,
-unindexed bytes, ...) gets a short caption under its render — "Nothing
-visible here: the secret is elsewhere in the file" — derived from the
-cell's own row (`caselib.cells.parts`), not a hand list: "live" (drawn on
-a page) and "match" (a layout-splitting limit — the value IS on the
-page, just split) are the only rows treated as visible.
+false-alarm cases get their own section. Each render may carry a short
+caption saying where the pinned value is relative to page 1, derived
+from the case's primary cell rather than a hand list:
+
+- A row that never reaches the rendered page (off-page, a switched-off
+  layer, an orphaned or superseded object, metadata, an attachment, a
+  script, private data, unindexed bytes, ...): "Nothing visible here: the
+  secret is elsewhere in the file".
+- "live" (drawn on a page): left uncaptioned by design; the value may be
+  covered (a box over it, say) — the caption is about where the value
+  is, not whether a reader can make it out.
+- "match" (a layout-splitting limit): the row alone can't say, so it is
+  decided from the pages' own extracted text, rule by rule, with letters
+  and digits compared and everything else (separators, spaces, line
+  breaks) ignored. The whole value on one line of page 1 gets no
+  caption; the whole value on page 1 but only reading across lines
+  (`match.line-wrap` and friends, a two-column wrap) gets "The value is
+  on this page, split across lines"; at least 3 characters of it on
+  page 1 with the rest on a later page (`match.page-break` and friends)
+  gets "Only part of the value is on page 1; the rest is on a later
+  page"; none of it on page 1 but all of it further on gets "Not on page
+  1: the value appears later in the document"; and in no page's text at all
+  gets "Nothing visible here" (e.g. `match.extreme-coordinates`, K35,
+  which draws its text where PyMuPDF's extraction never returns it, so
+  the page-1 PNG is blank). A rule with no literal value (a built-in
+  class like `ssn`) is judged by where its own regex finds a match its
+  validator accepts, one line at a time or across joined lines — never
+  over the whole page with every separator stripped, which would fuse
+  digits from unrelated lines. With several rules, the one page 1 shows
+  most of decides. `tests/test_gallery.py` pins the answer for every
+  `match.*` leak case against a hand-checked table
+  (`tests/gallery_visibility.json`).
+
+Captions report where the value is in the page's text, not whether it is
+legible: a value under a box, drawn white on white, or in invisible
+text render mode 3 is on page 1 all the same, so it gets no caption.
 
 **The miss marker** — the gallery's most important one — is "MISSES IT
 TODAY" on any leak case whose *shown* verdict has exit `0`: not the
@@ -502,7 +597,15 @@ with a pinned known gap in the *reassuring* direction (the label says
 exit `0`, this run's measured verdict caught it anyway), the page says so
 in a note rather than showing a stale badge — the gap may already be
 closed, or this run's environment/version differs from the one the
-label was pinned against. A crashed measured run is never a miss.
+label was pinned against. A crashed measured run is never a miss —
+specifically, a crashed **candidate** run: a `scorecard diff --json`
+row's own `"crashed"` field is true when *either* side crashed
+(`differential.CaseDiff.crashed`), so `gallery.verdicts.load_results`
+keys off the row's `"candidate"` key instead (`None` exactly when the
+candidate itself crashed) — a reference-only crash no longer hides a
+real candidate result (including a real miss) behind "crashed". The
+candidate's result is shown as usual, with a note that the reference run
+crashed on this case, so there is nothing to compare it against.
 
 Each case links to its COVERAGE.md cell and, where its known gap is one
 of docs/REDESIGN.md §8's numbered gaps, to its K-number, via
