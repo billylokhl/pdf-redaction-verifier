@@ -38,6 +38,10 @@ RUN_PERF = os.environ.get("RUN_PERF") == "1"
 
 
 def _params():
+    return list(_iter_params())     # pytest 10 rejects a bare generator
+
+
+def _iter_params():
     for case_id, case in sorted(REGISTRY.items()):
         missing = case.requires - HAVE
         marks = [pytest.mark.skip(reason=f"needs {', '.join(sorted(missing))}")] if missing else []
