@@ -41,11 +41,14 @@ and `verify._is_content_stream` verbatim):
 | Files with exactly 1 | 28 | 28 |
 | Top counts | 356, 356, 25, 13, 5 | (same -- all affected files are text-bearing) |
 
-**11.4%, not 2.7%, is the number that describes this rule's real cost**:
-every affected file happens to be text-bearing (an orphan that sniffs as
-content requires a shown text object, so this is expected), so diluting
-the rate across the corpus's ~76% text-free majority understated the
-cost on the population where it actually bites by roughly 4x.
+**11.4%, not 2.7%, is the number that describes this rule's real cost.**
+Every one of the 55 affected files is, by construction, text-bearing:
+the sniff this measurement uses (`verify._is_content_stream`) only counts
+an object as an orphan when it shows a text object, so a file with no
+text anywhere cannot be counted at all. Diluting the rate across the
+corpus's ~76% text-free majority (files that could never contribute a
+hit) understated the cost on the population where it actually bites by
+roughly 4x.
 
 **This measurement is a lower bound, not a "ceiling," on two counts the
 first version did not state:**

@@ -1,24 +1,29 @@
 # Phase 1 measurement results
 
-**This file was substantially revised after review.** The first version
-under-measured several numbers (reporting only the all-files rate where
-the text-bearing rate is what matters, and reporting a witness
-reconciliation rate later found to depend on a bug in the measuring
-script itself). Every number below is the corrected one, and states
+**This file has been revised twice after review.** The first pass
+under-measured several numbers (all-files rate where text-bearing is
+what matters; a witness reconciliation rate later found to depend on a
+bug in the measuring script). The second pass root-caused that bug (and
+two more in the same script), found a second script bug (widget
+appearance text, in addition to annotations), and added two new
+measurements (interpretation warnings, tiny images) plus a corrected
+false-hard number that excludes `email` (a true positive, not a pattern
+miscoloring). Every number below is the latest corrected one, and states
 which script produced it. See each ADR's own "Measurement" / "Correction"
 section for the reasoning.
 
-One run, on the author's machine, 2026-09-26 (revised same day after
-review). macOS (Darwin 25.6.0), PyMuPDF 1.27.2.3, qpdf 12.4.1. Corpus:
-2,031 PDFs discovered by `corpus.py` under `/System/Library`, `/Library`,
-and `/Applications` (no user data); **484 of them text-bearing**
-(`corpus.is_text_bearing`: >=1 page with non-empty `get_text()`).
-Reproduce with:
+One run, on the author's machine, 2026-09-26. macOS (Darwin 25.6.0),
+PyMuPDF 1.27.2.3, qpdf 12.4.1. Corpus: 2,031 PDFs discovered by
+`corpus.py` under `/System/Library`, `/Library`, and `/Applications` (no
+user data); **484 of them text-bearing** (`corpus.is_text_bearing`: >=1
+page with non-empty `get_text()`). Reproduce with:
 
 ```bash
 python3 eval/spikes/measure_corpus.py
 python3 eval/spikes/s1b_consumption_witness.py
 python3 eval/spikes/pattern_class_false_hard.py
+python3 eval/spikes/interpretation_warnings.py
+python3 eval/spikes/image_envelope_stats.py
 ```
 
 Only aggregate numbers appear below -- no file paths, filenames, or
@@ -31,8 +36,7 @@ below are from one specific run, not a fixed reference corpus.
 having extractable content**: all 2,031 files, and the 484 text-bearing
 files that are the population several of these decisions (docs/adr/0005,
 docs/adr/0007) actually gate on. Reporting only the all-files rate
-understated every one of those by 3-4x in the first version of this
-document.
+understated every one of those in the first version of this document.
 
 ## Pattern-class false-hard rate -- docs/adr/0005
 
@@ -47,17 +51,18 @@ classes over. The rate below is a lower bound.
 | `credit-card` | 0.0% | 0.0% |
 | `email` | 5.5% | 22.9% |
 | `us-phone` | 0.1% | 0.6% |
-| **Any of the four (union)** | **10.8%** | **45.5%** |
+| Any of the four (union) | 10.8% | 45.5% |
+| **`ssn` or `us-phone` only** | **5.5%** | **23.1%** |
 
-**45.5%, not 10.8%, is the number that matters** -- a file with no
-extractable text cannot produce a pattern-class false hard via this
-path, so the all-files rate is diluted by the corpus's ~76% text-free
-majority. `credit-card`'s 0% is a sample-size limit (no corpus file
-happens to contain a Luhn-valid, non-date digit run of the right length),
-not evidence its validator would reject a real false positive if one
-existed. See docs/adr/0005 for the decision this changes (recommend
-built-ins stay hard until Phase 5 -- the first version demoted them,
-which contradicted REDESIGN's transition invariant).
+**23.1%, not 45.5%, is the number that describes an actual false hard.**
+A validated `email` match is a true positive ("there is an email address
+here"), not a pattern miscoloring unrelated digits the way an SSN-shaped
+date is -- folding it into the four-class union overstates the case for
+demotion by roughly double. `credit-card`'s 0% is a sample-size limit (no
+corpus file happens to contain a Luhn-valid, non-date digit run of the
+right length), not evidence its validator would reject a real false
+positive if one existed. See docs/adr/0005 for the decision this changes
+(recommend built-ins stay hard until Phase 5).
 
 ## Parser-agreement flag rate -- docs/adr/0002
 
@@ -79,21 +84,11 @@ the real body -- real data loss, not "handled correctly") and a
 mislabelling (a warning attributed to "inline images" that is actually
 qpdf's unterminated-Flate-stream warning, the K1/K2 filter-chain
 problem). The two that survive are verified per instance against the
-file's own bytes, not assumed from the warning text.
-
-Category breakdown (all files) behind the two surviving categories --
-see `eval/spikes/measure_corpus.py`'s `_offset_warning_benign` and
-`_dup_key_benign` for how each instance is verified:
-
-- Wrong/zero xref offset, verified benign (no object body found
-  anywhere for that number): included in the 2.9%/7.0% "refined" rates
-  above as excluded.
-- Duplicated dictionary key, verified benign (both values identical):
-  included in the 2.9%/7.0% "refined" rates above as excluded.
-- Everything else that produced a qpdf warning -- including a wrong
-  offset where a body *does* exist elsewhere (data loss), a duplicated
-  key with differing values, missing/misplaced `endobj`, and
-  unterminated-Flate-stream warnings -- counts toward the refined rate.
+file's own bytes, not assumed from the warning text. Known gaps in that
+verification (an `/ObjStm`-compressed body is invisible to the "no body
+anywhere" check; the duplicate-key value comparison captures only the
+first token of an indirect reference) are documented in docs/adr/0002
+and deferred to Phase 3c, not fixed in this spike.
 
 ## Orphaned-content-stream rate -- docs/adr/0007
 
@@ -110,9 +105,10 @@ K5 shape, or a body with no current xref entry at all):
 | Files with exactly 1 | 28 | 28 |
 | Two largest counts | 356, 356 | (same files) |
 
-Every affected file is text-bearing (expected: the sniff requires a
-shown text object), so 11.4% -- not 2.7% -- is the rate that describes
-this rule's real cost on the relevant population.
+Every affected file is, by this sniff's own construction, text-bearing
+(it only counts an object as an orphan when it shows a text object), so
+11.4% -- not 2.7% -- is the rate that describes this rule's real cost on
+the relevant population.
 
 ## Unindexed non-whitespace byte rate -- docs/adr/0003, 0007
 
@@ -133,24 +129,95 @@ described in detail in docs/adr/0003 and 0007.
 `object_count` field, cited by docs/adr/0006): median 13, 95th percentile
 100, **maximum 32,971** (two files near 2,063, then a long tail). The
 first version of docs/adr/0006 cited "largest 258" from an unrepresentative
-40-file sample and "all files under 1,300" from nowhere reproducible;
-both are corrected here.
+40-file sample; corrected here. This count is itself a rough proxy (it
+misses objects compressed inside an `/ObjStm`, and a REDESIGN "unit" is
+not the same thing as an "object") -- see docs/adr/0006.
+
+## Tiny stored images -- docs/adr/0004
+
+`eval/spikes/image_envelope_stats.py`: every image object's `/Width` and
+`/Height`, read directly (no decompression):
+
+| | All files | Text-bearing |
+| --- | --- | --- |
+| Files with >= 1 image under 8 px (either dimension) | 1.9% (39/2,031) | 5.6% (27/484) |
+| Total images under 8 px | 248 | 224 |
+
+The first version of docs/adr/0004 claimed no such images existed in
+this corpus; corrected here. See docs/adr/0004 for the resulting
+recommendation (excuse via today's `_text_sized` logic, don't flag every
+one).
+
+## Interpretation warnings -- docs/adr/0009 (new)
+
+`eval/spikes/interpretation_warnings.py`: every `fitz.TOOLS.
+mupdf_warnings()` collected around `page.get_texttrace()` (MuPDF's page
+*interpreter*, not the parse-level open/qpdf warnings docs/adr/0002
+measures), categorised by a normalised (numbers stripped) warning line:
+
+| | All files | Text-bearing |
+| --- | --- | --- |
+| Files with >= 1 interpretation warning | 32.2% (653/2,031) | 53.5% (259/484) |
+| Pages with >= 1 interpretation warning | 16.5% (1,520/9,231) | 16.7% (1,091/6,543) |
+
+Top categories by files affected (all files; font names like
+"HelveticaNeue" are generic system font names, not personal data):
+`invalid marked content and clip nesting` (425 files), several distinct
+`FT_Get_Advance(<font>,<n>): invalid glyph index` categories (10-36 files
+each, one per embedded font subset), `JPX numcomps (<n>) doesn't match
+color_space (<n>)` (33 files), `openjpeg warning: Found a misplaced
+'cmap' box outside jp2h box` (30 files). This is the real cost of
+REDESIGN §4's "any MuPDF warning while interpreting the stream also
+means not `DECODED`" as literally written -- the single largest Phase 1
+review-rate finding, not sized before this pass. See docs/adr/0009.
 
 ## S1b: the consumption witness -- docs/adr/0008
 
-`eval/spikes/s1b_consumption_witness.py`. **This script had a real bug
-in its first version**: numeric content-stream operands were dropped
-rather than kept on the operand stack, so `/F0 12 Tf` never set the
-tracked font (`_code_counts("BT /F0 12 Tf <00480065> Tj ET", {"/F0": 2})`
-returned 4, not the correct 2). Every font silently counted as width 1.
-The first version's control-code exclusion (by raw byte value, 0x00-0x1F)
-then coincidentally cancelled much of this bug's effect, because a
-2-byte CID code's high byte is often `0x00`. Both bugs are fixed in the
-current script: numeric operands are kept, and glyph exclusion is now
-computed per font from that font's own glyph table
-(`doc.get_char_widths`), never from a raw byte value.
+`eval/spikes/s1b_consumption_witness.py`. **This script has been fixed
+twice.** The first version had an operand-stack bug: numeric content-
+stream operands were dropped rather than kept on the operand stack, so
+`/F0 12 Tf` never set the tracked font
+(`_code_counts("BT /F0 12 Tf <00480065> Tj ET", {"/F0": 2})` returned 4,
+not the correct 2) -- every font silently counted as width 1. The second
+version added a per-font "does this code have a real glyph" exclusion
+via `doc.get_char_widths`, which looked clean (92.7% reconciliation) but
+was itself unsound: `get_char_widths` resolves a code through the font's
+own cmap as a Unicode code point, ignoring `/Encoding`, `/Differences`,
+and `/CIDToGIDMap`, and returns an empty table for a font it cannot load
+this way -- for 690 real pages that fabricated "this font has no glyphs
+at all," hiding the real question behind a false 0-equals-0 match. The
+premise was also false: `get_texttrace()` DOES emit a char entry
+(replacement character, glyph id 0) for a code with no glyph --
+`(A\x01\x02B\x7f\x81)` shown in Helvetica traces 6 chars, not 2, in a
+direct check.
 
-### Adversarial content streams (hand-built, on a scratch page)
+**The exclusion is removed entirely in the current version.** What
+actually explained the residual mismatch, root-caused by re-running this
+script's own output against real content:
+
+1. This script's own literal-string decoder had the same two spec
+   violations `verify._decode_pdf_string` has (a backslash-end-of-line
+   continuation kept as a literal newline instead of contributing
+   nothing; a raw CRLF not normalised to a single LF) -- fixed **locally
+   in this spike script**, not in `verify.py`.
+2. **Annotation *and form-widget* appearance text is included in a
+   whole-page `get_texttrace()` call.** `page.annots()` does not
+   enumerate widgets (PyMuPDF surfaces those separately via
+   `page.widgets()`), so an intermediate fix that deleted only
+   `page.annots()` still left a filled-in form field's value showing up
+   as an unexplained mismatch -- both must be deleted from the in-memory
+   page before tracing.
+3. A ToUnicode continuation entry (glyph id -1) was counted as an extra
+   glyph -- excluded now.
+4. A fill-then-stroke render mode (`Tr` 2/6) draws, and `get_texttrace()`
+   reports, the same glyph twice -- as **two separate spans**, not two
+   entries in one span, confirmed directly. De-duplicated by (glyph id,
+   origin) across the whole page's trace, not per span.
+5. A few mixed-width CJK CMaps (e.g. `90msp-RKSJ-H`) are not 1- or
+   2-byte fixed-width and are not modelled; a page using one is now
+   skipped, not silently miscounted.
+
+### Ten hand-built content streams (on a scratch page)
 
 | Case | code_count | glyph_count | Mismatch | MuPDF warned |
 | --- | --- | --- | --- | --- |
@@ -159,53 +226,52 @@ computed per font from that font's own glyph table
 | Stray extra `Q` before content | 12 | 12 | no | no |
 | Well-formed inline image (control) | 23 | 23 | no | no |
 | Inline image whose declared size exceeds its data | 23 | 12 | **yes** | yes |
+| Ordinary invisible text (`3 Tr`) -- comparison | 6 | 6 | no | no |
+| Fill+stroke text (`2 Tr`) -- de-duplicated | 6 | 6 | no | no |
 | **Clip-only text (`7 Tr`)** | 13 | **0** | **yes** | **no** |
-| **Fill+stroke text (`2 Tr`)** | 6 | **12** | **yes** | **no** |
+| **Inline image data spells a phantom `Tj`** | 16 | **9** | **yes** | **no** |
+| **Text in a switched-off optional-content group** | 18 | **7** | **yes** | **no** |
 
-The last two rows are new in this revision, added because review asked
-for a demonstrated case where the witness catches something a
-warnings-only check would miss entirely -- both do, with zero MuPDF
-warning text to fall back on. For comparison, `3 Tr` (ordinary invisible
-text, as used by real OCR text layers under a scanned image) reconciles
-exactly (6 codes, 6 glyphs) -- this is specific to modes 2, 6, and 7, not
-"any invisible text."
+The last three rows are the leak shapes review asked for: cases the
+witness catches with **zero MuPDF warning** to fall back on.
+"Inline image data spells a phantom `Tj`": the image's declared-length
+pixel data literally contains a second, complete text-show operation
+(`... EI (PHANTOM) Tj ...`, still inside the image's own byte range);
+MuPDF correctly reads the whole range as opaque pixels (glyph_count 9 =
+"REAL" + "AFTER" only), but this script's own naive `EI`-search inline-
+image skip (the same technique `verify.py`'s current tokenizer uses)
+stops early at the embedded literal `EI` and re-parses the tail as real
+content, finding a phantom show operation that was never drawn -- the
+safe direction (over-counting), but proof a naive image-length skip is
+unsound. "Text in a switched-off optional-content group": REDESIGN §8's
+K6 shape, reproduced directly -- absent from both `get_texttrace()` and
+`get_text()`, present in the raw stream.
 
-### Real-corpus reconciliation, corrected
+### Real-corpus reconciliation, corrected twice
 
-| Pass | Reconciliation rate | Mismatches without a warning |
-| --- | --- | --- |
-| Naive whole-page | 93.6% (8,637/9,231 pages) | 482 |
-| **Per-decoding-unit** (the shape REDESIGN §4 actually specifies) | **71.2%** (5,868/8,237 pages) | **1,925** |
+"Text pages" excludes a page where both code_count and glyph_count are
+zero (most corpus pages show no text at all and would otherwise pad the
+rate with a meaningless 0-equals-0 "match").
 
-The first version reported 92.7% for the per-decoding-unit pass. That
-number was produced by the bugged script described above and does not
-describe the mechanism REDESIGN §4 specifies. **71.2% is the corrected
-number.** A breakdown of the 1,925 warning-free mismatches by the page's
-font encodings (`eval/spikes/s1b_consumption_witness.py`'s
-`mismatch_font_encodings` output):
+| Pass | Reconciliation rate (text pages) | In-scope files | Files with any mismatch |
+| --- | --- | --- | --- |
+| Naive whole-page | 96.1% (2,417/2,515) | 436 | 18 (4.1%) |
+| **Per-decoding-unit** (skips Form-XObject and mixed-width-CMap pages) | **98.7%** (2,235/2,264) | 326 | **9 (2.8%)** |
 
-```
-MacRomanEncoding (mixed with an unlabelled font): 1,252
-MacRomanEncoding alone:                             277
-Identity-H alone:                                   225
-Identity-H mixed with MacRomanEncoding:              31
-WinAnsiEncoding alone:                               12
-Identity-H mixed with WinAnsiEncoding:               11
-(remaining combinations, each < 5):                 < 10 combined
-```
+The first version reported 92.7%; the second, after removing the unsound
+glyph exclusion but before fixing the CRLF and widget bugs, reported
+71.2%. **98.7% is the corrected number**, after all five root causes
+above. A small residual remains and is **not fully root-caused**: the 9
+mismatching in-scope files show small (1-3 code), not-render-mode-related
+discrepancies on otherwise ordinary MacRoman-encoded text with no
+control characters, no annotations/widgets, and no Form XObjects.
 
-Manual inspection of sample MacRoman mismatches found small, near-exact
-discrepancies (e.g. 354 codes vs. 356 glyphs) on ordinary text using no
-unusual render mode -- **not** the Tr-mode issue demonstrated above, and
-**not root-caused** by this pass. The leading hypothesis
-(`doc.get_char_widths`'s glyph-presence signal diverging from MuPDF's
-actual rendering-time glyph resolution for some subset fonts) is
-plausible but unconfirmed.
-
-**Decision** (docs/adr/0008): the Tr-mode handling (correct for 2/6,
-leave 7 as a real mismatch signal) should ship in Phase 4a unconditionally
--- it is cheap, deterministic, and demonstrated. The broader byte-count
-witness is proposed as advisory pending root-cause of the MacRoman/
-Identity-H residual, given its real ~29% mismatch rate on per-unit
-content -- the owner should confirm this trade-off rather than accept
-either extreme by default.
+**Decision** (docs/adr/0008, revised): recommend a **hard gate** --
+mismatch means `FLAGGED`, unconditionally, not advisory. Advisory is
+fail-open with respect to REDESIGN §2 ("discharged only when... proved
+by a witness") and Principle 2 ("`DECODED` is accepted only when the
+decoder's witness balances"), masked only by worst-of shipping until
+Phase 6 retires legacy. At a corrected cost of ~2.8% of in-scope files,
+this is now affordable; the earlier advisory recommendation was a
+response to the (wrong) 71.2% figure, not a defensible design choice on
+its own terms.

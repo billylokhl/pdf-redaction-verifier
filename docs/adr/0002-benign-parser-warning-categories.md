@@ -75,6 +75,20 @@ cannot recover enough information to verify (the object number or key
 can't be parsed, or the object's raw span can't be found), the result is
 **not benign** by construction: fail closed.
 
+**A known gap in rule 1, found on the second review: it is fail-open for
+a body stored inside an object stream (`/ObjStm`).** `_offset_warning_benign`
+looks for a literal `N G obj` header anywhere in the raw file bytes; an
+object compressed into an `/ObjStm` (referenced via the cross-reference
+stream's type-2 entries, per PDF 1.5+) has no such header at all, so the
+check would wrongly conclude "no body exists anywhere" (benign) even
+though the object is very much present, just compressed. **This corpus
+has zero instances where that gap actually changes the verdict** (no
+offset-warning object in this corpus is also an ObjStm member), but the
+gap is real and the check must be extended to also search `/ObjStm`
+contents before Phase 3c relies on it. Recommend: accept the gap for now
+(it did not change any measured number here) and close it as part of
+Phase 3c's real implementation, not this spike.
+
 ## Measurement
 
 2,031 real files, 484 text-bearing (`eval/spikes/RESULTS.md`, full table
@@ -128,6 +142,16 @@ review rate" targets) would obviously tolerate without further work.
   object-set/page-tree comparison before treating the rate below as
   settled -- this ADR's numbers size the *warning-based* proxy only.
 
+**Deferred to Phase 3c, not fixed in this spike:** `_dup_key_benign`'s
+value comparison captures only the first whitespace-delimited token
+after the key, so an indirect reference like `5 0 R` and `5 1 R` (same
+object number, different generation -- a genuinely different reference)
+would compare equal on their captured "5" alone. This spike's measured
+rate is not known to be affected (no duplicate-key case in this corpus
+happened to have differing-generation indirect-reference values), but
+the check itself is not sound as written and must compare the full
+reference, not its first token, before Phase 3c trusts it.
+
 ## Owner confirmation needed
 
 - Whether a 7.2% (text-bearing) / 2.9% (all-files) parser-agreement flag
@@ -136,3 +160,7 @@ review rate" targets) would obviously tolerate without further work.
   check rather than dropping the category outright) before this becomes
   a real gate -- keeping in mind the rate above is from the warning-based
   proxy, not the real object-set/page-tree comparison.
+- Recommend: accept the two known verification gaps above (ObjStm bodies,
+  first-token-only reference comparison) for this Phase 1 pass and close
+  both in Phase 3c's real implementation, since neither is known to have
+  changed a measured number here.

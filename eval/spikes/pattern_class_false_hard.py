@@ -43,8 +43,14 @@ import verify  # noqa: E402
 CLASSES = ("ssn", "credit-card", "email", "us-phone")
 
 
+FALSE_HARD_CLASSES = ("ssn", "us-phone")  # excludes email/credit-card, see below
+
+
 def _empty_bucket() -> dict[str, Any]:
-    return {"checked": 0, "hit_files": {c: 0 for c in CLASSES}, "union_files": 0}
+    return {
+        "checked": 0, "hit_files": {c: 0 for c in CLASSES},
+        "union_files": 0, "false_hard_union_files": 0,
+    }
 
 
 def measure(files: list[Path]) -> dict[str, Any]:
@@ -84,6 +90,8 @@ def measure(files: list[Path]) -> dict[str, Any]:
                 b["hit_files"][name] += 1
             if file_hit:
                 b["union_files"] += 1
+            if file_hit & set(FALSE_HARD_CLASSES):
+                b["false_hard_union_files"] += 1
 
     out: dict[str, Any] = {"encrypted_skipped": encrypted, "hit_lines": hit_lines}
     for key, b in buckets.items():
@@ -94,6 +102,14 @@ def measure(files: list[Path]) -> dict[str, Any]:
             "file_rate": {c: (b["hit_files"][c] / n if n else None) for c in CLASSES},
             "union_files_with_any_class": b["union_files"],
             "union_file_rate": b["union_files"] / n if n else None,
+            # ssn|us-phone only: 0005 argues a validated `email` match is a
+            # true positive ("there is an email here"), not a pattern
+            # miscoloring unrelated digits the way an SSN-shaped date is --
+            # so it does not belong in a "false hard" headline number.
+            "false_hard_union_files_ssn_or_phone": b["false_hard_union_files"],
+            "false_hard_union_file_rate": (
+                b["false_hard_union_files"] / n if n else None
+            ),
         }
     return out
 

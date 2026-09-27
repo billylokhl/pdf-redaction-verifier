@@ -1,6 +1,6 @@
 # 0003. The `NOT_APPLICABLE` closed list
 
-Status: accepted
+Status: proposed (depends on docs/adr/0004, also proposed)
 
 ## Context
 
@@ -37,20 +37,48 @@ The concrete case that makes this necessary: consider a 10×10 DeviceGray
 image whose 100 raw sample bytes are literally the ASCII codes for
 "Employee SSN 123-45-6789" (a value hidden in the sample data, not
 rendered as visible glyphs -- this is steganographic with respect to a
-human viewer, but trivial with respect to a byte scan). Today's
-`verify.py` exits `2` for this file (a stored image it does not OCR is
-flagged, never silently passed). Under ADR 0003's reason 4
-("image data fully consumed by the image decoder") composed carelessly
-with ADR 0004's envelope, the image decoder would OCR the (visually
-blank/noisy) pixels, find no text, correctly report the image as fully
-consumed by the decoder, and -- if `NOT_APPLICABLE` were read as "this
-byte range is settled, move on" -- the file would wrongly exit `0`. The
-rule above closes this: the same raw sample bytes must *also* always be
-searched by the matcher (as a raw byte string, independent of what OCR
-found), and only then, if nothing matches, does `NOT_APPLICABLE` apply.
-This is not a new decoder or a new reason -- it is a restatement of
-Principle 1's "closed enum" discipline applied to what `NOT_APPLICABLE`
-is allowed to mean.
+human viewer, but trivial with respect to a byte scan).
+
+**Correction: an earlier version of this ADR claimed "today's `verify.py`
+exits `2` for this file," which is only true for one of four cases.**
+Verified directly against `verify.py` (not a claim taken on faith):
+
+| Drawn on the page? | Rule kind | Today's exit |
+| --- | --- | --- |
+| Yes | value (`"123-45-6789"`) | `2` (flagged: stored image, not OCR'd) |
+| Yes | class (`ssn`) | **`0`** -- pattern classes never run over image/binary bytes today |
+| No (unreferenced) | value | `0` -- the documented ✗ gap: an unreferenced image is not read at all |
+| No (unreferenced) | class | `0` |
+
+So three of the four already exit `0` today, not one. Under ADR 0003's
+reason 4 ("image data fully consumed by the image decoder") composed
+carelessly with ADR 0004's envelope, the drawn+value case (today's one
+correctly-flagged case) would ALSO newly exit `0`: the image decoder
+would OCR the (visually blank/noisy) pixels, find no text, correctly
+report the image as fully consumed, and -- if `NOT_APPLICABLE` were read
+as "this byte range is settled, move on" -- the file would silently
+regress from `2` to `0`. The rule above closes that regression: the same
+raw sample bytes must *also* always be searched by the matcher (as a raw
+byte string, independent of what OCR found), and only then, if nothing
+matches, does `NOT_APPLICABLE` apply. This is not a new decoder or a new
+reason -- it is a restatement of Principle 1's "closed enum" discipline
+applied to what `NOT_APPLICABLE` is allowed to mean.
+
+**Whether pattern classes should run over raw image sample bytes at all
+is a separate, real gap this case exposes, not fixed by the rule above.**
+The rule above covers *value* rules (a literal match against raw bytes);
+it does not by itself make *pattern classes* (`ssn`, `credit-card`, etc.)
+run over image samples, and today they do not run over any binary data
+at all (by design -- see `verify.py`'s `_OPAQUE_STREAM_SUBTYPES`
+exclusion, which exists because font-program bytes coincidentally match
+pattern classes constantly). Recommend: the new inventory's raw-byte
+matcher pass (the rule above) should run **value** rules unconditionally
+over decoded image samples, but should run **pattern classes** over them
+only behind the same manual-review tier `_scan_orphaned_payload` already
+uses for other raw-text contexts today (a coincidental digit run in
+noisy sample data is exactly the kind of fusion that tier exists for) --
+this needs its own case-library coverage in Phase 0b/3a, not
+implementation here.
 
 **The original four reasons, unchanged:**
 
@@ -67,9 +95,14 @@ is allowed to mean.
    the name/metadata strings inside those tables must still go through
    the matcher.
 4. **Image data fully consumed by the image decoder** -- only once
-   docs/adr/0004's envelope accepts the image and OCR actually ran to
-   completion, **and** the raw sample bytes have separately been
-   searched per the governing rule above.
+   docs/adr/0004's envelope accepts the image **and its recall bound is
+   satisfied** (docs/adr/0004, proposed: geometry and a completed OCR
+   pass are *not* enough on their own -- REDESIGN §4 requires a
+   recall-validated envelope, which does not exist until Phase 4b
+   measures it), **and** the raw sample bytes have separately been
+   searched per the governing rule above. Until Phase 4b's recall
+   measurement exists, this reason cannot actually be reached -- image
+   evidence stays `FLAGGED`, consistent with ADR 0004.
 
 Three other candidates considered and rejected: encrypted stream padding
 (overlaps the decryption cross-check, ADR 0001, rather than needing its
@@ -112,6 +145,11 @@ ADR.
 
 ## Owner confirmation needed
 
-None for the list itself. The steganographic-image case should be
-confirmed as a Phase 0b/3a case-library addition (a scheduling question,
-not a design trade-off).
+None for the list itself. Two items depend on other proposed ADRs and
+should be confirmed together: reason 4 depends on docs/adr/0004's recall
+bound (so 0003 is marked proposed, not accepted, purely because of that
+dependency); and whether pattern classes should run over decoded image
+samples at manual-review tier (recommended above) is a real, currently-
+unimplemented gap the owner should confirm before Phase 4b. The
+steganographic-image case itself should be confirmed as a Phase 0b/3a
+case-library addition (a scheduling question, not a design trade-off).

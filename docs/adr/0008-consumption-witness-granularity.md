@@ -8,149 +8,179 @@ REDESIGN.md §4 states the consumption witness as: "our own content
 tokenizer counts the character codes in every text-show operand (using
 each font's code length) and this must equal the glyph count in the text
 trace. Any MuPDF warning while interpreting the stream also means not
-`DECODED`." Phase 1's spike S1b was assigned to test this. This ADR is
-not one of REDESIGN's seven named Phase 1 questions, but what S1b found
-needs a decision of its own.
+`DECODED`." Two of the plan's own core principles depend on this witness
+actually gating, not merely informing: §2 says a unit's obligation "is
+discharged only when its decoder **consumed** it completely — proved by
+a witness"; Principle 2 says "`DECODED` is accepted only when the
+decoder's witness balances." **Advisory-only is fail-open with respect
+to both of these** -- it lets `DECODED` happen without the witness
+actually balancing, which is precisely what §2 and Principle 2 rule out.
+That is masked during the transition period by worst-of shipping (legacy
+stays at least as strict), but it becomes a real, un-masked exit-`0`
+path the moment Phase 6 retires legacy. This ADR is not one of REDESIGN's
+seven named Phase 1 questions, but what spike S1b found needed a
+decision of its own.
 
-**Correction to the first version of this ADR and its measurement.**
-The spike script had a real bug: numeric content-stream operands were
-never pushed onto its operand stack, so a `/F0 12 Tf` sequence never set
-the tracked font (`operands[-2]` was never the font name — there was
-only ever one operand, the name itself). Every font therefore silently
-counted as width 1, including 2-byte Identity-H/V fonts. The first
-version's crude "exclude any C0 control byte" correction then
-**coincidentally cancelled part of this bug's effect**, because a 2-byte
-CID code's high byte is often `0x00` (a C0 byte) for common BMP code
-points -- excluding it by byte value happened to approximate the correct
-divide-by-2 the Tf bug had skipped. The reported 92.7% reconciliation
-rate was real output, but not evidence of what it was presented as.
+**This is the third version of this ADR**, after two rounds of review.
+The first version reported 92.7% reconciliation on real content and
+recommended advisory. The second round found that number came from a bug
+in the measuring script (see docs/adr's sibling note in
+`eval/spikes/RESULTS.md`) and, once fixed, the honest reconciliation
+rate was only 71.2% -- so this ADR's second version recommended advisory
+again, this time because a hard gate at that cost looked unaffordable,
+while still calling out that advisory is fail-open. **A third round
+root-caused essentially all of that 71.2%'s shortfall** (below) down to
+a real reconciliation rate of ~98.7%, at which point a hard gate is
+affordable and the fail-open problem should not be accepted at all.
 
-Both bugs are fixed in this version: numeric operands are kept on the
-stack (so `Tf` is recognised), and the "no glyph" exclusion is now
-computed **per font**, from that font's own glyph table
-(`doc.get_char_widths` -- glyph id 0 means no glyph, i.e. `.notdef`),
-never from a byte's numeric value. The corpus was re-measured with the
-fix; the new numbers are materially different and are what this
-decision is actually based on.
+## The root cause of the second version's 71.2% figure
+
+Re-running this spike's own committed output against real content found
+five distinct causes, four of them bugs in the measuring script itself
+(never in `verify.py`, which this pass does not touch), one a real,
+narrow modelling gap:
+
+1. **The glyph-exclusion rule itself was unsound and is now removed.**
+   `doc.get_char_widths` resolves a code through the font's own cmap as
+   if it were a Unicode code point -- it ignores `/Encoding`,
+   `/Differences`, and `/CIDToGIDMap` entirely, and returns an empty
+   table for a font it cannot load this way. For 690 real pages that
+   fabricated "this font has no glyphs at all," excluding every code
+   shown and producing a false 0-equals-0 match that hid the real
+   question. The premise behind the exclusion was also false:
+   `get_texttrace()` DOES emit a char entry (Unicode replacement
+   character, glyph id 0) for a code with no glyph --
+   `(A\x01\x02B\x7f\x81)` shown in Helvetica traces 6 chars, not 2, in a
+   direct check. **The exclusion is removed entirely.**
+2. **This spike's own literal-string decoder had the same two bugs
+   `verify._decode_pdf_string` has** (kept a backslash-end-of-line
+   continuation as a literal newline; never normalised a raw CRLF inside
+   a literal to a single LF) -- both spec violations (PDF 32000-1
+   §7.3.4.2). Fixed **locally in this spike script**
+   (`_decode_literal_fixed`), not in `verify.py`.
+3. **Annotation *and form-widget* appearance text is included in a
+   whole-page `get_texttrace()` call** -- MuPDF's page interpreter runs
+   both. `page.annots()` does not enumerate widgets (PyMuPDF surfaces
+   those separately via `page.widgets()`), so deleting only `annots()`
+   looked sufficient until a filled-in form field's value showed up as
+   an unexplained mismatch. Both are now deleted from the in-memory page
+   before tracing (this spike never writes the file).
+4. **A ToUnicode continuation entry** (glyph id -1 -- a second or further
+   Unicode character folded into one glyph, e.g. a ligature's expansion)
+   was being counted as an extra glyph. Excluded now.
+5. **A fill-then-stroke render mode (`Tr` 2/6) draws, and
+   `get_texttrace()` reports, the same glyph twice -- as two separate
+   spans, not two entries in one span.** De-duplicated by (glyph id,
+   origin) across the whole page's trace, confirmed against real
+   content: `(SAMPLE)` shown once under `2 Tr` produces two 6-char spans
+   with identical (glyph, origin) pairs.
+6. **A few mixed-width CJK CMaps** (e.g. `90msp-RKSJ-H`) are not 1- or
+   2-byte fixed-width and are not modelled by this script's simple
+   code-length table. A page using one is now skipped, not silently
+   miscounted, and reported separately from pages skipped for drawing a
+   Form XObject.
 
 ## Decision
 
-**Two separable findings, two separable actions:**
+**Recommend a hard gate: a witness mismatch means `FLAGGED`, never
+`DECODED`, unconditionally -- no advisory mode.** Per the fail-closed
+rule this whole review is built around, and per REDESIGN §2/Principle 2
+directly (Context, above), this is the only design that does not create
+a new exit-`0` path once legacy retires. The corrected measurement
+(below) shows the cost of doing this now is small.
 
-**1. Text render mode must be accounted for -- this part is not a close
-call and needs no further measurement to justify.** Two hand-built,
-verified, **warning-free** cases (`eval/spikes/s1b_consumption_witness.py`,
-`ADVERSARIAL_CASES`) show `get_texttrace()` diverging from what was
-actually shown, with no MuPDF warning to catch either one:
+**Alternative, if the owner is not comfortable committing to
+enforcement from a Phase 1 spike's numbers: ship the hard gate in shadow
+mode first (recorded, not shipped in the worst-of verdict -- REDESIGN
+§6's existing shadow/enforced split already has a mechanism for exactly
+this), and move it into the enforced verdict once Phase 4a's own
+implementation confirms the corpus rate.** This is not the same as
+"advisory" -- shadow mode still computes the gate as a hard flag, it
+only defers *shipping* that flag's effect on the exit code, which
+Phase 6 already requires resolving before legacy retires. Advisory (the
+first two versions' choice) has no such resolution point and was wrong
+to recommend.
 
-- **`Tr 7` (add-to-clip-path, i.e. invisible-and-not-even-for-OCR):**
-  13 codes shown, **0** texttrace glyphs, no warning. `page.get_text()`
-  still returns the text. This is the shape of a genuinely hidden
-  leftover: a decoder relying on `get_texttrace()` glyph presence alone
-  would see nothing here and could still reach `DECODED` via other
-  content in the same unit, silently carrying Tr-7 text through
-  un-flagged.
-- **`Tr 2` / `Tr 6` (fill-then-stroke):** 6 codes shown, **12** texttrace
-  glyphs (exactly double), no warning -- `get_texttrace()` reports each
-  glyph twice, once per paint operation.
+Three verified, warning-free adversarial cases (`eval/spikes/
+s1b_consumption_witness.py`, `ADVERSARIAL_CASES`) demonstrate what a
+gate closes:
 
-  (For comparison: `Tr 3`, ordinary invisible text as used by real OCR
-  text layers under a scanned image, reconciles exactly -- 6 codes, 6
-  glyphs, confirmed. This is not a blanket "any invisible text mode
-  misbehaves" finding; it is specific to modes 2, 6, and 7.)
+- **Clip-only text (`Tr 7`)**: drawn, zero texttrace glyphs, `get_text()`
+  still returns it.
+- **An inline image whose declared-length pixel data literally spells a
+  second, complete text-show operation** (`... EI (PHANTOM) Tj ...`,
+  still inside the image's own declared byte range): MuPDF correctly
+  reads it as opaque pixels; this spike's own naive `EI`-search inline-
+  image skip (the same technique `verify.py`'s current tokenizer uses)
+  re-parses the tail as real content and finds a phantom show operation
+  that was never drawn -- the safe direction (over-counting, not a
+  miss), but proof that a naive image-length skip is unsound and REDESIGN
+  §4's declared-length-aware design is required, not optional, for
+  Phase 4a.
+- **Text inside a switched-off optional-content group**: absent from
+  both `get_texttrace()` and `get_text()`, present in the raw stream --
+  REDESIGN §8's K6 shape, reproduced directly.
 
-  **Decision:** Phase 4a's real witness must treat these deterministically,
-  not as generic "mismatch -> flag" noise: modes 2/6 should be corrected
-  for (halve the expected count, or de-duplicate by glyph origin, before
-  comparing) so that ordinary bold/outlined text does not spuriously
-  flag; mode 7 should **not** be corrected for -- the mismatch it
-  produces is exactly the signal that matters, and "fixing" the
-  expectation to tolerate it would silently remove the one thing this
-  spike was built to catch. This requires no further measurement and no
-  owner decision -- it is a specification detail for whoever implements
-  Phase 4a, independent of the broader question below.
+(`Tr 3`, ordinary invisible text as used by real OCR text layers, and
+`Tr 2` fill+stroke, now de-duplicated, both reconcile exactly -- included
+in `ADVERSARIAL_CASES` as the comparison. This is not "any unusual
+render mode misbehaves.")
 
-**2. The general byte-count consumption witness, once (1) is corrected
-for, is *proposed* as a hard `DECODED` gate -- but the real, corrected
-reconciliation rate is far lower than first reported, and the owner
-should see the honest number before this ships.** Per the fail-closed
-rule this whole review is built around ("any state the design can't
-positively vouch for must be `FLAGGED`"), a byte-count mismatch should
-in principle always mean `FLAGGED`, never advisory-only. The first
-version of this ADR shipped "advisory" specifically because 92.7%
-reconciliation made a hard gate look nearly free. **That number was
-wrong** (see Correction above). The honest, corrected number is much
-higher-cost -- see Measurement.
+**Correcting an overclaim from the first version**: it said spike S1b
+"confirmed" the mechanism requires a scratch page holding one resolved
+(stream, context) unit in isolation, as REDESIGN §4 describes. What S1b
+actually measured is a **whole-page** `page.read_contents()` vs. a
+**whole-page** `get_texttrace()`, with pages that draw through a Form
+XObject skipped (994 of 9,231 -- entirely unmeasured, not counted either
+way) rather than resolved and measured as their own unit. This is
+consistent with, but does not confirm, REDESIGN's actual per-unit
+design; a real per-unit measurement (one resolved stream on its own
+scratch page, per REDESIGN §4) has still not been built. Phase 4a's own
+implementation is where that gets built and confirmed for real.
 
 ## Measurement
 
-`eval/spikes/s1b_consumption_witness.py`, corrected script, same 2,031-
-file corpus:
+`eval/spikes/s1b_consumption_witness.py`, corrected per the six root
+causes above, same corpus:
 
-| Pass | Reconciliation rate | Mismatches without a warning |
-| --- | --- | --- |
-| Naive whole-page (informative only -- wrong unit, see below) | 93.6% (8,637/9,231 pages) | 482 |
-| **Per-decoding-unit** (skips pages with Form XObjects; excludes, per font, codes with no real glyph) | **71.2%** (5,868/8,237 pages) | **1,925** |
+| Pass | Reconciliation rate (text pages) | In-scope files | Files with any mismatch |
+| --- | --- | --- | --- |
+| Naive whole-page | 96.1% (2,417/2,515) | 436 | 18 (4.1%) |
+| **Per-decoding-unit** (skips Form-XObject and mixed-width-CMap pages) | **98.7%** (2,235/2,264) | 326 | **9 (2.8%)** |
 
-The per-decoding-unit pass is the one REDESIGN §4 actually specifies
-(one resolved stream on its own scratch page); the naive whole-page pass
-is kept only to document why a whole-page comparison is the wrong shape
-(a Form XObject's glyphs are not in `page.read_contents()` at all).
+("Text pages" excludes a page where both code_count and glyph_count are
+zero -- most corpus pages show no text at all and would otherwise pad
+the rate with a meaningless 0-equals-0 "match": 5,963 of 8,227 measured
+pages in the per-decoding-unit pass.)
 
-**71.2%, not 92.7%, is the real number.** A breakdown of the 1,925
-warning-free mismatches by the page's font encodings:
-
-```
-MacRomanEncoding (mixed with an unlabelled font): 1,252
-MacRomanEncoding alone:                             277
-Identity-H alone:                                   225
-Identity-H mixed with MacRomanEncoding:              31
-WinAnsiEncoding alone:                               12
-Identity-H mixed with WinAnsiEncoding:               11
-(other, small counts):                              < 10 combined
-```
-
-Manually inspecting sample mismatches in the largest (MacRoman) bucket
-found small, near-exact discrepancies -- e.g. 354 codes counted against
-356 glyphs shown, on ordinary address-block text with no unusual render
-mode, no control characters, and no Form XObjects. **This residual is
-not the render-mode issue in Decision (1)** (these samples use no
-non-default `Tr` at all) **and is not root-caused by this pass.** The
-leading hypothesis -- `doc.get_char_widths`'s own glyph-presence signal
-diverging from MuPDF's actual rendering-time glyph resolution for some
-subset/embedded simple fonts -- is plausible but unconfirmed; it was not
-possible to verify within this review's time budget.
+**A small residual remains and is not fully root-caused**: the 9
+mismatching in-scope files show small (1-3 code), not-render-mode-related
+discrepancies on otherwise ordinary MacRoman-encoded text with no
+control characters and no Form XObjects -- the same general shape as an
+earlier, larger residual, at roughly 1/40th the size. This is honestly
+reported as unresolved, not swept in with the fixes above; it is small
+enough that a hard gate's cost (flagging roughly 3 files in 100 that
+would otherwise certify) is a reasonable trade rather than a blocking
+concern.
 
 ## Consequences
 
-- Decision (1) (Tr-mode handling) should be implemented in Phase 4a
-  regardless of how Decision (2) resolves -- it is cheap, deterministic,
-  and closes a real, demonstrated silent-miss risk.
-- Decision (2), if the owner picks "hard gate now": roughly 29% of
-  text-bearing per-unit content would be held out of `DECODED` purely by
-  witness noise, not real malformed content, until the MacRoman/Identity-H
-  residual above is root-caused -- a large, currently-unbounded
-  review-rate cost that was not visible under the first version's
-  (incorrect) 92.7% figure.
-- Decision (2), if the owner picks "advisory until root-caused": the
-  Tr-7-shaped risk is fully covered anyway by Decision (1)'s
-  unconditional fix, so the remaining exposure from shipping the general
-  witness as advisory is limited to *other, not-yet-found* silent-skip
-  shapes beyond the ones this pass's adversarial cases covered --
-  smaller than the first version implied advisory mode carried, since
-  the specific concrete case this review raised (Tr 7) is independently
-  closed either way.
+- The hard-gate recommendation applies to the whole witness (render-mode
+  handling and the general byte-count check together) -- there is no
+  longer a reason to split them, now that the general check's real cost
+  is known to be small.
+- A ~2.8% in-scope-file mismatch rate is a real, if small, addition to
+  the review rate Phase 4a's own gate ("K3-K6... closed; every per-case
+  change is stricter and listed; review-rate change within what
+  [ADR 0007] accepted") must account for.
+- If the owner picks the shadow-mode alternative, Phase 3b's existing
+  shadow/enforced verdict machinery is the right place to wire it, not a
+  new mechanism -- REDESIGN §6 already describes exactly this kind of
+  staged enforcement for unit kinds generally.
 
 ## Owner confirmation needed
 
-Whether to ship the general byte-count witness as a hard `DECODED` gate
-now (fail-closed default, ~29% measured review-rate cost on text-bearing
-per-unit content pending root-cause) or advisory-only pending root-cause
-of the MacRoman/Identity-H residual (lower cost now, relies on Decision
-(1) alone to close the specific silent-miss shape this pass demonstrated).
-Recommend: advisory *specifically for the general byte-count check* with
-Decision (1)'s Tr-mode handling shipped as a hard, unconditional part of
-the font/render witness regardless -- but this trades off differently
-depending on how much the owner weighs "fail closed always" against a
-~29% unexplained review-rate cost, so it is presented as a
-recommendation, not a settled decision.
+Hard gate now (recommended -- REDESIGN §2/Principle 2 require it, and
+the corrected cost is ~2.8% of in-scope files) vs. hard gate in shadow
+mode first, enforced once Phase 4a's own implementation reconfirms the
+rate on a per-unit (not whole-page) basis.

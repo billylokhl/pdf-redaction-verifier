@@ -89,16 +89,19 @@ gate is defined on:
 | `credit-card` | 0.0% | 0.0% |
 | `email` | 5.5% | 22.9% |
 | `us-phone` | 0.1% | 0.6% |
-| **Any of the four (union)** | **10.8%** | **45.5%** |
+| Any of the four (union) | 10.8% | 45.5% |
+| **`ssn` or `us-phone` only (union)** | **5.5%** | **23.1%** |
 
-**The number that matters for this decision is 45.5%, not 10.8%.** A
-file with no extractable text cannot produce a pattern-class false hard
-via this path at all, so diluting the rate across the ~76% text-free
-majority of a system/app corpus understates the real exposure on exactly
-the population Phase 5's gate targets. 45.5% is far above the plan's
-originally cited 7.5-13% -- worth flagging to the owner as a possible
-sign that Phase 5's work is more urgent, or more involved, than the
-plan's original estimate assumed.
+**23.1%, not 45.5%, is the number that describes an actual false hard.**
+The four-class union counts `email` as a "false hard" too, but a
+validated `email` match is not one by this ADR's own reasoning above --
+it is a true positive for "there is an email address here." Folding it
+into a single headline number overstates the case for demotion by
+roughly double. 23.1% (text-bearing, `ssn`/`us-phone` only) is still far
+above the plan's originally cited 7.5-13% -- worth flagging to the owner
+as a possible sign that Phase 5's work is more urgent, or more involved,
+than the plan's original estimate assumed, but the number to cite going
+forward is 23.1%, not 45.5%.
 
 This measurement's own scope is a lower bound, stated plainly: it scans
 page **text** only, not Metadata (XMP/Info) or Objects (string literals,

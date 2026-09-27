@@ -53,17 +53,21 @@ longer sufficient for `DECODED` on its own.
   lookup, and is out of scope for Phase 1. JBIG2Decode and JPXDecode are
   in scope only once MuPDF decodes them to raw samples first -- the
   envelope check runs on the decoded bitmap, never the compressed bytes.
-- **Dimensions**: both `/Width` and `/Height` in `[8, 10000]` px.
-  **This floor does not "keep today's gate's intent" -- it inverts it.**
-  Today, `_MIN_TEXT_IMAGE_SIDE`/`_MIN_TEXT_IMAGE_LENGTH` exist to
-  **excuse** a tiny image from being flagged at all (too small for text
-  to plausibly fit, so silence about it is acceptable). Under this
-  envelope, the same floor instead **excludes** a tiny image from
-  `DECODED` eligibility -- meaning a tiny image now gets `FLAGGED`
-  where today's gate would pass it over in silence. That is a
-  deliberate strictness increase (a tiny image previously ignored is
-  now held to account), not a continuation of the old gate's purpose,
-  and should be described that way.
+- **Dimensions**: the upper bound is `10,000` px per side. For the lower
+  bound, **do not simply exclude a sub-8px image from the envelope** (see
+  Measurement below: 248 such images exist in this corpus, 5.6% of
+  text-bearing files) -- that would flag every icon, bullet, and checkbox
+  glyph as unreadable, a real, avoidable review-rate cost. Instead,
+  **reuse today's `_text_sized`/`_MIN_TEXT_IMAGE_SIDE` judgment** (too
+  small for text to plausibly fit, so it is excused from `DECODED`
+  scrutiny the same way it is excused from being flagged today) --
+  **and** always run docs/adr/0003's raw-byte matcher pass over the
+  decoded samples regardless of size, closing the actual gap (a value
+  hidden in tiny sample data) without the size-floor cost. (An earlier
+  version of this ADR called the floor "not keeping today's gate's
+  intent" and treated flagging every sub-floor image as a deliberate
+  strictness increase; measurement showed that increase is neither free
+  nor obviously justified, so the recommendation is reversed here.)
 - **Total pixels**: `width * height <= 35,000,000` (35 Mpx), taken as a
   fixed cap rather than the plan's floor.
 - **Mask type**: an `/SMask` or `/Mask` is only accepted when its own
@@ -102,6 +106,28 @@ measurements and spike S1b the plan explicitly asked for.
 The local corpus contains no stored image anywhere close to 35 Mpx, so
 the cap's exact value has no effect on this corpus's measured rates.
 
+**The size floor is a different story: tiny images are common, and an
+earlier version of this ADR's claim that "no images [are] near the size
+floor" was false.** `eval/spikes/image_envelope_stats.py` walks every
+image object's `/Width`/`/Height` directly (no decompression needed):
+
+| | All files | Text-bearing |
+| --- | --- | --- |
+| Files with >= 1 image under 8 px (either dimension) | 1.9% (39/2,031) | 5.6% (27/484) |
+| Total images under 8 px | 248 | 224 |
+
+**Recommendation, corrected**: rather than flagging every one of these
+248 images under the new envelope (a real, avoidable review-rate cost),
+apply today's existing `_text_sized`/`_MIN_TEXT_IMAGE_SIDE` excusal
+logic to decide when a sub-floor image is *worth flagging at all* --
+i.e. keep today's judgment that a genuinely tiny image (an icon, a
+bullet, a checkbox glyph) is implausible as a text carrier and excuse it
+-- **and** always still run docs/adr/0003's raw-byte matcher pass over
+its decoded samples regardless of size. This keeps the strictness
+increase docs/adr/0003's steganographic-image case actually needs (byte
+content is always searched) without also flagging 248 ordinary icons
+that were never going to be `DECODED` as text anyway.
+
 ## Consequences
 
 - Making image-OCR evidence `FLAGGED` rather than `DECODED` until Phase
@@ -112,10 +138,13 @@ the cap's exact value has no effect on this corpus's measured rates.
 - No strictness regression claim is made or needed: every leftover image
   that exits `2` today keeps exiting `2` (or worse) under this design,
   because nothing here grants `DECODED` yet.
-- The Indexed-base restriction and the corrected floor wording are both
-  implementation-facing corrections; neither changes a measured rate in
-  this pass (the corpus has no Separation/DeviceN-based Indexed images
-  and no images near the size floor either way).
+- The Indexed-base restriction is an implementation-facing correction
+  that does not change a measured rate in this pass (no
+  Separation/DeviceN-based Indexed images in the corpus). The size-floor
+  recommendation does change a real rate: reusing today's `_text_sized`
+  excusal instead of flagging every sub-8px image avoids flagging up to
+  248 images (5.6% of text-bearing files) that were never going to carry
+  readable text anyway.
 
 ## Owner confirmation needed
 
@@ -124,3 +153,6 @@ the cap's exact value has no effect on this corpus's measured rates.
 - Confirm the plan to run image-OCR as `FLAGGED`-only (never `DECODED`)
   until Phase 4b's recall measurement lands, rather than accepting a
   provisional, unmeasured `DECODED` grant sooner.
+- Confirm excusing a sub-8px image via today's `_text_sized` logic
+  (recommended) rather than flagging all 248 such images found in this
+  corpus under the new envelope.

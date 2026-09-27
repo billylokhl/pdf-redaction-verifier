@@ -58,34 +58,60 @@ resolved by this ADR.
 `object_count_distribution`, from `inventory_lite.tile()` over all 2,031
 files): median 13 objects, 95th percentile 100, **maximum 32,971**
 (two files near 2,063 objects, then a long tail down to the median).
-200,000 leaves roughly 6x headroom over the largest real file this pass
-saw, not the "two orders of magnitude over 258" the first version
-claimed from an unrepresentative sample.
+**This number is a rough proxy, not a units count, in two ways review
+found:** (a) `inventory_lite.tile()` counts top-level `N G obj` headers
+found by scanning raw bytes -- an object compressed inside an `/ObjStm`
+(PDF 1.5+ object streams) has no such header at all and is not counted,
+so this undercounts real object totals for any file using them (the same
+blind spot as docs/adr/0002's ObjStm gap); (b) REDESIGN's "unit" is not
+"object" -- a unit is created for every object-stream member, every
+content-stream child a decoder uncovers, every unindexed byte range, so
+the true units-per-run count for a given file is at least its object
+count, likely well above it. 200,000 leaves headroom over the largest
+*object* count this pass saw (not the "two orders of magnitude over 258"
+the first version claimed from an unrepresentative sample), but that
+headroom is against the wrong quantity. Recommend treating 200,000 as a
+placeholder Phase 3a must re-derive once it can enumerate real units
+(including ObjStm members and decoder-discovered children), not a number
+to carry forward as measured.
 
 **Inflated bytes <= 2 GiB cumulative**, matching the general order of
 magnitude of the existing per-attachment cap (16 MiB) scaled up for a
 whole-run budget. Not independently re-measured against a real large
 file in this pass.
 
-**OCR pixels: capped per page, not cumulatively across the file.** The
-first version's flat 500 Mpx cumulative cap fails REDESIGN §5's own
-corpus requirement outright: a representative "~300-page scan" at 300
-DPI on Letter-size pages is about 8.4 Mpx/page (2550x3300), so a
+**OCR pixels: a per-page cap of 200 Mpx, plus a whole-run cap DERIVED
+from it (200 Mpx x the anchored page count), not an independent flat
+number.** The first version's flat 500 Mpx cumulative cap fails REDESIGN
+§5's own corpus requirement outright: a representative "~300-page scan"
+at 300 DPI on Letter-size pages is about 8.4 Mpx/page (2550x3300), so a
 legitimate 300-page scanned document needs roughly 2,520 Mpx of stored-
 image OCR if most pages are a single full-page scanned image -- five
-times the flat cap. The corrected design: a **per-page** cap of 200 Mpx
-for stored-image OCR (comfortably above one full-page scan at 300 DPI,
-independent of how many pages the document has), plus docs/adr/0004's
-own per-image 35 Mpx cap. **Page-view OCR (rendering a page and OCRing
-it -- the existing view obligation, unchanged since today's tool) is
-explicitly out of scope for this budget** -- it is a different obligation
-kind (§4: "one per view... each page's OCR") with its own existing,
-uncapped-by-this-ADR behavior; this budget governs only Phase 4b's new
-per-stored-image decoding.
+times the flat cap.
+
+**A per-page cap alone is not enough either -- review correctly pointed
+out it contradicts §4's "one Budget for the whole run" framing and
+Principle 6 ("Limits are work-based... "; a per-page-only cap has no
+whole-run ceiling at all, which is exactly the kind of unbounded-total
+resource use Principle 4's hostile-input handling exists to prevent.**
+The corrected design keeps both: 200 Mpx per page (comfortably above one
+full-page scan at 300 DPI), and a whole-run total capped at 200 Mpx
+multiplied by the page count the parent already anchors independently
+(qpdf's reported page count, per §4's own anchoring design) -- not a
+second, independently-tunable flat number, which is exactly what would
+recreate the ~300-page-scan conflict. A file that claims many pages to
+inflate this budget is already bounded by the *other* budgets here (byte
+count, unit count) and by the page-count anchor itself. Plus
+docs/adr/0004's own per-image 35 Mpx cap. **Page-view OCR (rendering a
+page and OCRing it -- the existing view obligation, unchanged since
+today's tool) is explicitly out of scope for this budget** -- it is a
+different obligation kind (§4: "one per view... each page's OCR") with
+its own existing, uncapped-by-this-ADR behavior; this budget governs
+only Phase 4b's new per-stored-image decoding.
 
 ## Measurement
 
-Spike S1b (docs/adr/0008, `eval/spikes/RESULTS.md` §a) is the only Phase
+Spike S1b (docs/adr/0008, `eval/spikes/RESULTS.md`'s S1b section) is the only Phase
 1 evidence bearing on per-unit cost, and only indirectly: every case it
 checked ran in a single pass over one content stream plus one
 `get_texttrace()` call, cheap enough that depth and unit-count, not
@@ -100,10 +126,13 @@ byte cap or exercise reference-graph recursion at all.
   reference-graph recursion is explicitly a separate, still-open problem
   for Phase 3a/3d, not silently assumed to be covered by the same
   counter.
-- The per-page OCR cap means a document's total stored-image OCR bill
-  scales with its page count the way page-view OCR already does today,
-  rather than hitting an arbitrary whole-file ceiling that penalizes
-  long legitimate documents more than short suspicious ones.
+- The per-page OCR cap, plus a whole-run cap derived from it (not
+  independent), means a document's total stored-image OCR bill scales
+  with its page count the way page-view OCR already does today, rather
+  than hitting an arbitrary whole-file ceiling that penalizes long
+  legitimate documents more than short suspicious ones, while still
+  giving REDESIGN's "one Budget for the whole run" framing an actual
+  whole-run number to point to.
 - These are named, single-purpose numbers per Principle 9 and each needs
   its own pinning test once Phase 3d builds the sandbox around them; the
   Phase 3d gate ("Bomb/hang cases exit `2`") is a different, harsher
