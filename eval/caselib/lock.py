@@ -26,7 +26,11 @@ LOCK = Path(__file__).resolve().parent / "cases.lock.json"
 
 
 def lockable(case: Case) -> bool:
-    return case.writer != "qpdf"
+    # qpdf's output depends on the installed version; a perf case is built
+    # from scratch every run specifically to be large and slow — locking it
+    # would mean building it (at least) three times per lock refresh for a
+    # hash nothing reviews byte-for-byte.
+    return case.writer != "qpdf" and not case.perf
 
 
 def digest(case: Case, workdir: Path) -> str:

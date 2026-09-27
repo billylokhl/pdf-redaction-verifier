@@ -142,6 +142,11 @@ class Case:
     # Only meaningful for a case whose bytes are committed as-is
     # (writer="file"); every entry is checked by the scrub test itself.
     privacy_allowlist: tuple[dict[str, str], ...] = ()
+    # A large performance file (docs/REDESIGN.md §5's representative-file
+    # requirement): slow to build and/or slow to scan on purpose, so it is
+    # excluded from the default test run and the build lock (see
+    # tests/test_case_library.py and caselib.lock.lockable).
+    perf: bool = False
 
     @property
     def family(self) -> str:
@@ -198,6 +203,7 @@ def case(
     grid: str | None = None,
     params: tuple[tuple[str, str], ...] = (),
     privacy_allowlist: tuple[dict[str, str], ...] = (),
+    perf: bool = False,
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -212,7 +218,7 @@ def case(
             build=build, features=as_tuple(features), writer=writer, origin=origin,
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
             requires=frozenset(requires), grid=grid, params=params,
-            privacy_allowlist=privacy_allowlist,
+            privacy_allowlist=privacy_allowlist, perf=perf,
         )
         return build
     return register
