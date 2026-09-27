@@ -354,3 +354,9 @@ this ADR is its home.
   something painted over it (strips under a black box, say) is used. It
   stays the known miss recorded under "Strips" and the open question
   before Phase 4b; "fully covered" is not folded into "unused".
+
+  **Masks (owner decision, 2026-09-27).** An image's `/SMask` or `/Mask`
+  is used exactly when the image it belongs to is used; it is drawn only
+  as part of that image. It is still decoded and OCR'd as its own unit
+  (REDESIGN §4's image row), so text hidden in a mask is still read. The
+  mask of an unused image is unused and `FLAGGED` with it.
