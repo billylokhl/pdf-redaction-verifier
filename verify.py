@@ -88,8 +88,15 @@ from typing import Any, Callable, Iterator, NoReturn, Sequence
 # ──────────────────────────────────────────────────────────────────────────
 try:
     import fitz  # PyMuPDF
-except ImportError:  # pragma: no cover
-    sys.stderr.write("[ERROR] PyMuPDF is required: pip install pymupdf\n")
+except Exception as exc:  # pragma: no cover
+    # Broad on purpose: a corrupt install, a bytecode/ABI mismatch, or any
+    # other failure importing this dependency must exit 2 (operational
+    # failure), never fall through to a traceback and Python's default
+    # exit 1 — which this code otherwise shares with "secret found".
+    sys.stderr.write(
+        f"[ERROR] cannot import PyMuPDF ({type(exc).__name__}: {exc}); "
+        "install it: pip install pymupdf\n"
+    )
     sys.exit(2)
 
 try:
@@ -97,14 +104,26 @@ try:
     from Foundation import NSData
 
     _OCR_IMPORTS_OK = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
+    # Broad on purpose, same reasoning as above — but the design here is
+    # to degrade, not exit: any failure importing the OCR bridge (missing
+    # package, or a corrupt pyobjc install) means OCR is simply
+    # unavailable on this machine. That already surfaces later as an
+    # OCR_UNAVAILABLE warning (fail-closed: exit 2, never a silent clean
+    # verdict) rather than a crash, so it is not itself an operational
+    # failure worth a stderr message here.
     _OCR_IMPORTS_OK = False
 
 # ──────────────────────────────────────────────────────────────────────────
 # First-party package import (fail with a clear message, not a traceback —
 # same contract as the third-party imports above: an operational failure
 # must exit 2, never fall through to Python's default traceback + exit 1,
-# which this code otherwise shares with "secret found").
+# which this code otherwise shares with "secret found"). Catches Exception,
+# not just ImportError: a corrupt or partial install, a bytecode/ABI
+# mismatch, or any other failure while executing the package's module
+# bodies (a SyntaxError, an AttributeError, …) must exit 2 the same way a
+# missing package does — narrower than Exception would let any of those
+# through with a traceback and the default exit 1 instead.
 #
 # docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
 # normalizer/value matcher, the pattern-class scanning engine and the
@@ -160,10 +179,11 @@ try:
     from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
-except ImportError:  # pragma: no cover
+except Exception as exc:  # pragma: no cover
     sys.stderr.write(
-        "[ERROR] redaction_verifier package not found (install the "
-        "package or run verify.py from the repository)\n"
+        f"[ERROR] cannot import redaction_verifier "
+        f"({type(exc).__name__}: {exc}); install the package or run "
+        "verify.py from the repository\n"
     )
     sys.exit(2)
 

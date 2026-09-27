@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 import fitz
+import pytest
 
 import verify
 
@@ -112,14 +113,19 @@ class TestExitCodeContract:
         assert result.returncode == 2
         assert "Traceback" not in result.stderr
 
-    def test_missing_redaction_verifier_package_exits_2(self, tmp_path) -> None:
+    @pytest.mark.parametrize("exc_type", ["ImportError", "SyntaxError", "AttributeError"])
+    def test_missing_redaction_verifier_package_exits_2(self, tmp_path, exc_type) -> None:
         # Regression: verify.py's re-export of redaction_verifier.* was a
         # bare top-level import. If the package can't be found (not
         # installed, or verify.py copied out of the repo on its own), that
         # raised ModuleNotFoundError straight through main() — a plain
         # traceback and exit 1, the "secret found" code, silently
         # breaking the "operational failure exits 2, never 1" contract
-        # the PyMuPDF import already guards a few lines above it.
+        # the PyMuPDF import already guards a few lines above it. The
+        # guard must also catch more than ImportError: a corrupt or
+        # partial install, or a bytecode/ABI mismatch, can fail with a
+        # SyntaxError or AttributeError instead — anything raised while
+        # executing the package's module bodies, not only "not found".
         #
         # redaction_verifier is installed editable (a .pth finder in
         # site-packages pointing back at the repo), so neither an empty
@@ -128,12 +134,12 @@ class TestExitCodeContract:
         # from: Python inserts it at sys.path[0], ahead of site-packages.
         # So copying verify.py alone into tmp_path and placing a stub
         # top-level redaction_verifier.py next to it — a plain module,
-        # not a package, that raises ImportError on import — reliably
-        # simulates "the package can't be found" without needing -I or
-        # any interpreter/environment trickery.
+        # not a package, that raises the given exception on import —
+        # reliably simulates each failure mode without needing -I or any
+        # interpreter/environment trickery.
         shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
         (tmp_path / "redaction_verifier.py").write_text(
-            'raise ImportError("stub: simulated missing redaction_verifier")\n'
+            f'raise {exc_type}("stub: simulated {exc_type}")\n'
         )
         result = subprocess.run(
             [sys.executable, str(tmp_path / "verify.py"),
@@ -142,7 +148,11 @@ class TestExitCodeContract:
         )
         assert result.returncode == 2, result.stderr
         assert "Traceback" not in result.stderr
-        assert "[ERROR] redaction_verifier package not found" in result.stderr
+        assert "[ERROR] cannot import redaction_verifier" in result.stderr
+        # The real failure must stay visible — not masked by a generic
+        # "not found" message when the package IS present but something
+        # inside it failed.
+        assert exc_type in result.stderr, result.stderr
 
 
 @requires_full_env
