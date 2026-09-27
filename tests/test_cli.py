@@ -113,8 +113,31 @@ class TestExitCodeContract:
         assert result.returncode == 2
         assert "Traceback" not in result.stderr
 
-    @pytest.mark.parametrize("exc_type", ["ImportError", "SyntaxError", "AttributeError"])
-    def test_missing_redaction_verifier_package_exits_2(self, tmp_path, exc_type) -> None:
+    @pytest.mark.parametrize(
+        "exc_id, stub_code, expect_substr",
+        [
+            ("ImportError", 'raise ImportError("stub: simulated ImportError")\n',
+             "ImportError"),
+            ("SyntaxError", 'raise SyntaxError("stub: simulated SyntaxError")\n',
+             "SyntaxError"),
+            ("AttributeError", 'raise AttributeError("stub: simulated AttributeError")\n',
+             "AttributeError"),
+            # SystemExit and KeyboardInterrupt are BaseException, not
+            # Exception: an `except Exception` guard does not catch them,
+            # so a module that calls sys.exit() at import time (deliberate
+            # or accidental — argparse, a misplaced CLI shim, a debug
+            # `exit()` left in a partial install) would otherwise slip
+            # straight through as the whole process's own exit code —
+            # reproduced: SystemExit(0) made `verify.py --help` exit 0
+            # with no output whatsoever, silently discarding every
+            # argument including --target/--secrets.
+            ("SystemExit(0)", "raise SystemExit(0)\n", "SystemExit"),
+            ("SystemExit(1)", "raise SystemExit(1)\n", "SystemExit"),
+        ],
+    )
+    def test_missing_redaction_verifier_package_exits_2(
+        self, tmp_path, exc_id, stub_code, expect_substr
+    ) -> None:
         # Regression: verify.py's re-export of redaction_verifier.* was a
         # bare top-level import. If the package can't be found (not
         # installed, or verify.py copied out of the repo on its own), that
@@ -122,10 +145,11 @@ class TestExitCodeContract:
         # traceback and exit 1, the "secret found" code, silently
         # breaking the "operational failure exits 2, never 1" contract
         # the PyMuPDF import already guards a few lines above it. The
-        # guard must also catch more than ImportError: a corrupt or
+        # guard must also catch more than plain ImportError: a corrupt or
         # partial install, or a bytecode/ABI mismatch, can fail with a
-        # SyntaxError or AttributeError instead — anything raised while
-        # executing the package's module bodies, not only "not found".
+        # SyntaxError or AttributeError instead — and, per the
+        # SystemExit/KeyboardInterrupt case above, the catch must be
+        # BaseException, not Exception.
         #
         # redaction_verifier is installed editable (a .pth finder in
         # site-packages pointing back at the repo), so neither an empty
@@ -138,21 +162,51 @@ class TestExitCodeContract:
         # reliably simulates each failure mode without needing -I or any
         # interpreter/environment trickery.
         shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
-        (tmp_path / "redaction_verifier.py").write_text(
-            f'raise {exc_type}("stub: simulated {exc_type}")\n'
-        )
+        (tmp_path / "redaction_verifier.py").write_text(stub_code)
         result = subprocess.run(
             [sys.executable, str(tmp_path / "verify.py"),
              "--target", "x.pdf", "--secrets", "x.json"],
             capture_output=True, text=True, timeout=60, cwd=tmp_path,
         )
-        assert result.returncode == 2, result.stderr
+        assert result.returncode == 2, (exc_id, result.stdout, result.stderr)
         assert "Traceback" not in result.stderr
         assert "[ERROR] cannot import redaction_verifier" in result.stderr
         # The real failure must stay visible — not masked by a generic
         # "not found" message when the package IS present but something
         # inside it failed.
-        assert exc_type in result.stderr, result.stderr
+        assert expect_substr in result.stderr, result.stderr
+
+    def test_ocr_bridge_system_exit_at_import_exits_2(self, tmp_path) -> None:
+        # Same BaseException gap as above, but for the Vision/OCR import
+        # guard specifically: unlike an ordinary missing or broken OCR
+        # bridge (which must degrade to _OCR_IMPORTS_OK = False, not
+        # crash — see TestBaselines below), an import that itself calls
+        # sys.exit() or is interrupted must stop the tool loudly here.
+        # Order matters in the guard: (SystemExit, KeyboardInterrupt) is
+        # checked before the broad Exception catch that implements the
+        # degrade, so this must exit 2, not silently continue.
+        #
+        # A stub top-level Vision.py placed on PYTHONPATH shadows any
+        # real pyobjc Vision the same way a script's own directory
+        # shadows site-packages (see the test above) — PYTHONPATH entries
+        # are inserted ahead of the standard library and site-packages.
+        # Uses the real repo verify.py directly (no need to copy it: only
+        # the Vision import is being intercepted, not redaction_verifier).
+        stub_dir = tmp_path / "stub_vision"
+        stub_dir.mkdir()
+        (stub_dir / "Vision.py").write_text("raise SystemExit(0)\n")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(stub_dir), env.get("PYTHONPATH", "")]
+        )
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "verify.py"), "--help"],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr
+        assert "[ERROR] cannot import the OCR bridge (Vision)" in result.stderr
+        assert "SystemExit" in result.stderr
 
 
 @requires_full_env

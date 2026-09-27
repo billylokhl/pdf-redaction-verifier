@@ -88,11 +88,19 @@ from typing import Any, Callable, Iterator, NoReturn, Sequence
 # ──────────────────────────────────────────────────────────────────────────
 try:
     import fitz  # PyMuPDF
-except Exception as exc:  # pragma: no cover
-    # Broad on purpose: a corrupt install, a bytecode/ABI mismatch, or any
-    # other failure importing this dependency must exit 2 (operational
-    # failure), never fall through to a traceback and Python's default
-    # exit 1 — which this code otherwise shares with "secret found".
+except BaseException as exc:  # pragma: no cover
+    # BaseException, not Exception: a corrupt install, a bytecode/ABI
+    # mismatch, or any other failure importing this dependency must exit
+    # 2 (operational failure), never fall through to a traceback and
+    # Python's default exit 1 — which this code otherwise shares with
+    # "secret found". Exception alone is not broad enough — SystemExit
+    # and KeyboardInterrupt are BaseException, not Exception, so a stub
+    # or a corrupt module calling sys.exit() at import time (or a Ctrl-C
+    # during import) would otherwise slip straight through as the
+    # process's own exit code, silently, with no message at all. A Ctrl-C
+    # here exiting 2 (rather than the interpreter's usual 130) is
+    # acceptable: this code has not started scanning anything yet, and
+    # the fail-closed contract does not carve out an exception for it.
     sys.stderr.write(
         f"[ERROR] cannot import PyMuPDF ({type(exc).__name__}: {exc}); "
         "install it: pip install pymupdf\n"
@@ -104,26 +112,39 @@ try:
     from Foundation import NSData
 
     _OCR_IMPORTS_OK = True
+except (SystemExit, KeyboardInterrupt) as exc:  # pragma: no cover
+    # Checked before the broad Exception catch below (order matters):
+    # unlike a merely missing or broken OCR bridge, an import that itself
+    # calls sys.exit() or is interrupted must stop the tool loudly here,
+    # not be swallowed into a silent "OCR unavailable" degrade.
+    sys.stderr.write(
+        f"[ERROR] cannot import the OCR bridge (Vision) "
+        f"({type(exc).__name__}: {exc})\n"
+    )
+    sys.exit(2)
 except Exception:  # pragma: no cover
-    # Broad on purpose, same reasoning as above — but the design here is
-    # to degrade, not exit: any failure importing the OCR bridge (missing
-    # package, or a corrupt pyobjc install) means OCR is simply
-    # unavailable on this machine. That already surfaces later as an
-    # OCR_UNAVAILABLE warning (fail-closed: exit 2, never a silent clean
-    # verdict) rather than a crash, so it is not itself an operational
-    # failure worth a stderr message here.
+    # Broad on purpose, same reasoning as the PyMuPDF guard above — but
+    # the design here is to degrade, not exit: any ordinary failure
+    # importing the OCR bridge (missing package, or a corrupt pyobjc
+    # install) means OCR is simply unavailable on this machine. That
+    # already surfaces later as an OCR_UNAVAILABLE warning (fail-closed:
+    # exit 2, never a silent clean verdict) rather than a crash, so it is
+    # not itself an operational failure worth a stderr message here.
     _OCR_IMPORTS_OK = False
 
 # ──────────────────────────────────────────────────────────────────────────
 # First-party package import (fail with a clear message, not a traceback —
 # same contract as the third-party imports above: an operational failure
 # must exit 2, never fall through to Python's default traceback + exit 1,
-# which this code otherwise shares with "secret found"). Catches Exception,
-# not just ImportError: a corrupt or partial install, a bytecode/ABI
-# mismatch, or any other failure while executing the package's module
-# bodies (a SyntaxError, an AttributeError, …) must exit 2 the same way a
-# missing package does — narrower than Exception would let any of those
-# through with a traceback and the default exit 1 instead.
+# which this code otherwise shares with "secret found"). Catches
+# BaseException, not just ImportError or even Exception: a corrupt or
+# partial install, a bytecode/ABI mismatch, or any other failure while
+# executing the package's module bodies (a SyntaxError, an
+# AttributeError, …) must exit 2 the same way a missing package does —
+# and SystemExit/KeyboardInterrupt are BaseException, not Exception, so
+# Exception alone would let a module that calls sys.exit() at import time
+# (or a Ctrl-C during import) slip through as the process's own silent
+# exit code instead of this guard's message.
 #
 # docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
 # normalizer/value matcher, the pattern-class scanning engine and the
@@ -179,7 +200,7 @@ try:
     from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
-except Exception as exc:  # pragma: no cover
+except BaseException as exc:  # pragma: no cover
     sys.stderr.write(
         f"[ERROR] cannot import redaction_verifier "
         f"({type(exc).__name__}: {exc}); install the package or run "
