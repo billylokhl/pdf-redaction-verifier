@@ -45,7 +45,7 @@ _MATCH_ROW = "match"
 # gets none). They say where the value is, never whether it is legible.
 _CAPTIONS = {
     "none": "Nothing visible here: the secret is elsewhere in the file (see above).",
-    "later": "Not on page 1: the value is on a later page.",
+    "later": "Not on page 1: the value appears later in the document.",
     "partial": "Only part of the value is on page 1; the rest is on a later page.",
     "wrapped": "The value is on this page, split across lines.",
 }
@@ -224,7 +224,7 @@ def _secret_visibility(case: Case, pdf_path: Path) -> str:
       lines (match.line-wrap and friends);
     - "partial": at least _MIN_PART characters of it on page 1 and the
       rest on a later page (match.page-break and friends);
-    - "later": none of it on page 1, but the value is on a later page;
+    - "later": none of it on page 1, but the value is on later pages;
     - "none": in no page's text at all (match.extreme-coordinates, K35,
       draws its text where PyMuPDF's extraction never returns it, so
       page 1 is blank)."""

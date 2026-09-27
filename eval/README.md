@@ -201,8 +201,10 @@ needs a second, different commit to compare against:
 `eval/check_ratchets.py` diffs every ratchet against the merge-base with
 `main` (a pull request) or `HEAD~1` (a direct push to `main`, which
 only catches a single-commit rewrite — see the script's docstring for
-what that does and doesn't cover) and fails if anything grew, or if an
-`initial_labels_sha256` moved. It is CI's `ratchets` job
+what that does and doesn't cover) and fails if anything grew, if an
+`initial_labels_sha256` moved, if a ratchet the base's own registry
+lists is no longer checked (`check_registry`, below), or if the base
+can't be read well enough to tell. It is CI's `ratchets` job
 (`.github/workflows/tests.yml`, needs `fetch-depth: 0` for the history to
 diff against) and can also be run locally:
 
@@ -254,12 +256,14 @@ The base's own list of ratchets counts too (`check_registry`): the
 `eval/check_ratchets.py` — read from the base ref, not the running
 script — must all still be checked. Deleting an entry, or renaming or
 moving a set along with a matching entry, would otherwise pass ("nothing
-to shrink from") and let the set grow in the same change. A ratchet the
-base lists must also be readable in the base, so a set that is missing
-there was renamed or moved, not introduced. Retiring or renaming a
-ratchet therefore always fails this check: it has to land as its own
-pull request after anything replacing it, where the failing `ratchets`
-job makes the removal explicit and a maintainer accepts it deliberately.
+to shrink from") and let the set grow unseen. A ratchet the base lists
+must also be readable in the base, so a set that is missing there was
+renamed or moved, not introduced. An unreadable base registry fails, and
+so does a base that has ratchet files but no copy of the checker at all
+(only a base that predates the ratchets entirely has nothing to compare).
+**Retiring or renaming a ratchet is unsupported by design**: an emptied
+ratchet stays, with its test, for good — it costs nothing and guards the
+"no exceptions" state. Adding a new ratchet is always fine.
 
 **Threat model.** The ratchets guard against accidental or unreviewed
 growth: a set grown by any ordinary edit, a rebind in some block or
@@ -564,8 +568,8 @@ from the case's primary cell rather than a hand list:
   on this page, split across lines"; at least 3 characters of it on
   page 1 with the rest on a later page (`match.page-break` and friends)
   gets "Only part of the value is on page 1; the rest is on a later
-  page"; none of it on page 1 but all of it on a later page gets "Not on
-  page 1: the value is on a later page"; and in no page's text at all
+  page"; none of it on page 1 but all of it further on gets "Not on page
+  1: the value appears later in the document"; and in no page's text at all
   gets "Nothing visible here" (e.g. `match.extreme-coordinates`, K35,
   which draws its text where PyMuPDF's extraction never returns it, so
   the page-1 PNG is blank). A rule with no literal value (a built-in

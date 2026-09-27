@@ -33,7 +33,8 @@ Three things this deliberately does not trust:
 
 - Which ratchets to check is read from the *base's* copy of this script
   (``check_registry``), not only from the running one, so a change
-  cannot drop, rename or move a ratchet and grow it at the same time.
+  cannot drop, rename or move a ratchet. Ratchets are never retired or
+  renamed; adding a new one is always fine.
 - A round is matched between trees by round.json's own ``"round"`` field,
   never by path — a directory rename alone changes nothing, but a rename
   that also forges a fresh ``initial_labels_sha256`` is still caught,
@@ -416,15 +417,16 @@ def check_ratchet_set(old: Tree, new: Tree, path: str, name: str,
 
 def check_reexports(new: Tree, path: str,
                     sets: tuple[tuple[str, str], ...] = RATCHET_SETS) -> list[str]:
-    """*path* (a package ``__init__.py`` consumers import the ratchet
-    sets through — tests do ``from caselib import UNDOCUMENTED_GAPS``)
+    """*path* (a package ``__init__.py`` that re-exports the ratchet
+    sets for other importers — ``caselib`` does; the tests themselves
+    read them via ``_verified(NAME)``, the literal this script checks)
     may bind a ratchet name only by re-exporting it unchanged from its
     defining module in the same package (``from .cells import
     UNDOCUMENTED_GAPS``). Anything else that could bind it there —
     assigning it, importing it from elsewhere or under another name's
     alias, a star import, a string naming it — fails closed, since
     ``check_ratchet_set`` never looks at this file and a rebind here
-    would grow exactly the set the tests use."""
+    would change the set every such importer sees."""
     text = new.read(path)
     if text is None:
         return []
@@ -492,26 +494,36 @@ def check_registry(old: Tree, sets: tuple[tuple[str, str], ...] = RATCHET_SETS,
     from the running script) must still be checked now. Without this, a
     pull request could stop a ratchet being checked — delete its
     RATCHET_SETS entry, or rename or move the set along with a matching
-    entry — and grow it in the same change, unseen. Retiring or renaming
-    a ratchet is therefore never silent: it always fails this check, so
-    it has to land as its own, deliberate step (see eval/README.md)."""
+    entry — and grow it unseen. Ratchets are never retired or renamed,
+    by design: an empty one stays (with its test) to guard the "no
+    exceptions" state. Adding a new ratchet is always fine.
+
+    A base with no copy of this script at all only passes if it predates
+    the ratchets entirely — none of the files in *sets* exist there
+    either. A base that has ratchet files but no checker fails closed:
+    there is no registry to compare against."""
     try:
         old_sets = _declared(old, "RATCHET_SETS")
         old_reexports = _declared(old, "RATCHET_REEXPORTS")
     except _RegistryError as exc:
         return [f"base: {exc} — cannot tell which ratchets must still be checked"]
+    if old_sets is None:
+        present = sorted({path for path, _name in sets if old.read(path) is not None})
+        if present:
+            return [f"base: has ratchet file(s) {present} but no {CHECKER_PATH} — cannot "
+                    "tell which ratchets must still be checked"]
+        return []
     problems = []
-    for entry in old_sets or ():
+    for entry in old_sets:
         if tuple(entry) not in sets:
             path, name = entry
             problems.append(
-                f"{path}:{name}: the base checks this ratchet, but RATCHET_SETS no longer "
-                "does — a ratchet may not be removed, renamed or moved in the same change "
-                "that could grow it")
+                f"ratchet ({path}, {name}) from the base registry is no longer checked; "
+                "ratchets are never retired or renamed (see eval/README.md)")
     for path in old_reexports or ():
         if path not in reexports:
-            problems.append(f"{path}: the base checks this module's ratchet re-exports, but "
-                            "RATCHET_REEXPORTS no longer does")
+            problems.append(f"re-export module {path} from the base registry is no longer "
+                            "checked; ratchets are never retired (see eval/README.md)")
     return problems
 
 

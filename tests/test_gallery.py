@@ -227,7 +227,7 @@ _ALL_CAPTIONS = ("Nothing visible here", "Only part of the value", "split across
     ("page.extreme-coordinates", "Nothing visible here"),
     ("layout.page-break", "Only part of the value is on page 1"),
     ("layout.raw-line-wrap", "The value is on this page, split across lines"),
-    ("layout.several-values-ssn", "Not on page 1: the value is on a later page"),
+    ("layout.several-values-ssn", "Not on page 1: the value appears later in the document"),
     ("page.box-over-text", None),
 ])
 def test_each_visibility_gets_its_own_caption(visibility_built, case_id: str,

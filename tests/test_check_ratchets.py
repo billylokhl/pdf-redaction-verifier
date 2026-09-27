@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from check_ratchets import (CHECKER_PATH, RATCHET_REEXPORTS, DictTree, check_ratchet_set,
-                            check_redteam_anchors, check_registry, check_reexports,
-                            determine_base_ref, run_all_checks)
+from check_ratchets import (CHECKER_PATH, RATCHET_REEXPORTS, RATCHET_SETS, DictTree,
+                            check_ratchet_set, check_redteam_anchors, check_registry,
+                            check_reexports, determine_base_ref, run_all_checks)
 
 CELLS_TEMPLATE = """
 UNDOCUMENTED_GAPS: frozenset[str] = frozenset({{
@@ -353,7 +353,7 @@ class TestRegistry:
         new = DictTree({_CELLS: 'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap", "b"})\n',
                         _MODEL: self.MODEL_OLD})
         problems = run_all_checks(old, new, sets=self.SETS[1:], reexports=())
-        assert any("UNDOCUMENTED_GAPS" in p and "no longer" in p for p in problems), problems
+        assert any("UNDOCUMENTED_GAPS" in p and "no longer checked" in p for p in problems), problems
 
     def test_renaming_a_set_with_a_matching_entry_fails(self) -> None:
         old = self._old()
@@ -361,7 +361,7 @@ class TestRegistry:
                         _MODEL: self.MODEL_OLD})
         sets = ((_CELLS, "RENAMED_GAPS"), self.SETS[1])
         problems = run_all_checks(old, new, sets=sets, reexports=())
-        assert any("UNDOCUMENTED_GAPS" in p and "no longer" in p for p in problems), problems
+        assert any("UNDOCUMENTED_GAPS" in p and "no longer checked" in p for p in problems), problems
 
     def test_moving_a_set_with_a_matching_entry_fails(self) -> None:
         old = self._old()
@@ -369,7 +369,7 @@ class TestRegistry:
                         '= frozenset({"a.gap", "b"})\n'})
         sets = ((_MODEL, "UNDOCUMENTED_GAPS"), self.SETS[1])
         problems = run_all_checks(old, new, sets=sets, reexports=())
-        assert any(_CELLS in p and "no longer" in p for p in problems), problems
+        assert any(_CELLS in p and "no longer checked" in p for p in problems), problems
 
     def test_listed_in_the_base_but_missing_there_fails(self) -> None:
         # The base's registry names it, so "not in the old tree" is no
@@ -398,8 +398,20 @@ class TestRegistry:
         problems = check_registry(old, sets=self.SETS, reexports=())
         assert problems and _INIT in problems[0]
 
-    def test_base_without_a_checker_has_no_registry(self) -> None:
-        assert check_registry(DictTree({}), sets=(), reexports=()) == []
+    def test_base_predating_the_ratchets_entirely_has_no_registry(self) -> None:
+        # No checker and none of the ratchet files: nothing to compare.
+        assert check_registry(DictTree({}), sets=self.SETS, reexports=()) == []
+
+    def test_base_with_ratchet_files_but_no_checker_fails_closed(self) -> None:
+        old = DictTree({_CELLS: self.CELLS_OLD, _MODEL: self.MODEL_OLD})
+        problems = check_registry(old, sets=self.SETS, reexports=())
+        assert problems and "no " + CHECKER_PATH in problems[0]
+
+    def test_removal_message_says_ratchets_are_never_retired(self) -> None:
+        (problem,) = check_registry(self._old(), sets=self.SETS[1:], reexports=())
+        assert problem == (f"ratchet ({_CELLS}, UNDOCUMENTED_GAPS) from the base registry is "
+                           "no longer checked; ratchets are never retired or renamed "
+                           "(see eval/README.md)")
 
     def test_base_checker_predating_reexports_is_fine(self) -> None:
         old = DictTree({CHECKER_PATH: _checker(self.SETS)})
@@ -581,6 +593,7 @@ class TestCheckRedteamAnchors:
 
 def test_run_all_checks_combines_every_ratchet() -> None:
     old = DictTree({
+        CHECKER_PATH: _checker(RATCHET_SETS, RATCHET_REEXPORTS),
         "eval/caselib/cells.py": _cells_source(("a.gap",)),
         "eval/caselib/model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n",
         "eval/caselib/redteam/round-0-example/round.json":
@@ -601,6 +614,7 @@ def test_run_all_checks_combines_every_ratchet() -> None:
 
 def test_run_all_checks_clean_when_nothing_changed() -> None:
     files = {
+        CHECKER_PATH: _checker(RATCHET_SETS, RATCHET_REEXPORTS),
         "eval/caselib/cells.py": _cells_source(("a.gap",)),
         "eval/caselib/model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n",
     }
