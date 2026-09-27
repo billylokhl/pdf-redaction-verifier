@@ -426,6 +426,11 @@ against a pinned reference version, so every intended verdict change is
 reviewed explicitly in `eval/accepted_diffs.yaml` — see
 [eval/README.md](eval/README.md#the-scorecard-scorecard).
 
+The **gallery** (`PYTHONPATH=eval:. python -m gallery build --out DIR`) is
+a static HTML page of how each leak case's redaction actually fails —
+generated from the same case library, illustrative only, and never
+gating — see [eval/README.md](eval/README.md#gallery-gallery).
+
 ## Glossary
 
 ### What is inside a PDF

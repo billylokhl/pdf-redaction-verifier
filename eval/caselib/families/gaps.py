@@ -441,9 +441,9 @@ def _af_objects(filename: bytes, data: bytes) -> dict[int, bytes]:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("embedded-other.plain.pattern-rules", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
-    mistake="Leaving a PDF 2.0 associated file in place, off the attachments list, and "
-            "trusting a pattern rule to catch it.",
-    recovery="Walk every /AF entry and read its content directly, not only via the qpdf sweep.",
+    mistake="Leaving a PDF 2.0 associated file in place, off the attachments list, "
+            "instead of deleting it.",
+    recovery="Walk every /AF entry and read its content directly.",
 )
 def af_pattern_rule(path: Path) -> None:
     _write(path, _af_objects(b"source.txt", b"Source notes: " + SECRET.encode()))
@@ -490,8 +490,8 @@ def af_container(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("javascript.plain.pattern-rules-in-streams", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
-    mistake="Leaving a JavaScript action's code in the file, stored as a stream, and "
-            "trusting a pattern rule to catch it.",
+    mistake="Leaving a link's JavaScript action in the file, stored as a stream, instead "
+            "of removing it.",
     recovery="Walk every action's /JS entry and read it as raw text, string or stream alike.",
 )
 def js_stream_pattern(path: Path) -> None:
@@ -513,9 +513,9 @@ def js_stream_pattern(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("private-data.plain.pattern-rules", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
-    mistake="Leaving an editor's private data (/PieceInfo) in the file and trusting a "
-            "pattern rule to catch it in the Binary sweep.",
-    recovery="Read every live /PieceInfo stream as raw text directly, not only via qpdf.",
+    mistake="Leaving an editor's private data (/PieceInfo) in the file instead of "
+            "stripping it before sharing.",
+    recovery="Read every live /PieceInfo stream as raw text directly.",
 )
 def piece_info_pattern(path: Path) -> None:
     objects = one_page(PAGE)
@@ -599,7 +599,8 @@ def unindexed_container(path: Path) -> None:
     expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
     known_gap=KnownGap("match.columns", expect(0)),
     requires=("no-ocr",),
-    mistake="Trusting a naive top-to-bottom text search on a multi-column layout.",
+    mistake="Nobody redacted the value; it wraps across two lines inside one column of "
+            "a two-column layout.",
     recovery="Read the page column by column, not strictly top-to-bottom.",
 )
 def two_column_wrap(path: Path) -> None:
