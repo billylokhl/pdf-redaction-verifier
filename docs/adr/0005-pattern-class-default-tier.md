@@ -47,9 +47,11 @@ the size of the change): `eval/caselib/families/live.py`'s
 `("Any SSN", "live")`); every `page_text_labels.py` grid entry whose
 expected findings list is exactly `(("Any SSN", "live"),)` (the
 `pattern-only` layout variants: `single-line`, `rotated`, `form-boxes`,
-`overlapping-values`, `overlapping-split-short-tail` at minimum); and
-`families/layout.py`'s SSN-class cases. All of these currently expect
-exit `1`; demoting the class would need every one relabelled to expect
+`overlapping-values`, `overlapping-split-short-tail` at minimum). All of
+these currently expect exit `1`. (`families/layout.py`'s one SSN-class
+case, `layout.undashed-ssn-wrapped`, is not on this list: it already
+expects exit `2`, a review warning, so a demotion would not relabel it.)
+Demoting the class would need every one on the list relabelled to expect
 `2` (or a mixed hard/review finding set) *before* Phase 2's differential
 gate could pass -- this is Phase 2 work, not a Phase 1 ADR's to do.
 

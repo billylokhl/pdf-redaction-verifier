@@ -48,29 +48,60 @@ have: exit `2` -- unchanged from today's behavior (see Correction
 above). No password is ever logged, retried against a wordlist, or
 otherwise brute-forced.
 
-**Implementation surface -- proposed, needs the owner's decision.** The
-first version of this ADR proposed `pikepdf` for decryption. That does
-not actually work for this design: **pikepdf (like PyMuPDF) only ever
-exposes the current revision's view of the file** -- there is no API to
-open "the file as of an earlier incremental update" the way
-`verify.scan_earlier_revisions` does today for the *unencrypted* case
-(truncating the raw bytes just past an earlier xref section and
-reopening). A superseded revision can carry its **own** `/Encrypt`
-dictionary (a different key, possibly a different algorithm, than the
-current revision's), and neither pikepdf nor PyMuPDF can be pointed at
-it. The realistic options are:
+**Implementation surface -- proposed, needs the owner's decision.**
+
+**Correction to the previous version of this ADR.** It claimed that
+neither pikepdf nor PyMuPDF can open a superseded revision, so
+hand-rolled key derivation was "the only option that actually covers
+superseded revisions." That is false. `verify.scan_earlier_revisions`
+already reaches them for encrypted files too: it cuts the raw bytes just
+past an earlier xref section, appends a `startxref`, and reopens the
+prefix (`verify.py` around lines 2929-2931). The cut copy carries the
+earlier revision's own trailer and `/Encrypt`, and PyMuPDF opens it with
+the empty user password. Checked directly: an owner-password-only file
+(AES-256 R6, and separately RC4-128 R3) whose content stream showing a
+value was overwritten by an incremental update exits `1` under today's
+`verify.py`, with an `Objects` finding in `superseded` storage. pikepdf
+could be pointed at the same prefix. So which implementation reads a
+superseded revision is an open choice, not a forced one.
+
+The options, and the differences between them that remain:
 
 1. **Hand-rolled key derivation and decryption** (RC4 is a few lines;
    AES via a crypto-primitives library such as `cryptography`, never a
-   hand-rolled block cipher) that can be pointed at any revision's own
-   `/Encrypt` dictionary and any object's raw bytes, with pikepdf/MuPDF
-   used only as the cross-check on the current revision (recommended --
-   it is the only option that actually covers superseded revisions).
-2. Decrypt only the current revision (via pikepdf or hand-rolled) and
-   treat every superseded revision of an encrypted file as `FLAGGED`
-   outright, never attempting to read it. Simpler, but gives up on the
-   exact place a pre-redaction original is most likely to still be
-   sitting (§4's inventory section on superseded objects).
+   hand-rolled block cipher), applied per revision to that revision's
+   own `/Encrypt`, with MuPDF's decryption of the same prefix as the
+   cross-check.
+2. **Library decryption per revision**: pikepdf (qpdf) reads each
+   revision's prefix cut, as `verify.py` already does with PyMuPDF, and
+   its decrypted stream bytes, before filters, are cross-checked against
+   MuPDF's `xref_stream_raw` for the same prefix (the stage the
+   cross-check below compares; confirming pikepdf exposes exactly that
+   stage is part of choosing it -- not checked in this pass).
+3. Decrypt only the current revision and flag every superseded revision
+   of an encrypted file outright. Not recommended: today's tool already
+   reads those revisions, so this would turn every incrementally updated
+   encrypted file into a review case for no gain.
+
+| | Option 1 (hand-rolled) | Option 2 (pikepdf) |
+| --- | --- | --- |
+| Superseded revisions | Reached by the prefix cut, key derived from that revision's `/Encrypt` | Reached by the same prefix cut |
+| Dead bodies (`N G obj` bytes no xref indexes) | Can be decrypted and searched, but no second decryption exists to cross-check, so still `FLAGGED` | Cannot be decrypted; `FLAGGED` unsearched. A secret in one exits `2` rather than `1` -- never `0` either way |
+| An earlier revision whose `/Encrypt` differs from the current one | Untested | Untested |
+| Cross-check independence | Our code vs MuPDF | qpdf vs MuPDF: two independent implementations, neither ours |
+| Exit-`0` audit surface | Our key derivation and RC4, plus the crypto library | pikepdf/qpdf's decryption |
+| New dependency to pin | `cryptography` (or another crypto-primitives library) | `pikepdf` (not a runtime dependency today) |
+
+**Recommendation: option 2.** It reaches superseded revisions the way
+today's tool already does, keeps hand-written cryptography off the
+exit-`0` audit surface, and its cross-check compares two implementations
+that share no code. The one thing option 1 adds is searching dead bodies
+in an encrypted file, and those stay `FLAGGED` under either option (no
+second decryption exists for them), so the difference is exit `1`
+versus `2` when a secret sits in one -- never a false `0`. Choose option
+1 only if that difference matters to the owner. Under either option,
+Phase 3a must add a fixture whose earlier revision carries a *different*
+`/Encrypt` from the current one: nothing has exercised that case yet.
 
 **The cross-check, corrected.** For every object with an xref entry --
 **this includes an orphaned-but-indexed object**: `doc.xref_object`/
@@ -98,12 +129,12 @@ even with the correct key. The comparison must instead be:
   `xref_stream`.
 
 **Any key path this cross-check cannot reach is `FLAGGED`, not
-`DECODED` on our own decryption's word alone**, per the fail-closed
-default this whole review is built around. Concretely, that means:
-a superseded revision (including one with its own `/Encrypt`, under
-option 1 above), and any object MuPDF itself cannot read for an
-unrelated reason, are `FLAGGED` unless some other independent check
-covers that specific key path.
+`DECODED` on one decryption's word alone**, per the fail-closed default
+this whole review is built around. Concretely, that means: a dead body
+outside every xref, a superseded revision whose prefix cut MuPDF opens
+only by repair (today's tool already reports that as unread), and any
+object MuPDF itself cannot read for an unrelated reason, are `FLAGGED`
+unless some other independent check covers that specific key path.
 
 **Unindexed byte ranges** in an encrypted file have no object number,
 so there is nothing to decrypt against a confirmed key and nothing to
@@ -130,11 +161,11 @@ deliberately wrong key to confirm the cross-check actually fires.
   unencrypted ones once decrypted; encryption adds one more thing that
   must succeed (authentication) before any other obligation can be
   discharged.
-- The cross-check makes MuPDF's own decryption (current revision) part
-  of the audit surface for encrypted files, and makes a
-  crypto-primitives library (if option 1 is chosen) part of it too --
-  this is a wider exit-`0` audit surface than an unencrypted file has,
-  which is inherent to the problem, not a design flaw.
+- The cross-check makes MuPDF's own decryption part of the audit surface
+  for encrypted files, and makes either pikepdf/qpdf (option 2) or our
+  own key derivation plus a crypto-primitives library (option 1) part of
+  it too -- this is a wider exit-`0` audit surface than an unencrypted
+  file has, which is inherent to the problem, not a design flaw.
 - No verdict currently exits `0` for an encrypted file that this ADR
   would move to `2`, or vice versa -- see Correction above. The
   verdict-change risk here is in the *other* direction: getting the
@@ -144,9 +175,14 @@ deliberately wrong key to confirm the cross-check actually fires.
 
 ## Owner confirmation needed
 
-- Hand-rolled key derivation on a crypto-primitives library (option 1,
-  recommended) vs. pikepdf/current-revision-only with superseded
-  revisions always flagged (option 2).
-- If option 1: which crypto-primitives library to pin (e.g.
-  `cryptography` for AES/SHA; RC4 is short enough to implement directly
-  and review as part of the exit-0 audit surface).
+- Which implementation decrypts each revision: pikepdf on each
+  revision's prefix cut, cross-checked against MuPDF (option 2,
+  recommended); hand-rolled key derivation on a crypto-primitives
+  library, cross-checked against MuPDF (option 1 -- only if searching
+  dead bodies in encrypted files, exit `1` instead of `2`, is worth our
+  own crypto code on the exit-`0` audit surface); or current revision
+  only (option 3, not recommended).
+- Which library to pin, exactly as `pymupdf` is pinned: `pikepdf` for
+  option 2, or `cryptography` (AES, SHA-256/384/512 for R6; RC4 short
+  enough to write and review directly) for option 1. Neither is a
+  runtime dependency today.

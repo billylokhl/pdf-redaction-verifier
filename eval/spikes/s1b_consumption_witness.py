@@ -12,13 +12,26 @@ text-show operator (dividing each shown string's length by its font's
 code length -- 1 byte for a simple font, 2 for an Identity-H/V Type0
 font) and this must equal the number of glyphs MuPDF reports in the
 page's texttrace, after excluding a texttrace char entry that is a
-ToUnicode continuation (glyph id -1, no glyph of its own) and
-de-duplicating a (glyph, origin) pair that appears twice (fill-then-
-stroke rendering modes draw, and texttrace reports, the same glyph
-twice).
+ToUnicode continuation (glyph id -1, no glyph of its own) and -- only on
+a page that sets text render mode 2 or 6 (fill+stroke) -- de-duplicating
+a (glyph, origin) pair that appears twice (MuPDF reports the fill and the
+stroke of one glyph as two separate spans). De-duplication is confined to
+such pages because on any other page a repeated (glyph, origin) pair is a
+real second draw (a run of zero-width glyphs at one position, the same
+text painted twice at one spot) that the code count also counts.
 
-**This is the second correction to this script.** The first version had
-an operand-stack bug (numeric operands were dropped, so `Tf` was never
+**This is the third correction to this script** (the second is below;
+the third, in this version: (d) the fill+stroke de-duplication above was
+applied to every page, which removed real repeated draws and caused 8 of
+the 9 files the previous version reported as mismatching -- it is now
+confined to pages that set `2 Tr` or `6 Tr`; (e) the Form XObject skip
+was a regex over the page's content that missed `0 TL/Fm0 Do` (no
+whitespace before the name) and skipped any page drawing *any* XObject,
+images included -- a `Do` operand is now resolved against the page's
+resources, and only a draw of a real `/Subtype /Form` XObject skips the
+page, so image-only pages are now measured.)
+
+**The second correction:** the first version had an operand-stack bug (numeric operands were dropped, so `Tf` was never
 recognised -- see git history / RESULTS.md's first Correction note). The
 version after that added a per-font "does this code have a real glyph"
 exclusion via `doc.get_char_widths`, which looked clean (92.7%
@@ -50,21 +63,24 @@ skipped, not silently miscounted.
 
 This script does two things:
 
-1. Runs ten hand-built content streams (attached to a scratch page the
+1. Runs eleven hand-built content streams (attached to a scratch page the
    way REDESIGN §4 describes: an undrawn stream given the page's own
    resolved resources) and reports, for each, whether MuPDF warned,
    whether the witness caught a mismatch, and whether the mismatch would
    have gone unnoticed by a warnings-only check. `3 Tr` (ordinary
    invisible text, ordinary OCR-layer usage) and `2 Tr` (fill+stroke,
    now de-duplicated) both reconcile -- included as the comparison the
-   `7 Tr` and leak-shape cases need. Three cases produce a witness
+   `7 Tr` and other no-warning cases need, and so does the same text painted
+   twice at one spot under `0 Tr` (the control for correction (d): it
+   must count twice on both sides). Three cases produce a witness
    mismatch with **no MuPDF warning at all**: clip-only text (`7 Tr`),
    an inline image whose declared-length pixel data literally spells a
    second, phantom text-show operation that MuPDF correctly treats as
-   opaque bytes but this script's own naive inline-image skip does not,
-   and text inside a switched-off optional-content group (invisible to
-   both `get_texttrace()` and `get_text()`, but present in the raw
-   stream). The optional-content case is REDESIGN §8's K6 shape.
+   opaque bytes but this script's own naive inline-image skip does not
+   (a false flag caused by this script's tokenizer over-counting, not a
+   leak), and text inside a switched-off optional-content group
+   (invisible to both `get_texttrace()` and `get_text()`, but present in
+   the raw stream). The optional-content case is REDESIGN §8's K6 shape.
 2. Sweeps every page of the real corpus (see corpus.py) and reports the
    witness's reconciliation rate, on the denominator that actually
    carries signal (pages that show *some* text -- most corpus pages show
@@ -175,18 +191,34 @@ def _decode_pdf_string_fixed(token: str) -> str:
 # of verify._decode_pdf_string.
 
 
+class _Scan:
+    """What one pass of the tokenizer below found in a content stream."""
+
+    def __init__(self) -> None:
+        self.total = 0                   # code units shown
+        self.shown: list[str] = []       # the shown strings
+        self.do_names: set[str] = set()  # every `/Name Do` operand
+        self.fill_stroke = False         # a `2 Tr` or `6 Tr` was set
+
+
 def _code_counts(buf: str, code_length: dict[str, int]) -> tuple[int, list[str]]:
     """(total code-unit count, shown strings) for every text-show
     operation in *buf*. Each shown string's codes are counted using the
     code length of the font active at that point (default 1 before any
     `Tf` or for a font not on the page)."""
+    scan = _scan_codes(buf, code_length)
+    return scan.total, scan.shown
+
+
+def _scan_codes(buf: str, code_length: dict[str, int]) -> _Scan:
+    """_code_counts's pass, also recording the names drawn with `Do` and
+    whether a fill+stroke render mode (2 or 6) is ever set."""
+    scan = _Scan()
     operands: list[tuple[str, Any]] = []
     array: list[str] | None = None
     depth = 0
     active_font: str | None = None
     inline: list[str] | None = None
-    total = 0
-    shown: list[str] = []
     i, n = 0, len(buf)
     while i < n:
         if buf[i] == "(":
@@ -251,12 +283,17 @@ def _code_counts(buf: str, code_length: dict[str, int]) -> tuple[int, list[str]]
                 pieces = [value] if kind == "str" else []
             width = code_length.get(active_font, 1) if active_font else 1
             for piece in pieces:
-                shown.append(piece)
-                total += (len(piece) // width) if width else len(piece)
+                scan.shown.append(piece)
+                scan.total += (len(piece) // width) if width else len(piece)
+        elif token == "Tr" and operands and operands[-1][0] == "num":
+            if float(operands[-1][1]) in (2, 6):
+                scan.fill_stroke = True
+        elif token == "Do" and operands and operands[-1][0] == "name":
+            scan.do_names.add(operands[-1][1])
         elif token == "BI":
             inline = []
         operands.clear()
-    return total, shown
+    return scan
 
 
 # Mixed-width CJK CMaps (Shift-JIS-, EUC- and Big5-based predefined CMaps)
@@ -285,25 +322,30 @@ def _font_code_lengths(page: fitz.Page) -> dict[str, int] | None:
     return lengths
 
 
-def _glyph_count(trace: list[dict[str, Any]]) -> int:
+def _glyph_count(trace: list[dict[str, Any]], *, fill_stroke: bool = False) -> int:
     """Glyphs actually drawn, from get_texttrace()'s chars tuples:
     excludes a ToUnicode continuation entry (glyph id -1 -- a second or
     further Unicode character for one glyph, e.g. a ligature's expansion,
-    not a second glyph) and de-duplicates a (glyph, origin) pair that
-    recurs (a fill-then-stroke render mode, Tr 2/6, draws -- and MuPDF
-    reports -- the same glyph twice, but as TWO SEPARATE SPANS, one per
-    paint operation, not two entries in one span -- the dedup set is
-    shared across the whole page's trace, not reset per span)."""
+    not a second glyph). Only when *fill_stroke* (the page sets render
+    mode 2 or 6) is a recurring (glyph, origin) pair de-duplicated: a
+    fill-then-stroke render mode draws -- and MuPDF reports -- the same
+    glyph twice, as TWO SEPARATE SPANS, one per paint operation (so the
+    dedup set is shared across the whole page's trace, not reset per
+    span). On any other page a recurring pair is a real second draw -- a
+    run of zero-width glyphs at one position, or the same text painted
+    twice at one spot -- which the code count counts too, so removing it
+    would manufacture a mismatch."""
     total = 0
     seen: set[tuple[int, tuple[float, float]]] = set()
     for span in trace:
         for _unicode, glyph, origin, _bbox in span["chars"]:
             if glyph == -1:
                 continue
-            key = (glyph, origin)
-            if key in seen:
-                continue
-            seen.add(key)
+            if fill_stroke:
+                key = (glyph, origin)
+                if key in seen:
+                    continue
+                seen.add(key)
             total += 1
     return total
 
@@ -314,28 +356,46 @@ class _SkipPage(Exception):
         self.reason = reason
 
 
-_FORM_DO_RE = re.compile(r"(?:^|[\s\d])/[^\s/()<>\[\]{}%]+\s+Do(?:[\s(]|$)")
+def _form_names(page: fitz.Page) -> set[str]:
+    """'/Name' for every Form XObject in the page's own resources (the
+    ones its content stream can draw directly; `invoker` 0 -- a form
+    nested inside another form is reached only through its parent)."""
+    return {"/" + name for _xref, name, invoker, _bbox in page.get_xobjects()
+            if invoker == 0}
+
+
+def _image_names(page: fitz.Page) -> set[str]:
+    return {"/" + entry[7] for entry in page.get_images()}
 
 
 def witness(page: fitz.Page, *, unit_only: bool = False) -> tuple[int, int, bool, str]:
     """(code_count, glyph_count, matches, mupdf_warnings) for one page.
 
     *unit_only*, used by the corpus sweep's refined pass: skip a page
-    that draws through a Form XObject (its glyphs are not in
-    page.read_contents(), so a whole-page comparison is not the
-    same-decoding-unit comparison REDESIGN §4 actually specifies -- such
-    a page is entirely unmeasured by this script, not counted either
-    way) or that uses an unmodelled mixed-width CMap. Annotation
-    appearance text is always excluded (annotations are deleted from the
-    in-memory page before tracing -- this script never writes the file).
+    whose content stream draws a Form XObject -- a `Do` whose operand
+    resolves, in the page's resources, to a `/Subtype /Form` XObject (its
+    glyphs are not in page.read_contents(), so a whole-page comparison is
+    not the same-decoding-unit comparison REDESIGN §4 actually specifies
+    -- such a page is entirely unmeasured by this script, not counted
+    either way). A `Do` of an image XObject does not skip the page (an
+    image shows no text codes and no texttrace glyphs); a `Do` whose name
+    resolves to neither is skipped too ("unresolved_xobject"), rather
+    than guessed. Also skips a page that uses an unmodelled mixed-width
+    CMap. Annotation appearance text is always excluded (annotations are
+    deleted from the in-memory page before tracing -- this script never
+    writes the file).
     """
     buf = page.read_contents().decode("latin-1")
-    if unit_only and _FORM_DO_RE.search(buf):
-        raise _SkipPage("form_xobject")
     code_length = _font_code_lengths(page)
+    scan = _scan_codes(buf, code_length or {})
+    if unit_only and scan.do_names:
+        if scan.do_names & _form_names(page):
+            raise _SkipPage("form_xobject")
+        if scan.do_names - _image_names(page):
+            raise _SkipPage("unresolved_xobject")
     if code_length is None:
         raise _SkipPage("mixed_width_cmap")
-    code_count, _shown = _code_counts(buf, code_length)
+    code_count = scan.total
     # page.annots() does NOT include Widget-subtype annotations (form
     # fields) -- PyMuPDF surfaces those separately via page.widgets() --
     # and a widget's appearance stream (e.g. a filled-in text field) is
@@ -349,7 +409,7 @@ def witness(page: fitz.Page, *, unit_only: bool = False) -> tuple[int, int, bool
     fitz.TOOLS.mupdf_warnings()  # clear
     trace = page.get_texttrace()
     warnings = fitz.TOOLS.mupdf_warnings()
-    glyph_count = _glyph_count(trace)
+    glyph_count = _glyph_count(trace, fill_stroke=scan.fill_stroke)
     return code_count, glyph_count, code_count == glyph_count, warnings
 
 
@@ -469,10 +529,25 @@ BT
 ET
 Q
 """, _scratch_page),
+    ("same text painted twice at one spot (0 Tr) -- two real draws, must "
+     "count twice on both sides", b"""
+q
+BT
+1 0 0 1 72 700 Tm
+/helv 12 Tf
+(TWICE) Tj
+1 0 0 1 72 700 Tm
+(TWICE) Tj
+ET
+Q
+""", _scratch_page),
     # The three cases below produce NO MuPDF warning at all -- a
     # warnings-only check (the other half of REDESIGN §4's rejection
-    # rule) would not catch any of them. This is the evidence behind
-    # docs/adr/0008's hard-gate recommendation.
+    # rule) would not catch any of them. The phantom-Tj case is a false
+    # flag from this script's own tokenizer over-counting, not a leak;
+    # the 7 Tr and switched-off-layer cases each already exit 1 under
+    # today's verify.py (its Objects layer searches the raw strings) --
+    # they matter for the rewrite's DECODED discharge, see docs/adr/0008.
     ("clip-only text (7 Tr): drawn, zero texttrace glyphs, no warning", b"""
 q
 BT
@@ -525,15 +600,17 @@ def run_corpus_sweep(limit: int | None = None, *, unit_only: bool = False) -> di
     """unit_only=False reproduces a naive whole-page comparison (informative
     about why that comparison is the wrong shape, see RESULTS.md); True
     approximates REDESIGN §4's actual per-decoding-unit comparison by
-    skipping a page that draws through a Form XObject or uses an
-    unmodelled mixed-width CMap.
+    skipping a page that draws a Form XObject (resolved in the page's
+    resources; an image `Do` does not skip), draws an XObject name that
+    resolves to nothing, or uses an unmodelled mixed-width CMap.
 
     Reports on two denominators, both because most corpus pages show no
     text at all and would otherwise pad the reconciliation rate with a
     meaningless 0 == 0 "match": *text pages* (code_count>0 or
     glyph_count>0) among pages actually measured, and *in-scope files*
     (a text-bearing file that contributed >=1 text page after the two
-    skips above)."""
+    skips above). Skipped pages are unmeasured, not counted either way;
+    their counts, and the files with at least one, are reported."""
     import corpus
 
     files = corpus.discover(limit=limit)
@@ -542,7 +619,9 @@ def run_corpus_sweep(limit: int | None = None, *, unit_only: bool = False) -> di
     text_pages_matched = 0
     pages_with_warnings = 0
     mismatches_without_warning = 0
-    skipped: dict[str, int] = {"form_xobject": 0, "mixed_width_cmap": 0}
+    skipped: dict[str, int] = {"form_xobject": 0, "unresolved_xobject": 0,
+                               "mixed_width_cmap": 0}
+    files_with_skipped: dict[str, int] = dict.fromkeys(skipped, 0)
     errors = 0
     in_scope_files = 0
     files_with_mismatch = 0
@@ -558,11 +637,13 @@ def run_corpus_sweep(limit: int | None = None, *, unit_only: bool = False) -> di
             continue
         file_has_text_page = False
         file_has_mismatch = False
+        file_skips: set[str] = set()
         for page in doc:
             try:
                 code_count, glyph_count, matches, warnings = witness(page, unit_only=unit_only)
             except _SkipPage as skip:
                 skipped[skip.reason] = skipped.get(skip.reason, 0) + 1
+                file_skips.add(skip.reason)
                 continue
             except Exception:
                 errors += 1
@@ -581,6 +662,8 @@ def run_corpus_sweep(limit: int | None = None, *, unit_only: bool = False) -> di
             if not matches and not warnings.strip():
                 mismatches_without_warning += 1
         doc.close()
+        for reason in file_skips:
+            files_with_skipped[reason] += 1
         if file_has_text_page:
             in_scope_files += 1
             if file_has_mismatch:
@@ -600,7 +683,8 @@ def run_corpus_sweep(limit: int | None = None, *, unit_only: bool = False) -> di
         "reconciliation_rate": text_pages_matched / text_pages if text_pages else None,
         "pages_with_mupdf_warnings": pages_with_warnings,
         "mismatches_without_a_warning": mismatches_without_warning,
-        "skipped": skipped,
+        "skipped_pages": skipped,
+        "files_with_a_skipped_page": files_with_skipped,
         "errors": errors,
         "elapsed_s": round(time.time() - t0, 2),
     }

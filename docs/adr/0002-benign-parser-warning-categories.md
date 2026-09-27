@@ -97,7 +97,7 @@ there; `eval/spikes/measure_corpus.py` is the script):
 | | All files | Text-bearing |
 | --- | --- | --- |
 | qpdf raw flag rate (any warning) | 9.0% | 32.4% |
-| qpdf refined flag rate (tightened categories excluded) | 2.9% | 7.0% |
+| qpdf refined flag rate (tightened categories excluded) | 2.8% | 7.0% |
 | MuPDF flag rate | 0.3% | 1.4% |
 | **Combined refined flag rate** | **2.9%** | **7.2%** |
 
@@ -160,7 +160,10 @@ reference, not its first token, before Phase 3c trusts it.
   check rather than dropping the category outright) before this becomes
   a real gate -- keeping in mind the rate above is from the warning-based
   proxy, not the real object-set/page-tree comparison.
-- Recommend: accept the two known verification gaps above (ObjStm bodies,
-  first-token-only reference comparison) for this Phase 1 pass and close
-  both in Phase 3c's real implementation, since neither is known to have
-  changed a measured number here.
+- Whether to accept the two known verification gaps (ObjStm offset
+  bodies; duplicate keys compared on the first token) until Phase 3c.
+  Both measured 0 instances on this corpus: no offset-warning object is
+  also an `/ObjStm` member, and no duplicate-key pair is a pair of
+  indirect references that differ only after the first token. Recommend: accept them now and close both
+  in Phase 3c's real implementation, before that phase relies on either
+  check.

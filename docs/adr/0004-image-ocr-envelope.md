@@ -17,7 +17,7 @@ geometry and a completed decode alone. §4b's own gate says exactly this:
 from geometry (dimensions, pixel cap, mask shape) plus "OCR completed
 without error" alone, with no recall bound at all -- contradicting §4's
 "recall-validated" requirement outright. It also claimed "no strictness
-regression," which is false: a leftover image today that is `>=8x32`px
+regression," which is false: a leftover image today that is at least 8×32 px
 (`_MIN_TEXT_IMAGE_SIDE`/`_MIN_TEXT_IMAGE_LENGTH`) is flagged (exit `2`)
 as a leftover the tool cannot read; under the first version's ADR, such
 an image inside the new envelope would become `DECODED` and could exit
@@ -54,20 +54,24 @@ longer sufficient for `DECODED` on its own.
   in scope only once MuPDF decodes them to raw samples first -- the
   envelope check runs on the decoded bitmap, never the compressed bytes.
 - **Dimensions**: the upper bound is `10,000` px per side. For the lower
-  bound, **do not simply exclude a sub-8px image from the envelope** (see
-  Measurement below: 248 such images exist in this corpus, 5.6% of
-  text-bearing files) -- that would flag every icon, bullet, and checkbox
-  glyph as unreadable, a real, avoidable review-rate cost. Instead,
-  **reuse today's `_text_sized`/`_MIN_TEXT_IMAGE_SIDE` judgment** (too
-  small for text to plausibly fit, so it is excused from `DECODED`
-  scrutiny the same way it is excused from being flagged today) --
-  **and** always run docs/adr/0003's raw-byte matcher pass over the
-  decoded samples regardless of size, closing the actual gap (a value
-  hidden in tiny sample data) without the size-floor cost. (An earlier
-  version of this ADR called the floor "not keeping today's gate's
-  intent" and treated flagging every sub-floor image as a deliberate
-  strictness increase; measurement showed that increase is neither free
-  nor obviously justified, so the recommendation is reversed here.)
+  bound, **do not simply exclude every image below some floor from the
+  envelope and flag it** (see Measurement below: 248 images under 8 px
+  on a side, in 39 files -- 1.9% of all files; 224 of them in 27 files,
+  5.6% of text-bearing files) -- that would flag every icon, bullet, and
+  checkbox glyph as unreadable, a real, avoidable review-rate cost.
+  Instead, **reuse today's 8×32 `_text_sized` judgment**
+  (`verify.py`'s `_MIN_TEXT_IMAGE_SIDE` = 8 and
+  `_MIN_TEXT_IMAGE_LENGTH` = 32: an image under 8 px on its short side
+  *or* under 32 px on its long side is too small for text to plausibly
+  fit, so it is excused from `DECODED` scrutiny the same way it is
+  excused from being flagged today) -- **and** always run
+  docs/adr/0003's raw-byte matcher pass over the decoded samples
+  regardless of size, closing the actual gap (a value hidden in small
+  sample data) without the size-floor cost. (An earlier version of this
+  ADR called the floor "not keeping today's gate's intent" and treated
+  flagging every sub-floor image as a deliberate strictness increase;
+  measurement showed that increase is neither free nor obviously
+  justified, so the recommendation is reversed here.)
 - **Total pixels**: `width * height <= 35,000,000` (35 Mpx), taken as a
   fixed cap rather than the plan's floor.
 - **Mask type**: an `/SMask` or `/Mask` is only accepted when its own
@@ -103,29 +107,36 @@ from REDESIGN.md's own decoder-registry text (attributed there to
 earlier feasibility work). This pass's budget went to the corpus rate
 measurements and spike S1b the plan explicitly asked for.
 
-The local corpus contains no stored image anywhere close to 35 Mpx, so
-the cap's exact value has no effect on this corpus's measured rates.
+**An earlier version of this ADR said the local corpus contains no
+stored image anywhere close to 35 Mpx. That is false**:
+`eval/spikes/image_envelope_stats.py` finds two stored images of
+4464×8579 px (38.3 Mpx) in one text-bearing file, over the 35 Mpx cap.
+Under this envelope both would be outside it and `FLAGGED` -- a
+one-file cost on this corpus, but it means the cap's exact value does
+bite on real files.
 
-**The size floor is a different story: tiny images are common, and an
+**The size floor is a different story: small images are common, and an
 earlier version of this ADR's claim that "no images [are] near the size
 floor" was false.** `eval/spikes/image_envelope_stats.py` walks every
 image object's `/Width`/`/Height` directly (no decompression needed):
 
-| | All files | Text-bearing |
+| | All files (2,031) | Text-bearing (484) |
 | --- | --- | --- |
-| Files with >= 1 image under 8 px (either dimension) | 1.9% (39/2,031) | 5.6% (27/484) |
-| Total images under 8 px | 248 | 224 |
+| Images under 8 px on either side | 248 images in 39 files (1.9%) | 224 images in 27 files (5.6%) |
+| Images today's 8×32 `_text_sized` rule excuses (under 8 px short side or under 32 px long side) | 299 images in 51 files (2.5%) | 235 images in 27 files (5.6%) |
+| ...of which not under 8 px (the 8×32 rule's addition) | 51 images in 13 files | 11 images in 1 file |
+| Images over the 35 Mpx cap | 2 images in 1 file | 2 images in 1 file |
 
 **Recommendation, corrected**: rather than flagging every one of these
-248 images under the new envelope (a real, avoidable review-rate cost),
-apply today's existing `_text_sized`/`_MIN_TEXT_IMAGE_SIDE` excusal
-logic to decide when a sub-floor image is *worth flagging at all* --
-i.e. keep today's judgment that a genuinely tiny image (an icon, a
-bullet, a checkbox glyph) is implausible as a text carrier and excuse it
--- **and** always still run docs/adr/0003's raw-byte matcher pass over
-its decoded samples regardless of size. This keeps the strictness
-increase docs/adr/0003's steganographic-image case actually needs (byte
-content is always searched) without also flagging 248 ordinary icons
+images under the new envelope (a real, avoidable review-rate cost),
+apply today's 8×32 `_text_sized` excusal to decide when a small image
+is *worth flagging at all* -- i.e. keep today's judgment that a
+genuinely small image (an icon, a bullet, a checkbox glyph) is
+implausible as a text carrier and excuse it -- **and** always still run
+docs/adr/0003's raw-byte matcher pass over its decoded samples
+regardless of size. This keeps the strictness increase docs/adr/0003's
+hidden-image case actually needs (byte content is always searched)
+without also flagging 299 ordinary icons (235 in text-bearing files)
 that were never going to be `DECODED` as text anyway.
 
 ## Consequences
@@ -141,18 +152,22 @@ that were never going to be `DECODED` as text anyway.
 - The Indexed-base restriction is an implementation-facing correction
   that does not change a measured rate in this pass (no
   Separation/DeviceN-based Indexed images in the corpus). The size-floor
-  recommendation does change a real rate: reusing today's `_text_sized`
-  excusal instead of flagging every sub-8px image avoids flagging up to
-  248 images (5.6% of text-bearing files) that were never going to carry
-  readable text anyway.
+  recommendation does change a real rate: reusing today's 8×32
+  `_text_sized` excusal instead of flagging every small image avoids
+  flagging 299 images in 51 files (2.5% of all files) -- 235 images in
+  27 files (5.6% of text-bearing files) -- that were never going to
+  carry readable text anyway.
 
 ## Owner confirmation needed
 
+- **The main question: image OCR stays `FLAGGED`-only (never `DECODED`)
+  until Phase 4b measures recall**, rather than accepting a provisional,
+  unmeasured `DECODED` grant sooner. Recommend: yes.
 - Confirm (or re-measure) the 35 Mpx pixel cap and the 10,000 px
-  per-side ceiling against Apple Vision's actual request limits.
-- Confirm the plan to run image-OCR as `FLAGGED`-only (never `DECODED`)
-  until Phase 4b's recall measurement lands, rather than accepting a
-  provisional, unmeasured `DECODED` grant sooner.
-- Confirm excusing a sub-8px image via today's `_text_sized` logic
-  (recommended) rather than flagging all 248 such images found in this
-  corpus under the new envelope.
+  per-side ceiling against Apple Vision's actual request limits -- the
+  cap already excludes two real 38.3 Mpx images in one text-bearing
+  file.
+- Confirm excusing images under today's 8×32 `_text_sized` rule
+  (recommended) -- 299 images in 51 files (2.5% of all files), 235 in 27
+  (5.6% of text-bearing) -- with their samples still raw-searched, rather
+  than flagging every one under the new envelope.

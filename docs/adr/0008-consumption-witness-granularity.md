@@ -21,24 +21,27 @@ path the moment Phase 6 retires legacy. This ADR is not one of REDESIGN's
 seven named Phase 1 questions, but what spike S1b found needed a
 decision of its own.
 
-**This is the third version of this ADR**, after two rounds of review.
-The first version reported 92.7% reconciliation on real content and
-recommended advisory. The second round found that number came from a bug
-in the measuring script (see docs/adr's sibling note in
-`eval/spikes/RESULTS.md`) and, once fixed, the honest reconciliation
-rate was only 71.2% -- so this ADR's second version recommended advisory
-again, this time because a hard gate at that cost looked unaffordable,
-while still calling out that advisory is fail-open. **A third round
-root-caused essentially all of that 71.2%'s shortfall** (below) down to
-a real reconciliation rate of ~98.7%, at which point a hard gate is
-affordable and the fail-open problem should not be accepted at all.
+**This is the fourth version of this ADR**, after three rounds of
+review. The first version reported 92.7% reconciliation on real content
+and recommended advisory. The second round found that number came from a
+bug in the measuring script (see `eval/spikes/RESULTS.md`) and, once
+fixed, the honest reconciliation rate was only 71.2% -- so this ADR's
+second version recommended advisory again, this time because a hard gate
+at that cost looked unaffordable, while still calling out that advisory
+is fail-open. The third round root-caused most of that shortfall, to
+98.7% (2,235/2,264 text pages; 9 of 326 in-scope files mismatching), and
+reported a residual it could not explain. **This round explained the
+residual: all 9 files were artefacts of the spike itself** (causes 7 and
+8 below). On the corrected script every measured text page reconciles;
+what remains is the pages the spike cannot yet measure (Measurement,
+below).
 
-## The root cause of the second version's 71.2% figure
+## The root causes of the earlier figures
 
-Re-running this spike's own committed output against real content found
-five distinct causes, four of them bugs in the measuring script itself
+Re-running this spike's own output against real content found eight
+distinct causes, seven of them bugs in the measuring script itself
 (never in `verify.py`, which this pass does not touch), one a real,
-narrow modelling gap:
+narrow modelling gap (6):
 
 1. **The glyph-exclusion rule itself was unsound and is now removed.**
    `doc.get_char_widths` resolves a code through the font's own cmap as
@@ -71,14 +74,30 @@ narrow modelling gap:
 5. **A fill-then-stroke render mode (`Tr` 2/6) draws, and
    `get_texttrace()` reports, the same glyph twice -- as two separate
    spans, not two entries in one span.** De-duplicated by (glyph id,
-   origin) across the whole page's trace, confirmed against real
-   content: `(SAMPLE)` shown once under `2 Tr` produces two 6-char spans
-   with identical (glyph, origin) pairs.
+   origin) across the page's trace, confirmed against real content:
+   `(SAMPLE)` shown once under `2 Tr` produces two 6-char spans with
+   identical (glyph, origin) pairs. (Cause 7 narrows where this applies.)
 6. **A few mixed-width CJK CMaps** (e.g. `90msp-RKSJ-H`) are not 1- or
    2-byte fixed-width and are not modelled by this script's simple
-   code-length table. A page using one is now skipped, not silently
+   code-length table. A page using one is skipped, not silently
    miscounted, and reported separately from pages skipped for drawing a
    Form XObject.
+7. **The de-duplication in 5 was applied to every page, and removed real
+   draws.** On a page that never sets `2 Tr` or `6 Tr`, a repeated
+   (glyph, origin) pair is a real second draw -- a run of zero-width
+   glyphs at one position, or the same text painted twice at one spot --
+   which the code count also counts. Removing it manufactured a
+   mismatch; this caused 8 of the 9 mismatching files in the previous
+   version. De-duplication is now confined to pages that set render mode
+   2 or 6, and a hand-built control (the same text painted twice at one
+   spot under `0 Tr`) reconciles at 10 codes = 10 glyphs.
+8. **The Form XObject skip was a regex that both missed and over-matched.**
+   It required whitespace before the XObject name, so it missed
+   `0 TL/Fm0 Do` -- the ninth file, a page drawing a form the spike
+   compared as if it did not -- and it skipped any page drawing *any*
+   XObject, images included. Each `Do` operand is now resolved in the
+   page's resources, and only a draw of a real `/Subtype /Form` XObject
+   skips the page, so image-only pages are now measured.
 
 ## Decision
 
@@ -87,7 +106,7 @@ narrow modelling gap:
 rule this whole review is built around, and per REDESIGN §2/Principle 2
 directly (Context, above), this is the only design that does not create
 a new exit-`0` path once legacy retires. The corrected measurement
-(below) shows the cost of doing this now is small.
+(below) finds no unexplained mismatch among the pages it can measure.
 
 **Alternative, if the owner is not comfortable committing to
 enforcement from a Phase 1 spike's numbers: ship the hard gate in shadow
@@ -101,78 +120,103 @@ Phase 6 already requires resolving before legacy retires. Advisory (the
 first two versions' choice) has no such resolution point and was wrong
 to recommend.
 
-Three verified, warning-free adversarial cases (`eval/spikes/
-s1b_consumption_witness.py`, `ADVERSARIAL_CASES`) demonstrate what a
-gate closes:
+**What the gate is for, stated precisely.** Three hand-built cases
+(`eval/spikes/s1b_consumption_witness.py`, `ADVERSARIAL_CASES`) produce
+a witness mismatch with no MuPDF warning at all. **None of them is a
+false exit `0` under today's tool**, and one is not a leak at all:
 
-- **Clip-only text (`Tr 7`)**: drawn, zero texttrace glyphs, `get_text()`
-  still returns it.
+- **Clip-only text (`Tr 7`)**: drawn, zero texttrace glyphs. Today's
+  `verify.py` exits `1` on it (checked directly with a value rule: the
+  Objects layer finds the string, and so does the Text layer, since
+  `get_text()` still returns clip text).
+- **Text inside a switched-off optional-content group** (REDESIGN §8's
+  K6 shape): absent from both `get_texttrace()` and `get_text()`, present
+  in the raw stream. Today's `verify.py` exits `1` on it (the Objects
+  layer finds the string).
 - **An inline image whose declared-length pixel data literally spells a
   second, complete text-show operation** (`... EI (PHANTOM) Tj ...`,
   still inside the image's own declared byte range): MuPDF correctly
-  reads it as opaque pixels; this spike's own naive `EI`-search inline-
-  image skip (the same technique `verify.py`'s current tokenizer uses)
-  re-parses the tail as real content and finds a phantom show operation
-  that was never drawn -- the safe direction (over-counting, not a
-  miss), but proof that a naive image-length skip is unsound and REDESIGN
-  §4's declared-length-aware design is required, not optional, for
-  Phase 4a.
-- **Text inside a switched-off optional-content group**: absent from
-  both `get_texttrace()` and `get_text()`, present in the raw stream --
-  REDESIGN §8's K6 shape, reproduced directly.
+  reads it as opaque pixels; this spike's own naive `EI`-search
+  inline-image skip (the same technique `verify.py`'s current tokenizer
+  uses) re-parses the tail as content and counts a show operation that
+  was never drawn. **This is the spike's tokenizer over-counting -- a
+  false flag, not a leak shape the gate closes.** What it does show is
+  that a naive image-length skip is unsound, so REDESIGN §4's
+  declared-length-aware tokenizer is required for Phase 4a.
 
-(`Tr 3`, ordinary invisible text as used by real OCR text layers, and
-`Tr 2` fill+stroke, now de-duplicated, both reconcile exactly -- included
-in `ADVERSARIAL_CASES` as the comparison. This is not "any unusual
-render mode misbehaves.")
+The gate matters for the rewrite's `DECODED` discharge (REDESIGN §2: a
+unit is discharged only when its decoder's witness proves it consumed
+the unit), not for today's tool: once a content unit can be `DECODED`,
+the `Tr 7` and switched-off-layer shapes are exactly what a decoder
+that trusted `get_texttrace()` alone would discharge while text it never
+reported sits in the stream.
+
+(`Tr 3`, ordinary invisible text as used by real OCR text layers, `Tr 2`
+fill+stroke, de-duplicated, and the same text painted twice under
+`0 Tr`, not de-duplicated, all reconcile exactly -- included in
+`ADVERSARIAL_CASES` as the comparison. This is not "any unusual render
+mode misbehaves.")
 
 **Correcting an overclaim from the first version**: it said spike S1b
 "confirmed" the mechanism requires a scratch page holding one resolved
 (stream, context) unit in isolation, as REDESIGN §4 describes. What S1b
-actually measured is a **whole-page** `page.read_contents()` vs. a
-**whole-page** `get_texttrace()`, with pages that draw through a Form
-XObject skipped (994 of 9,231 -- entirely unmeasured, not counted either
-way) rather than resolved and measured as their own unit. This is
-consistent with, but does not confirm, REDESIGN's actual per-unit
-design; a real per-unit measurement (one resolved stream on its own
-scratch page, per REDESIGN §4) has still not been built. Phase 4a's own
-implementation is where that gets built and confirmed for real.
+actually measures is a **whole-page** `page.read_contents()` vs. a
+**whole-page** `get_texttrace()`, with pages that draw a Form XObject
+skipped (856 of 9,231 -- entirely unmeasured, not counted either way)
+rather than resolved and measured as their own unit. This is consistent
+with, but does not confirm, REDESIGN's actual per-unit design; a real
+per-unit measurement (one resolved stream on its own scratch page, per
+REDESIGN §4) has still not been built. Phase 4a's own implementation is
+where that gets built and confirmed for real.
 
 ## Measurement
 
-`eval/spikes/s1b_consumption_witness.py`, corrected per the six root
-causes above, same corpus:
+`eval/spikes/s1b_consumption_witness.py`, corrected per the eight root
+causes above, same corpus (PyMuPDF 1.28.2):
 
 | Pass | Reconciliation rate (text pages) | In-scope files | Files with any mismatch |
 | --- | --- | --- | --- |
-| Naive whole-page | 96.1% (2,417/2,515) | 436 | 18 (4.1%) |
-| **Per-decoding-unit** (skips Form-XObject and mixed-width-CMap pages) | **98.7%** (2,235/2,264) | 326 | **9 (2.8%)** |
+| Naive whole-page | 97.3% (2,448/2,515) | 436 | 7 (1.6%) |
+| **Per-decoding-unit** (skips Form-XObject and mixed-width-CMap pages) | **100.0%** (2,345/2,345) | 399 | **0** |
 
 ("Text pages" excludes a page where both code_count and glyph_count are
 zero -- most corpus pages show no text at all and would otherwise pad
-the rate with a meaningless 0-equals-0 "match": 5,963 of 8,227 measured
-pages in the per-decoding-unit pass.)
+the rate with a meaningless 0-equals-0 "match": 6,018 of the 8,363
+measured pages in the per-decoding-unit pass.)
 
-**A small residual remains and is not fully root-caused**: the 9
-mismatching in-scope files show small (1-3 code), not-render-mode-related
-discrepancies on otherwise ordinary MacRoman-encoded text with no
-control characters and no Form XObjects -- the same general shape as an
-earlier, larger residual, at roughly 1/40th the size. This is honestly
-reported as unresolved, not swept in with the fixes above; it is small
-enough that a hard gate's cost (flagging roughly 3 files in 100 that
-would otherwise certify) is a reasonable trade rather than a blocking
-concern.
+**No unexplained mismatch remains among measured pages.** The previous
+version's residual (9 files) was causes 7 and 8, both spike artefacts.
+
+**What is not measured**, stated plainly -- of the corpus's 9,231 pages:
+
+- **856 pages, in 206 files, draw a Form XObject** and are skipped
+  entirely. Their text is inside the form, not the page's own content
+  stream; REDESIGN §4 measures each form as its own unit, which this
+  spike does not build. Their reconciliation rate is unknown.
+- **12 pages, in 9 files, use an unmodelled mixed-width CJK CMap** and
+  are skipped.
+- No `Do` operand failed to resolve to either a form or an image (0
+  pages).
+
+**Caveat: the witness compares counts, not content.** A tokenizer error
+that adds codes and an interpreter behaviour that adds glyphs could in
+principle cancel on the same page and balance. Not observed here (no
+case or corpus page showed it), but a balanced count is evidence that
+the stream was consumed, not proof that every code was read correctly.
 
 ## Consequences
 
 - The hard-gate recommendation applies to the whole witness (render-mode
   handling and the general byte-count check together) -- there is no
-  longer a reason to split them, now that the general check's real cost
-  is known to be small.
-- A ~2.8% in-scope-file mismatch rate is a real, if small, addition to
-  the review rate Phase 4a's own gate ("K3-K6... closed; every per-case
-  change is stricter and listed; review-rate change within what
-  [ADR 0007] accepted") must account for.
+  reason to split them.
+- On the pages this spike can measure, the gate's review-rate cost is 0
+  unexplained mismatches (0 of 399 in-scope files). The open cost is the
+  unmeasured pages above: 856 form-drawing pages (206 files) and 12 CJK
+  pages (9 files). Phase 4a must measure forms as their own units; any
+  it cannot measure are `FLAGGED` under this gate, and that rate is what
+  Phase 4a's own gate ("K3-K6... closed; every per-case change is
+  stricter and listed; review-rate change within what [ADR 0007]
+  accepted") must account for.
 - If the owner picks the shadow-mode alternative, Phase 3b's existing
   shadow/enforced verdict machinery is the right place to wire it, not a
   new mechanism -- REDESIGN §6 already describes exactly this kind of
@@ -180,7 +224,9 @@ concern.
 
 ## Owner confirmation needed
 
-Hard gate now (recommended -- REDESIGN §2/Principle 2 require it, and
-the corrected cost is ~2.8% of in-scope files) vs. hard gate in shadow
-mode first, enforced once Phase 4a's own implementation reconfirms the
-rate on a per-unit (not whole-page) basis.
+Hard gate now (recommended -- REDESIGN §2/Principle 2 require it; on
+the corrected spike, 0 unexplained mismatches among 2,345 measured text
+pages in 399 files, with 856 form-drawing pages in 206 files and 12 CJK
+pages in 9 files unmeasured) vs. hard gate in shadow mode first,
+enforced once Phase 4a's own implementation measures forms as their own
+units and reconfirms the rate on a per-unit (not whole-page) basis.

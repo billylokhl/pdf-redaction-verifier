@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Measures how many stored images fall below docs/adr/0004's 8 px
-envelope floor, on the real corpus -- behind docs/adr/0004's claim that
-"no tiny images" exist, which review found false.
+"""Measures stored-image sizes against docs/adr/0004's envelope bounds,
+on the real corpus -- behind docs/adr/0004's claims that "no tiny
+images" exist and that no stored image comes near the 35 Mpx cap, both
+of which review found false.
 
 Walks every object in every file (doc.xref_length()), checks
 /Subtype /Image, and reads /Width and /Height directly via
-doc.xref_get_key -- cheap, no decompression needed. An image counts as
-"tiny" when either dimension is below 8 px (docs/adr/0004's floor).
+doc.xref_get_key -- cheap, no decompression needed. Three counts:
+
+* "under 8 px": either dimension below 8 px;
+* "not text-sized": today's `verify._text_sized` (imported, not
+  reimplemented) is false -- under 8 px on the short side OR under
+  32 px on the long side (the 8x32 rule `verify.py` uses to decide a
+  leftover image is too small to be worth flagging); a superset of the
+  first count, reported with the difference;
+* "over 35 Mpx": width * height above docs/adr/0004's per-image cap.
+
 Reported on both denominators; aggregate counts only.
 """
 
@@ -24,12 +33,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import fitz  # noqa: E402
 
 import corpus  # noqa: E402
+import verify  # noqa: E402
 
 TINY_FLOOR = 8
+PIXEL_CAP = 35_000_000
+
+_COUNTS = ("tiny", "not_text_sized", "not_text_sized_but_not_tiny", "over_cap")
 
 
 def _empty_bucket() -> dict[str, Any]:
-    return {"files_measured": 0, "files_with_tiny_image": 0, "total_tiny_images": 0}
+    bucket: dict[str, Any] = {"files_measured": 0, "largest_image_px": 0,
+                              "largest_image_dims": None}
+    for name in _COUNTS:
+        bucket[f"files_with_{name}_image"] = 0
+        bucket[f"total_{name}_images"] = 0
+    return bucket
 
 
 def measure(files: list[Path]) -> dict[str, Any]:
@@ -45,7 +63,8 @@ def measure(files: list[Path]) -> dict[str, Any]:
             encrypted += 1
             doc.close()
             continue
-        tiny_count = 0
+        counts = dict.fromkeys(_COUNTS, 0)
+        largest = (0, None)
         try:
             n = doc.xref_length()
         except Exception:
@@ -58,27 +77,41 @@ def measure(files: list[Path]) -> dict[str, Any]:
                 h = int(doc.xref_get_key(xref, "Height")[1])
             except Exception:
                 continue
-            if w < TINY_FLOOR or h < TINY_FLOOR:
-                tiny_count += 1
+            tiny = w < TINY_FLOOR or h < TINY_FLOOR
+            small = not verify._text_sized(w, h)
+            counts["tiny"] += tiny
+            counts["not_text_sized"] += small
+            counts["not_text_sized_but_not_tiny"] += small and not tiny
+            counts["over_cap"] += w * h > PIXEL_CAP
+            if w * h > largest[0]:
+                largest = (w * h, (w, h))
         text_bearing = corpus.is_text_bearing(doc)
         doc.close()
         for key in (["all_files"] + (["text_bearing"] if text_bearing else [])):
             b = buckets[key]
             b["files_measured"] += 1
-            if tiny_count:
-                b["files_with_tiny_image"] += 1
-                b["total_tiny_images"] += tiny_count
+            for name, count in counts.items():
+                if count:
+                    b[f"files_with_{name}_image"] += 1
+                    b[f"total_{name}_images"] += count
+            if largest[0] > b["largest_image_px"]:
+                b["largest_image_px"], b["largest_image_dims"] = largest
 
     out: dict[str, Any] = {"encrypted_skipped": encrypted, "errors": errors,
-                            "tiny_floor_px": TINY_FLOOR}
+                            "tiny_floor_px": TINY_FLOOR,
+                            "text_sized_rule_px": [verify._MIN_TEXT_IMAGE_SIDE,
+                                                   verify._MIN_TEXT_IMAGE_LENGTH],
+                            "pixel_cap": PIXEL_CAP}
     for key, b in buckets.items():
         n = b["files_measured"]
-        out[key] = {
-            "files_measured": n,
-            "files_with_tiny_image": b["files_with_tiny_image"],
-            "file_rate": b["files_with_tiny_image"] / n if n else None,
-            "total_tiny_images": b["total_tiny_images"],
-        }
+        out[key] = {"files_measured": n,
+                    "largest_image_px": b["largest_image_px"],
+                    "largest_image_dims": b["largest_image_dims"]}
+        for name in _COUNTS:
+            files_with = b[f"files_with_{name}_image"]
+            out[key][name] = {"files_with": files_with,
+                              "file_rate": files_with / n if n else None,
+                              "images": b[f"total_{name}_images"]}
     return out
 
 

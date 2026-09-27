@@ -45,10 +45,16 @@ Verified directly against `verify.py` (not a claim taken on faith):
 
 | Drawn on the page? | Rule kind | Today's exit |
 | --- | --- | --- |
-| Yes | value (`"123-45-6789"`) | `2` (flagged: stored image, not OCR'd) |
+| Yes | value (`"123-45-6789"`) | `2` -- `REVIEW_BINARY`: qpdf's raw byte sweep matched the value in the image's bytes. (The drawn image *is* OCR'd, as part of the page render; OCR finds nothing, since the value is sample data, not glyphs.) |
 | Yes | class (`ssn`) | **`0`** -- pattern classes never run over image/binary bytes today |
-| No (unreferenced) | value | `0` -- the documented ✗ gap: an unreferenced image is not read at all |
-| No (unreferenced) | class | `0` |
+| No (unreferenced) | value | `0` -- only because a 10×10 image is under today's 8×32 `_text_sized` floor (`verify.py` `_MIN_TEXT_IMAGE_SIDE`/`_MIN_TEXT_IMAGE_LENGTH`), so it is not flagged as a leftover; the same unreferenced image at 10×40 exits `2` (`LEFTOVER_IMAGE`) |
+| No (unreferenced) | class | `0` (same reason; `2` at 10×40) |
+
+The unreferenced rows depend on docs/adr/0004's size excusal: that ADR
+recommends keeping today's 8×32 `_text_sized` judgment, so a small image
+like this one stays excused from being flagged -- and only the governing
+rule above (its sample bytes still go through the raw matcher) keeps the
+value case from passing silently.
 
 So three of the four already exit `0` today, not one. Under ADR 0003's
 reason 4 ("image data fully consumed by the image decoder") composed
@@ -57,7 +63,8 @@ correctly-flagged case) would ALSO newly exit `0`: the image decoder
 would OCR the (visually blank/noisy) pixels, find no text, correctly
 report the image as fully consumed, and -- if `NOT_APPLICABLE` were read
 as "this byte range is settled, move on" -- the file would silently
-regress from `2` to `0`. The rule above closes that regression: the same
+regress from `2` to `0` once the legacy path (and with it today's
+qpdf raw byte sweep, the source of that `2`) retires in Phase 6. The rule above closes that regression: the same
 raw sample bytes must *also* always be searched by the matcher (as a raw
 byte string, independent of what OCR found), and only then, if nothing
 matches, does `NOT_APPLICABLE` apply. This is not a new decoder or a new
@@ -145,11 +152,20 @@ ADR.
 
 ## Owner confirmation needed
 
-None for the list itself. Two items depend on other proposed ADRs and
-should be confirmed together: reason 4 depends on docs/adr/0004's recall
-bound (so 0003 is marked proposed, not accepted, purely because of that
-dependency); and whether pattern classes should run over decoded image
-samples at manual-review tier (recommended above) is a real, currently-
-unimplemented gap the owner should confirm before Phase 4b. The
-steganographic-image case itself should be confirmed as a Phase 0b/3a
-case-library addition (a scheduling question, not a design trade-off).
+- **The governing rule itself**: no unit's bytes are ever exempt from the
+  raw matcher -- `NOT_APPLICABLE` and `DECODED` excuse a decoder from
+  further parsing, never from the search. This is a requirement on every
+  decoder in the registry (each must run the raw matcher over the bytes
+  it excuses, and say where), not only the image decoder, so it is the
+  owner's call rather than a detail of this list. Recommend: adopt it.
+- **Scheduling the hidden-image case**: a value hidden in an image's raw
+  sample bytes (the case above) is not yet in the case library. Recommend
+  adding it in Phase 0b/3a, before Phase 4b ships the image decoder, so
+  the governing rule is a tested invariant rather than only a documented
+  one.
+- Whether pattern classes should run over decoded image samples at the
+  manual-review tier (recommended above) -- a real, currently
+  unimplemented gap, to confirm before Phase 4b.
+- The list itself (the four reasons, three rejected) needs no separate
+  decision, but reason 4 depends on docs/adr/0004's recall bound, so this
+  ADR stays `proposed` until 0004 is decided.

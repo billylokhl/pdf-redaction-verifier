@@ -42,13 +42,21 @@ and `verify._is_content_stream` verbatim):
 | Top counts | 356, 356, 25, 13, 5 | (same -- all affected files are text-bearing) |
 
 **11.4%, not 2.7%, is the number that describes this rule's real cost.**
-Every one of the 55 affected files is, by construction, text-bearing:
-the sniff this measurement uses (`verify._is_content_stream`) only counts
-an object as an orphan when it shows a text object, so a file with no
-text anywhere cannot be counted at all. Diluting the rate across the
-corpus's ~76% text-free majority (files that could never contribute a
-hit) understated the cost on the population where it actually bites by
-roughly 4x.
+All 55 affected files happen to be text-bearing (55 of 55). That is an
+observation about this corpus, not something the measurement guarantees:
+an orphan is an unreferenced stream, while "text-bearing" is judged on
+the live pages' extracted text, so a file whose only text sits in an
+orphan would be counted here without being text-bearing. Since every
+affected file here is text-bearing, the text-bearing stratum is the
+population the rule's cost falls on, and the 2.7% all-files rate
+dilutes it across the corpus's ~76% text-free majority.
+
+**This is the gross cost, not the added cost.** Today's tool already
+scans orphaned streams (its Objects layer, `orphaned` and `unreferenced`
+storage) and exits `2` for one it cannot decode, so some of these 55
+files may already exit `2` today and would not be newly flagged by this
+rule. That overlap was not measured in this pass; the added review-rate
+cost is somewhere between 0 and 11.4% of text-bearing files.
 
 **This measurement is a lower bound, not a "ceiling," on two counts the
 first version did not state:**
@@ -76,8 +84,9 @@ above) would show.
 
 ## Consequences
 
-- 11.4% (text-bearing) is a real, larger cost than the first version
-  reported, and per Phase 4a's own gate ("review-rate change within what
+- 11.4% (text-bearing) is the same 55 files the first version reported
+  as 2.7%, stated on the population the cost falls on; per Phase 4a's
+  own gate ("review-rate change within what
   the orphan ADR accepted") this is now the number Phase 4a's actual
   review-rate change gets checked against -- confirm this before Phase
   4a ships, not after.
@@ -96,7 +105,11 @@ above) would show.
 
 ## Owner confirmation needed
 
-Whether an 11.4% (text-bearing) review-rate contribution -- known to be
-a lower bound -- is still affordable to accept without a narrower rule,
-now that it is roughly 4x the number the first version of this ADR
-reported.
+Whether an 11.4% (text-bearing, 55/484) review-rate contribution -- the
+gross cost, known to be a lower bound (paint-only orphans and dead bodies
+are not counted), of which an unmeasured share already exits `2` today --
+is affordable to accept without a narrower rule. The first version of
+this ADR reported the same 55 files as 2.7% of all 2,031 files; the
+number did not grow, the denominator was corrected to the text-bearing
+stratum. Recommend: accept it (ship "always `FLAGGED`"), and measure the
+overlap with today's exit-`2` orphan handling in Phase 3a.
