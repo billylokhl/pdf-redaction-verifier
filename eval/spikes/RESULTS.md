@@ -1,6 +1,6 @@
 # Phase 1 measurement results
 
-**This file has been revised twice after review.** The first pass
+**This file has been revised three times after review.** The first pass
 under-measured several numbers (all-files rate where text-bearing is
 what matters; a witness reconciliation rate later found to depend on a
 bug in the measuring script). The second pass root-caused that bug (and
@@ -8,15 +8,19 @@ two more in the same script), found a second script bug (widget
 appearance text, in addition to annotations), and added two new
 measurements (interpretation warnings, tiny images) plus a corrected
 false-hard number that excludes `email` (a true positive, not a pattern
-miscoloring). Every number below is the latest corrected one, and states
-which script produced it. See each ADR's own "Measurement" / "Correction"
-section for the reasoning.
+miscoloring). The third pass rebased onto `main` (which had, among other
+things, bumped PyMuPDF from 1.27.2.3 to 1.28.2) and re-ran every script:
+every number held except the interpretation-warning rate, which moved
+3x -- see that section below. Every number below is the latest corrected
+one, and states which script produced it. See each ADR's own
+"Measurement" / "Correction" section for the reasoning.
 
-One run, on the author's machine, 2026-09-26. macOS (Darwin 25.6.0),
-PyMuPDF 1.27.2.3, qpdf 12.4.1. Corpus: 2,031 PDFs discovered by
-`corpus.py` under `/System/Library`, `/Library`, and `/Applications` (no
-user data); **484 of them text-bearing** (`corpus.is_text_bearing`: >=1
-page with non-empty `get_text()`). Reproduce with:
+Most recent full run: 2026-09-27, same machine. macOS (Darwin 25.6.0),
+PyMuPDF 1.28.2 (up from 1.27.2.3 as of the second pass), qpdf 12.4.1.
+Corpus: 2,031 PDFs discovered by `corpus.py` under `/System/Library`,
+`/Library`, and `/Applications` (no user data); **484 of them
+text-bearing** (`corpus.is_text_bearing`: >=1 page with non-empty
+`get_text()`). Reproduce with:
 
 ```bash
 python3 eval/spikes/measure_corpus.py
@@ -153,23 +157,38 @@ one).
 `eval/spikes/interpretation_warnings.py`: every `fitz.TOOLS.
 mupdf_warnings()` collected around `page.get_texttrace()` (MuPDF's page
 *interpreter*, not the parse-level open/qpdf warnings docs/adr/0002
-measures), categorised by a normalised (numbers stripped) warning line:
+measures), categorised by a normalised (numbers stripped) warning line.
+
+**This number moved 3x between two runs, from a dependency bump alone.**
+First measured against PyMuPDF 1.27.2.3; rebasing this branch onto
+`main` picked up a Dependabot bump to 1.28.2, and re-running the exact
+same script found a materially different rate:
 
 | | All files | Text-bearing |
 | --- | --- | --- |
-| Files with >= 1 interpretation warning | 32.2% (653/2,031) | 53.5% (259/484) |
-| Pages with >= 1 interpretation warning | 16.5% (1,520/9,231) | 16.7% (1,091/6,543) |
+| Files with >= 1 interpretation warning, PyMuPDF 1.27.2.3 (first measurement) | 32.2% (653/2,031) | 53.5% (259/484) |
+| **Files with >= 1 interpretation warning, PyMuPDF 1.28.2 (current)** | **11.2% (227/2,031)** | **45.7% (221/484)** |
+| Pages with >= 1 interpretation warning (current) | 5.0% (459/9,219) | 6.9% (453/6,543) |
 
-Top categories by files affected (all files; font names like
-"HelveticaNeue" are generic system font names, not personal data):
-`invalid marked content and clip nesting` (425 files), several distinct
-`FT_Get_Advance(<font>,<n>): invalid glyph index` categories (10-36 files
+`invalid marked content and clip nesting` (425 files on 1.27.2.3, the
+dominant category) **does not appear at all** in the 1.28.2 measurement
+-- the newer bundled MuPDF evidently stopped emitting it. The remaining
+categories are stable across both versions: several distinct
+`FT_Get_Advance(<font>,<n>): invalid glyph index` categories (4-36 files
 each, one per embedded font subset), `JPX numcomps (<n>) doesn't match
 color_space (<n>)` (33 files), `openjpeg warning: Found a misplaced
-'cmap' box outside jp2h box` (30 files). This is the real cost of
-REDESIGN §4's "any MuPDF warning while interpreting the stream also
-means not `DECODED`" as literally written -- the single largest Phase 1
-review-rate finding, not sized before this pass. See docs/adr/0009.
+'cmap' box outside jp2h box` (30 files). Font names like "HelveticaNeue"
+are generic system font names, not personal data.
+
+This is the real cost of REDESIGN §4's "any MuPDF warning while
+interpreting the stream also means not `DECODED`" as literally written,
+**as of the currently pinned PyMuPDF version** -- 11.2%/45.7%
+(all/text-bearing), still the single largest Phase 1 review-rate
+finding. The 3x swing is itself evidence for docs/adr/0009's
+recommendation: a warning category that disappears on a routine
+dependency bump was never a stable signal about document content, so a
+name-based benign/not-benign list would silently change behaviour on the
+next upgrade. See docs/adr/0009.
 
 ## S1b: the consumption witness -- docs/adr/0008
 
