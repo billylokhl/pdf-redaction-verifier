@@ -390,7 +390,12 @@ On Debian/Ubuntu the binaries are
 you do not need the test suite. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
 `python verify.py --target ... --secrets ...` works installed or not; pass
-`--fail-fast` to stop at the first confirmed finding.
+`--fail-fast` to stop at the first confirmed finding. `verify.py` imports
+its pure parts from the `redaction_verifier` package (`docs/REDESIGN.md`
+§4/§6), so it must either be installed (`pip install` / `uv sync`, as
+above) or run from a copy of the repository that still has
+`redaction_verifier/` sitting next to it — copying `verify.py` out on its
+own does not work.
 
 [DESIGN.md](DESIGN.md) explains the design rationale — the exit-code
 contract, the two-tier matching model, and the known limitations.
@@ -405,8 +410,8 @@ resolving or installing differently against the same lock file):
 uv sync --extra test --group dev          # Install test + lint/type-check tools
 uv run pytest                             # Run the test suite
 uv run ruff check .                       # Lint code
-uv run mypy                               # Type check (eval/caselib, eval/scorecard)
-uv run pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
+uv run mypy                               # Type check (redaction_verifier, eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
+uv run pytest tests/ --cov=verify --cov=caselib --cov=redaction_verifier  # Run tests with coverage report
 ```
 
 Without uv: `pip install -e '.[test]'` plus `pip install ruff==<pinned>
@@ -418,7 +423,9 @@ generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
 absent. CI installs from `uv.lock` (`uv sync --locked`, which fails the
 build if the lock is out of date with `pyproject.toml`) and also runs
-ruff (correctness) and mypy (types, on the case library), and reports
+ruff (correctness) and mypy (types, on `redaction_verifier` and the
+evaluation harness — `eval/caselib`, `eval/scorecard`, `eval/gallery`,
+`eval/check_ratchets.py`; `verify.py` itself is excluded), and reports
 coverage on the Linux Python 3.12 job; the commands above run the same
 checks locally. Two suites go further and test robustness directly:
 

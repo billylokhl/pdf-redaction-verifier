@@ -1,7 +1,9 @@
 # Design
 
 Why this tool is built the way it is. For *how to use it*, see the
-[README](README.md); for *what it does*, read `verify.py`.
+[README](README.md); for *what it does*, read `verify.py` and the
+`redaction_verifier/` package it imports its pure parts from (see
+`docs/REDESIGN.md` §4/§6 for why the code is split that way).
 
 ## Problem
 

@@ -206,6 +206,14 @@ class WarnList(list):
     def insert(self, index: Any, item: Any) -> None:
         super().insert(index, *self._check([item]))
 
+    # mypy: list.__add__ returns a plain list, so overriding __iadd__ with
+    # a narrower (checked) signature is technically incompatible. This is
+    # a pre-existing gap carried over unchanged by this move, not
+    # introduced by it: `WarnList(...) + other` and `.copy()` both still
+    # return an unchecked plain list rather than a WarnList, so a Warn-only
+    # invariant enforced by append/extend/insert/__setitem__/__iadd__ can
+    # still be bypassed via `+` or `.copy()`. Tracked in
+    # https://github.com/billylokhl/pdf-redaction-verifier/issues/25.
     def __iadd__(self, items: Any) -> "WarnList":  # type: ignore[misc]
         super().extend(self._check(items))
         return self

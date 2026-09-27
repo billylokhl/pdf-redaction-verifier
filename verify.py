@@ -100,6 +100,73 @@ try:
 except ImportError:  # pragma: no cover
     _OCR_IMPORTS_OK = False
 
+# ──────────────────────────────────────────────────────────────────────────
+# First-party package import (fail with a clear message, not a traceback —
+# same contract as the third-party imports above: an operational failure
+# must exit 2, never fall through to Python's default traceback + exit 1,
+# which this code otherwise shares with "secret found").
+#
+# docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
+# normalizer/value matcher, the pattern-class scanning engine and the
+# rules loader now live in redaction_verifier.model, .matching and
+# .rules. Re-exported here (one block, so there is exactly one place that
+# needs this guard) so every name used outside the package — existing
+# `verify.X` references, imports and the CLI — keeps working unchanged.
+# Each is imported `as` itself (the explicit re-export convention,
+# recognized by ruff's F401) because verify.py's OWN code below no
+# longer defines these, it just uses them. Three implementation-detail
+# constants are NOT re-exported, because nothing outside their own
+# submodule ever reaches them as a bare name or `verify.X`:
+# matching.values._NON_ALNUM_RE, matching.patterns._PATTERN_FOLD_TABLE,
+# matching.validators._EMAIL_FILE_EXTENSIONS.
+try:
+    from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES as BUILTIN_PATTERN_CLASSES
+    from redaction_verifier.matching import PATTERN_SCAN_BATCH as PATTERN_SCAN_BATCH
+    from redaction_verifier.matching import PATTERN_SCAN_OVERLAP as PATTERN_SCAN_OVERLAP
+    from redaction_verifier.matching import PatternRule as PatternRule
+    from redaction_verifier.matching import PatternScanner as PatternScanner
+    from redaction_verifier.matching import RollingScanner as RollingScanner
+    from redaction_verifier.matching import SecretMatcher as SecretMatcher
+    from redaction_verifier.matching import _fold_for_patterns as _fold_for_patterns
+    from redaction_verifier.matching import _luhn_ok as _luhn_ok
+    from redaction_verifier.matching import _valid_card as _valid_card
+    from redaction_verifier.matching import _valid_email as _valid_email
+    from redaction_verifier.matching import _valid_nanp as _valid_nanp
+    from redaction_verifier.matching import _valid_ssn as _valid_ssn
+    from redaction_verifier.matching import mask as mask
+    from redaction_verifier.matching import match_patterns as match_patterns
+    from redaction_verifier.matching import normalize_string as normalize_string
+    from redaction_verifier.model import ADJACENCY as ADJACENCY
+    from redaction_verifier.model import LAYERS as LAYERS
+    from redaction_verifier.model import STORAGE_CLASSES as STORAGE_CLASSES
+    from redaction_verifier.model import WARNING_CODES as WARNING_CODES
+    from redaction_verifier.model import WARNING_FIELDS as WARNING_FIELDS
+    from redaction_verifier.model import Finding as Finding
+    from redaction_verifier.model import ScanReport as ScanReport
+    from redaction_verifier.model import Secret as Secret
+    from redaction_verifier.model import VerifyError as VerifyError
+    from redaction_verifier.model import Warn as Warn
+    from redaction_verifier.model import WarnList as WarnList
+    from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS as ENTITY_TYPE_TO_CLASS
+    from redaction_verifier.rules import PARTIAL_ENTITY_COVERAGE as PARTIAL_ENTITY_COVERAGE
+    from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS
+    from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES as UPSTREAM_ENTITY_TYPES
+    from redaction_verifier.rules import RuleSet as RuleSet
+    from redaction_verifier.rules import _load_rules_json as _load_rules_json
+    from redaction_verifier.rules import _load_rules_yaml as _load_rules_yaml
+    from redaction_verifier.rules import _make_class_rule as _make_class_rule
+    from redaction_verifier.rules import _make_pattern_rule as _make_pattern_rule
+    from redaction_verifier.rules import _make_value_rule as _make_value_rule
+    from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
+    from redaction_verifier.rules import _yaml_section as _yaml_section
+    from redaction_verifier.rules import load_rules as load_rules
+except ImportError:  # pragma: no cover
+    sys.stderr.write(
+        "[ERROR] redaction_verifier package not found (install the "
+        "package or run verify.py from the repository)\n"
+    )
+    sys.exit(2)
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Constants
@@ -2660,28 +2727,6 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-# Moved to redaction_verifier.rules (docs/REDESIGN.md §4, §6 "Move, don't
-# wrap"): the redactor-config mapping tables, the shared rule builders,
-# RuleSet and the JSON/YAML loaders. Re-exported here so existing
-# `verify.X` references, imports and the CLI keep working unchanged.
-# Every name is imported `as` itself (the explicit re-export convention,
-# recognized by ruff's F401): see the same note above the model/matching
-# imports.
-from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS as ENTITY_TYPE_TO_CLASS  # noqa: E402
-from redaction_verifier.rules import PARTIAL_ENTITY_COVERAGE as PARTIAL_ENTITY_COVERAGE  # noqa: E402
-from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS  # noqa: E402
-from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES as UPSTREAM_ENTITY_TYPES  # noqa: E402
-from redaction_verifier.rules import RuleSet as RuleSet  # noqa: E402
-from redaction_verifier.rules import _load_rules_json as _load_rules_json  # noqa: E402
-from redaction_verifier.rules import _load_rules_yaml as _load_rules_yaml  # noqa: E402
-from redaction_verifier.rules import _make_class_rule as _make_class_rule  # noqa: E402
-from redaction_verifier.rules import _make_pattern_rule as _make_pattern_rule  # noqa: E402
-from redaction_verifier.rules import _make_value_rule as _make_value_rule  # noqa: E402
-from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind  # noqa: E402
-from redaction_verifier.rules import _yaml_section as _yaml_section  # noqa: E402
-from redaction_verifier.rules import load_rules as load_rules  # noqa: E402
-
-
 def _sanitize_report_text(text: str) -> str:
     """Strip control characters so PDF-derived bytes (ANSI escapes,
     newlines) cannot inject into or spoof the terminal report."""

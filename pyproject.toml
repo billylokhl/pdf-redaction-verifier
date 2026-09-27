@@ -43,11 +43,12 @@ pdf-verify = "verify:run_cli"
 
 [tool.setuptools]
 py-modules = ["verify"]
-packages = [
-    "redaction_verifier",
-    "redaction_verifier.matching",
-    "redaction_verifier.rules",
-]
+
+[tool.setuptools.packages.find]
+# Auto-discover redaction_verifier's subpackages instead of listing each
+# one by hand, so a future subpackage (redaction_verifier.inventory, …)
+# ships without a pyproject.toml edit.
+include = ["redaction_verifier*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "verify.__version__"}

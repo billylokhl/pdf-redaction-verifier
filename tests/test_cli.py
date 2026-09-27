@@ -112,6 +112,38 @@ class TestExitCodeContract:
         assert result.returncode == 2
         assert "Traceback" not in result.stderr
 
+    def test_missing_redaction_verifier_package_exits_2(self, tmp_path) -> None:
+        # Regression: verify.py's re-export of redaction_verifier.* was a
+        # bare top-level import. If the package can't be found (not
+        # installed, or verify.py copied out of the repo on its own), that
+        # raised ModuleNotFoundError straight through main() — a plain
+        # traceback and exit 1, the "secret found" code, silently
+        # breaking the "operational failure exits 2, never 1" contract
+        # the PyMuPDF import already guards a few lines above it.
+        #
+        # redaction_verifier is installed editable (a .pth finder in
+        # site-packages pointing back at the repo), so neither an empty
+        # cwd nor a stripped PYTHONPATH hides it from this interpreter.
+        # What DOES take precedence is the directory a script is run
+        # from: Python inserts it at sys.path[0], ahead of site-packages.
+        # So copying verify.py alone into tmp_path and placing a stub
+        # top-level redaction_verifier.py next to it — a plain module,
+        # not a package, that raises ImportError on import — reliably
+        # simulates "the package can't be found" without needing -I or
+        # any interpreter/environment trickery.
+        shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
+        (tmp_path / "redaction_verifier.py").write_text(
+            'raise ImportError("stub: simulated missing redaction_verifier")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, str(tmp_path / "verify.py"),
+             "--target", "x.pdf", "--secrets", "x.json"],
+            capture_output=True, text=True, timeout=60, cwd=tmp_path,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "Traceback" not in result.stderr
+        assert "[ERROR] redaction_verifier package not found" in result.stderr
+
 
 @requires_full_env
 class TestBaselines:
