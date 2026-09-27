@@ -387,6 +387,10 @@ contract, the two-tier matching model, and the known limitations.
 
 ## Development
 
+Requires uv 0.12.3 (`pyproject.toml`'s `[tool.uv].required-version` pins
+the same range CI installs — a mismatched uv refuses to run rather than
+resolving or installing differently against the same lock file):
+
 ```bash
 uv sync --extra test --group dev          # Install test + lint/type-check tools
 uv run pytest                             # Run the test suite

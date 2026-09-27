@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Dependencies**: PyMuPDF 1.27.2.3 → 1.28.2 (plus pyyaml, pytest, pytest-cov patch/minor bumps). The case library's generated PDFs change byte-for-byte (lock regenerated), but the scorecard shows no verdict change on any case.
 
-Hash-locked dependencies via `uv.lock` (resolved for macOS and Linux, Python 3.10–3.13), so a silent upstream change can no longer alter a verdict. Lint tools (ruff, mypy) moved from an ad hoc unpinned `pip install` in CI to a pinned `dev` dependency group. CI now installs with `uv sync --locked` (failing the build if the lock drifts from `pyproject.toml`) instead of `pip install -e`, and Dependabot's `pip` ecosystem switched to `uv`.
+Hash-locked dependencies via `uv.lock` (resolved for macOS and Linux, Python 3.10–3.13), so a silent upstream change can no longer alter a verdict. Lint tools (ruff, mypy) moved from an ad hoc unpinned `pip install` in CI to a pinned `dev` dependency group. CI now installs with `uv sync --locked` (failing the build if the lock drifts from `pyproject.toml`) instead of `pip install -e`, and Dependabot's `pip` ecosystem switched to `uv`. uv itself is pinned to 0.12.3 (`[tool.uv].required-version` in `pyproject.toml`, matched by every CI `setup-uv` step's `version:`), since a different uv binary can resolve or install differently even against an identical lock file.
 
 ### Verdict changes
 The following changes can move a file's exit code:

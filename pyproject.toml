@@ -48,6 +48,11 @@ py-modules = ["verify"]
 version = {attr = "verify.__version__"}
 
 [tool.uv]
+# Pin the uv binary itself, not just the lock: a different uv version can
+# resolve or install differently even against the same uv.lock. CI's
+# setup-uv steps pass a matching `version:`; this makes a local uv refuse
+# to run at all if it doesn't match, rather than silently drifting.
+required-version = ">=0.12.3,<0.13"
 # requires-python is an open-ended ">=3.10"; without a cap uv's universal
 # resolver would also have to solve for not-yet-released interpreters.
 # The lock only needs to cover what CI and the README actually promise
