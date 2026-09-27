@@ -367,37 +367,46 @@ conda installs everything in one command (conda-forge ships the binaries):
 conda env create -f environment.yml && conda activate pdf-redaction-verifier
 ```
 
-With uv or pip, install the two binaries separately:
+Dependencies are hash-locked in `uv.lock`, resolved for macOS and Linux on
+Python 3.10–3.13 (the pyobjc packages stay macOS-only via their markers).
+With [uv](https://docs.astral.sh/uv/), install the two binaries separately:
 
 ```bash
-brew install exiftool qpdf && uv pip install -e '.[test]'   # or: pip install -e '.[test]'
+brew install exiftool qpdf && uv sync --extra test
 ```
 
 On Debian/Ubuntu the binaries are
-`sudo apt-get install libimage-exiftool-perl qpdf`. Drop `[test]` if you
-do not need the test suite. `python verify.py --target ... --secrets ...`
-works installed or not; pass `--fail-fast` to stop at the first confirmed
-finding.
+`sudo apt-get install libimage-exiftool-perl qpdf`. Drop `--extra test` if
+you do not need the test suite. Without uv, `pip install -e '.[test]'`
+still works (from `pyproject.toml` directly, not the lock file).
+`python verify.py --target ... --secrets ...` works installed or not; pass
+`--fail-fast` to stop at the first confirmed finding.
 
 [DESIGN.md](DESIGN.md) explains the design rationale — the exit-code
 contract, the two-tier matching model, and the known limitations.
 
-## Tests
+## Development
 
 ```bash
-pytest                                    # Run the test suite
-ruff check .                              # Lint code
-mypy                                      # Type check (eval/caselib, eval/scorecard)
-pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
+uv sync --extra test --group dev          # Install test + lint/type-check tools
+uv run pytest                             # Run the test suite
+uv run ruff check .                       # Lint code
+uv run mypy                               # Type check (eval/caselib, eval/scorecard)
+uv run pytest tests/ --cov=verify --cov=caselib  # Run tests with coverage report
 ```
+
+Without uv: `pip install -e '.[test]'` plus `pip install ruff==<pinned>
+mypy==<pinned>` (see the `dev` group in `pyproject.toml` for the pinned
+versions), then drop the `uv run` prefix from the commands above.
 
 Every regression test pins a previously confirmed bug; fixtures are
 generated on the fly, nothing binary is committed, and tests needing
 Apple Vision, `exiftool`, or `qpdf` skip with a reason when the tool is
-absent. CI also runs ruff (correctness) and mypy (types, on the case
-library), and reports coverage on the Linux Python 3.12 job; the commands
-above run the same checks locally. Two suites go further and test
-robustness directly:
+absent. CI installs from `uv.lock` (`uv sync --locked`, which fails the
+build if the lock is out of date with `pyproject.toml`) and also runs
+ruff (correctness) and mypy (types, on the case library), and reports
+coverage on the Linux Python 3.12 job; the commands above run the same
+checks locally. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
