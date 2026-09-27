@@ -20,16 +20,28 @@ import pytest
 
 import verify
 
+from redaction_verifier.matching import (
+    BUILTIN_PATTERN_CLASSES,
+    PatternRule,
+    SecretMatcher,
+    _valid_card,
+    _valid_ssn,
+    match_patterns,
+    normalize_string,
+)
+from redaction_verifier.model import ScanReport, Secret
+from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text
+
 from .conftest import SSN, requires_qpdf
 
-NORM = verify.normalize_string(SSN)
+NORM = normalize_string(SSN)
 
 
-def _scan_objects(path: Path, *, revisions: bool = False) -> verify.ScanReport:
-    report = verify.ScanReport()
-    matcher = verify.SecretMatcher([verify.Secret("SSN", NORM)])
-    patterns = [verify.PatternRule(
-        "ssn", re.compile(verify.BUILTIN_PATTERN_CLASSES["ssn"][0]), verify._valid_ssn)]
+def _scan_objects(path: Path, *, revisions: bool = False) -> ScanReport:
+    report = ScanReport()
+    matcher = SecretMatcher([Secret("SSN", NORM)])
+    patterns = [PatternRule(
+        "ssn", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]), _valid_ssn)]
     doc = fitz.open(path)
     try:
         verify.scan_pdf_objects(doc, matcher, patterns, report)
@@ -99,11 +111,11 @@ class TestNowRead:
         page.insert_text((72, 72), "visible")
         page.insert_text((72, -40), f"SSN {SSN}")           # above the page
         try:
-            readings = verify.extract_visual_text(page)
+            readings = extract_visual_text(page)
         finally:
             doc.close()
-        assert NORM in verify.normalize_string(readings[3])   # off-page reading
-        assert NORM not in verify.normalize_string(readings[0])
+        assert NORM in normalize_string(readings[3])   # off-page reading
+        assert NORM not in normalize_string(readings[0])
 
     def test_text_outside_the_cropbox(self) -> None:
         # Cropping is a classic fake redaction: the text is still there.
@@ -113,10 +125,10 @@ class TestNowRead:
         page.insert_text((72, 500), f"SSN {SSN}")
         page.set_cropbox(fitz.Rect(0, 0, 300, 300))
         try:
-            readings = verify.extract_visual_text(page)
+            readings = extract_visual_text(page)
         finally:
             doc.close()
-        assert NORM in verify.normalize_string(readings[3])
+        assert NORM in normalize_string(readings[3])
 
     def test_off_page_text_does_not_hide_a_page_break_split(self) -> None:
         # Regression: merged into the visible reading, a slug below page 1
@@ -126,13 +138,13 @@ class TestNowRead:
         p1.insert_text((72, 780), "Employee SSN 123-45-")
         p1.insert_text((72, 900), "JOB-4471 slug")          # below the page
         doc.new_page().insert_text((72, 60), "6789 was on file.")
-        report = verify.ScanReport()
+        report = ScanReport()
         try:
             verify.scan_page_layer(
-                doc, verify.SecretMatcher([verify.Secret("SSN", NORM)]), report,
-                layer="Text", extractor=verify.extract_visual_text,
+                doc, SecretMatcher([Secret("SSN", NORM)]), report,
+                layer="Text", extractor=extract_visual_text,
                 note="visual text layer", patterns=[],
-                hard_variants=verify.TEXT_GENUINE_READINGS)
+                hard_variants=TEXT_GENUINE_READINGS)
         finally:
             doc.close()
         assert [f.location for f in report.findings] == [
@@ -197,10 +209,10 @@ class TestNowFlagged:
         doc = fitz.open()
         doc.new_page().insert_text((72, 72), "clean")
         doc.embfile_add("records.zip", _zip_with(f"SSN {SSN}"))
-        report = verify.ScanReport()
+        report = ScanReport()
         try:
             verify.scan_hidden_objects(
-                doc, verify.SecretMatcher([verify.Secret("SSN", NORM)]), [], report)
+                doc, SecretMatcher([Secret("SSN", NORM)]), [], report)
         finally:
             doc.close()
         assert any("is not text" in w and "NOT scanned" in w for w in report.warnings)
@@ -238,10 +250,10 @@ class TestNoFalseFlags:
         doc = fitz.open()
         doc.new_page().insert_text((72, 72), "clean")
         doc.embfile_add("notes.txt", "Café résumé — 名前 und Grüße".encode())
-        report = verify.ScanReport()
+        report = ScanReport()
         try:
             verify.scan_hidden_objects(
-                doc, verify.SecretMatcher([verify.Secret("SSN", NORM)]), [], report)
+                doc, SecretMatcher([Secret("SSN", NORM)]), [], report)
         finally:
             doc.close()
         assert report.warnings == []
@@ -416,21 +428,21 @@ class TestRevisions:
         # Each of these dates' digits passes the card checksum.
         card_like = ["D:20240102090702-07'00'", "D:20240102094902-07'00'",
                      "D:20240103092103-07'00'", "D:20240105093505-07'00'"]
-        assert all(verify.match_patterns(d, [verify.PatternRule("cc", re.compile(
-            verify.BUILTIN_PATTERN_CLASSES["credit-card"][0]), verify._valid_card)])
+        assert all(match_patterns(d, [PatternRule("cc", re.compile(
+            BUILTIN_PATTERN_CLASSES["credit-card"][0]), _valid_card)])
             for d in card_like)                              # fixture guard
         for date in card_like:
             doc = fitz.open(path)
             doc.set_metadata({"modDate": date})
             doc.save(str(path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
             doc.close()
-        report = verify.ScanReport()
-        cc = [verify.PatternRule("cc", re.compile(
-            verify.BUILTIN_PATTERN_CLASSES["credit-card"][0]), verify._valid_card)]
+        report = ScanReport()
+        cc = [PatternRule("cc", re.compile(
+            BUILTIN_PATTERN_CLASSES["credit-card"][0]), _valid_card)]
         doc = fitz.open(path)
         try:
-            verify.scan_pdf_objects(doc, verify.SecretMatcher([]), cc, report)
-            verify.scan_earlier_revisions(path, doc, verify.SecretMatcher([]), cc, report)
+            verify.scan_pdf_objects(doc, SecretMatcher([]), cc, report)
+            verify.scan_earlier_revisions(path, doc, SecretMatcher([]), cc, report)
         finally:
             doc.close()
         assert report.findings == []
@@ -511,12 +523,12 @@ class TestLeftoverChecks:
                b"uuid:9f3c-123456789-ab</xmpMM:InstanceID></x:xmpmeta>")
         path = tmp_path / "uuid.pdf"
         _orphan(path, xmp, "<< /Type /Metadata /Subtype /XML >>")
-        report = verify.ScanReport()
+        report = ScanReport()
         doc = fitz.open(path)
         try:
-            verify.scan_pdf_objects(doc, verify.SecretMatcher([]), [verify.PatternRule(
-                "ssn", re.compile(verify.BUILTIN_PATTERN_CLASSES["ssn"][0]),
-                verify._valid_ssn)], report)
+            verify.scan_pdf_objects(doc, SecretMatcher([]), [PatternRule(
+                "ssn", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]),
+                _valid_ssn)], report)
         finally:
             doc.close()
         assert report.findings == []
@@ -672,11 +684,11 @@ class TestLiveContentIsNeverLeftover:
 
 
 class TestAttachmentFlags:
-    def _hidden(self, doc) -> verify.ScanReport:
-        report = verify.ScanReport()
+    def _hidden(self, doc) -> ScanReport:
+        report = ScanReport()
         try:
             verify.scan_hidden_objects(
-                doc, verify.SecretMatcher([verify.Secret("SSN", NORM)]), [], report)
+                doc, SecretMatcher([Secret("SSN", NORM)]), [], report)
         finally:
             doc.close()
         return report

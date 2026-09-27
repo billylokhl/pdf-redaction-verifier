@@ -9,33 +9,37 @@ import fitz
 
 import verify
 
+from redaction_verifier.matching import SecretMatcher, normalize_string
+from redaction_verifier.model import ScanReport, Secret
+from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text
+
 from .conftest import SSN
 
 
 def _dom_finds(page: fitz.Page, normalized_secret: str) -> bool:
     return any(
-        normalized_secret in verify.normalize_string(variant)
-        for variant in verify.extract_visual_text(page)
+        normalized_secret in normalize_string(variant)
+        for variant in extract_visual_text(page)
     )
 
 
 class TestNormalizer:
     def test_formatting_variants_collapse(self) -> None:
         for form in ("123-45-6789", "123 45 6789", "1 2 3\n4 5-6.7/8 9"):
-            assert verify.normalize_string(form) == "123456789"
+            assert normalize_string(form) == "123456789"
 
     def test_fullwidth_digits_fold_to_ascii(self) -> None:
         # Regression: ASCII-only normalizer deleted fullwidth forms,
         # so a visually identical secret false-PASSed.
-        assert verify.normalize_string("１２３－４５－６７８９") == "123456789"
+        assert normalize_string("１２３－４５－６７８９") == "123456789"
 
     def test_accents_and_casefold(self) -> None:
-        assert verify.normalize_string("José-Straße") == "josestrasse"
+        assert normalize_string("José-Straße") == "josestrasse"
 
     def test_overlapping_secrets_both_found(self) -> None:
         # SecretMatcher must not let one match consume an overlapping one.
-        matcher = verify.SecretMatcher([
-            verify.Secret("a", "1234"), verify.Secret("b", "2345"),
+        matcher = SecretMatcher([
+            Secret("a", "1234"), Secret("b", "2345"),
         ])
         assert {s.name for s in matcher.search("12345")} == {"a", "b"}
 
@@ -46,8 +50,8 @@ class TestVisualOrder:
         # in visual left-to-right order (horizontal variant specifically).
         doc = fitz.open(leaky_pdf)
         try:
-            horizontal = verify.extract_visual_text(doc[0])[0]
-            assert SSN.replace("-", "") in verify.normalize_string(horizontal)
+            horizontal = extract_visual_text(doc[0])[0]
+            assert SSN.replace("-", "") in normalize_string(horizontal)
         finally:
             doc.close()
 
@@ -59,8 +63,8 @@ class TestVisualOrder:
         for i, digit in enumerate("123456789"):
             page.insert_text((72 + i * 40, 200 + (6 if i % 2 else 0)), digit, fontsize=30)
         try:
-            horizontal = verify.extract_visual_text(page)[0]
-            assert "123456789" in verify.normalize_string(horizontal)
+            horizontal = extract_visual_text(page)[0]
+            assert "123456789" in normalize_string(horizontal)
         finally:
             doc.close()
 
@@ -82,8 +86,8 @@ class TestVisualOrder:
         page.insert_text((72, 100), "111 222 333", fontsize=8)
         page.insert_text((72, 109), "444 555 666", fontsize=8)
         try:
-            horizontal = verify.extract_visual_text(page)[0]
-            assert "111222333" in verify.normalize_string(horizontal.split("\n")[0])
+            horizontal = extract_visual_text(page)[0]
+            assert "111222333" in normalize_string(horizontal.split("\n")[0])
         finally:
             doc.close()
 
@@ -103,14 +107,14 @@ def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
 
 
 def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
-          hard_variants: int = verify.TEXT_GENUINE_READINGS,
-          secrets=(("SSN", SSN),), fail_fast: bool = False) -> verify.ScanReport:
-    report = verify.ScanReport()
-    matcher = verify.SecretMatcher(
-        [verify.Secret(name, verify.normalize_string(v)) for name, v in secrets])
+          hard_variants: int = TEXT_GENUINE_READINGS,
+          secrets=(("SSN", SSN),), fail_fast: bool = False) -> ScanReport:
+    report = ScanReport()
+    matcher = SecretMatcher(
+        [Secret(name, normalize_string(v)) for name, v in secrets])
     try:
         verify.scan_page_layer(doc, matcher, report, layer=layer,
-                               extractor=extractor or verify.extract_visual_text,
+                               extractor=extractor or extract_visual_text,
                                note="visual text layer", patterns=[],
                                hard_variants=hard_variants, fail_fast=fail_fast)
     finally:
@@ -118,7 +122,7 @@ def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
     return report
 
 
-def _scan_pages(pages: list[list[str]], **kw) -> verify.ScanReport:
+def _scan_pages(pages: list[list[str]], **kw) -> ScanReport:
     return _scan(_build(pages), **kw)
 
 
@@ -135,7 +139,7 @@ def crossing(page: int, name: str = "SSN", layer: str = "Text") -> str:
     return verify.CROSS_PAGE_WARNING.format(layer=layer, page=page, name=name)
 
 
-def _where(report: verify.ScanReport) -> list[str]:
+def _where(report: ScanReport) -> list[str]:
     return [f.location for f in report.findings]
 
 
@@ -260,7 +264,7 @@ class TestPageSeam:
 
         def counting(page: fitz.Page) -> list[str]:
             seen.append(page.number)
-            return verify.extract_visual_text(page)
+            return extract_visual_text(page)
 
         doc = _build([["SSN 123-45-"], ["6789 end"]] + [["filler"]] * 8)
         report = _scan(doc, extractor=counting, fail_fast=True)
@@ -318,7 +322,7 @@ class TestPageBreakBackstop:
         def flaky(page: fitz.Page) -> list[str]:
             if page.number == 1:
                 raise RuntimeError("unreadable")
-            return verify.extract_visual_text(page)
+            return extract_visual_text(page)
 
         report = _scan(_build([["SSN 123-45-"], ["x"], ["6789 tail"]]),
                        extractor=flaky)
@@ -353,7 +357,7 @@ class TestPageBreaksOcr:
     """The same rules on the OCR path: two genuine readings that can differ."""
 
     @staticmethod
-    def _ocr(readings: list[list[str]]) -> verify.ScanReport:
+    def _ocr(readings: list[list[str]]) -> ScanReport:
         doc = fitz.open()
         for _ in readings:
             doc.new_page()

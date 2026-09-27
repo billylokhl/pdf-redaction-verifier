@@ -12,6 +12,19 @@ import pytest
 
 import verify
 
+from redaction_verifier.matching import (
+    BUILTIN_PATTERN_CLASSES,
+    SecretMatcher,
+    _valid_card,
+    _valid_email,
+    _valid_nanp,
+    _valid_ssn,
+    mask,
+    match_patterns,
+)
+from redaction_verifier.model import ScanReport, Secret, VerifyError
+from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS, load_rules
+
 from .conftest import requires_full_env, requires_metadata_tools, run_verify
 
 # Valid under SSA rules (area not 000/666/9xx, group not 00, serial not 0000).
@@ -41,23 +54,23 @@ def _pdf_with_text(tmp_path: Path, *lines: str) -> Path:
 class TestLoader:
     def test_entry_with_value_and_pattern_rejected(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [{"name": "x", "value": "a1", "pattern": "a"}])
-        with pytest.raises(verify.VerifyError, match="exactly one"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="exactly one"):
+            load_rules(path)
 
     def test_unknown_class_rejected_with_valid_list(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [{"name": "x", "class": "passport"}])
-        with pytest.raises(verify.VerifyError, match="ssn"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="ssn"):
+            load_rules(path)
 
     def test_invalid_regex_rejected(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [{"name": "x", "pattern": "(unclosed"}])
-        with pytest.raises(verify.VerifyError, match="invalid regex"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="invalid regex"):
+            load_rules(path)
 
     def test_empty_matching_pattern_rejected(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [{"name": "x", "pattern": "a*"}])
-        with pytest.raises(verify.VerifyError, match="empty string"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="empty string"):
+            load_rules(path)
 
     def test_duplicate_names_rejected(self, tmp_path) -> None:
         # Regression: same-named rules silently overwrote each other's
@@ -66,8 +79,8 @@ class TestLoader:
             {"name": "PII", "class": "ssn"},
             {"name": "PII", "class": "credit-card"},
         ])
-        with pytest.raises(verify.VerifyError, match="duplicate rule name"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="duplicate rule name"):
+            load_rules(path)
 
     def test_mixed_rules_load(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [
@@ -75,87 +88,87 @@ class TestLoader:
             {"name": "any ssn", "class": "ssn"},
             {"name": "case id", "pattern": r"CASE-\d{4}"},
         ])
-        rules = verify.load_rules(path)
+        rules = load_rules(path)
         assert len(rules.secrets) == 1 and len(rules.patterns) == 2
 
 
 class TestValidators:
     def test_luhn(self) -> None:
-        assert verify._valid_card(VALID_CARD)
-        assert not verify._valid_card(INVALID_LUHN_CARD)
-        assert not verify._valid_card("0000 0000 0000 0000")  # degenerate
+        assert _valid_card(VALID_CARD)
+        assert not _valid_card(INVALID_LUHN_CARD)
+        assert not _valid_card("0000 0000 0000 0000")  # degenerate
 
     def test_card_rejects_pdf_date_stamps(self) -> None:
         # Regression: D:YYYYMMDDHHmmSS literals pass Luhn ~10% of the
         # time; no real 14-digit card IIN starts with 19/20.
-        assert not verify._valid_card("20190115235959")
-        assert not verify._valid_card("19991231115959")
+        assert not _valid_card("20190115235959")
+        assert not _valid_card("19991231115959")
 
     def test_ssn_rules(self) -> None:
-        assert verify._valid_ssn(VALID_SSN)
-        assert not verify._valid_ssn("000-12-3456")  # area 000
-        assert not verify._valid_ssn("666-12-3456")  # area 666
-        assert not verify._valid_ssn("987-65-4321")  # area 9xx
-        assert not verify._valid_ssn("123-00-6789")  # group 00
-        assert not verify._valid_ssn("123-45-0000")  # serial 0000
+        assert _valid_ssn(VALID_SSN)
+        assert not _valid_ssn("000-12-3456")  # area 000
+        assert not _valid_ssn("666-12-3456")  # area 666
+        assert not _valid_ssn("987-65-4321")  # area 9xx
+        assert not _valid_ssn("123-00-6789")  # group 00
+        assert not _valid_ssn("123-45-0000")  # serial 0000
 
     def test_nanp_rejects_non_phone_integers(self) -> None:
-        assert verify._valid_nanp("(425) 867-5309")
-        assert not verify._valid_nanp("1756500000")  # epoch-like, area '175'
-        assert not verify._valid_nanp("0123456789")
+        assert _valid_nanp("(425) 867-5309")
+        assert not _valid_nanp("1756500000")  # epoch-like, area '175'
+        assert not _valid_nanp("0123456789")
 
     def test_email_rejects_asset_filenames(self) -> None:
         # Regression: logo@2x.png fully matched the email class.
-        assert not verify._valid_email("logo@2x.png")
-        assert verify._valid_email("alice@example.com")
+        assert not _valid_email("logo@2x.png")
+        assert _valid_email("alice@example.com")
 
     def test_mask_never_reveals_more_than_half(self) -> None:
-        assert verify.mask("123-45-6789") == "****6789"
-        assert verify.mask("38217") == "****17"      # 5-char PIN: reveal 2
-        assert verify.mask("abc") == "****c"         # reveal 1 of 3
-        assert verify.mask("ab") == "****b"          # reveal 1 of 2
-        assert verify.mask("a") == "****"            # reveal 0
+        assert mask("123-45-6789") == "****6789"
+        assert mask("38217") == "****17"      # 5-char PIN: reveal 2
+        assert mask("abc") == "****c"         # reveal 1 of 3
+        assert mask("ab") == "****b"          # reveal 1 of 2
+        assert mask("a") == "****"            # reveal 0
 
 
 class TestMatchSemantics:
     SSN_RULES = None  # built per test via load
 
     def _patterns(self, tmp_path, rules):
-        return verify.load_rules(_rules_file(tmp_path, rules)).patterns
+        return load_rules(_rules_file(tmp_path, rules)).patterns
 
     def test_soft_hyphen_is_folded_to_a_dash(self, tmp_path) -> None:
         # Regression: fonts embedded by some producers (PyMuPDF with Arial)
         # extract '-' as U+00AD, which NFKC keeps, so the ssn class missed
         # 'SSN 123-45-6789' drawn in such a font — exit 0 on a leak.
         patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        assert verify.match_patterns("SSN 123­45­6789", patterns) == {
+        assert match_patterns("SSN 123­45­6789", patterns) == {
             "ssn": "123-45-6789"}
 
     def test_greedy_rejection_retries_embedded_match(self, tmp_path) -> None:
         # Regression: validator-rejected greedy superspan swallowed the
         # embedded valid card and finditer never retried inside it.
         patterns = self._patterns(tmp_path, [{"name": "card", "class": "credit-card"}])
-        hits = verify.match_patterns(f"Gate 7 {VALID_CARD}", patterns)
+        hits = match_patterns(f"Gate 7 {VALID_CARD}", patterns)
         assert "card" in hits
 
     def test_unicode_dashes_folded(self, tmp_path) -> None:
         # Regression: en-dash SSNs evaded the ASCII separator class.
         patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        assert "ssn" in verify.match_patterns("SSN: 123–45–6789", patterns)
+        assert "ssn" in match_patterns("SSN: 123–45–6789", patterns)
 
     def test_fullwidth_digits_folded_and_validated(self, tmp_path) -> None:
         # Regression: fullwidth digits matched \d but bypassed the ASCII
         # comparisons in _valid_ssn (area-9xx passed as a finding).
         patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        assert verify.match_patterns("９８７６５４３２１", patterns) == {}
-        assert "ssn" in verify.match_patterns("５２９１２４５６７", patterns)
+        assert match_patterns("９８７６５４３２１", patterns) == {}
+        assert "ssn" in match_patterns("５２９１２４５６７", patterns)
 
     def test_zip_plus_four_and_decimals_not_ssn(self, tmp_path) -> None:
         # Regression: ZIP+4 regrouped into an SSN; decimal fractions
         # matched because '.' was not excluded by the leading guard.
         patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        assert verify.match_patterns("Anytown, NY 12345-6789", patterns) == {}
-        assert verify.match_patterns("ratio 1.123456789 observed", patterns) == {}
+        assert match_patterns("Anytown, NY 12345-6789", patterns) == {}
+        assert match_patterns("ratio 1.123456789 observed", patterns) == {}
 
     def test_zero_width_matches_never_findings(self, tmp_path) -> None:
         # Regression: lookbehind-only patterns produced zero-width hits
@@ -163,7 +176,7 @@ class TestMatchSemantics:
         patterns = self._patterns(
             tmp_path, [{"name": "x", "pattern": r"(?<=SSN: )\d*"}]
         )
-        assert verify.match_patterns("SSN: [REDACTED]", patterns) == {}
+        assert match_patterns("SSN: [REDACTED]", patterns) == {}
 
     def test_anchored_patterns_match_per_line(self, tmp_path) -> None:
         # Regression: ^/$ compiled without re.MULTILINE never matched
@@ -171,7 +184,7 @@ class TestMatchSemantics:
         patterns = self._patterns(
             tmp_path, [{"name": "case", "pattern": r"^Ref CASE-\d{4}$"}]
         )
-        assert "case" in verify.match_patterns("intro\nRef CASE-8912\nend", patterns)
+        assert "case" in match_patterns("intro\nRef CASE-8912\nend", patterns)
 
 
 class TestPatternDetection:
@@ -306,13 +319,13 @@ class TestTiering:
         # cleanly only by the correction-OFF Vision pass (variants[1] —
         # the more digit-accurate read) could never be a hard finding.
         rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn"}])
-        patterns = verify.load_rules(rules).patterns
+        patterns = load_rules(rules).patterns
         doc = fitz.open()
         doc.new_page()
         try:
-            report = verify.ScanReport()
+            report = ScanReport()
             verify.scan_page_layer(
-                doc, verify.SecretMatcher([verify.Secret("unused", "zzzz")]), report,
+                doc, SecretMatcher([Secret("unused", "zzzz")]), report,
                 layer="OCR",
                 extractor=lambda page: ["SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
                 note="test", patterns=patterns, hard_variants=2,
@@ -372,7 +385,7 @@ backend: lmstudio
 model: gemma-4-26b-a4b-qat
 scrub_metadata: true
 """)
-        rules = verify.load_rules(path)
+        rules = load_rules(path)
         assert len(rules.secrets) == 2                      # exact_values
         assert len(rules.patterns) == 3                     # 1 regex + ssn + email
         # Unmappable entity types are recorded, never silently dropped.
@@ -382,10 +395,10 @@ scrub_metadata: true
         # Independence: an entity_type maps to THIS tool's regex and
         # validator, not to the redactor's pattern for the same concept.
         path = self._yaml(tmp_path, "entity_types: [ssn]\n")
-        patterns = verify.load_rules(path).patterns
+        patterns = load_rules(path).patterns
         assert len(patterns) == 1
-        assert patterns[0].validator is verify._valid_ssn
-        assert patterns[0].regex.pattern == verify.BUILTIN_PATTERN_CLASSES["ssn"][0]
+        assert patterns[0].validator is _valid_ssn
+        assert patterns[0].regex.pattern == BUILTIN_PATTERN_CLASSES["ssn"][0]
 
     def test_unverifiable_types_force_exit_2(self, tmp_path) -> None:
         # A clean document must NOT certify as 0 when the config asked
@@ -410,8 +423,8 @@ scrub_metadata: true
         # The redactor compiles its patterns IGNORECASE; a shared file
         # must not match differently in the two tools.
         path = self._yaml(tmp_path, "patterns:\n  - 'case-[0-9]{4}'\n")
-        patterns = verify.load_rules(path).patterns
-        assert "patterns[0]" in verify.match_patterns("Ref CASE-8912", patterns)
+        patterns = load_rules(path).patterns
+        assert "patterns[0]" in match_patterns("Ref CASE-8912", patterns)
 
     def test_malformed_yaml_exits_2_not_1(self, tmp_path) -> None:
         pdf = _pdf_with_text(tmp_path, "clean")
@@ -420,8 +433,8 @@ scrub_metadata: true
 
     def test_invalid_regex_in_yaml_rejected(self, tmp_path) -> None:
         path = self._yaml(tmp_path, "patterns:\n  - '(unclosed'\n")
-        with pytest.raises(verify.VerifyError, match="invalid regex"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="invalid regex"):
+            load_rules(path)
 
 
 class TestYamlScalarCoercion:
@@ -437,14 +450,14 @@ class TestYamlScalarCoercion:
         # searched for "42798" and CERTIFIED CLEAN a document containing
         # the real account number.
         path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
-        assert [s.normalized for s in verify.load_rules(path).secrets] == ["00123456"]
+        assert [s.normalized for s in load_rules(path).secrets] == ["00123456"]
 
     def test_scalars_keep_their_literal_text(self, tmp_path) -> None:
         path = self._yaml(
             tmp_path, "exact_values:\n  - 1.50\n  - yes\n  - 0123\n"
         )
         # 1.50 must not become "1.5", yes must not become "True".
-        assert [s.normalized for s in verify.load_rules(path).secrets] == [
+        assert [s.normalized for s in load_rules(path).secrets] == [
             "150", "yes", "0123",
         ]
 
@@ -452,14 +465,14 @@ class TestYamlScalarCoercion:
         # A redactor sharing the file reads it with a plain safe_load and
         # would remove a different string — say so, and never exit 0.
         path = self._yaml(tmp_path, "exact_values:\n  - 0123\n")
-        rules = verify.load_rules(path)
+        rules = load_rules(path)
         assert any("unquoted" in w for w in rules.warnings)
 
     def test_quoted_values_raise_no_warning(self, tmp_path) -> None:
         # Other warnings are expected here (an absent entity_types key
         # means the full upstream roster); only the coercion one must go.
         path = self._yaml(tmp_path, 'exact_values:\n  - "0123"\n')
-        assert not any("unquoted" in w for w in verify.load_rules(path).warnings)
+        assert not any("unquoted" in w for w in load_rules(path).warnings)
 
     def test_unquoted_secret_is_still_detected(self, tmp_path) -> None:
         pdf = _pdf_with_text(tmp_path, "Account: 00123456 on file")
@@ -484,72 +497,72 @@ class TestYamlAdapterFidelity:
         # silently dropped whole sections the redactor did see.
         path = self._yaml(tmp_path, 'base: &b\n  exact_values: ["SECRET-A"]\n'
                                     "<<: *b\nentity_types: [ssn]\n")
-        assert [s.normalized for s in verify.load_rules(path).secrets] == ["secreta"]
+        assert [s.normalized for s in load_rules(path).secrets] == ["secreta"]
 
     def test_absent_entity_types_means_the_full_roster(self, tmp_path) -> None:
         # Upstream defaults to every type when the key is absent; reading
         # it as "none" certified clean what was never scanned.
-        rules = verify.load_rules(self._yaml(tmp_path, 'exact_values: ["x1"]\n'))
+        rules = load_rules(self._yaml(tmp_path, 'exact_values: ["x1"]\n'))
         assert len(rules.unverifiable) == 6
-        assert len(rules.patterns) == len(verify.ENTITY_TYPE_TO_CLASS)
+        assert len(rules.patterns) == len(ENTITY_TYPE_TO_CLASS)
 
     def test_unknown_top_level_key_is_warned(self, tmp_path) -> None:
         path = self._yaml(tmp_path, 'exact_value: ["x"]\nentity_types: [email]\n')
-        assert any("unrecognized" in w for w in verify.load_rules(path).warnings)
+        assert any("unrecognized" in w for w in load_rules(path).warnings)
 
     def test_duplicate_key_rejected(self, tmp_path) -> None:
         path = self._yaml(tmp_path, 'exact_values: ["a1"]\nexact_values: ["b2"]\n')
-        with pytest.raises(verify.VerifyError, match="duplicate key"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="duplicate key"):
+            load_rules(path)
 
     def test_falsy_non_list_section_rejected(self, tmp_path) -> None:
         path = self._yaml(tmp_path, "entity_types: [ssn]\nexact_values: {}\n")
-        with pytest.raises(verify.VerifyError, match="must be a list"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="must be a list"):
+            load_rules(path)
 
     def test_non_string_entries_rejected(self, tmp_path) -> None:
         # A JSON-shaped entry, or an explicit !!int tag, would otherwise
         # stringify into a search key the user never wrote.
         path = self._yaml(tmp_path, 'exact_values:\n  - name: x\n    value: "1"\n')
-        with pytest.raises(verify.VerifyError, match="quoted string"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="quoted string"):
+            load_rules(path)
         path = self._yaml(tmp_path, "exact_values:\n  - !!int 00123456\n")
-        with pytest.raises(verify.VerifyError, match="quoted string"):
-            verify.load_rules(path)
+        with pytest.raises(VerifyError, match="quoted string"):
+            load_rules(path)
 
     def test_unknown_entity_type_is_an_error(self, tmp_path) -> None:
         # A typo or case variant must be fixed, not reported as an
         # inherent LLM-only coverage gap.
         for bad in ("SSN", "credit-card", "emial"):
             path = self._yaml(tmp_path, f"entity_types: [{bad}]\n")
-            with pytest.raises(verify.VerifyError, match="not a known entity type"):
-                verify.load_rules(path)
+            with pytest.raises(VerifyError, match="not a known entity type"):
+                load_rules(path)
 
     def test_partial_coverage_is_declared(self, tmp_path) -> None:
         path = self._yaml(tmp_path, "entity_types: [phone]\n")
-        assert any("partly verifiable" in w for w in verify.load_rules(path).warnings)
+        assert any("partly verifiable" in w for w in load_rules(path).warnings)
 
     def test_capture_group_pattern_warns(self, tmp_path) -> None:
         # The redactor removes only group text, so the rule verifies more
         # than it removed.
         path = self._yaml(tmp_path, "patterns:\n  - '(AB|CD)[0-9]{6}'\n")
-        assert any("capturing group" in w for w in verify.load_rules(path).warnings)
+        assert any("capturing group" in w for w in load_rules(path).warnings)
 
     def test_yaml_flags_match_the_redactor(self, tmp_path) -> None:
         # IGNORECASE only: adding MULTILINE would make a shared rule mean
         # different things in the two tools.
         path = self._yaml(tmp_path, "patterns:\n  - 'case-[0-9]{4}'\n")
-        flags = verify.load_rules(path).patterns[0].regex.flags
+        flags = load_rules(path).patterns[0].regex.flags
         assert flags & re.IGNORECASE and not flags & re.MULTILINE
 
     def test_entity_types_are_deduped(self, tmp_path) -> None:
         path = self._yaml(tmp_path, "entity_types: [ssn, ssn]\n")
-        assert len(verify.load_rules(path).patterns) == 1
+        assert len(load_rules(path).patterns) == 1
 
     def test_divergence_warning_masks_the_secret(self, tmp_path) -> None:
         # The warning must not re-leak the value it warns about.
         path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
-        joined = " ".join(verify.load_rules(path).warnings)
+        joined = " ".join(load_rules(path).warnings)
         assert "unquoted" in joined
         assert "00123456" not in joined and "42798" not in joined
 
@@ -560,7 +573,7 @@ class TestYamlAdapterFidelity:
         # is a deterministic function of the whole spec. The warning must
         # name only what YAML read the value as, with no digit of it.
         path = self._yaml(tmp_path, "exact_values:\n  - 0123456701\n")
-        rules = verify.load_rules(path)
+        rules = load_rules(path)
         (warning,) = [w for w in rules.warnings if w.code == "RULES_UNQUOTED_VALUE"]
         assert "a number" in warning
         assert "****" not in warning
@@ -577,7 +590,7 @@ class TestYamlAdapterFidelity:
     ) -> None:
         path = self._yaml(tmp_path, body)
         (warning,) = [
-            w for w in verify.load_rules(path).warnings
+            w for w in load_rules(path).warnings
             if w.code == "RULES_UNQUOTED_VALUE"
         ]
         assert kind in warning

@@ -15,6 +15,8 @@ from typing import Callable, Iterable
 
 import fitz
 
+from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES
+
 from caselib import REGISTRY, load
 from caselib.cells import parts as cell_parts
 from caselib.model import Case
@@ -197,8 +199,7 @@ def _rule_regex(rule: dict[str, str]) -> tuple[re.Pattern[str], Callable[[str], 
     """A pattern rule's regex and validator (a built-in class has both,
     as verify.py applies them; a custom regex has no validator)."""
     if "class" in rule:
-        import verify
-        spec = verify.BUILTIN_PATTERN_CLASSES.get(rule["class"])
+        spec = BUILTIN_PATTERN_CLASSES.get(rule["class"])
         return (re.compile(spec[0]), spec[1]) if spec else None
     if "pattern" in rule:
         try:

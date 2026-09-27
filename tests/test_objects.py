@@ -19,6 +19,15 @@ import pytest
 
 import verify
 
+from redaction_verifier.matching import (
+    BUILTIN_PATTERN_CLASSES,
+    PatternRule,
+    SecretMatcher,
+    _valid_ssn,
+    normalize_string,
+)
+from redaction_verifier.model import ScanReport, Secret
+
 from .conftest import run_verify
 
 SSN = "123-45-6789"
@@ -37,13 +46,13 @@ def ssn_rules(tmp_path: Path) -> Path:
 def _scan(path: Path):
     """Run only the structural pass, so nothing else can mask it."""
     doc = fitz.open(path)
-    report = verify.ScanReport()
-    secrets = [verify.Secret("Target SSN", verify.normalize_string(SSN))]
-    patterns = [verify.PatternRule(
-        "Any SSN", re.compile(verify.BUILTIN_PATTERN_CLASSES["ssn"][0]),
-        verify._valid_ssn)]
+    report = ScanReport()
+    secrets = [Secret("Target SSN", normalize_string(SSN))]
+    patterns = [PatternRule(
+        "Any SSN", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]),
+        _valid_ssn)]
     try:
-        verify.scan_pdf_objects(doc, verify.SecretMatcher(secrets), patterns, report)
+        verify.scan_pdf_objects(doc, SecretMatcher(secrets), patterns, report)
     finally:
         doc.close()
     return report
@@ -370,9 +379,9 @@ class TestOrphanLabel:
             return real(xref, *a, **k)
 
         doc.xref_object = flaky
-        report = verify.ScanReport()
+        report = ScanReport()
         verify.scan_pdf_objects(
-            doc, verify.SecretMatcher([verify.Secret("T", verify.normalize_string(SSN))]),
+            doc, SecretMatcher([Secret("T", normalize_string(SSN))]),
             (), report)
         doc.close()
         assert report.findings
@@ -388,10 +397,10 @@ class TestOrphanLabel:
         doc.close()
         doc = fitz.open(path)
         doc.pdf_trailer = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope"))
-        report = verify.ScanReport()
+        report = ScanReport()
         verify.scan_pdf_objects(
-            doc, verify.SecretMatcher([verify.Secret("Target SSN",
-                                                     verify.normalize_string(SSN))]),
+            doc, SecretMatcher([Secret("Target SSN",
+                                                     normalize_string(SSN))]),
             (), report)
         doc.close()
         assert report.findings
@@ -400,13 +409,13 @@ class TestOrphanLabel:
 
 class TestStructuralScanErrors:
     def test_unreadable_objects_degrade_loudly(self) -> None:
-        report = verify.ScanReport()
+        report = ScanReport()
 
         class Hostile:
             def xref_length(self): raise RuntimeError("no xref")
 
         verify.scan_pdf_objects(
-            Hostile(), verify.SecretMatcher([verify.Secret("x", "y")]), (), report)
+            Hostile(), SecretMatcher([Secret("x", "y")]), (), report)
         assert report.findings == []
         assert report.degraded
 

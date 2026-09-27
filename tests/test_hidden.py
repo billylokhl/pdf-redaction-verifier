@@ -17,6 +17,9 @@ import pytest
 
 import verify
 
+from redaction_verifier.matching import SecretMatcher
+from redaction_verifier.model import ScanReport, Secret
+
 from .conftest import run_verify
 
 SSN = "123-45-6789"
@@ -191,14 +194,14 @@ class TestHiddenLayer:
 
     def test_layer_survives_a_broken_document(self, tmp_path, ssn_rules) -> None:
         # A sweep failure must degrade to a warning, never crash the run.
-        report = verify.ScanReport()
+        report = ScanReport()
 
         class Exploding:
             page_count = 1
             def embfile_names(self): raise RuntimeError("boom")
 
         verify.scan_hidden_objects(
-            Exploding(), verify.SecretMatcher([verify.Secret("x", "y")]), (), report
+            Exploding(), SecretMatcher([Secret("x", "y")]), (), report
         )
         assert any("Hidden" in w and "NOT scanned" in w for w in report.warnings)
         assert report.findings == []
@@ -348,7 +351,7 @@ class TestHiddenLayerRegressions:
     def test_a_silent_sweep_failure_is_impossible(self, tmp_path) -> None:
         # Every swallow must warn, or the layer can scan nothing and the
         # run still exits 0.
-        report = verify.ScanReport()
+        report = ScanReport()
 
         class Hostile:
             page_count = 1
@@ -358,6 +361,6 @@ class TestHiddenLayerRegressions:
             def get_ocgs(self): raise RuntimeError("ocgs")
 
         verify.scan_hidden_objects(
-            Hostile(), verify.SecretMatcher([verify.Secret("x", "y")]), (), report)
+            Hostile(), SecretMatcher([Secret("x", "y")]), (), report)
         assert report.findings == []
         assert report.degraded, "a layer that scanned nothing must not be silent"

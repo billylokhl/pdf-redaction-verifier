@@ -25,21 +25,30 @@ import fitz
 
 import verify
 
+from redaction_verifier.matching import (
+    BUILTIN_PATTERN_CLASSES,
+    PatternRule,
+    SecretMatcher,
+    _valid_ssn,
+    normalize_string,
+)
+from redaction_verifier.model import ScanReport, Secret
+
 from caselib import REGISTRY, SSN, load
 from caselib.run import build
 
 load()
 
 
-def _object_scan(path: Path) -> verify.ScanReport:
+def _object_scan(path: Path) -> ScanReport:
     doc = fitz.open(path)
-    report = verify.ScanReport()
-    secrets = [verify.Secret("SSN", verify.normalize_string(SSN))]
-    patterns = [verify.PatternRule(
-        "ssn", re.compile(verify.BUILTIN_PATTERN_CLASSES["ssn"][0]),
-        verify._valid_ssn)]
+    report = ScanReport()
+    secrets = [Secret("SSN", normalize_string(SSN))]
+    patterns = [PatternRule(
+        "ssn", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]),
+        _valid_ssn)]
     try:
-        verify.scan_pdf_objects(doc, verify.SecretMatcher(secrets), patterns, report)
+        verify.scan_pdf_objects(doc, SecretMatcher(secrets), patterns, report)
     finally:
         doc.close()
     return report
