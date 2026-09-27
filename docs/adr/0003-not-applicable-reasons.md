@@ -37,9 +37,13 @@ found missing and that must be stated explicitly, because ADR 0004
 > bytes an image codec consumes (`DCTDecode`, `JPXDecode`,
 > `JBIG2Decode`), not only the decoded samples it produces. Pattern
 > classes run over the same stages, at review tier (below). A stage
-> counts as searched only if it decoded cleanly: if any filter or codec
-> stage raises an error or a warning, a partly searched stage is not a
-> searched one, and the unit is `FLAGGED`.**
+> counts as searched only if nothing was lost decoding it: after a
+> decode error, or any warning that suggests lost data (truncation, a
+> corrupt or premature end of a codestream, a zlib or flate error), the
+> stage is only partly searched and the unit is `FLAGGED`. A warning
+> nobody has reviewed also means `FLAGGED`. Only an image-decoder
+> warning reviewed as harmless may be excused, and only by the image's
+> own witness from Phase 4b (owner decision C, below).**
 
 The concrete case that makes the rule necessary: consider a 10×10 DeviceGray
 image whose 100 raw sample bytes are literally the ASCII codes for
@@ -59,19 +63,25 @@ Verified directly against `verify.py` (not a claim taken on faith):
 | No (unreferenced) | class | `0` (same reason; `2` at 10×40) |
 
 The unreferenced rows exit `0` today only because of the 8×32
-`_text_sized` floor. The new design has no size excusal (owner decision,
-2026-09-27; see reason 4 and docs/adr/0004): a 10×10 image is treated
-like any other image -- enlarged and OCR'd, `FLAGGED` until Phase 4b's
-recall bound covers small images -- and its bytes are still raw-searched
-under the governing rule above, so none of the four rows can exit `0`.
+`_text_sized` floor. In the new design a leftover (unreferenced) image
+is always `FLAGGED`, whatever its size or what OCR finds (owner decision
+D, 2026-09-27; docs/adr/0004), and a used one has no size excusal
+(owner decision A; see reason 4 and docs/adr/0004): a 10×10 image is
+treated like any other image -- enlarged and OCR'd, `FLAGGED` until
+Phase 4b's recall bound covers small images. Either way its bytes are
+still raw-searched under the governing rule above, so none of the four
+rows can exit `0`.
 
 **Why there is no size excusal.** An earlier same-day decision excused a
 sub-floor image once its bytes had been raw-searched. Its premise, that
 an image under 8×32 cannot plausibly carry text, is wrong: a 5×7-pixel
-bitmap font renders an SSN as a 66×7 image (or as strips under 8 px
-tall), OCR reads it once the image is enlarged, and a byte search cannot
-find text drawn as pixels. The excusal would have been an exit-`0` path;
-it is also a gap in today's tool (REDESIGN §8, K21).
+bitmap font renders an SSN as a 66×7 image, OCR reads it once the image
+is enlarged, and a byte search cannot find text drawn as pixels. The
+excusal would have been an exit-`0` path; it is also a gap in today's
+tool (REDESIGN §8, K21). Removing the excusal closes the single small
+image. It does not close the same render cut into strips: OCR'd one at
+a time, each strip reads as nothing, so leftover strips are closed by
+decision D (every leftover image is `FLAGGED`), not by enlargement.
 
 So three of the four already exit `0` today, not one. Under ADR 0003's
 reason 4 ("image data fully consumed by the image decoder") composed
@@ -99,13 +109,16 @@ extension segment are the same shape. Today's `verify.py` exits `2`
 sweep sees the encoded stream; a rewrite that searched only decoded
 samples would regress it to `0` once that sweep retires in Phase 6.
 
-**Embedded extra images are `FLAGGED`** (owner decision, 2026-09-27).
+**Embedded extra images are `FLAGGED`** (owner decision B, 2026-09-27).
 A codec payload can carry image data beyond the main frame the decoder
 returns: a JPEG APP1 (EXIF) or APP13 thumbnail, additional JPEG 2000
-codestreams, extra JBIG2 pages or regions. Text drawn in such an image
-is pixels, so the raw matcher cannot find it, and the image decoder
-never OCRs it. Any such data means the image is `FLAGGED` (exit `2`),
-not discharged.
+codestreams, extra JBIG2 pages or regions. Decoded sample data beyond
+`/Width`×`/Height`×components×bits per component, or a codec frame
+larger than the dictionary declares, is the same thing: rows the image
+dictionary does not declare are never drawn, so OCR never sees them.
+Text drawn in such an image is pixels, so the raw matcher cannot find
+it, and the image decoder never OCRs it. Any such data means the image
+is `FLAGGED` (exit `2`), not discharged.
 
 **Whether pattern classes should run over raw image sample bytes at all
 is a separate, real gap the hidden-image case exposes, not fixed by the
@@ -141,8 +154,10 @@ restated by the owner's decisions of 2026-09-27):
    the name/metadata strings inside those tables must still go through
    the matcher.
 4. **Image data fully consumed by the image decoder.** One path: the
-   image is inside docs/adr/0004's recall-validated envelope and its
-   recall bound is satisfied (docs/adr/0004, accepted: geometry and a
+   image is used by the document (a leftover image nothing uses is
+   always `FLAGGED`, owner decision D), it is inside docs/adr/0004's
+   recall-validated envelope and its recall bound is satisfied
+   (docs/adr/0004, accepted: geometry and a
    completed OCR pass are *not* enough on their own -- REDESIGN §4
    requires a recall-validated envelope, which does not exist until
    Phase 4b measures it). The envelope has no size excusal: its lower
@@ -150,13 +165,16 @@ restated by the owner's decisions of 2026-09-27):
    bound must cover images under 8×32 before any of them can be
    discharged. In addition, every filter-chain stage of the image's
    bytes (encoded and decoded) must have been searched per the governing
-   rule above (value rules, and pattern classes at review tier); every
-   stage must have decoded cleanly (any filter or codec error or warning
-   means `FLAGGED`); and the codec payload must hold no image data
+   rule above (value rules, and pattern classes at review tier); no
+   stage may have lost data (a decode error, a warning that suggests
+   lost data, or an unrecognised warning means `FLAGGED`; a warning on
+   the reviewed-harmless allowlist is excused only by the image's own
+   witness -- owner decision C); and the payload must hold no image data
    beyond the main frame (an EXIF/APP13 thumbnail, an extra JPEG 2000
-   codestream, an extra JBIG2 page or region means `FLAGGED`). Until
-   Phase 4b's recall measurement exists, this reason cannot actually be
-   reached -- image evidence stays `FLAGGED`, consistent with ADR 0004.
+   codestream, an extra JBIG2 page or region, or decoded samples beyond
+   the declared frame means `FLAGGED`). Until Phase 4b's recall
+   measurement exists, this reason cannot actually be reached -- image
+   evidence stays `FLAGGED`, consistent with ADR 0004.
 
 Three other candidates considered and rejected: encrypted stream padding
 (overlaps the decryption cross-check, ADR 0001, rather than needing its
@@ -181,10 +199,12 @@ than only a documented one. So are the JPEG-comment case (a value in a
 JPEG's comment segment, found only by a raw byte scan of the encoded
 `DCTDecode` stream, never in the decoded samples), the EXIF-thumbnail
 case (a small JPEG whose EXIF thumbnail shows the SSN; the image must be
-`FLAGGED`), and the pixel-text-under-the-floor case (a leftover image
-under 8×32 holding pixel-drawn text; caselib's `leftover.small-image`,
-K21, already expects `LEFTOVER_IMAGE`; the strips variant K21 describes is
-not yet a case of its own).
+`FLAGGED`), the extra-rows case (a referenced 200×20 DeviceGray image
+whose declared frame is blank but whose stream holds 20 more rows with
+an SSN render; the image must be `FLAGGED`), and the pixel-text-under-the-floor
+case (a leftover image under 8×32 holding pixel-drawn text; caselib's
+`leftover.small-image`, K21, already expects `LEFTOVER_IMAGE`; the
+strips variant is not yet a case of its own; Phase 3a adds it).
 
 **Deferred, not implemented here:** xref-stream free-entry bytes (reason
 1) still need to go through the raw matcher under the same governing
@@ -226,25 +246,42 @@ Owner decision: "approve all recommendations."
   4b** ships the image decoder, so the governing rule is a tested
   invariant rather than only a documented one.
 
-**Recorded after the approval, within the approved rule** (wording, not
-a new decision):
+**Recorded after the approval** (wording and case scheduling, not new
+decisions):
 
 - The raw matcher runs over every filter-chain stage, including the
   encoded bytes an image codec consumes, not only decoded samples; the
   pattern-class pass covers the same stages. A JPEG comment segment, a
   JPEG 2000 metadata box, or a JBIG2 extension segment never reaches the
   decoded pixels.
-- A stage counts as searched only if it decoded cleanly; any filter or
-  codec error or warning means the image is `FLAGGED`.
 - The JPEG-comment case (a JPEG whose comment segment holds
   `123-45-6789`, present in the encoded `DCTDecode` stream but not in
   the decoded pixels) is scheduled next to the hidden-image case.
+- Cases for the owner decisions below, all in Phase 3a before Phase 4b:
+  the strips variant of K21 (two leftover 90×7 strips of one SSN
+  render; the strips variant is not yet a case of its own; Phase 3a
+  adds it), the EXIF-thumbnail case (a small JPEG whose EXIF thumbnail
+  shows the SSN) next to the JPEG-comment case, and beside it the
+  extra-rows case (a referenced 200×20 DeviceGray image with a blank
+  declared frame plus 20 extra rows holding an SSN render; today's
+  `verify.py` exits `0` on it and MuPDF gives no warning).
+- Under decision B, decoded sample data beyond
+  `/Width`×`/Height`×components×bits per component, or a codec frame
+  larger than declared, counts as image data beyond the main frame, and
+  the image is `FLAGGED`.
 
-**Owner decisions (2026-09-27), taken after the approval.** These two
+An earlier revision of this section also recorded here, as wording,
+that any filter or codec error or warning means `FLAGGED` (a
+"clean-decode rule"). That was a new rule, not wording, and decision C
+below replaces it.
+
+**Owner decisions (2026-09-27), taken after the approval.** A and B
 supersede an earlier same-day decision that excused an image under the
 8×32 floor, without OCR or a recall bound, once its bytes had been
 raw-searched. That decision's premise -- that such an image cannot
-plausibly carry text -- was wrong.
+plausibly carry text -- was wrong. C replaces the clean-decode rule
+above. D extends docs/adr/0007's rule for orphaned content streams to
+images (recorded in full in docs/adr/0004).
 
 - **A. No size excusal for tiny images.** An image under the 8×32 floor
   is treated like any other image: normalised, enlarged and OCR'd, and
@@ -252,16 +289,29 @@ plausibly carry text -- was wrong.
   measured a recall bound that covers small images. Until then it is
   `FLAGGED`, like every other image. Its bytes are still raw-searched at
   every filter-chain stage. Reason: a 5×7-pixel bitmap font renders an
-  SSN as a 66×7 image (or strips under 8 px tall); OCR reads it after
-  enlargement; a byte search cannot find text drawn as pixels. It is
-  also today's tool's gap (REDESIGN §8, K21), and a matching
-  case is added in Phase 3a.
+  SSN as a 66×7 image; OCR reads it after enlargement; a byte search
+  cannot find text drawn as pixels. It is also today's tool's gap
+  (REDESIGN §8, K21). A closes the single small image; the strips
+  variant is closed by D, not by A.
 - **B. Embedded extra images are `FLAGGED`.** Any image data in the
   codec payload beyond the decoded main frame (a JPEG APP1/EXIF or APP13
   thumbnail, additional JPEG 2000 codestreams, extra JBIG2 pages or
-  regions) means the image is `FLAGGED` (exit `2`). The EXIF-thumbnail
-  case (a small JPEG whose EXIF thumbnail shows the SSN) is added in
-  Phase 3a next to the JPEG-comment case.
+  regions) means the image is `FLAGGED` (exit `2`).
+- **C. Image-decoder warnings, split by kind.** A decode error, or any
+  warning that suggests lost data (truncation, a corrupt or premature
+  end of a codestream, a zlib or flate error), means the image is always
+  `FLAGGED`. Warnings reviewed as harmless (for example JPEG 2000's
+  `numcomps doesn't match color_space`, openjpeg's `misplaced cmap box`)
+  go on a reviewed allowlist; from Phase 4b the image's own witness may
+  vouch for them. Any unrecognised warning means `FLAGGED`. This
+  replaces the clean-decode rule and agrees with docs/adr/0009's guard
+  3.
+- **D. Leftover images are always `FLAGGED`.** An image nothing in the
+  document uses is `FLAGGED` whatever its size and whatever OCR finds,
+  like docs/adr/0007's orphaned content streams. Reason: an SSN image
+  cut into 7 px strips cannot be read strip by strip, and nothing
+  reassembles unreferenced strips. See docs/adr/0004 for the evidence
+  and the cost, which Phase 3a measures.
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
 recall bound is a scheduling gate (it cannot actually be reached until

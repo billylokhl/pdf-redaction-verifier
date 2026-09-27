@@ -56,17 +56,36 @@ longer sufficient for `DECODED` on its own.
   (The raw matcher is a different matter: per docs/adr/0003's governing
   rule it runs over every filter-chain stage, the compressed bytes the
   codec consumes included.)
-- **Clean decode**: every filter and codec stage must decode without an
-  error or a warning. If any stage raises one, the image is `FLAGGED`:
-  a partly searched stage does not count as searched (docs/adr/0003).
-- **One image per payload** (owner decision, 2026-09-27): any image
+- **Decoder errors and warnings** (owner decision C, 2026-09-27): a
+  decode error, or any warning that suggests lost data (truncation, a
+  corrupt or premature end of a codestream, a zlib or flate error),
+  means the image is always `FLAGGED`: a partly searched stage does not
+  count as searched (docs/adr/0003). Warnings reviewed as harmless (for
+  example JPEG 2000's `numcomps doesn't match color_space`, openjpeg's
+  `misplaced cmap box`) go on a reviewed allowlist, and from Phase 4b
+  the image's own witness may vouch for them (docs/adr/0009, guard 3).
+  Any unrecognised warning means `FLAGGED`.
+- **One image per payload** (owner decision B, 2026-09-27): any image
   data in the codec payload beyond the decoded main frame -- a JPEG
   APP1 (EXIF) or APP13 thumbnail, additional JPEG 2000 codestreams,
   extra JBIG2 pages or regions -- means the image is `FLAGGED` (exit
   `2`). That data is pixels the decoder never OCRs and the raw matcher
-  cannot read.
+  cannot read. Decoded sample data beyond
+  `/Width`×`/Height`×components×bits per component, or a codec frame
+  larger than the dictionary declares, is image data beyond the main
+  frame too, and also `FLAGGED`: the undeclared rows are never drawn, so
+  no OCR sees them. Today's `verify.py` misses this: a referenced
+  200×20 DeviceGray image whose declared frame is blank, with 20 extra
+  rows holding an SSN render, exits `0`, and MuPDF gives no warning
+  (REDESIGN §8; the case is added in Phase 3a).
+- **Used by the document** (owner decision D, 2026-09-27): a leftover
+  (orphaned) image, one nothing in the document uses, is always
+  `FLAGGED`, whatever its size and whatever OCR finds -- the image
+  counterpart of docs/adr/0007's orphaned content streams. The envelope
+  applies only to images the document uses. Reason: see "Strips" under
+  Known misses below.
 - **Dimensions**: the upper bound is `10,000` px per side. **There is
-  no size excusal at the lower end** (owner decision, 2026-09-27,
+  no size excusal at the lower end** (owner decision A, 2026-09-27,
   superseding an earlier same-day decision): an image under today's 8×32
   `_text_sized` floor (`verify.py`'s `_MIN_TEXT_IMAGE_SIDE` = 8 and
   `_MIN_TEXT_IMAGE_LENGTH` = 32) is treated like any other image --
@@ -76,13 +95,14 @@ longer sufficient for `DECODED` on its own.
   raw-searched at every filter-chain stage (docs/adr/0003). The
   envelope's lower bound is whatever Phase 4b validates with
   enlargement, not a floor carried over from today's tool. The reason: a
-  5×7-pixel bitmap font renders an SSN as a 66×7 image (or as strips
-  under 8 px tall), OCR reads it once enlarged, and a byte search cannot
-  find text drawn as pixels, so excusing sub-floor images would be an
-  exit-`0` path. It is also a gap in today's tool (REDESIGN §8,
-  K21). (Earlier versions of this ADR first flagged every sub-floor
-  image, then excused them -- on the premise, now shown wrong, that an
-  image that small cannot carry text.)
+  5×7-pixel bitmap font renders an SSN as a 66×7 image, OCR reads it
+  once enlarged, and a byte search cannot find text drawn as pixels, so
+  excusing sub-floor images would be an exit-`0` path. It is also a gap
+  in today's tool (REDESIGN §8, K21). This closes the single small
+  image, not the same render cut into strips (see "Strips" below, which
+  decision D closes). (Earlier versions of this ADR first flagged every
+  sub-floor image, then excused them -- on the premise, now shown wrong,
+  that an image that small cannot carry text.)
 - **Total pixels**: `width * height <= 35,000,000` (35 Mpx), taken as a
   fixed cap rather than the plan's floor.
 - **Mask type**: an `/SMask` or `/Mask` is only accepted when its own
@@ -95,8 +115,9 @@ Outside the envelope, or on conversion failure, the unit is `FLAGGED`.
 is *also* `FLAGGED` (not `DECODED`) -- the envelope narrows what gets
 attempted; it does not yet certify a clean attempt.
 
-**Known misses inside the envelope**, for the record ahead of Phase 4b's
-recall measurement:
+**Known misses of per-image OCR**, for the record ahead of Phase 4b's
+recall measurement (the first two inside the envelope; the third is
+why a leftover image is outside it):
 
 - **Post-downsample small glyphs.** Apple Vision's own internal
   processing can downsample a large input image before recognition;
@@ -109,6 +130,16 @@ recall measurement:
   *same* grey value under our RGB/CMYK-to-grey normalisation, making
   real text structurally invisible to OCR after normalisation even
   though it is visually plain to a human viewer.
+- **Strips.** One render cut into strips, each stored as its own image,
+  cannot be read strip by strip: tested, each 90×7 half of a 90×14 SSN
+  render OCRs to nothing useful after 10× upscaling, while the whole
+  90×14 image reads the SSN. Removing the size excusal (decision A)
+  therefore does not close this. Strips a page draws together are read
+  where the render composites them (REDESIGN §4's image row); nothing
+  reassembles strips nothing uses, so those are closed by decision D
+  (every leftover image is `FLAGGED`), not by A. This is the strips
+  variant of REDESIGN §8's K21 (two leftover 90×7 strips exit `0`
+  today); it is not yet a case of its own, and Phase 3a adds it.
 
 ## Measurement
 
@@ -142,9 +173,16 @@ image object's `/Width`/`/Height` directly (no decompression needed):
 excusal), these 299 images in 51 files (235 in 27 text-bearing files)
 are in scope for enlarged OCR like any other image: `FLAGGED` until
 Phase 4b's recall bound covers images this small, then `DECODED` when
-an enlarged OCR pass finds nothing. They are the population Phase 4b's
-small-image recall measurement has to cover. The counts use the
-declared `/Width`/`/Height`.
+an enlarged OCR pass finds nothing -- except a leftover one, which stays
+`FLAGGED` whatever OCR finds (decision D; the spike does not split used
+from leftover images). They are the population Phase 4b's small-image
+recall measurement has to cover. The counts use the declared
+`/Width`/`/Height`.
+
+**Decision D's cost is not measured.** Nothing in this pass counts how
+many files carry a leftover image (of any size) that today's tool does
+not already flag; Phase 3a measures it, as it measures docs/adr/0007's
+overlap with today's exit `2`.
 
 ## Consequences
 
@@ -157,8 +195,16 @@ declared `/Width`/`/Height`.
   that exits `2` today keeps exiting `2` (or worse) under this design,
   because nothing here grants `DECODED` yet. A sub-floor leftover image,
   which today's tool excuses by its declared size
-  (`verify._is_text_sized_image`), is now `FLAGGED` too: a strictness
-  increase that closes K21.
+  (`verify._is_text_sized_image`), is now always `FLAGGED` (decision D):
+  a strictness increase. For K21 the two decisions divide the work:
+  removing the size excusal (A) closes the single small image, which
+  OCR reads once enlarged; flagging every leftover image (D) closes the
+  strips variant, which no per-image OCR can read.
+- Decision D adds an unmeasured review-rate cost: every leftover image,
+  not only a text-sized one, is `FLAGGED`. Phase 3a measures it.
+- Decision C makes image-decoder warnings a reviewed allowlist, the same
+  fail-closed shape as docs/adr/0009's: a warning not on it, including
+  one a MuPDF update renames, keeps the image `FLAGGED`.
 - The Indexed-base restriction is an implementation-facing correction
   that does not change a measured rate in this pass (no
   Separation/DeviceN-based Indexed images in the corpus). Removing the
@@ -183,28 +229,62 @@ Owner decision: "approve all recommendations."
   limits**; re-check it (and the 10,000 px per-side ceiling) in Phase
   4b.
 
-**Recorded after the approval, within the approved rule** (wording, not
-a new decision): docs/adr/0003's raw matcher runs over every
-filter-chain stage of an image, including the encoded bytes the codec
-consumes; a stage counts as searched only if it decoded cleanly (any
-filter or codec error or warning means `FLAGGED`); and the JPEG-comment
-case is scheduled next to the hidden-image case.
+**Recorded after the approval** (wording and case scheduling, not new
+decisions):
 
-**Owner decisions (2026-09-27), taken after the approval.** These two
+- docs/adr/0003's raw matcher runs over every filter-chain stage of an
+  image, including the encoded bytes the codec consumes, and the
+  JPEG-comment case is scheduled next to the hidden-image case.
+- Under decision B, decoded sample data beyond
+  `/Width`×`/Height`×components×bits per component, or a codec frame
+  larger than declared, counts as image data beyond the main frame, and
+  the image is `FLAGGED`.
+- Cases for the decisions below, all in Phase 3a before Phase 4b: the
+  strips variant of K21 (two leftover 90×7 strips of one SSN render),
+  the EXIF-thumbnail case next to the JPEG-comment case, and beside it
+  the extra-rows case (a referenced 200×20 DeviceGray image with a
+  blank declared frame plus 20 extra rows holding an SSN render;
+  today's `verify.py` exits `0` and MuPDF gives no warning).
+
+An earlier revision of this section also recorded here, as wording,
+that any filter or codec error or warning means `FLAGGED` (a
+"clean-decode rule"). That was a new rule, not wording; decision C
+below replaces it.
+
+**Owner decisions (2026-09-27), taken after the approval.** A and B
 supersede both the approved 8×32 excusal and an earlier same-day
 decision that discharged a sub-floor image as `NOT_APPLICABLE` without
 OCR once its bytes had been raw-searched. Both rested on the premise
-that an image that small cannot carry text, which was wrong.
+that an image that small cannot carry text, which was wrong. C replaces
+the clean-decode rule above. D extends docs/adr/0007's rule to images;
+this ADR is its home.
 
 - **A. No size excusal for tiny images.** An image under the 8×32 floor
   is normalised, enlarged and OCR'd like any other image, and `DECODED`
   only once Phase 4b has measured a recall bound that covers small
   images; until then it is `FLAGGED`, like every other image. Its bytes
   are still raw-searched at every filter-chain stage. A 5×7-pixel bitmap
-  font renders an SSN as a 66×7 image (or strips under 8 px tall), OCR
-  reads it after enlargement, and a byte search cannot find text drawn
-  as pixels. This is also today's tool's gap (REDESIGN §8, K21).
+  font renders an SSN as a 66×7 image, OCR reads it after enlargement,
+  and a byte search cannot find text drawn as pixels. This is also
+  today's tool's gap (REDESIGN §8, K21). A closes the single small
+  image; the strips variant is closed by D, not by A.
 - **B. Embedded extra images are `FLAGGED`.** Any image data in the
   codec payload beyond the decoded main frame (a JPEG APP1/EXIF or APP13
   thumbnail, additional JPEG 2000 codestreams, extra JBIG2 pages or
   regions) means the image is `FLAGGED` (exit `2`).
+- **C. Image-decoder warnings, split by kind.** A decode error, or any
+  warning that suggests lost data (truncation, a corrupt or premature
+  end of a codestream, a zlib or flate error), means the image is always
+  `FLAGGED`. Warnings reviewed as harmless (for example JPEG 2000's
+  `numcomps doesn't match color_space`, openjpeg's `misplaced cmap box`)
+  go on a reviewed allowlist; from Phase 4b the image's own witness may
+  vouch for them. Any unrecognised warning means `FLAGGED`. This
+  replaces the clean-decode rule and agrees with docs/adr/0009's guard
+  3.
+- **D. Leftover images are always `FLAGGED`.** An image nothing in the
+  document uses is `FLAGGED` whatever its size and whatever OCR finds,
+  like docs/adr/0007's orphaned content streams. Reason: an SSN image
+  cut into 7 px strips cannot be read strip by strip (tested: each
+  90×7 half OCRs to nothing useful after 10× upscaling, while the whole
+  90×14 image reads the SSN), and nothing reassembles unreferenced
+  strips. The cost is unmeasured; Phase 3a measures it.

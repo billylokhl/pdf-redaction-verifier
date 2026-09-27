@@ -17,24 +17,31 @@ recommendation for the repository owner -- because each turned on a
 judgement call (a new dependency, a severity change, a stress test not
 yet run, a review-rate cost) that is the owner's to make. The owner
 approved every recommendation on 2026-09-27, so all nine are now
-`accepted`. The same day the owner took two further decisions, recorded
-in 0003 and 0004: no size excusal for tiny images, and an image whose
-codec payload holds extra image data is `FLAGGED`. They supersede an
-earlier same-day decision that excused sub-floor images, whose premise
-was wrong. Each ADR's "Owner decision" section records exactly what was
-decided.
+`accepted`. The same day the owner took four further decisions on
+images, recorded in 0003 and 0004 (C also in 0009, D also in 0007):
+**A**, no size excusal for tiny images; **B**, an image whose codec
+payload holds image data beyond the decoded main frame is `FLAGGED`;
+**C**, image-decoder warnings are split by kind -- decode errors and
+warnings that suggest lost data always flag the image, warnings reviewed
+as harmless go on an allowlist the image's own witness may vouch for
+from Phase 4b, and unrecognised warnings flag; **D**, a leftover
+(orphaned) image is always `FLAGGED`, like an orphaned content stream.
+A and B supersede an earlier same-day decision that excused sub-floor
+images, whose premise was wrong; C replaces a "clean-decode rule" an
+earlier revision recorded as wording. Each ADR's "Owner decision"
+section records exactly what was decided.
 
 | # | Title | Status | Decision (one line) |
 | --- | --- | --- | --- |
 | [0001](0001-encryption-and-decryption-cross-check.md) | Encryption and the decryption cross-check | accepted | Decrypt each revision's prefix cut with **pikepdf**, cross-checked against MuPDF's `xref_stream_raw`; anything no second decryption covers (dead bodies outside every xref) is `FLAGGED`. pikepdf is pinned when Phase 3a adds it; 3a also adds a fixture whose earlier revision has a different `/Encrypt` and confirms pikepdf's unfiltered read. |
 | [0002](0002-benign-parser-warning-categories.md) | Benign parser-warning categories | accepted | Two categories are benign, each verified per instance: a wrong xref offset only when no object body exists; a duplicated key only when both values are identical. Flag rate 2.9% of all files, **7.2% of text-bearing files**. Two known check gaps (ObjStm bodies; first-token key comparison) accepted until Phase 3c closes them. |
-| [0003](0003-not-applicable-reasons.md) | The `NOT_APPLICABLE` closed list | accepted | Exactly REDESIGN §4's four reasons, under one rule for every decoder: **no unit's bytes are ever exempt from the raw matcher**, at any filter-chain stage (including the encoded bytes an image codec consumes). Pattern classes run over raw image bytes at review tier. An image is discharged only inside 0004's recall-validated envelope, after a clean decode, with no extra image data in its codec payload (an EXIF thumbnail, say, means `FLAGGED`). The hidden-image, JPEG-comment and EXIF-thumbnail cases are added in 0b/3a before Phase 4b. |
-| [0004](0004-image-ocr-envelope.md) | Image-OCR envelope | accepted | Image OCR is `FLAGGED`-only, never `DECODED`, until Phase 4b measures recall. **No size excusal**: an image under today's 8×32 floor (235 images in 27 files, 5.6% of text-bearing) is enlarged and OCR'd like any other, and 4b's recall bound must cover it (a bitmap-font SSN fits in 66×7 px; K21). Any codec error or warning, or extra image data in the payload, means `FLAGGED`. The 35 Mpx cap stands (two 38.3 Mpx images exceed it), re-checked against Apple Vision in 4b. |
+| [0003](0003-not-applicable-reasons.md) | The `NOT_APPLICABLE` closed list | accepted | Exactly REDESIGN §4's four reasons, under one rule for every decoder: **no unit's bytes are ever exempt from the raw matcher**, at any filter-chain stage (including the encoded bytes an image codec consumes). Pattern classes run over raw image bytes at review tier. An image is discharged only if the document uses it (a leftover image is always `FLAGGED`, decision D), inside 0004's recall-validated envelope, with no decode error, no warning that suggests lost data and no unreviewed warning (decision C), and with no image data beyond the declared main frame (an EXIF thumbnail or undeclared extra rows mean `FLAGGED`, decision B). The hidden-image, JPEG-comment, EXIF-thumbnail and extra-rows cases are added in 0b/3a before Phase 4b. |
+| [0004](0004-image-ocr-envelope.md) | Image-OCR envelope | accepted | Image OCR is `FLAGGED`-only, never `DECODED`, until Phase 4b measures recall. **No size excusal**: an image under today's 8×32 floor (235 images in 27 files, 5.6% of text-bearing) is enlarged and OCR'd like any other, and 4b's recall bound must cover it (a bitmap-font SSN fits in 66×7 px; K21). A leftover image is always `FLAGGED` (decision D: strips of a render cannot be read one by one; the strips variant of K21 is closed by D, not by removing the size excusal). A decode error, a warning that suggests lost data or an unrecognised warning means `FLAGGED`; a warning reviewed as harmless is vouched for only by the image's own witness, from 4b (decision C). Image data beyond the declared main frame means `FLAGGED` (decision B). The 35 Mpx cap stands (two 38.3 Mpx images exceed it), re-checked against Apple Vision in 4b. |
 | [0005](0005-pattern-class-default-tier.md) | Pattern-class default tier | accepted | Built-in pattern classes **stay hard** until Phase 5 ships its fix (context rules or a demotion, Phase 5's choice). `ssn`/`us-phone` false-hard rate: **23.1% of text-bearing files** (the four-class union of 45.5% wrongly includes `email`, a true positive). |
 | [0006](0006-recursion-and-decode-budget.md) | Recursion and decode budget | accepted | Placeholders: depth ≤ 25, 200,000 units (re-derived in 3a), 2 GiB inflated, OCR 200 Mpx per page plus a whole-run cap derived from page count. Exhaustion → `FLAGGED`, never exit 0. Reference-graph recursion stays open for 3a/3d. |
-| [0007](0007-orphaned-content-streams.md) | Orphaned content streams | accepted | Always `FLAGGED`. Gross cost **11.4% of text-bearing files** (55/484), a lower bound; the overlap with today's exit `2` is measured in 3a. |
+| [0007](0007-orphaned-content-streams.md) | Orphaned content streams | accepted | Always `FLAGGED`. Gross cost **11.4% of text-bearing files** (55/484), a lower bound; the overlap with today's exit `2` is measured in 3a. Leftover images are always `FLAGGED` too (0004's decision D; cost unmeasured, measured in 3a). |
 | [0008](0008-consumption-witness-granularity.md) | Consumption-witness granularity (spike S1b) | accepted | **Hard gate**: a witness mismatch → `FLAGGED`, unconditionally, from Phase 4a (no shadow-mode period). Corrected spike: **100.0% (2,345/2,345) of measured text pages, 0 of 399 files**; unmeasured: 856 form-drawing pages (206 files), 12 CJK-CMap pages (9 files). |
-| [0009](0009-benign-interpretation-warnings.md) | Benign interpretation warnings | accepted | Replaces "any interpreter warning → not `DECODED`" (45.7% of text-bearing files) with the **guarded rule, including the annotation guard**: excused only when the unit's own witness balances non-zero, never for filter/decode warnings; an image-decoder warning is vouched for only by the image's own witness, so it stays flagged until Phase 4b; interpreter run first on a fresh document; unrecognised warnings fail closed; re-measured on every PyMuPDF/MuPDF update. Cost **7.6% of text-bearing files** (37/484). |
+| [0009](0009-benign-interpretation-warnings.md) | Benign interpretation warnings | accepted | Replaces "any interpreter warning → not `DECODED`" (45.7% of text-bearing files) with the **guarded rule, including the annotation guard**: excused only when the unit's own witness balances non-zero, never for filter/decode warnings; image-decoder errors, warnings that suggest lost data and unrecognised warnings always flag the image, and a warning reviewed as harmless is vouched for only by the image's own witness, so it stays flagged until Phase 4b (decision C); interpreter run first on a fresh document; unrecognised warnings fail closed; re-measured on every PyMuPDF/MuPDF update. Cost **7.6% of text-bearing files** (37/484). |
 
 ## Template
 

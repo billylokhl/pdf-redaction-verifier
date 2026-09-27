@@ -117,3 +117,11 @@ Owner decision: "approve all recommendations."
   the text-bearing stratum.
 - **Measure the overlap with today's exit-`2` orphan handling in Phase
   3a**, to establish the added (not gross) review-rate cost.
+
+**Owner decision D (2026-09-27), taken after the approval, recorded in
+docs/adr/0004.** Leftover (orphaned) images, images nothing in the
+document uses, are always `FLAGGED` too, like the orphaned content
+streams above and regardless of OCR: an SSN image cut into 7 px strips
+cannot be read strip by strip, and nothing reassembles unreferenced
+strips. Its cost is not part of this ADR's 11.4%, which counts content
+streams only; it is unmeasured, and Phase 3a measures it.

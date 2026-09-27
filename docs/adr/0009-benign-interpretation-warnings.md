@@ -58,8 +58,15 @@ of the following hold:**
    witness cannot see what a failed filter dropped.
 3. **An image-decoder warning (JPEG 2000, JPEG, JBIG2) is vouched for
    only by that image's own witness** (Phase 4b, docs/adr/0004), never
-   by a text-code count on the page that draws it. Until Phase 4b, a
-   unit carrying one stays flagged.
+   by a text-code count on the page that draws it, and only if it is on
+   the reviewed-harmless allowlist (owner decision C, 2026-09-27): a
+   decode error, or any warning that suggests lost data (truncation, a
+   corrupt or premature end of a codestream, a zlib or flate error),
+   always leaves the image `FLAGGED`, and so does an unrecognised one.
+   Warnings reviewed as harmless (for example `JPX numcomps doesn't
+   match color_space`, openjpeg's `misplaced cmap box`) are the only
+   ones the image's witness may vouch for. Until Phase 4b, a unit
+   carrying any image-decoder warning stays flagged.
 4. **The warning belongs to the unit the witness measured.** A warning
    raised while the interpreter runs any other unit in the same window
    -- an annotation's or widget's appearance stream, a Form XObject, a
@@ -210,10 +217,23 @@ Owner decision: "approve all recommendations."
   (raw rule: 45.7%).
 - **The three exit-`0` guards are requirements, not tuning**: never
   excuse a filter/decode warning, never accept 0 = 0 as balance, and
-  vouch for an image-decoder warning only with the image's own witness.
+  vouch for an image-decoder warning only with the image's own witness
+  (and, per decision C below, only for a warning reviewed as harmless).
 - **Unrecognised warning names fail closed** (guard 2 implemented as an
   allow-after-review list, not a deny list).
 - **Call order**: the interpreter runs first on a freshly opened
   document.
 - **Re-measure on every PyMuPDF/MuPDF update**, as part of reviewing the
   bump.
+
+**Owner decision C (2026-09-27), taken after the approval, also
+recorded in docs/adr/0003 and docs/adr/0004.** Image-decoder warnings
+are split by kind. A decode error, or any warning that suggests lost
+data (truncation, a corrupt or premature end of a codestream, a zlib or
+flate error), means the image is always `FLAGGED`. Warnings reviewed as
+harmless (for example JPEG 2000's `numcomps doesn't match color_space`,
+openjpeg's `misplaced cmap box`) go on a reviewed allowlist; from Phase
+4b the image's own witness may vouch for them. Any unrecognised warning
+means `FLAGGED`. Guard 3 above states this rule; it refines the third
+exit-`0` guard (an image-decoder warning is vouched for only by the
+image's own witness) and does not relax it.
