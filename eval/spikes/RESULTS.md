@@ -208,7 +208,7 @@ categories vanish: MuPDF emits some warnings only on the first load of a
 resource. The numbers above, and the rule below, use `get_texttrace()`
 first on a fresh document, the order a rule relying on warnings must use.
 
-**docs/adr/0009's proposed rule, measured** (same script; pages as
+**docs/adr/0009's rule (accepted with guard 4), measured** (same script; pages as
 units; `s1b_consumption_witness.witness(unit_only=True)` as the
 witness). Guards: (1) 0 = 0 is not balance; (2) a filter/decode warning
 is never excused; (3) an image-decoder warning is never vouched for by a
@@ -358,9 +358,9 @@ compares counts, not content, so a tokenizer over-count and an
 interpreter over-count could in principle cancel on one page; not
 observed.
 
-**Decision** (docs/adr/0008): recommend a **hard gate** -- mismatch
-means `FLAGGED`, unconditionally, not advisory (alternative: shadow mode
-first). Advisory is fail-open with respect to REDESIGN §2 ("discharged
+**Decision** (docs/adr/0008, accepted 2026-09-27): a **hard gate** --
+mismatch means `FLAGGED`, unconditionally, not advisory and not staged
+through shadow mode. Advisory is fail-open with respect to REDESIGN §2 ("discharged
 only when... proved by a witness") and Principle 2 ("`DECODED` is
 accepted only when the decoder's witness balances"), masked only by
 worst-of shipping until Phase 6 retires legacy. Its cost on measured

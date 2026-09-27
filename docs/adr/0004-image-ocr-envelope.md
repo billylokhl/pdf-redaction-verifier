@@ -1,6 +1,6 @@
 # 0004. Image-OCR envelope
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -158,16 +158,20 @@ that were never going to be `DECODED` as text anyway.
   27 files (5.6% of text-bearing files) -- that were never going to
   carry readable text anyway.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-- **The main question: image OCR stays `FLAGGED`-only (never `DECODED`)
-  until Phase 4b measures recall**, rather than accepting a provisional,
-  unmeasured `DECODED` grant sooner. Recommend: yes.
-- Confirm (or re-measure) the 35 Mpx pixel cap and the 10,000 px
-  per-side ceiling against Apple Vision's actual request limits -- the
-  cap already excludes two real 38.3 Mpx images in one text-bearing
-  file.
-- Confirm excusing images under today's 8×32 `_text_sized` rule
-  (recommended) -- 299 images in 51 files (2.5% of all files), 235 in 27
-  (5.6% of text-bearing) -- with their samples still raw-searched, rather
-  than flagging every one under the new envelope.
+Owner decision: "approve all recommendations."
+
+- **Image OCR stays `FLAGGED`-only (never `DECODED`) until Phase 4b
+  measures recall** -- no provisional, unmeasured `DECODED` grant
+  sooner.
+- **Keep today's 8x32 `_text_sized` excusal** for the envelope's lower
+  size bound (299 images in 51 files, 2.5% of all files; 235 in 27,
+  5.6% of text-bearing) **while still always raw-searching sample
+  bytes** per docs/adr/0003's governing rule, rather than flagging every
+  small image under the new envelope.
+- **The 35 Mpx per-image cap stands** as specified -- it already
+  excludes two real 38.3 Mpx images in one text-bearing file. It is
+  **not yet independently verified against Apple Vision's actual request
+  limits**; re-check it (and the 10,000 px per-side ceiling) in Phase
+  4b.

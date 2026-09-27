@@ -1,6 +1,6 @@
 # 0005. Pattern-class default tier
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -34,7 +34,7 @@ transition invariant.
 
 ## Decision
 
-**Recommended default: built-in pattern classes (`ssn`, `credit-card`,
+**Decided: built-in pattern classes (`ssn`, `credit-card`,
 `email`, `us-phone`) stay at today's hard-finding tier (single-line/
 single-literal match = hard) through the Move and until Phase 5 actually
 ships its own fix.** This keeps Phase 2's differential gate meaningful
@@ -55,9 +55,9 @@ Demoting the class would need every one on the list relabelled to expect
 `2` (or a mixed hard/review finding set) *before* Phase 2's differential
 gate could pass -- this is Phase 2 work, not a Phase 1 ADR's to do.
 
-**Options for the owner:**
+## Options considered
 
-1. **Keep hard until Phase 5 (recommended).** No case relabelling, no
+1. **Keep hard until Phase 5 (chosen).** No case relabelling, no
    transition-invariant conflict, no early severity change. Phase 5
    resolves the false-hard rate with context rules, a demotion, or both,
    on its own gate ("false hard < 1% on text-bearing real files").
@@ -70,11 +70,9 @@ gate could pass -- this is Phase 2 work, not a Phase 1 ADR's to do.
    miscoloring unrelated digits, the way an SSN-shaped date is. Whether
    an incidental email address is *sensitive* is a judgment call for the
    rules file's author, not evidence the `email` class itself is
-   imprecise. If the owner wants a narrower demotion than option 1,
-   `ssn` and `us-phone` are the two classes this pass's data actually
-   supports demoting.
-3. **Demote all four now, accept the Phase 2 relabelling cost.** Not
-   recommended: it spends Phase 5's decision early, on data that Phase
+   imprecise.
+3. **Demote all four now, accept the Phase 2 relabelling cost.** Rejected:
+   it spends Phase 5's decision early, on data that Phase
    5's own gate (text-bearing false-hard rate) is the designed place to
    evaluate it against.
 
@@ -123,8 +121,11 @@ capped by it.
   Phase 2's differential -- the first version's discussion of scorecard
   behavior under demotion is removed as unsupported speculation.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-Which of the three options to ship: keep hard until Phase 5
-(recommended), demote only `ssn`/`us-phone` now, or demote all four now
-and accept the Phase 2 case-relabelling cost.
+Owner decision: "approve all recommendations."
+
+- **Keep built-in pattern classes hard until Phase 5** (option 1) --
+  no case relabelling now; Phase 5 resolves the false-hard rate on its
+  own gate. Options 2 (demote only `ssn`/`us-phone`) and 3 (demote all
+  four now) are rejected for the time being.

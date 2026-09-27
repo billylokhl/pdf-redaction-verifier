@@ -1,6 +1,6 @@
 # 0006. Recursion and decode budget
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -70,8 +70,8 @@ the true units-per-run count for a given file is at least its object
 count, likely well above it. 200,000 leaves headroom over the largest
 *object* count this pass saw (not the "two orders of magnitude over 258"
 the first version claimed from an unrepresentative sample), but that
-headroom is against the wrong quantity. Recommend treating 200,000 as a
-placeholder Phase 3a must re-derive once it can enumerate real units
+headroom is against the wrong quantity. **Decided: treat 200,000 as a
+placeholder Phase 3a must re-derive** once it can enumerate real units
 (including ObjStm members and decoder-discovered children), not a number
 to carry forward as measured.
 
@@ -139,13 +139,18 @@ byte cap or exercise reference-graph recursion at all.
   outcome than ordinary budget exhaustion and should stay a separate
   test path.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-- The four numeric bounds (depth 25, units 200,000, inflated bytes
-  2 GiB, OCR 200 Mpx/page) are sized by analogy and corpus headroom, not
-  a dedicated adversarial stress spike. Confirm these are acceptable to
-  ship as-is, or commission that stress spike before Phase 3d wires the
-  sandbox around them.
-- Confirm the reference-graph recursion problem (cycle detection,
-  `RecursionError` handling) is acceptable to leave fully open for
-  Phase 3a/3d rather than partially addressed here.
+Owner decision: "approve all recommendations."
+
+- **Accept the four numeric bounds as placeholders** (depth 25, units
+  200,000, inflated bytes 2 GiB, OCR 200 Mpx/page) -- sized by analogy
+  and corpus headroom, not a dedicated adversarial stress spike, and
+  acceptable to ship as-is on that basis. No stress spike is commissioned
+  now.
+- **Re-derive units in Phase 3a** once it can enumerate real units
+  (including ObjStm members and decoder-discovered children) -- 200,000
+  is a placeholder, not a number to carry forward as measured.
+- **Reference-graph recursion stays open for Phase 3a/3d** (cycle
+  detection, `RecursionError` handling) rather than being partially
+  addressed here.

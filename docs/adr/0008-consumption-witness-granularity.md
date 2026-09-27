@@ -1,6 +1,6 @@
 # 0008. Consumption-witness granularity
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -101,24 +101,19 @@ narrow modelling gap (6):
 
 ## Decision
 
-**Recommend a hard gate: a witness mismatch means `FLAGGED`, never
-`DECODED`, unconditionally -- no advisory mode.** Per the fail-closed
-rule this whole review is built around, and per REDESIGN §2/Principle 2
-directly (Context, above), this is the only design that does not create
-a new exit-`0` path once legacy retires. The corrected measurement
-(below) finds no unexplained mismatch among the pages it can measure.
+**A hard gate: a witness mismatch means `FLAGGED`, never `DECODED`,
+unconditionally -- no advisory mode, no shadow-mode period (decided,
+owner approval 2026-09-27).** Per the fail-closed rule this whole review
+is built around, and per REDESIGN §2/Principle 2 directly (Context,
+above), this is the only design that does not create a new exit-`0`
+path once legacy retires. The corrected measurement (below) finds no
+unexplained mismatch among the pages it can measure.
 
-**Alternative, if the owner is not comfortable committing to
-enforcement from a Phase 1 spike's numbers: ship the hard gate in shadow
-mode first (recorded, not shipped in the worst-of verdict -- REDESIGN
-§6's existing shadow/enforced split already has a mechanism for exactly
-this), and move it into the enforced verdict once Phase 4a's own
-implementation confirms the corpus rate.** This is not the same as
-"advisory" -- shadow mode still computes the gate as a hard flag, it
-only defers *shipping* that flag's effect on the exit code, which
-Phase 6 already requires resolving before legacy retires. Advisory (the
-first two versions' choice) has no such resolution point and was wrong
-to recommend.
+(Options considered: shadow mode first -- the gate computed as a hard
+flag but kept out of the worst-of verdict until Phase 4a reconfirmed the
+corpus rate -- was the alternative, and was not chosen. Advisory, the
+first two versions' choice, has no point at which it becomes a gate and
+was wrong to recommend.)
 
 **What the gate is for, stated precisely.** Three hand-built cases
 (`eval/spikes/s1b_consumption_witness.py`, `ADVERSARIAL_CASES`) produce
@@ -206,7 +201,7 @@ the stream was consumed, not proof that every code was read correctly.
 
 ## Consequences
 
-- The hard-gate recommendation applies to the whole witness (render-mode
+- The hard gate applies to the whole witness (render-mode
   handling and the general byte-count check together) -- there is no
   reason to split them.
 - On the pages this spike can measure, the gate's review-rate cost is 0
@@ -217,16 +212,16 @@ the stream was consumed, not proof that every code was read correctly.
   Phase 4a's own gate ("K3-K6... closed; every per-case change is
   stricter and listed; review-rate change within what [ADR 0007]
   accepted") must account for.
-- If the owner picks the shadow-mode alternative, Phase 3b's existing
-  shadow/enforced verdict machinery is the right place to wire it, not a
-  new mechanism -- REDESIGN §6 already describes exactly this kind of
-  staged enforcement for unit kinds generally.
+- The gate is enforced from the moment content units can be `DECODED`
+  (Phase 4a); it is not staged through shadow mode first.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-Hard gate now (recommended -- REDESIGN §2/Principle 2 require it; on
-the corrected spike, 0 unexplained mismatches among 2,345 measured text
-pages in 399 files, with 856 form-drawing pages in 206 files and 12 CJK
-pages in 9 files unmeasured) vs. hard gate in shadow mode first,
-enforced once Phase 4a's own implementation measures forms as their own
-units and reconfirms the rate on a per-unit (not whole-page) basis.
+Owner decision: "approve all recommendations."
+
+- **Hard gate now**: a witness mismatch means `FLAGGED`, never
+  `DECODED`. The shadow-mode-first alternative is not chosen.
+- Basis: on the corrected spike, 0 unexplained mismatches among 2,345
+  measured text pages in 399 files; 856 form-drawing pages in 206 files
+  and 12 CJK pages in 9 files are unmeasured and must be measured (or
+  are `FLAGGED`) in Phase 4a.

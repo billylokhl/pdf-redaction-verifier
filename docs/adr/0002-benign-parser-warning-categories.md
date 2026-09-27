@@ -1,6 +1,6 @@
 # 0002. Benign parser-warning categories
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -85,9 +85,9 @@ though the object is very much present, just compressed. **This corpus
 has zero instances where that gap actually changes the verdict** (no
 offset-warning object in this corpus is also an ObjStm member), but the
 gap is real and the check must be extended to also search `/ObjStm`
-contents before Phase 3c relies on it. Recommend: accept the gap for now
-(it did not change any measured number here) and close it as part of
-Phase 3c's real implementation, not this spike.
+contents before Phase 3c relies on it. **Decided: accept the gap for now**
+(it did not change any measured number here) **and close it as part of
+Phase 3c's real implementation**, not this spike.
 
 ## Measurement
 
@@ -152,18 +152,34 @@ happened to have differing-generation indirect-reference values), but
 the check itself is not sound as written and must compare the full
 reference, not its first token, before Phase 3c trusts it.
 
-## Owner confirmation needed
+## Options considered
 
-- Whether a 7.2% (text-bearing) / 2.9% (all-files) parser-agreement flag
-  rate is affordable to ship as-is, or whether Phase 3c needs to narrow
-  further (e.g. by implementing the deferred "expected endobj" per-object
-  check rather than dropping the category outright) before this becomes
-  a real gate -- keeping in mind the rate above is from the warning-based
-  proxy, not the real object-set/page-tree comparison.
-- Whether to accept the two known verification gaps (ObjStm offset
-  bodies; duplicate keys compared on the first token) until Phase 3c.
-  Both measured 0 instances on this corpus: no offset-warning object is
-  also an `/ObjStm` member, and no duplicate-key pair is a pair of
-  indirect references that differ only after the first token. Recommend: accept them now and close both
-  in Phase 3c's real implementation, before that phase relies on either
-  check.
+On affordability, two options were weighed: (a) accept the measured
+2.9%/7.2% combined refined flag rate as-is; (b) have Phase 3c narrow
+further before treating it as a real gate, e.g. by implementing the
+deferred "expected endobj" per-object check rather than dropping that
+category outright. On the two known verification gaps (ObjStm offset
+bodies; duplicate keys compared on the first token), the options were:
+accept them now and close both in Phase 3c's real implementation, or
+close them before relying on either check at all. Both gaps measured 0
+instances on this corpus: no offset-warning object is also an `/ObjStm`
+member, and no duplicate-key pair is a pair of indirect references that
+differ only after the first token.
+
+## Owner decision (2026-09-27)
+
+Owner decision: "approve all recommendations."
+
+- **Accept the two benign categories** (a wrong/zero xref offset only
+  when no body exists anywhere for that object number; a duplicated key
+  only when both occurrences' values are textually identical) **and the
+  measured combined refined flag rate** (2.9% of all files, 7.2% of
+  text-bearing files) as affordable to ship as-is -- keeping in mind the
+  rate is from the warning-based proxy, not the real
+  object-set/page-tree comparison, which Phase 3c must re-measure
+  against before treating it as settled.
+- **Accept both known check gaps** -- ObjStm offset bodies (rule 1 is
+  fail-open for an object compressed into an `/ObjStm`); duplicate keys
+  compared on the first token only (does not distinguish an indirect
+  reference like `5 0 R` from `5 1 R`) -- **until Phase 3c closes them**
+  in its real implementation.

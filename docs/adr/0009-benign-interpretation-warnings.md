@@ -1,6 +1,6 @@
 # 0009. Benign interpretation warnings
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -23,9 +23,10 @@ proposed. This version measures it, with the hole closed.
 
 ## Decision
 
-**This ADR does not decide the rate is acceptable -- it sizes it and
-proposes a review rule, since the affordability call belongs to the
-owner (see Owner confirmation).**
+**The guarded rule below replaces REDESIGN §4's raw rule ("any warning
+means not `DECODED`"), with all five points, including guard 4
+(decided, owner approval 2026-09-27).** The raw rule would flag 45.7% of
+text-bearing files; the guarded rule flags 7.6% (Measurement).
 
 **Why "the witness balances" is not enough on its own.** docs/adr/0008's
 witness compares our count of the codes a content stream shows against
@@ -37,8 +38,8 @@ warned page would excuse 7 pages carrying filter/decode warnings, all 7
 at 0 codes = 0 glyphs -- the stream decoded to nothing that shows text,
 which is balance only in the most useless sense.
 
-**Recommend: a warned unit is excused from the "not `DECODED`" rule only
-when all of the following hold:**
+**A warned unit is excused from the "not `DECODED`" rule only when all
+of the following hold:**
 
 1. **The unit's own consumption witness (docs/adr/0008) balances with a
    non-zero count.** 0 = 0 is never balance.
@@ -65,6 +66,17 @@ happened in the unit it fired on -- that would repeat ADR 0002's
 first-version mistake of trusting a message's own reassuring wording.
 This is a *rule for evaluating* units, not a pre-approved list; no
 category is excused by this ADR itself.
+
+**Unrecognised warnings fail closed.** Guard 2 is implemented the
+fail-closed way round: a warning family is eligible for the witness test
+only once it has been reviewed and recorded as a text-interpretation
+warning; any warning the implementation does not recognise (including a
+filter warning renamed by a MuPDF update) keeps its unit flagged.
+
+**Re-measured on every PyMuPDF/MuPDF update.** The rate moved materially
+between two point releases (Measurement), so this measurement is re-run
+whenever a PyMuPDF or MuPDF version bump lands, as part of reviewing that
+bump.
 
 ## Measurement
 
@@ -115,7 +127,7 @@ entirely, because MuPDF emits some warnings only on the first load of a
 resource. The rule must use the order that surfaces them, which is the
 order measured here (point 5 above).
 
-**The proposed rule, measured** (same script; pages as units;
+**The rule, measured** (same script; pages as units;
 `s1b_consumption_witness.witness(unit_only=True)` as the per-unit
 witness):
 
@@ -124,7 +136,7 @@ witness):
 | Raw rule (any warning → not `DECODED`) | 221 of 484 (45.7%) | 0 of 453 |
 | Witness balances, no guards | 3 of 221 (1.4%) | 436 of 453 |
 | **Witness balances, guards 1-3** | **34 of 221 (15.4%) -- 7.0% of the 484 text-bearing files** | **403 of 453** |
-| Guards 1-4 (annotated pages not excused) | 37 of 221 (16.7%) -- 7.6% of 484 | 395 of 453 |
+| **Guards 1-4 (annotated pages not excused) -- the decided rule** | **37 of 221 (16.7%) -- 7.6% of 484** | **395 of 453** |
 
 - Without the guards, the rule would excuse 31 pages carrying JPEG 2000
   warnings (their images are not witnessed by a text count) and 2
@@ -150,31 +162,32 @@ witness):
   that the spike does not witness yet.
 - The guards key partly on warning text, which this ADR shows is
   version-sensitive: a renamed filter warning would slip past guard 2 if
-  it is implemented as "excusable unless recognised as a filter error".
-  Implementing it the other way round (a family is excusable only once
-  reviewed as a text-interpretation warning) is fail-closed on renames;
-  its cost on this corpus was not measured.
+  it were implemented as "excusable unless recognised as a filter
+  error". It is therefore implemented the other way round (a family is
+  excusable only once reviewed as a text-interpretation warning), which
+  is fail-closed on renames; that variant's cost on this corpus was not
+  measured and is measured when Phase 4a implements it.
 - Any Phase 1/3c measurement that counts *by warning category name*
   should be re-verified whenever a MuPDF/PyMuPDF version bump lands, not
   assumed stable -- docs/adr/0002's qpdf-based categories are a
   different, external tool and were not affected by this bump, but a
   future qpdf upgrade could plausibly do the same thing to those.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-- Whether the raw rule's cost (11.2% of all files, 45.7% of text-bearing
-  files, PyMuPDF 1.28.2) is affordable as REDESIGN §4 states it, or
-  whether Phase 3c/4a should adopt the guarded rule above instead:
-  measured at 34 of 221 warned text-bearing files still flagged (15.4%;
-  7.0% of all 484 text-bearing files), or 37 (7.6%) with guard 4.
-  Recommend: the guarded rule, with all five points.
-- Confirm the three exit-`0` guards as requirements, not tuning: never
+Owner decision: "approve all recommendations."
+
+- **The guarded rule, with all five points, including guard 4**
+  (annotation and widget warnings are vouched for only by their own
+  unit), replaces the raw rule. Measured cost: 37 of 221 warned
+  text-bearing files still flagged, 7.6% of all 484 text-bearing files
+  (raw rule: 45.7%).
+- **The three exit-`0` guards are requirements, not tuning**: never
   excuse a filter/decode warning, never accept 0 = 0 as balance, and
   vouch for an image-decoder warning only with the image's own witness.
-- Confirm the call order: the interpreter runs first on a freshly
-  opened document, since a prior pass hides warnings (186 vs 221 warned
-  text-bearing files on this corpus).
-- Given the swing measured between two PyMuPDF point releases, consider
-  whether this measurement should be re-run as part of routine
-  dependency-bump review (e.g. Dependabot PRs touching PyMuPDF), not
-  just once at Phase 1.
+- **Unrecognised warning names fail closed** (guard 2 implemented as an
+  allow-after-review list, not a deny list).
+- **Call order**: the interpreter runs first on a freshly opened
+  document.
+- **Re-measure on every PyMuPDF/MuPDF update**, as part of reviewing the
+  bump.

@@ -1,6 +1,6 @@
 # 0007. Orphaned content streams
 
-Status: proposed
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -103,13 +103,16 @@ above) would show.
   decision, but the owner should know the true rate could be higher
   still.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-Whether an 11.4% (text-bearing, 55/484) review-rate contribution -- the
-gross cost, known to be a lower bound (paint-only orphans and dead bodies
-are not counted), of which an unmeasured share already exits `2` today --
-is affordable to accept without a narrower rule. The first version of
-this ADR reported the same 55 files as 2.7% of all 2,031 files; the
-number did not grow, the denominator was corrected to the text-bearing
-stratum. Recommend: accept it (ship "always `FLAGGED`"), and measure the
-overlap with today's exit-`2` orphan handling in Phase 3a.
+Owner decision: "approve all recommendations."
+
+- **Accept "always `FLAGGED`" at the measured cost**: an 11.4%
+  (text-bearing, 55/484) review-rate contribution -- the gross cost,
+  known to be a lower bound (paint-only orphans and dead bodies are not
+  counted), of which an unmeasured share already exits `2` today. The
+  first version of this ADR reported the same 55 files as 2.7% of all
+  2,031 files; the number did not grow, the denominator was corrected to
+  the text-bearing stratum.
+- **Measure the overlap with today's exit-`2` orphan handling in Phase
+  3a**, to establish the added (not gross) review-rate cost.

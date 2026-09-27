@@ -411,9 +411,8 @@ the gap is stated rather than implied away.
 [docs/REDESIGN.md](docs/REDESIGN.md) is the plan to replace enumeration
 (searching the places this tool knows about) with an accounted ledger
 (every byte of the file, every obligation discharged or flagged); its
-[docs/adr/](docs/adr/) works through the Phase 1 design questions --
-all nine as proposals awaiting owner approval -- backed by the real
-corpus measurements behind them.
+[docs/adr/](docs/adr/) records the nine accepted Phase 1 design
+decisions, with the real corpus measurements behind them.
 
 ## Testing
 

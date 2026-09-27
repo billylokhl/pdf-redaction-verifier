@@ -1,6 +1,6 @@
 # 0003. The `NOT_APPLICABLE` closed list
 
-Status: proposed (depends on docs/adr/0004, also proposed)
+Status: accepted (owner approval, 2026-09-27)
 
 ## Context
 
@@ -21,7 +21,7 @@ tool is enumerative" problem §1 exists to close.
 
 ## Decision
 
-**Ship the four reasons exactly as proposed, and no others** (unchanged
+**Adopt the four reasons exactly as listed, and no others** (unchanged
 from the first version of this ADR -- see the list and the three
 rejected candidates below), **plus one governing rule this pass's review
 found missing and that must be stated explicitly, because ADR 0004
@@ -78,9 +78,9 @@ it does not by itself make *pattern classes* (`ssn`, `credit-card`, etc.)
 run over image samples, and today they do not run over any binary data
 at all (by design -- see `verify.py`'s `_OPAQUE_STREAM_SUBTYPES`
 exclusion, which exists because font-program bytes coincidentally match
-pattern classes constantly). Recommend: the new inventory's raw-byte
-matcher pass (the rule above) should run **value** rules unconditionally
-over decoded image samples, but should run **pattern classes** over them
+pattern classes constantly). **Decided:** the new inventory's raw-byte
+matcher pass (the rule above) runs value rules unconditionally
+over decoded image samples, and runs pattern classes over them
 only behind the same manual-review tier `_scan_orphaned_payload` already
 uses for other raw-text contexts today (a coincidental digit run in
 noisy sample data is exactly the kind of fusion that tier exists for) --
@@ -103,7 +103,7 @@ implementation here.
    the matcher.
 4. **Image data fully consumed by the image decoder** -- only once
    docs/adr/0004's envelope accepts the image **and its recall bound is
-   satisfied** (docs/adr/0004, proposed: geometry and a completed OCR
+   satisfied** (docs/adr/0004, accepted: geometry and a completed OCR
    pass are *not* enough on their own -- REDESIGN §4 requires a
    recall-validated envelope, which does not exist until Phase 4b
    measures it), **and** the raw sample bytes have separately been
@@ -150,22 +150,30 @@ ADR.
   not only the image decoder; Phase 4's decoder registry entries should
   each note where the raw-byte matcher pass happens.
 
-## Owner confirmation needed
+## Owner decision (2026-09-27)
 
-- **The governing rule itself**: no unit's bytes are ever exempt from the
+Owner decision: "approve all recommendations."
+
+- **Adopt the four reasons** (xref-stream field data; object-stream
+  header table; a font program whose parsed tables span the stream and
+  whose strings were searched; image data fully consumed by the image
+  decoder, gated on docs/adr/0004's recall bound) and no others.
+- **Adopt the governing rule**: no unit's bytes are ever exempt from the
   raw matcher -- `NOT_APPLICABLE` and `DECODED` excuse a decoder from
   further parsing, never from the search. This is a requirement on every
   decoder in the registry (each must run the raw matcher over the bytes
-  it excuses, and say where), not only the image decoder, so it is the
-  owner's call rather than a detail of this list. Recommend: adopt it.
-- **Scheduling the hidden-image case**: a value hidden in an image's raw
-  sample bytes (the case above) is not yet in the case library. Recommend
-  adding it in Phase 0b/3a, before Phase 4b ships the image decoder, so
-  the governing rule is a tested invariant rather than only a documented
-  one.
-- Whether pattern classes should run over decoded image samples at the
-  manual-review tier (recommended above) -- a real, currently
-  unimplemented gap, to confirm before Phase 4b.
-- The list itself (the four reasons, three rejected) needs no separate
-  decision, but reason 4 depends on docs/adr/0004's recall bound, so this
-  ADR stays `proposed` until 0004 is decided.
+  it excuses, and say where), not only the image decoder.
+- **Run pattern classes on raw image samples at the manual-review
+  tier**, the same tier `_scan_orphaned_payload` already uses for other
+  raw-text contexts -- a real, currently unimplemented gap to close
+  before Phase 4b.
+- **Schedule the hidden-image case** (a 10x10 image whose 100 raw sample
+  bytes spell "Employee SSN 123-45-6789") **in Phase 0b/3a, before Phase
+  4b** ships the image decoder, so the governing rule is a tested
+  invariant rather than only a documented one.
+
+With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
+recall bound is a scheduling gate (it cannot actually be reached until
+Phase 4b measures recall), not an open decision -- the list itself (the
+four reasons, three rejected) needed no separate decision beyond the
+one recorded above.
