@@ -10,3 +10,12 @@ dist/
 
 # Local agent worktrees and settings
 .claude/
+
+# The real-world corpus manifest and results are local-only: SHA-256s
+# and (locally meaningful) relative paths into a directory of real files
+# that never leaves this machine (docs/REDESIGN.md §5, Phase 0c).
+/eval/scorecard/real_corpus/
+
+# The scorecard's local reference-result cache (--cache-dir), the same
+# default path CI's actions/cache step restores into.
+/eval/scorecard/.reference-cache/

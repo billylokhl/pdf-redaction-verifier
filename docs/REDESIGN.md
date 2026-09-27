@@ -503,6 +503,54 @@ the tool's verdict. Built at the end of Phase 0; it never gates.
 ADRs are required only for the Phase 1 questions and for any change to
 compatibility or exit semantics.
 
+**Phase 0c status**: landed — `eval/scorecard/` (runner, per-case
+differential against `eval-ref-0` via a worktree, the normalised
+*multiset* key above — same rule/tier/storage twice counts as two, not
+one — with `OCR_UNAVAILABLE`/`TOOL_MISSING` dropped by exact, known tool
+name (never an untrusted `/usr/bin/qpdf`-shaped or absent "tool" field
+read as a match) and the exit recomputed before comparing, so the key
+holds across environments; two guards on that recomputation so it can
+never manufacture a verdict that hides a real bug — an error report's
+exit is never touched, and the *unfiltered* report must already be
+self-consistent with its own findings/warnings before anything is
+recomputed, so a fail-open bug (a wrong exit `0` alongside a real
+warning) shows up as a real difference instead of being "corrected"
+away; the process's own exit code is checked against the report's own
+claimed `exit_code` too (a mismatch is a crash, not a report to
+normalise); `REQUIRE_FULL_ENV` is read only at the orchestration layer
+(`normalization_have`), never inside the pure `is_environmental`/
+`effective_exit` functions themselves, so their behaviour depends only
+on their arguments; `eval/accepted_diffs.yaml` seeded from the real
+reference-vs-main differences found by running it, with a `weaker: true`
+requirement (checked both ways: required when the verdict does loosen,
+rejected when it doesn't) on any entry that loosens the verdict (`1`→`2`,
+`1`→`0`, `2`→`0`), and a stale-entry check on a full run that excludes a
+case merely skipped this environment (`requires: ocr` on Linux) while
+still catching one whose case id no longer exists at all; a `perf`-marked
+case (a large, multi-minute generator) excluded from the default
+selection unless named explicitly, so it can't silently time out a
+default run; label-based metrics; the local-only real-corpus manifest —
+producer *family* only, path-guarded to its own gitignored directory —
+and stratified clean-side metrics; a reference result cache keyed by ref
+commit, build-lock hash, the scorecard's own code hash, this machine's
+tool versions/OCR availability, and whether `REQUIRE_FULL_ENV` changes
+normalisation, with each cached case also carrying its own
+`input_hash` (PDF bytes + rules) so changed rules invalidate just that
+entry, and a crashed or timed-out run never saved or trusted back out).
+The Linux every-PR differential job and the weekly full-environment
+macOS job (`.github/workflows/tests.yml`,
+`.github/workflows/scorecard-weekly.yml`), with `ci-ok` explicitly
+failing (`if: always()` plus a `needs.*.result` check) rather than
+relying on a skip reading as a pass; the judge's exact-storage check
+extended to warnings, sorted by `str` rather than the tuple itself (a
+code reported at both a string and a `None` storage otherwise crashes
+the sort) (`eval/caselib/run.py`); `caselib.run.available()` probing OCR
+directly rather than through whichever `verify.py` happens to be the
+in-process import. Not yet done, left for a later PR: the additive
+`--json` fields this phase calls for (a per-layer status block,
+`target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
+performance files the real corpus wants.
+
 ## 8. Known gaps found by this review
 
 All exit `0` on today's tool with the secret present (reproduced):

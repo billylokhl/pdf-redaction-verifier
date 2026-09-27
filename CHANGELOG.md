@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--version` flag to display tool version
 - Tokenization of leftover content streams (compact inline images, long/compactly written text)
 - Case library (`eval/caselib`) with parameter grids and raw-writer cases for robust testing
+- Scorecard (`eval/scorecard`): a per-case differential of the CLI against a pinned reference version (environment-independent: drops OCR/tool-availability noise, and every accepted difference must be tracked in `eval/accepted_diffs.yaml`, with a `weaker: true` flag required on any verdict-loosening entry and a check for entries no case still produces), label-based metrics (silent miss, downgrade, false hard, review rate, crash/timeout, runtime), and a local-only, path-guarded real-world corpus for clean-side metrics (producer family only, never the raw `/Producer` string)
 
 ### Changed
 **Security**: exiftool and qpdf now run with absolute paths, exiftool with `-config ""` disabled, minimal environment variables, and a private working directory. Tool exit warnings now include a `returncode` field. The unquoted-YAML-value warning in configuration parsing now reports only the YAML type rather than the converted value.
