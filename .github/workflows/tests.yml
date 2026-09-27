@@ -71,7 +71,7 @@ jobs:
         # One run per version; 3.12 also reports coverage.
         run: >-
           uv run pytest tests/ -rs
-          ${{ matrix.python-version == '3.12' && '--cov=verify --cov=caselib --cov-report=term' || '' }}
+          ${{ matrix.python-version == '3.12' && '--cov=verify --cov=caselib --cov=redaction_verifier --cov-report=term' || '' }}
 
   # Scorecard differential (docs/REDESIGN.md §5, Phase 0c): the case
   # library, run through the real CLI as a subprocess per file and

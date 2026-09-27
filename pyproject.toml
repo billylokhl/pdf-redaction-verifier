@@ -43,6 +43,11 @@ pdf-verify = "verify:run_cli"
 
 [tool.setuptools]
 py-modules = ["verify"]
+packages = [
+    "redaction_verifier",
+    "redaction_verifier.matching",
+    "redaction_verifier.rules",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "verify.__version__"}
@@ -77,13 +82,33 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["F", "E9"]
-per-file-ignores = {}
+# TID251 only (banned-api), not the whole TID category: TID252 (relative
+# imports) already fires throughout eval/caselib and is unrelated to this
+# rule's purpose.
+select = ["F", "E9", "TID251"]
+
+# The package must not import verify (docs/REDESIGN.md §6, "Move, don't
+# wrap": a one-way dependency). Scoped with per-file-ignores below so
+# verify.py itself and the tests (which legitimately import verify) are
+# unaffected.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"verify".msg = "redaction_verifier must not import verify (one-way dependency) — move the code into the package instead"
+
+[tool.ruff.lint.per-file-ignores]
+"verify.py" = ["TID251"]
+"tests/*" = ["TID251"]
+"eval/*" = ["TID251"]
 
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
-files = ["eval/caselib", "eval/scorecard", "eval/check_ratchets.py", "eval/gallery"]
+files = [
+    "eval/caselib",
+    "eval/scorecard",
+    "eval/check_ratchets.py",
+    "eval/gallery",
+    "redaction_verifier",
+]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
