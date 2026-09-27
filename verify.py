@@ -134,31 +134,12 @@ try:
 except BaseException as exc:  # pragma: no cover
     _fatal_import("PyMuPDF", exc)
 
-try:
-    import Vision
-    from Foundation import NSData
-
-    _OCR_IMPORTS_OK = True
-except Exception:  # pragma: no cover
-    # Broad on purpose, but the design here is to degrade, not exit: any
-    # ORDINARY failure importing the OCR bridge (missing package, or a
-    # corrupt pyobjc install) means OCR is simply unavailable on this
-    # machine. That already surfaces later as an OCR_UNAVAILABLE warning
-    # (fail-closed: exit 2, never a silent clean verdict) rather than a
-    # crash, so it is not itself an operational failure worth a stderr
-    # message here. Checked BEFORE the BaseException clause below (order
-    # matters: Exception is itself a BaseException, so the reverse order
-    # would make this clause unreachable) — that one exists precisely for
-    # what this one must NOT swallow: see _fatal_import's docstring.
-    _OCR_IMPORTS_OK = False
-except BaseException as exc:  # pragma: no cover
-    _fatal_import("the OCR bridge (Vision)", exc)
-
 # docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
-# normalizer/value matcher, the pattern-class scanning engine and the
-# rules loader now live in redaction_verifier.model, .matching and
-# .rules. Re-exported here (one block, so there is exactly one place that
-# needs this guard) so every name used outside the package — existing
+# normalizer/value matcher, the pattern-class scanning engine, the rules
+# loader, the page/OCR views and the report renderers now live in
+# redaction_verifier.model, .matching, .rules, .views and .report.
+# Re-exported here (one block, so there is exactly one place that needs
+# this guard) so every name used outside the package — existing
 # `verify.X` references, imports and the CLI — keeps working unchanged.
 # Each is imported `as` itself (the explicit re-export convention,
 # recognized by ruff's F401) because verify.py's OWN code below no
@@ -167,6 +148,18 @@ except BaseException as exc:  # pragma: no cover
 # submodule ever reaches them as a bare name or `verify.X`:
 # matching.values._NON_ALNUM_RE, matching.patterns._PATTERN_FOLD_TABLE,
 # matching.validators._EMAIL_FILE_EXTENSIONS.
+#
+# The former dedicated Vision-import guard (a `_fatal_import("the OCR
+# bridge (Vision)", exc)` for a BaseException at `import Vision` time)
+# moved inside this same block along with the rest of the OCR view: the
+# ordinary-failure degrade path (`_OCR_IMPORTS_OK = False`) still lives
+# next to that import in redaction_verifier.views.ocr, but a BaseException
+# there (SystemExit, KeyboardInterrupt, ...) is no longer caught by a
+# dedicated guard — this package must never import verify, so it cannot
+# call `_fatal_import` itself. It propagates out of `redaction_verifier`
+# instead, caught by the `except BaseException` below like any other
+# package-import failure, and reported as "cannot import
+# redaction_verifier" rather than "cannot import the OCR bridge (Vision)".
 try:
     from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES as BUILTIN_PATTERN_CLASSES
     from redaction_verifier.matching import PATTERN_SCAN_BATCH as PATTERN_SCAN_BATCH
@@ -195,6 +188,11 @@ try:
     from redaction_verifier.model import VerifyError as VerifyError
     from redaction_verifier.model import Warn as Warn
     from redaction_verifier.model import WarnList as WarnList
+    from redaction_verifier.report import JSON_SCHEMA_VERSION as JSON_SCHEMA_VERSION
+    from redaction_verifier.report import _sanitize_report_text as _sanitize_report_text
+    from redaction_verifier.report import build_json_report as build_json_report
+    from redaction_verifier.report import print_report as print_report
+    from redaction_verifier.report import write_json_report as write_json_report
     from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS as ENTITY_TYPE_TO_CLASS
     from redaction_verifier.rules import PARTIAL_ENTITY_COVERAGE as PARTIAL_ENTITY_COVERAGE
     from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS
@@ -208,6 +206,16 @@ try:
     from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
+    from redaction_verifier.views import MAX_LINE_TOLERANCE_PT as MAX_LINE_TOLERANCE_PT
+    from redaction_verifier.views import MIN_LINE_TOLERANCE_PT as MIN_LINE_TOLERANCE_PT
+    from redaction_verifier.views import OCR_DPI as OCR_DPI
+    from redaction_verifier.views import TEXT_GENUINE_READINGS as TEXT_GENUINE_READINGS
+    from redaction_verifier.views import _OCR_IMPORTS_OK as _OCR_IMPORTS_OK
+    from redaction_verifier.views import _join_cluster as _join_cluster
+    from redaction_verifier.views import _reconstruct as _reconstruct
+    from redaction_verifier.views import _vision_recognize_batch as _vision_recognize_batch
+    from redaction_verifier.views import extract_ocr_text as extract_ocr_text
+    from redaction_verifier.views import extract_visual_text as extract_visual_text
 except BaseException as exc:  # pragma: no cover
     _fatal_import("redaction_verifier", exc)
 
@@ -217,20 +225,13 @@ except BaseException as exc:  # pragma: no cover
 # ──────────────────────────────────────────────────────────────────────────
 # The verdict semantics are versioned with the tool: any change that can
 # move a file from 0 to 1/2, or from 1 to 2, bumps at least the minor.
+# The single source of truth pyproject.toml's dynamic version reads
+# (`attr = "verify.__version__"`) — it stays here, not in
+# redaction_verifier.report, which only receives it as a parameter
+# (build_json_report's `tool_version`) since that package must never
+# import verify.
 __version__ = "0.1.0"
-# Bumped when a field of the --json report is renamed, removed or changes
-# meaning; adding a field does not bump it.
-JSON_SCHEMA_VERSION: int = 1
 SUBPROCESS_TIMEOUT_S: int = 120
-OCR_DPI: int = 300
-# Floor for the visual-line clustering tolerance; the effective tolerance
-# scales with the median glyph size on the page so large form-box digits
-# with baseline jitter still cluster into one line.
-MIN_LINE_TOLERANCE_PT: float = 4.0
-# Ceiling: prevents a page dominated by large glyphs (watermarks,
-# headers) from inflating the tolerance so much that fine-print lines
-# get merged, scrambling their text and causing false negatives.
-MAX_LINE_TOLERANCE_PT: float = 12.0
 QPDF_CHUNK_BYTES: int = 4 << 20
 # Image codecs PyMuPDF does not decode to text. Feeding their bytes to a
 # text parser is the category error the structural pass exists to avoid:
@@ -270,234 +271,14 @@ EXIFTOOL_FILESYSTEM_FIELDS: frozenset[str] = frozenset({
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# PHASE 2: Layout-Aware Text Extraction (Text layer)
+# PHASE 2/3: Text and OCR views — moved to redaction_verifier.views
 # ──────────────────────────────────────────────────────────────────────────
-def _reconstruct(
-    glyphs: list[tuple[float, float, float, float, str]],
-    cluster_axis: int,
-) -> str:
-    """Cluster glyphs into visual lines along one axis, sort along the other.
-
-    glyphs: (x_center, y_center, width, height, char).
-    cluster_axis 1 clusters by y (horizontal lines, read left-to-right);
-    cluster_axis 0 clusters by x (vertical columns, read top-to-bottom).
-    The clustering tolerance scales with the median glyph extent along the
-    cluster axis, so 30pt form-box digits with 6pt baseline jitter still
-    land in one line while 8pt fine print keeps its lines separate.
-    """
-    if not glyphs:
-        return ""
-
-    extents = sorted(g[3] if cluster_axis == 1 else g[2] for g in glyphs)
-    median_extent = extents[len(extents) // 2]
-    tolerance = max(MIN_LINE_TOLERANCE_PT, min(MAX_LINE_TOLERANCE_PT, 0.5 * median_extent))
-    order_axis = 1 - cluster_axis
-
-    ordered = sorted(glyphs, key=lambda g: g[cluster_axis])
-    clusters: list[list[tuple[float, float, float, float, str]]] = []
-    current = [ordered[0]]
-    center = ordered[0][cluster_axis]
-    for glyph in ordered[1:]:
-        if abs(glyph[cluster_axis] - center) <= tolerance:
-            current.append(glyph)
-            # Running mean keeps the cluster stable against drift.
-            center += (glyph[cluster_axis] - center) / len(current)
-        else:
-            clusters.append(current)
-            current = [glyph]
-            center = glyph[cluster_axis]
-    clusters.append(current)
-
-    lines: list[str] = []
-    for cluster in clusters:
-        cluster.sort(key=lambda g: g[order_axis])
-        lines.append(_join_cluster(cluster, order_axis))
-    return "\n".join(lines)
-
-
-def _join_cluster(
-    cluster: list[tuple[float, float, float, float, str]], order_axis: int
-) -> str:
-    """Join one visual line's glyphs, breaking it at column gaps.
-
-    Whitespace glyphs are dropped during extraction, so without this a
-    table ROW ('123' | '45' | '6789' in three columns) would concatenate
-    into '123456789' and read as one contiguous number. A gap is treated
-    as a column break — emitted as a newline, which no single [-\\s.]
-    separator slot can cross — when it is BOTH a large outlier against the
-    other gaps on this line AND wider than a character. Both conditions
-    matter: form boxes space every glyph widely but *uniformly* (no
-    outlier, so the run stays intact), while ordinary word spaces are
-    narrower than a character (so 'SSN 123 45 6789' stays intact too).
-    """
-    if len(cluster) < 2:
-        return "".join(g[4] for g in cluster)
-
-    extent_index = 2 if order_axis == 0 else 3
-    gaps: list[float] = []
-    for prev, nxt in zip(cluster, cluster[1:]):
-        prev_end = prev[order_axis] + prev[extent_index] / 2.0
-        next_start = nxt[order_axis] - nxt[extent_index] / 2.0
-        gaps.append(max(0.0, next_start - prev_end))
-
-    ordered_gaps = sorted(gaps)
-    median_gap = ordered_gaps[len(ordered_gaps) // 2]
-    extents = sorted(g[extent_index] for g in cluster)
-    median_extent = extents[len(extents) // 2]
-    threshold = max(3.0 * median_gap, 1.5 * median_extent)
-
-    out = [cluster[0][4]]
-    for gap, glyph in zip(gaps, cluster[1:]):
-        if gap > threshold:
-            out.append("\n")
-        out.append(glyph[4])
-    return "".join(out)
-
-
-# How many of extract_visual_text's readings are genuine reading orders
-# (hard-finding eligible); the rest are reconstructions (manual review).
-TEXT_GENUINE_READINGS = 4
-
-
-def extract_visual_text(page: fitz.Page) -> list[str]:
-    """Reconstruct page text in visual reading orders.
-
-    Returns six readings, or [] for a page with no glyphs:
-
-    0. horizontal — visible, horizontally written text, lines top to bottom;
-    1-2. rotated, top-to-bottom and bottom-to-top — visible text written
-       vertically (a rotated matrix), read along its own direction;
-    3. off-page — text placed outside the visible area (crop or media box),
-       read horizontally on its own;
-    4-5. every visible glyph read in vertical columns, top-to-bottom and
-       bottom-to-top.
-
-    Readings 0-3 are genuine: each reads text the way it was written.
-    Off-page text is kept apart from the visible readings: merged into
-    them, a slug or Bates stamp below the page became the page's "last
-    line" and hid a value split across the page break. Readings 4-5 are
-    reconstructions: a column of an ordinary horizontal page stacks one
-    glyph from each of many lines (a ledger's last digits, a numbered
-    list's numbers), so they can assemble a value by accident — yet they
-    are also the only reading of a value written one character per line.
-    Callers treat them as manual-review only.
-    """
-    Glyph = tuple[float, float, float, float, str]
-    flat: list[Glyph] = []
-    rotated: list[Glyph] = []
-    off_page: list[Glyph] = []
-    # The visible area in the (unrotated) coordinates glyphs are reported
-    # in, computed once per page: a per-glyph Point * Matrix doubled the
-    # Text layer's run time.
-    vx0, vy0, vx1, vy1 = page.rect * page.derotation_matrix
-    # No clipping to the page: text outside the visible area is invisible
-    # to a reader but still in the file, and still a leak.
-    raw: dict[str, Any] = page.get_text(
-        "rawdict", clip=fitz.INFINITE_RECT(),
-        flags=fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_MEDIABOX_CLIP)
-    for block in raw.get("blocks", []):
-        for line in block.get("lines", []):
-            # dir is the writing direction: (1, 0) for ordinary text,
-            # (0, -1) / (0, 1) for text rotated 90 / 270 degrees.
-            written_vertically = abs(line.get("dir", (1.0, 0.0))[1]) > 0.1
-            for span in line.get("spans", []):
-                for char in span.get("chars", []):
-                    c: str = char.get("c", "")
-                    if not c or c.isspace():
-                        continue
-                    x0, y0, x1, y1 = char["bbox"]
-                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-                    glyph = (cx, cy, x1 - x0, y1 - y0, c)
-                    if not (vx0 <= cx <= vx1 and vy0 <= cy <= vy1):
-                        off_page.append(glyph)
-                    elif written_vertically:
-                        rotated.append(glyph)
-                    else:
-                        flat.append(glyph)
-
-    if not (flat or rotated or off_page):
-        return []
-
-    def columns(glyphs: list[Glyph]) -> tuple[str, str]:
-        if not glyphs:
-            return "", ""
-        down = _reconstruct(glyphs, cluster_axis=0)
-        return down, "\n".join(line[::-1] for line in down.split("\n"))
-
-    horizontal = _reconstruct(flat, cluster_axis=1) if flat else ""
-    rotated_down, rotated_up = columns(rotated)
-    outside = _reconstruct(off_page, cluster_axis=1) if off_page else ""
-    all_down, all_up = columns(flat + rotated)
-    return [horizontal, rotated_down, rotated_up, outside, all_down, all_up]
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# PHASE 3: OCR Visual Fallback (Apple Vision)
-# ──────────────────────────────────────────────────────────────────────────
-def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
-    """OCR a PNG with Apple Vision in one pass: correction on AND off.
-
-    Both requests share a single VNImageRequestHandler so the image is
-    decoded once instead of twice.  Raises on any Vision-level failure.
-    """
-    ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
-    results: dict[bool, list[str]] = {True: [], False: []}
-    errors: dict[bool, list[str]] = {True: [], False: []}
-
-    def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
-        def handler(request: Any, error: Any) -> None:
-            if error:
-                errors[correction].append(str(error))
-                return
-            for observation in request.results() or []:
-                candidates = observation.topCandidates_(1)
-                if candidates:
-                    results[correction].append(candidates[0].string())
-        return handler
-
-    request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
-        _make_handler(True)
-    )
-    request_on.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-    request_on.setUsesLanguageCorrection_(True)
-
-    request_off = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
-        _make_handler(False)
-    )
-    request_off.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-    request_off.setUsesLanguageCorrection_(False)
-
-    image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
-        ns_data, {}
-    )
-    success, perform_error = image_handler.performRequests_error_(
-        [request_on, request_off], None
-    )
-    if not success:
-        raise RuntimeError(f"Apple Vision request failed: {perform_error}")
-    for correction in (True, False):
-        if errors[correction]:
-            raise RuntimeError(f"Apple Vision error: {'; '.join(errors[correction])}")
-
-    return ("\n".join(results[True]), "\n".join(results[False]))
-
-
-def extract_ocr_text(page: fitz.Page) -> list[str]:
-    """Render a page and OCR it twice: language correction on AND off.
-
-    Correction-on reads prose reliably; correction-off preserves literal
-    code/serial-number character sequences that the language model might
-    otherwise "correct". Searching the union maximizes recall. Grayscale
-    rendering: Vision does not need color and the pixmap is 3x smaller.
-
-    Both recognition passes share one image handler so the PNG is decoded
-    once (see _vision_recognize_batch).
-    """
-    pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
-    png_bytes: bytes = pix.tobytes("png")
-    pix = None  # release the raster before Vision runs
-    text_on, text_off = _vision_recognize_batch(png_bytes)
-    return [text_on, text_off]
+# docs/REDESIGN.md §4, §6: the layout-aware visual text extractor
+# (_reconstruct, _join_cluster, extract_visual_text, TEXT_GENUINE_READINGS
+# and the line-clustering tolerance constants) and the Apple Vision OCR
+# bridge (_vision_recognize_batch, extract_ocr_text, OCR_DPI,
+# _OCR_IMPORTS_OK) now live in redaction_verifier.views, re-exported above
+# in the single guarded block.
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2731,142 +2512,11 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-def _sanitize_report_text(text: str) -> str:
-    """Strip control characters so PDF-derived bytes (ANSI escapes,
-    newlines) cannot inject into or spoof the terminal report."""
-    return "".join(ch if ch.isprintable() or ch == " " else "�" for ch in text)
-
-
-def print_report(report: ScanReport, pdf_path: Path) -> None:
-    """Render the final verdict banner and per-finding detail.
-
-    This is the single choke point where pattern samples are masked and
-    all document-derived text is sanitized.
-    """
-    bar = "=" * 70
-    print(f"\n{bar}")
-    if report.leaked:
-        print(f"  [FAIL]  SENSITIVE DATA DETECTED IN: {pdf_path.name}")
-        print(bar)
-        for f in report.findings:
-            line = f"  ✖ LAYER: {f.layer:<8} | RULE: {f.secret_name!r:<24} | {f.location}"
-            if f.sample:
-                line += f" — sample {mask(f.sample)}"
-            print(_sanitize_report_text(line))
-    else:
-        print(f"  [PASS]  No target secrets detected in: {pdf_path.name}")
-    print(bar)
-
-    if report.degraded:
-        print("\n  ⚠ ATTENTION — warnings were raised during the scan:")
-        for w in report.warnings:
-            print(_sanitize_report_text(f"    - {w}"))
-        if not report.leaked:
-            print("\n  A [PASS] with warnings is NOT a certified clean result "
-                  "(exit code 2): resolve the warnings above.")
-    print()
-
-
-def build_json_report(
-    report: ScanReport,
-    exit_code: int,
-    error: tuple[str, str] | None = None,
-    *,
-    target: Path,
-    private_paths: Sequence[Path] = (),
-) -> dict[str, Any]:
-    """The machine-readable report: the same content as print_report,
-    masked and sanitized the same way, plus stable codes and structured
-    fields (layer, storage class, object, revision, page, rule, adjacency,
-    tool) so consumers never parse message wording.
-
-    Every field is always present (null when it does not apply), and
-    findings and warnings are sorted, so the output is identical across
-    runs. Paths given on the command line appear only as base names.
-    """
-
-    def text(value: str) -> str:
-        for path in private_paths:
-            for form in {str(path), str(path.resolve())}:
-                if form not in (".", ""):
-                    value = value.replace(form, path.name)
-        return _sanitize_report_text(value)
-
-    findings = sorted(
-        (
-            {
-                "layer": f.layer,
-                "rule": text(f.secret_name),
-                "tier": "hard",
-                "storage": f.storage,
-                "object": f.object,
-                "revision": f.revision,
-                "page": f.page,
-                "location": text(f.location),
-                "sample": text(mask(f.sample)) if f.sample else "",
-            }
-            for f in report.findings
-        ),
-        key=lambda d: json.dumps(d, sort_keys=True),
-    )
-    warnings = []
-    for w in report.warnings:
-        coded = isinstance(w, Warn)
-        fields = w.fields if coded else {}
-        entry: dict[str, Any] = {
-            "code": w.code if coded else "UNCODED",
-            "kind": w.kind if coded else "coverage",
-            "layer": w.layer if coded else None,
-        }
-        for name in WARNING_FIELDS:
-            value = fields.get(name)
-            entry[name] = text(value) if isinstance(value, str) else value
-        entry["message"] = text(w)
-        warnings.append(entry)
-    warnings.sort(key=lambda d: json.dumps(d, sort_keys=True))
-    return {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "tool": {"name": "pdf-redaction-verifier", "version": __version__},
-        "environment": {
-            "python": sys.version.split()[0],
-            "platform": sys.platform,
-            "pymupdf": fitz.VersionBind,
-            "ocr_available": _OCR_IMPORTS_OK,
-        },
-        "target": text(target.name),
-        "exit_code": exit_code,
-        "verdict": {0: "pass", 1: "fail", 2: "uncertified"}[exit_code],
-        "error": ({"code": error[0], "message": text(error[1])} if error else None),
-        "findings": findings,
-        "warnings": warnings,
-    }
-
-
-def write_json_report(path: Path, data: dict[str, Any]) -> bool:
-    """Write the JSON report atomically — to a temporary file beside it,
-    then renamed over it — so a reader never sees a partial report.
-    False (and a stderr note) if it cannot be written."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    try:
-        # Private (0600), never through a symlink, never over an existing
-        # file; the rename then replaces a link at *path*, not its target.
-        fd = os.open(
-            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
-        )
-        with os.fdopen(fd, "wb") as out:
-            out.write(payload)
-        os.replace(tmp, path)
-    except OSError as exc:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        print(
-            f"[ERROR] Cannot write JSON report {path.name}: {exc.strerror or exc}", file=sys.stderr
-        )
-        return False
-    return True
+# docs/REDESIGN.md §4, §6: the console and --json report renderers
+# (_sanitize_report_text, print_report, build_json_report,
+# write_json_report, JSON_SCHEMA_VERSION) now live in
+# redaction_verifier.report, re-exported above in the single guarded
+# block.
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -2932,7 +2582,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"[ERROR] {error[1]}", file=sys.stderr)
         if json_path is not None:
             data = build_json_report(
-                report, code, error, target=pdf_path, private_paths=(pdf_path, args.secrets)
+                report, code, error, target=pdf_path, tool_version=__version__,
+                private_paths=(pdf_path, args.secrets),
             )
             if not write_json_report(json_path, data) and code == 0:
                 # A caller that asked for the JSON report gates on it; a

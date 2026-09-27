@@ -214,18 +214,29 @@ class TestExitCodeContract:
         self, tmp_path, exc_id, stub_code, expect_substr
     ) -> None:
         # Same BaseException gap as the redaction_verifier test above, but
-        # for the Vision/OCR import guard specifically: unlike an
+        # exercised through the Vision/OCR import specifically: unlike an
         # ordinary missing or broken OCR bridge (which must degrade to
         # _OCR_IMPORTS_OK = False, not crash — see TestBaselines below),
         # an import that itself calls sys.exit(), is interrupted, or
-        # raises any other BaseException must stop the tool loudly here.
+        # raises any other BaseException must stop the tool loudly.
         #
         # A stub top-level Vision.py placed on PYTHONPATH shadows any
         # real pyobjc Vision the same way a script's own directory
         # shadows site-packages (see the test above) — PYTHONPATH entries
         # are inserted ahead of the standard library and site-packages.
         # Uses the real repo verify.py directly (no need to copy it: only
-        # the Vision import is being intercepted, not redaction_verifier).
+        # the Vision import is being intercepted).
+        #
+        # Since Phase 2 step 2 moved the Vision import into
+        # redaction_verifier.views.ocr (docs/REDESIGN.md §6), it no
+        # longer has its own dedicated "cannot import the OCR bridge
+        # (Vision)" guard: that package must never import verify, so it
+        # cannot call verify.py's own _fatal_import. A BaseException here
+        # instead propagates out of `redaction_verifier` and is caught by
+        # verify.py's single guarded re-export block, the same as any
+        # other package-import failure — so the message is now the
+        # generic "cannot import redaction_verifier", with the original
+        # exception still visible in the detail (expect_substr).
         stub_dir = tmp_path / "stub_vision"
         stub_dir.mkdir()
         (stub_dir / "Vision.py").write_text(stub_code)
@@ -239,8 +250,66 @@ class TestExitCodeContract:
         )
         assert result.returncode == 2, (exc_id, result.stdout, result.stderr)
         assert "Traceback" not in result.stderr
-        assert "[ERROR] cannot import the OCR bridge (Vision)" in result.stderr
+        assert "[ERROR] cannot import redaction_verifier" in result.stderr
         assert expect_substr in result.stderr, result.stderr
+
+    def test_ocr_bridge_ordinary_import_error_still_degrades(
+        self, clean_pdf, secrets_file, tmp_path
+    ) -> None:
+        # Counterpart to the BaseException case above: an ORDINARY
+        # ImportError (missing package, corrupt pyobjc install) must NOT
+        # be treated as a fatal package-import failure. It is caught by
+        # redaction_verifier.views.ocr's own `except Exception:
+        # _OCR_IMPORTS_OK = False` — a plain ImportError is an Exception,
+        # not a BaseException that would escape that clause — so the
+        # scan still runs, OCR just degrades to an OCR_UNAVAILABLE
+        # warning (fail-closed: exit 2, never a silent clean verdict).
+        # Pins that this degrade path survived Phase 2 step 2's move of
+        # the Vision import into the package.
+        stub_dir = tmp_path / "stub_vision"
+        stub_dir.mkdir()
+        (stub_dir / "Vision.py").write_text('raise ImportError("stub: no Vision")\n')
+        result = run_verify(
+            clean_pdf, secrets_file,
+            env_overrides={
+                "PYTHONPATH": os.pathsep.join(
+                    [str(stub_dir), os.environ.get("PYTHONPATH", "")]
+                ),
+            },
+        )
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "[ERROR] cannot import" not in result.stderr
+        assert "PyObjC Vision bridge not available" in result.stdout, result.stdout
+
+    def test_views_import_failure_exits_2(self, tmp_path) -> None:
+        # redaction_verifier.views imports fitz plainly, without its own
+        # guard (docs/REDESIGN.md §6): a failure there (fitz missing or
+        # broken inside the package) must propagate out of
+        # redaction_verifier and be caught by verify.py's same
+        # package-import guard used by test_missing_redaction_verifier_
+        # package_exits_2 above — never a bare traceback and exit 1.
+        #
+        # Simulated with a full copy of the real installed package (so
+        # matching/model/rules/report still import normally — report
+        # itself imports redaction_verifier.views for _OCR_IMPORTS_OK, so
+        # this failure is reachable even before verify.py's own explicit
+        # `from redaction_verifier.views import ...` lines run) whose own
+        # views/__init__.py is overwritten to fail the way a missing
+        # fitz would.
+        shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
+        shutil.copytree(REPO_ROOT / "redaction_verifier", tmp_path / "redaction_verifier")
+        (tmp_path / "redaction_verifier" / "views" / "__init__.py").write_text(
+            "raise ImportError(\"No module named 'fitz'\")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(tmp_path / "verify.py"),
+             "--target", "x.pdf", "--secrets", "x.json"],
+            capture_output=True, text=True, timeout=60, cwd=tmp_path,
+        )
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr
+        assert "[ERROR] cannot import redaction_verifier" in result.stderr
+        assert "fitz" in result.stderr, result.stderr
 
 
 @requires_full_env
