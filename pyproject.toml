@@ -46,6 +46,11 @@ testpaths = ["tests"]
 # eval/ holds the case library (import caselib), which the tests judge.
 pythonpath = [".", "eval"]
 
+[tool.coverage.run]
+# The CLI tests run verify.py as a subprocess; pytest-cov 7 no longer
+# measures subprocesses unless coverage is told to patch them.
+patch = ["subprocess"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 **Security**: exiftool and qpdf now run with absolute paths, exiftool with `-config ""` disabled, minimal environment variables, and a private working directory. Tool exit warnings now include a `returncode` field. The unquoted-YAML-value warning in configuration parsing now reports only the YAML type rather than the converted value.
 
+**Dependencies**: PyMuPDF 1.27.2.3 → 1.28.2 (plus pyyaml, pytest, pytest-cov patch/minor bumps). The case library's generated PDFs change byte-for-byte (lock regenerated), but the scorecard shows no verdict change on any case.
+
 ### Verdict changes
 The following changes can move a file's exit code:
 - **Exit 0 → 2**: Files with compactly written content streams (no spaces between operators), long inline images or text in leftover streams without BT operators, or font-before-BT patterns in leftover streams (now properly tokenized). The scanner cannot certify these files as fully clean because it cannot reliably extract the content.
