@@ -19,3 +19,9 @@ dist/
 # The scorecard's local reference-result cache (--cache-dir), the same
 # default path CI's actions/cache step restores into.
 /eval/scorecard/.reference-cache/
+
+# The gallery (eval/gallery, docs/REDESIGN.md's Phase 0e) is rebuilt fresh
+# every time from the case library: generated HTML and page-1 PNGs, never
+# committed.
+/eval/gallery/_build/
+

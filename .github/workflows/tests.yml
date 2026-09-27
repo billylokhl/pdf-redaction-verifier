@@ -161,6 +161,37 @@ jobs:
       - name: Run ratchet checks
         run: python eval/check_ratchets.py
 
+  # The gallery (docs/REDESIGN.md Phase 0e): built from the case library and
+  # uploaded as an artifact so a reviewer can browse it, but it never gates
+  # anything — continue-on-error and left out of ci-ok's needs. Cheap on
+  # purpose: Linux has no OCR bridge, and this build doesn't run the
+  # scorecard first, so every case shows its label ("not measured this
+  # run") rather than a measured verdict.
+  gallery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Python dependencies
+        run: python -m pip install -e '.[test]'
+      - name: Build the gallery
+        run: PYTHONPATH=eval:. python -m gallery build --out gallery-build
+      - name: Upload gallery
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gallery
+          path: gallery-build
+          if-no-files-found: ignore
+
   # Single stable check name to mark as required once branch protection
   # becomes available for this repo. `if: always()` plus an explicit
   # result check, rather than relying on the default "skip if a

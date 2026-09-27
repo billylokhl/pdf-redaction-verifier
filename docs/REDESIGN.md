@@ -448,6 +448,24 @@ difference fails the gate.
 Generated from case metadata: what a reader sees, the recovered secret,
 the tool's verdict. Built at the end of Phase 0; it never gates.
 
+**Status**: landed — `eval/gallery/` (`python -m gallery build --out DIR
+[--results FILE]`): a static, dependency-free HTML page, grouped by
+family and COVERAGE.md cell, with a page-1 render (built fresh, never
+committed, with a derived caption when the cell's own row means nothing
+would show there anyway), the pinned fabricated secret, the mistake and
+recovery, and today's shown verdict per leak case — measured, from a
+`scorecard diff --json` report, where one covers the case, the case's
+own label otherwise, marked as such either way; a clear "MISSES IT
+TODAY" marker on any case whose shown verdict exits `0`, a distinct "NEW
+MISS" badge when that case has no pinned `known_gap` at all, and a note
+when a measured result shows a pinned gap as already closed; clean and
+false-alarm cases in their own section; each case linked to its
+COVERAGE.md cell and, for the numbered gaps, its §8 K-number via an
+explicit, hand-verified table checked against §8 by a test (an earlier
+fuzzy, story-text-matching version proved untested and
+non-deterministic). A non-gating CI job builds it and uploads it as an
+artifact.
+
 ## 6. Transition
 
 - **Move, don't wrap.** The reusable pure parts (normalizer, matcher,

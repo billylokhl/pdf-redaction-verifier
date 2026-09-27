@@ -461,3 +461,76 @@ or, outside pytest, to keep the PDF and time the scan directly:
 ```bash
 PYTHONPATH=eval:. python -m caselib.run /tmp/perf file.perf-scanned-300
 ```
+
+## Gallery (`gallery/`)
+
+A static, self-contained HTML page generated from the case library
+(docs/REDESIGN.md's Phase 0e): "what a reader sees, the recovered secret,
+the tool's verdict." **It never gates anything** — it is not run by
+`pytest`, not part of `ci-ok`, and has no verdict of its own.
+
+```bash
+PYTHONPATH=eval:. python -m gallery build --out /tmp/gallery
+PYTHONPATH=eval:. python -m gallery build --out /tmp/gallery --results /tmp/diff.json
+open /tmp/gallery/index.html
+```
+
+For every leak case (grouped by family, then by COVERAGE.md cell) it
+shows the id, the story, the **mistake** (what the redactor or a tool did
+wrong) and the **recovery** (how a person actually gets the secret back
+out), a page-1 PNG rendered fresh at build time (never committed —
+"what a reader sees"), the pinned secret(s) planted in it (fabricated:
+the canonical example SSN, 123-45-6789), and today's verdict. Clean and
+false-alarm cases get their own section. A case whose primary cell isn't
+drawn on the page at all (off-page, a switched-off layer, an orphaned or
+superseded object, metadata, an attachment, a script, private data,
+unindexed bytes, ...) gets a short caption under its render — "Nothing
+visible here: the secret is elsewhere in the file" — derived from the
+cell's own row (`caselib.cells.parts`), not a hand list: "live" (drawn on
+a page) and "match" (a layout-splitting limit — the value IS on the
+page, just split) are the only rows treated as visible.
+
+**The miss marker** — the gallery's most important one — is "MISSES IT
+TODAY" on any leak case whose *shown* verdict has exit `0`: not the
+pinned label directly, but whatever `gallery.verdicts.verdict_for`
+actually displays (measured, when `--results` covers the case; the
+label otherwise). A leak case with **no** `known_gap` at all showing exit
+`0` is the dangerous direction — a real, undocumented miss — and gets a
+distinct "NEW MISS (not a known gap)" badge instead, so it's never
+confused with an already-tracked gap. When a measured result disagrees
+with a pinned known gap in the *reassuring* direction (the label says
+exit `0`, this run's measured verdict caught it anyway), the page says so
+in a note rather than showing a stale badge — the gap may already be
+closed, or this run's environment/version differs from the one the
+label was pinned against. A crashed measured run is never a miss.
+
+Each case links to its COVERAGE.md cell and, where its known gap is one
+of docs/REDESIGN.md §8's numbered gaps, to its K-number, via
+`gallery.knumbers.CASE_TO_K` — an explicit, hand-verified table (an
+earlier version derived this by fuzzy-matching each case's story against
+§8's table; a review found that untested and non-deterministic, so it's
+now a plain dict, checked by `tests/test_gallery.py` against
+`documented_k_numbers` — parsed straight from §8 — so the two can never
+silently drift apart). COVERAGE.md's cell ids don't appear verbatim
+anywhere in COVERAGE.md's own prose (confirmed: none of the case
+library's ~70 cell descriptions are literal substrings of it either), so
+the link points at the file as a whole rather than a GitHub text-fragment
+anchor (`#:~:text=...`) — that mechanism does work on GitHub's rendered
+markdown (verified against a live example), there's just no reliably
+derivable search string to hand it per cell.
+
+**The verdict shown**: without `--results`, it's the case's own label
+(`expected`, or `known_gap.today` for a known gap) — accurate as of the
+last green test run, but not measured by the gallery build itself, and
+labelled as such. With `--results`, a `scorecard diff --json` report
+(eval/README.md's "The scorecard", above) — the gallery reuses that
+runner rather than scanning cases itself; a case the report doesn't
+cover (skipped this environment) still falls back to its label.
+
+Perf cases and any case whose `requires` this machine can't meet are
+skipped, the same as `caselib.run`. Nothing is written outside `--out`;
+PDFs are built into a temporary directory. CI builds it on Linux (no
+OCR, so gap labels are shown, never measured — running the scorecard
+first isn't worth the extra time for a page that doesn't gate anything)
+and uploads it as a `continue-on-error` artifact, outside `ci-ok`'s
+`needs:`.
