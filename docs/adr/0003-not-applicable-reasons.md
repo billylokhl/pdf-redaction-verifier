@@ -36,7 +36,10 @@ found missing and that must be stated explicitly, because ADR 0004
 > matcher runs over the output of each filter, including the encoded
 > bytes an image codec consumes (`DCTDecode`, `JPXDecode`,
 > `JBIG2Decode`), not only the decoded samples it produces. Pattern
-> classes run over the same stages, at review tier (below).**
+> classes run over the same stages, at review tier (below). A stage
+> counts as searched only if it decoded cleanly: if any filter or codec
+> stage raises an error or a warning, a partly searched stage is not a
+> searched one, and the unit is `FLAGGED`.**
 
 The concrete case that makes the rule necessary: consider a 10×10 DeviceGray
 image whose 100 raw sample bytes are literally the ASCII codes for
@@ -55,12 +58,20 @@ Verified directly against `verify.py` (not a claim taken on faith):
 | No (unreferenced) | value | `0` -- only because a 10×10 image is under today's 8×32 `_text_sized` floor (`verify.py` `_MIN_TEXT_IMAGE_SIDE`/`_MIN_TEXT_IMAGE_LENGTH`), so it is not flagged as a leftover; the same unreferenced image at 10×40 exits `2` (`LEFTOVER_IMAGE`) |
 | No (unreferenced) | class | `0` (same reason; `2` at 10×40) |
 
-The unreferenced rows depend on docs/adr/0004's size excusal: that ADR
-keeps today's 8×32 `_text_sized` judgment (accepted), so a small image
-like this one stays excused from being flagged -- and only the governing
-rule above (all its bytes still go through the raw matcher) keeps the
-value case from passing silently. The exact conditions under which a
-small image is discharged are reason 4 below.
+The unreferenced rows exit `0` today only because of the 8×32
+`_text_sized` floor. The new design has no size excusal (owner decision,
+2026-09-27; see reason 4 and docs/adr/0004): a 10×10 image is treated
+like any other image -- enlarged and OCR'd, `FLAGGED` until Phase 4b's
+recall bound covers small images -- and its bytes are still raw-searched
+under the governing rule above, so none of the four rows can exit `0`.
+
+**Why there is no size excusal.** An earlier same-day decision excused a
+sub-floor image once its bytes had been raw-searched. Its premise, that
+an image under 8×32 cannot plausibly carry text, is wrong: a 5×7-pixel
+bitmap font renders an SSN as a 66×7 image (or as strips under 8 px
+tall), OCR reads it once the image is enlarged, and a byte search cannot
+find text drawn as pixels. The excusal would have been an exit-`0` path;
+it is also a gap in today's tool (REDESIGN §8, K21).
 
 So three of the four already exit `0` today, not one. Under ADR 0003's
 reason 4 ("image data fully consumed by the image decoder") composed
@@ -88,6 +99,14 @@ extension segment are the same shape. Today's `verify.py` exits `2`
 sweep sees the encoded stream; a rewrite that searched only decoded
 samples would regress it to `0` once that sweep retires in Phase 6.
 
+**Embedded extra images are `FLAGGED`** (owner decision, 2026-09-27).
+A codec payload can carry image data beyond the main frame the decoder
+returns: a JPEG APP1 (EXIF) or APP13 thumbnail, additional JPEG 2000
+codestreams, extra JBIG2 pages or regions. Text drawn in such an image
+is pixels, so the raw matcher cannot find it, and the image decoder
+never OCRs it. Any such data means the image is `FLAGGED` (exit `2`),
+not discharged.
+
 **Whether pattern classes should run over raw image sample bytes at all
 is a separate, real gap the hidden-image case exposes, not fixed by the
 rule above.**
@@ -107,7 +126,7 @@ this needs its own case-library coverage in Phase 0b/3a, not
 implementation here.
 
 **The four reasons** (1-3 unchanged from the first version; reason 4
-now also states the owner's small-image decision of 2026-09-27):
+restated by the owner's decisions of 2026-09-27):
 
 1. **Xref-stream field data** -- the fixed-width binary columns inside a
    cross-reference stream's body (object type, offset, generation).
@@ -121,22 +140,23 @@ now also states the owner's small-image decision of 2026-09-27):
    for every byte (padding aside; a gap becomes a `RESIDUE` child), and
    the name/metadata strings inside those tables must still go through
    the matcher.
-4. **Image data fully consumed by the image decoder.** Two ways to
-   reach it, and in both, every filter-chain stage of the image's bytes
-   (encoded and decoded) must first have been searched per the governing
-   rule above -- value rules, and pattern classes at review tier:
-   - **An image inside docs/adr/0004's envelope**, only once its recall
-     bound is satisfied (docs/adr/0004, accepted: geometry and a
-     completed OCR pass are *not* enough on their own -- REDESIGN §4
-     requires a recall-validated envelope, which does not exist until
-     Phase 4b measures it). Until then this path cannot actually be
-     reached -- image evidence stays `FLAGGED`, consistent with ADR 0004.
-   - **An image under the 8×32 `_text_sized` floor** (owner decision,
-     2026-09-27), **without OCR and without a recall bound**, when its
-     **actual decoded sample dimensions and sample count** -- not merely
-     the declared `/Width` and `/Height` -- are under the floor. A
-     declared-small image whose payload decodes to more samples than
-     its declared dimensions allow is `FLAGGED`, never discharged here.
+4. **Image data fully consumed by the image decoder.** One path: the
+   image is inside docs/adr/0004's recall-validated envelope and its
+   recall bound is satisfied (docs/adr/0004, accepted: geometry and a
+   completed OCR pass are *not* enough on their own -- REDESIGN §4
+   requires a recall-validated envelope, which does not exist until
+   Phase 4b measures it). The envelope has no size excusal: its lower
+   bound is whatever Phase 4b validates with enlargement, so the recall
+   bound must cover images under 8×32 before any of them can be
+   discharged. In addition, every filter-chain stage of the image's
+   bytes (encoded and decoded) must have been searched per the governing
+   rule above (value rules, and pattern classes at review tier); every
+   stage must have decoded cleanly (any filter or codec error or warning
+   means `FLAGGED`); and the codec payload must hold no image data
+   beyond the main frame (an EXIF/APP13 thumbnail, an extra JPEG 2000
+   codestream, an extra JBIG2 page or region means `FLAGGED`). Until
+   Phase 4b's recall measurement exists, this reason cannot actually be
+   reached -- image evidence stays `FLAGGED`, consistent with ADR 0004.
 
 Three other candidates considered and rejected: encrypted stream padding
 (overlaps the decryption cross-check, ADR 0001, rather than needing its
@@ -157,9 +177,14 @@ pass** -- it belongs in Phase 0b/3a as a new cell (a value hidden in raw
 image sample bytes, undetectable by OCR, only found by a raw byte scan
 of the decoded samples) and should be pinned there before Phase 4b ships
 the image decoder, to make the governing rule a tested invariant rather
-than only a documented one. So is the JPEG-comment case (a value in a
+than only a documented one. So are the JPEG-comment case (a value in a
 JPEG's comment segment, found only by a raw byte scan of the encoded
-`DCTDecode` stream, never in the decoded samples).
+`DCTDecode` stream, never in the decoded samples), the EXIF-thumbnail
+case (a small JPEG whose EXIF thumbnail shows the SSN; the image must be
+`FLAGGED`), and the pixel-text-under-the-floor case (a leftover image
+under 8×32 holding pixel-drawn text; caselib's `leftover.small-image`,
+K21, already expects `LEFTOVER_IMAGE`; the strips variant K21 describes is
+not yet a case of its own).
 
 **Deferred, not implemented here:** xref-stream free-entry bytes (reason
 1) still need to go through the raw matcher under the same governing
@@ -186,42 +211,60 @@ Owner decision: "approve all recommendations."
 - **Adopt the four reasons** (xref-stream field data; object-stream
   header table; a font program whose parsed tables span the stream and
   whose strings were searched; image data fully consumed by the image
-  decoder, gated on docs/adr/0004's recall bound, or for an image under
-  the 8×32 floor on the small-image conditions below) and no others.
+  decoder, gated on docs/adr/0004's recall bound) and no others.
 - **Adopt the governing rule**: no unit's bytes are ever exempt from the
   raw matcher -- `NOT_APPLICABLE` and `DECODED` excuse a decoder from
   further parsing, never from the search. This is a requirement on every
   decoder in the registry (each must run the raw matcher over the bytes
-  it excuses, and say where), not only the image decoder. The matcher
-  runs over every filter-chain stage, including the encoded bytes an
-  image codec consumes, not only decoded samples (a wording fix within
-  this rule, recorded after the approval: a JPEG comment segment, a
-  JPEG 2000 metadata box, or a JBIG2 extension segment never reaches the
-  decoded pixels).
+  it excuses, and say where), not only the image decoder.
 - **Run pattern classes on raw image bytes at the manual-review
-  tier** (every filter-chain stage, as above), the same tier
-  `_scan_orphaned_payload` already uses for other raw-text contexts -- a
-  real, currently unimplemented gap to close before Phase 4b.
-- **Small images (owner decision, 2026-09-27, taken after the approval
-  above).** An image under the 8×32 `_text_sized` floor is discharged
-  under reason 4 without OCR and without a recall bound, but only once
-  all its bytes (every filter-chain stage, encoded and decoded) have
-  been raw-searched (value rules, and pattern classes at review tier),
-  and only if its **actual decoded** sample dimensions and count, not
-  merely its declared `/Width` and `/Height`, are under the floor. A
-  declared-small image whose payload decodes to more samples than
-  declared is `FLAGGED`. docs/adr/0004 records the same decision.
-- **Schedule two cases in Phase 0b/3a, before Phase 4b** ships the image
-  decoder, so the governing rule is a tested invariant rather than only
-  a documented one: the hidden-image case (a 10x10 image whose 100 raw
-  sample bytes spell "Employee SSN 123-45-6789"), and the JPEG-comment
-  case (a JPEG whose comment segment holds `123-45-6789`, present in the
-  encoded `DCTDecode` stream but not in the decoded pixels).
+  tier**, the same tier `_scan_orphaned_payload` already uses for other
+  raw-text contexts -- a real, currently unimplemented gap to close
+  before Phase 4b.
+- **Schedule the hidden-image case** (a 10x10 image whose 100 raw sample
+  bytes spell "Employee SSN 123-45-6789") **in Phase 0b/3a, before Phase
+  4b** ships the image decoder, so the governing rule is a tested
+  invariant rather than only a documented one.
+
+**Recorded after the approval, within the approved rule** (wording, not
+a new decision):
+
+- The raw matcher runs over every filter-chain stage, including the
+  encoded bytes an image codec consumes, not only decoded samples; the
+  pattern-class pass covers the same stages. A JPEG comment segment, a
+  JPEG 2000 metadata box, or a JBIG2 extension segment never reaches the
+  decoded pixels.
+- A stage counts as searched only if it decoded cleanly; any filter or
+  codec error or warning means the image is `FLAGGED`.
+- The JPEG-comment case (a JPEG whose comment segment holds
+  `123-45-6789`, present in the encoded `DCTDecode` stream but not in
+  the decoded pixels) is scheduled next to the hidden-image case.
+
+**Owner decisions (2026-09-27), taken after the approval.** These two
+supersede an earlier same-day decision that excused an image under the
+8×32 floor, without OCR or a recall bound, once its bytes had been
+raw-searched. That decision's premise -- that such an image cannot
+plausibly carry text -- was wrong.
+
+- **A. No size excusal for tiny images.** An image under the 8×32 floor
+  is treated like any other image: normalised, enlarged and OCR'd, and
+  `DECODED` (or `NOT_APPLICABLE` under reason 4) only once Phase 4b has
+  measured a recall bound that covers small images. Until then it is
+  `FLAGGED`, like every other image. Its bytes are still raw-searched at
+  every filter-chain stage. Reason: a 5×7-pixel bitmap font renders an
+  SSN as a 66×7 image (or strips under 8 px tall); OCR reads it after
+  enlargement; a byte search cannot find text drawn as pixels. It is
+  also today's tool's gap (REDESIGN §8, K21), and a matching
+  case is added in Phase 3a.
+- **B. Embedded extra images are `FLAGGED`.** Any image data in the
+  codec payload beyond the decoded main frame (a JPEG APP1/EXIF or APP13
+  thumbnail, additional JPEG 2000 codestreams, extra JBIG2 pages or
+  regions) means the image is `FLAGGED` (exit `2`). The EXIF-thumbnail
+  case (a small JPEG whose EXIF thumbnail shows the SSN) is added in
+  Phase 3a next to the JPEG-comment case.
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
-recall bound is a scheduling gate for images inside the envelope (that
-path cannot actually be reached until Phase 4b measures recall), not an
-open decision; the small-image path is reachable as soon as the
-inventory can decode and raw-search an image's bytes. The list itself
-(the four reasons, three rejected) needed no separate decision beyond
-the ones recorded above.
+recall bound is a scheduling gate (it cannot actually be reached until
+Phase 4b measures a recall bound, one that covers small images), not an
+open decision -- the list itself (the four reasons, three rejected)
+needed no separate decision beyond the ones recorded above.

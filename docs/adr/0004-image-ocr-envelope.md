@@ -56,31 +56,33 @@ longer sufficient for `DECODED` on its own.
   (The raw matcher is a different matter: per docs/adr/0003's governing
   rule it runs over every filter-chain stage, the compressed bytes the
   codec consumes included.)
-- **Dimensions**: the upper bound is `10,000` px per side. For the lower
-  bound, **do not simply exclude every image below some floor from the
-  envelope and flag it** (see Measurement below: 248 images under 8 px
-  on a side, in 39 files -- 1.9% of all files; 224 of them in 27 files,
-  5.6% of text-bearing files) -- that would flag every icon, bullet, and
-  checkbox glyph as unreadable, a real, avoidable review-rate cost.
-  Instead, **reuse today's 8×32 `_text_sized` judgment**
-  (`verify.py`'s `_MIN_TEXT_IMAGE_SIDE` = 8 and
-  `_MIN_TEXT_IMAGE_LENGTH` = 32: an image under 8 px on its short side
-  *or* under 32 px on its long side is too small for text to plausibly
-  fit). **Such an image is outside the envelope but is not `FLAGGED`:
-  it is discharged as `NOT_APPLICABLE` under docs/adr/0003's reason 4,
-  without OCR and without a recall bound** (owner decision, 2026-09-27),
-  on two conditions: (a) every filter-chain stage of its bytes, encoded
-  and decoded, has been raw-searched (value rules, and pattern classes
-  at review tier), which closes the actual gap (a value hidden in small
-  sample data or in codec metadata) without the size-floor cost; and
-  (b) its **actual decoded** sample dimensions and sample count, not
-  merely the declared `/Width` and `/Height`, are under the floor. A
-  declared-small image whose payload decodes to more samples than
-  declared is `FLAGGED`. (An earlier version of this ADR called the
-  floor "not keeping today's gate's intent" and treated flagging every
-  sub-floor image as a deliberate strictness increase; measurement
-  showed that increase is neither free nor obviously justified, so that
-  version's position was reversed.)
+- **Clean decode**: every filter and codec stage must decode without an
+  error or a warning. If any stage raises one, the image is `FLAGGED`:
+  a partly searched stage does not count as searched (docs/adr/0003).
+- **One image per payload** (owner decision, 2026-09-27): any image
+  data in the codec payload beyond the decoded main frame -- a JPEG
+  APP1 (EXIF) or APP13 thumbnail, additional JPEG 2000 codestreams,
+  extra JBIG2 pages or regions -- means the image is `FLAGGED` (exit
+  `2`). That data is pixels the decoder never OCRs and the raw matcher
+  cannot read.
+- **Dimensions**: the upper bound is `10,000` px per side. **There is
+  no size excusal at the lower end** (owner decision, 2026-09-27,
+  superseding an earlier same-day decision): an image under today's 8×32
+  `_text_sized` floor (`verify.py`'s `_MIN_TEXT_IMAGE_SIDE` = 8 and
+  `_MIN_TEXT_IMAGE_LENGTH` = 32) is treated like any other image --
+  normalised, enlarged (upscaled) and OCR'd, and `DECODED` only once
+  Phase 4b has measured a recall bound that covers small images. Until
+  then it is `FLAGGED`, like every other image, and its bytes are still
+  raw-searched at every filter-chain stage (docs/adr/0003). The
+  envelope's lower bound is whatever Phase 4b validates with
+  enlargement, not a floor carried over from today's tool. The reason: a
+  5×7-pixel bitmap font renders an SSN as a 66×7 image (or as strips
+  under 8 px tall), OCR reads it once enlarged, and a byte search cannot
+  find text drawn as pixels, so excusing sub-floor images would be an
+  exit-`0` path. It is also a gap in today's tool (REDESIGN §8,
+  K21). (Earlier versions of this ADR first flagged every sub-floor
+  image, then excused them -- on the premise, now shown wrong, that an
+  image that small cannot carry text.)
 - **Total pixels**: `width * height <= 35,000,000` (35 Mpx), taken as a
   fixed cap rather than the plan's floor.
 - **Mask type**: an `/SMask` or `/Mask` is only accepted when its own
@@ -88,9 +90,7 @@ longer sufficient for `DECODED` on its own.
   a stencil mask (`/ImageMask true`) is OCR'd directly after `/Decode`.
   Any other mask shape is outside the envelope.
 
-Outside the envelope, or on conversion failure, the unit is `FLAGGED`
--- except an image under the size floor that meets both conditions
-above, which is `NOT_APPLICABLE`.
+Outside the envelope, or on conversion failure, the unit is `FLAGGED`.
 **Inside** the envelope, until a recall bound exists, an OCR-clean result
 is *also* `FLAGGED` (not `DECODED`) -- the envelope narrows what gets
 attempted; it does not yet certify a clean attempt.
@@ -138,19 +138,13 @@ image object's `/Width`/`/Height` directly (no decompression needed):
 | ...of which not under 8 px (the 8×32 rule's addition) | 51 images in 13 files | 11 images in 1 file |
 | Images over the 35 Mpx cap | 2 images in 1 file | 2 images in 1 file |
 
-**Decision, corrected**: rather than flagging every one of these
-images under the new envelope (a real, avoidable review-rate cost),
-apply today's 8×32 `_text_sized` excusal to decide when a small image
-is *worth flagging at all* -- i.e. keep today's judgment that a
-genuinely small image (an icon, a bullet, a checkbox glyph) is
-implausible as a text carrier and excuse it -- **and** always still run
-docs/adr/0003's raw-byte matcher pass over every filter-chain stage of
-its bytes regardless of size. These counts use the declared
-`/Width`/`/Height`; the discharge itself checks the actual decoded
-sample dimensions (Decision, above). This keeps the strictness increase docs/adr/0003's
-hidden-image case actually needs (byte content is always searched)
-without also flagging 299 ordinary icons (235 in text-bearing files)
-that were never going to be `DECODED` as text anyway.
+**What these counts now size.** Under the owner's decision (no size
+excusal), these 299 images in 51 files (235 in 27 text-bearing files)
+are in scope for enlarged OCR like any other image: `FLAGGED` until
+Phase 4b's recall bound covers images this small, then `DECODED` when
+an enlarged OCR pass finds nothing. They are the population Phase 4b's
+small-image recall measurement has to cover. The counts use the
+declared `/Width`/`/Height`.
 
 ## Consequences
 
@@ -161,19 +155,17 @@ that were never going to be `DECODED` as text anyway.
   activity that happens after enforcement ships.
 - No strictness regression claim is made or needed: every leftover image
   that exits `2` today keeps exiting `2` (or worse) under this design,
-  because nothing here grants `DECODED` yet, and the one `NOT_APPLICABLE`
-  discharge (a sub-floor image) covers only images whose declared size
-  today's tool already excuses (`verify._is_text_sized_image` reads the
-  declared `/Width`/`/Height`) -- now also requiring the decoded size to
-  be under the floor, and with all their bytes searched.
+  because nothing here grants `DECODED` yet. A sub-floor leftover image,
+  which today's tool excuses by its declared size
+  (`verify._is_text_sized_image`), is now `FLAGGED` too: a strictness
+  increase that closes K21.
 - The Indexed-base restriction is an implementation-facing correction
   that does not change a measured rate in this pass (no
-  Separation/DeviceN-based Indexed images in the corpus). The size-floor
-  decision does change a real rate: reusing today's 8×32
-  `_text_sized` excusal instead of flagging every small image avoids
-  flagging 299 images in 51 files (2.5% of all files) -- 235 images in
-  27 files (5.6% of text-bearing files) -- that were never going to
-  carry readable text anyway.
+  Separation/DeviceN-based Indexed images in the corpus). Removing the
+  size excusal adds 299 images in 51 files (2.5% of all files) -- 235
+  images in 27 files (5.6% of text-bearing files) -- to the images
+  Phase 4b's recall bound must cover; until 4b they are `FLAGGED` like
+  every other image.
 
 ## Owner decision (2026-09-27)
 
@@ -182,23 +174,37 @@ Owner decision: "approve all recommendations."
 - **Image OCR stays `FLAGGED`-only (never `DECODED`) until Phase 4b
   measures recall** -- no provisional, unmeasured `DECODED` grant
   sooner.
-- **Keep today's 8x32 `_text_sized` excusal** for the envelope's lower
-  size bound (299 images in 51 files, 2.5% of all files; 235 in 27,
-  5.6% of text-bearing) **while still always raw-searching every
-  filter-chain stage of the image's bytes** (encoded and decoded) per
-  docs/adr/0003's governing rule, rather than flagging every small image
-  under the new envelope.
-- **Small images (owner decision, 2026-09-27, taken after the approval
-  above).** An image under the 8×32 floor is discharged under
-  docs/adr/0003's `NOT_APPLICABLE` reason 4 without OCR and without a
-  recall bound, but only once all its bytes (every filter-chain stage,
-  encoded and decoded) have been raw-searched (value rules, and pattern
-  classes at review tier), and only if its **actual decoded** sample
-  dimensions and count, not merely its declared `/Width` and `/Height`,
-  are under the floor. A declared-small image whose payload decodes to
-  more samples than declared is `FLAGGED`.
+- Keep today's 8x32 `_text_sized` excusal for the envelope's lower
+  size bound, while still always raw-searching sample bytes.
+  **Superseded the same day by decision A below.**
 - **The 35 Mpx per-image cap stands** as specified -- it already
   excludes two real 38.3 Mpx images in one text-bearing file. It is
   **not yet independently verified against Apple Vision's actual request
   limits**; re-check it (and the 10,000 px per-side ceiling) in Phase
   4b.
+
+**Recorded after the approval, within the approved rule** (wording, not
+a new decision): docs/adr/0003's raw matcher runs over every
+filter-chain stage of an image, including the encoded bytes the codec
+consumes; a stage counts as searched only if it decoded cleanly (any
+filter or codec error or warning means `FLAGGED`); and the JPEG-comment
+case is scheduled next to the hidden-image case.
+
+**Owner decisions (2026-09-27), taken after the approval.** These two
+supersede both the approved 8×32 excusal and an earlier same-day
+decision that discharged a sub-floor image as `NOT_APPLICABLE` without
+OCR once its bytes had been raw-searched. Both rested on the premise
+that an image that small cannot carry text, which was wrong.
+
+- **A. No size excusal for tiny images.** An image under the 8×32 floor
+  is normalised, enlarged and OCR'd like any other image, and `DECODED`
+  only once Phase 4b has measured a recall bound that covers small
+  images; until then it is `FLAGGED`, like every other image. Its bytes
+  are still raw-searched at every filter-chain stage. A 5×7-pixel bitmap
+  font renders an SSN as a 66×7 image (or strips under 8 px tall), OCR
+  reads it after enlargement, and a byte search cannot find text drawn
+  as pixels. This is also today's tool's gap (REDESIGN §8, K21).
+- **B. Embedded extra images are `FLAGGED`.** Any image data in the
+  codec payload beyond the decoded main frame (a JPEG APP1/EXIF or APP13
+  thumbnail, additional JPEG 2000 codestreams, extra JBIG2 pages or
+  regions) means the image is `FLAGGED` (exit `2`).

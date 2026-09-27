@@ -152,8 +152,9 @@ not the same thing as an "object") -- see docs/adr/0006.
 `eval/spikes/image_envelope_stats.py`: every image object's `/Width` and
 `/Height`, read directly (no decompression). "8×32" is today's
 `verify._text_sized` rule (imported, not reimplemented): an image under
-8 px on its short side *or* under 32 px on its long side is too small to
-be worth flagging as a leftover.
+8 px on its short side *or* under 32 px on its long side is one today's
+tool treats as too small to be worth flagging as a leftover (a premise
+docs/adr/0004 now rejects).
 
 | | All files (2,031) | Text-bearing (484) |
 | --- | --- | --- |
@@ -165,10 +166,10 @@ be worth flagging as a leftover.
 
 The first version of docs/adr/0004 claimed no small images existed in
 this corpus, and the second that none came near 35 Mpx; both corrected
-here. See docs/adr/0004 for the resulting decision (accepted: excuse
-via today's 8×32 `_text_sized` rule, checked against the decoded size,
-with every filter-chain stage of the image's bytes still raw-searched;
-don't flag every one).
+here. See docs/adr/0004 for the resulting decision: the owner removed
+the size excusal (2026-09-27), so these small images are enlarged and
+OCR'd like any other image, and Phase 4b's recall bound must cover
+them.
 
 ## Interpretation warnings -- docs/adr/0009
 
@@ -194,7 +195,9 @@ measurement -- the newer bundled MuPDF evidently stopped emitting it. So
 the swing is about 3x on all files but about 1.2x on text-bearing files
 (259 to 221). On 1.28.2, one font-warning family,
 `FT_Get_Advance(<font>,<n>): invalid glyph index` (one category per
-embedded font subset, 4-36 files each), covers 186 of the 221 warned
+embedded font subset: 67 categories, 1-36 files each, 44 of them a
+single file -- counted over every category, not the script's printed
+top 15), covers 186 of the 221 warned
 text-bearing files; the others are `JPX numcomps (<n>) doesn't match
 color_space (<n>)` (33 files), `openjpeg warning: Found a misplaced
 'cmap' box outside jp2h box` (30), a `bogus font ... ascent/descent

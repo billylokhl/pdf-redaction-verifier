@@ -43,8 +43,10 @@ R2-R4 the key comes from Algorithm 2 in the spec and is authenticated
 against `/U`. For R5/R6 the password is authenticated against `/U`'s
 validation salt (the hash of the password with that salt must equal
 `/U`'s first 32 bytes); `/UE` only unwraps the file key once that check
-passes, and the decrypted `/Perms` must then also check out. If
-authentication fails, the file needs a real user password we don't
+passes, and the decrypted `/Perms` must then also check out. pikepdf
+(qpdf) does not fail on a `/Perms` mismatch -- it opens the file and
+emits a warning -- so a qpdf `/Perms`-mismatch warning means `FLAGGED`
+(exit `2`). If authentication fails, the file needs a real user password we don't
 have: exit `2` -- unchanged from today's behavior (see Correction
 above). No password is ever logged, retried against a wordlist, or
 otherwise brute-forced.

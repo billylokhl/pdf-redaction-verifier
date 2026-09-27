@@ -86,9 +86,10 @@ above) would show.
 
 - 11.4% (text-bearing) is the same 55 files the first version reported
   as 2.7%, stated on the population the cost falls on; per Phase 4a's
-  own gate ("review-rate change within what
-  the orphan ADR accepted") this is now the number Phase 4a's actual
-  review-rate change gets checked against -- confirm this before Phase
+  own gate ("review-rate change within the rates measured in ADR 0007
+  (11.4%) and ADR 0009 (7.6%); a larger rate goes back to the owner")
+  this is now the number Phase 4a's actual review-rate change gets
+  checked against -- confirm this before Phase
   4a ships, not after.
 - None of the 2,031 corpus files have any redaction history, so none of
   the 836 streams are an actual leak -- they read as ordinary producer

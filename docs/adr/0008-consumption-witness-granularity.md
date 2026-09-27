@@ -210,8 +210,9 @@ the stream was consumed, not proof that every code was read correctly.
   pages (9 files). Phase 4a must measure forms as their own units; any
   it cannot measure are `FLAGGED` under this gate, and that rate is what
   Phase 4a's own gate ("K3-K6... closed; every per-case change is
-  stricter and listed; review-rate change within what [ADR 0007]
-  accepted") must account for.
+  stricter and listed; review-rate change within the rates measured in
+  ADR 0007 (11.4%) and ADR 0009 (7.6%); a larger rate goes back to the
+  owner") must account for.
 - The gate is enforced from the moment content units can be `DECODED`
   (Phase 4a); it is not staged through shadow mode first.
 - Phase 4a's witness narrows the spike's fill-then-stroke

@@ -76,7 +76,10 @@ of the following hold:**
    only by the owning unit's witness, a family guard 2's allowlist has
    not reviewed is never excused whichever unit carries it, and the
    verdict is per file, so a warning left unexcused on any unit keeps
-   the whole file from exiting `0`.
+   the whole file from exiting `0`. A warning raised during a run that
+   entered other units is attributed to each of them and excused only
+   if every one of their witnesses balances; if attribution is
+   impossible, it is not excused.
 5. **Warnings are collected by running the interpreter first, on a
    freshly opened document.** MuPDF emits some warnings only the first
    time it loads a resource, so an earlier pass on the same document
@@ -131,7 +134,8 @@ are generic system font names, not personal or file-identifying data):
 
 - **One font-warning family covers 186 of the 221**:
   `FT_Get_Advance(<font>,<n>): invalid glyph index`, one category per
-  embedded font subset (4-36 files each).
+  embedded font subset (67 categories, 1-36 files each, 44 of them a
+  single file; the script prints only the top 15).
 - `JPX numcomps (<n>) doesn't match color_space (<n>)` (JPEG 2000) -- 33
   files
 - `openjpeg warning: Found a misplaced 'cmap' box outside jp2h box`
