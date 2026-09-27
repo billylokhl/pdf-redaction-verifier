@@ -119,8 +119,9 @@ samples would regress it to `0` once that sweep retires in Phase 6.
 
 **An image that decodes to more than declared is `FLAGGED`** (owner
 decision B, 2026-09-27). An image can carry data beyond the main
-decoded picture: an EXIF or other thumbnail (a JPEG APP1 or APP13
-segment), additional JPEG 2000 codestreams, extra JBIG2 pages, decoded
+decoded picture: an EXIF or other thumbnail (for example in a JPEG
+APP0/JFXX, APP1/EXIF, APP2/MPF or APP13 segment, or data after the
+EOI marker -- any segment, the examples are not a complete list), additional JPEG 2000 codestreams, extra JBIG2 pages, decoded
 samples beyond `/Width`×`/Height`×components×bits per component, or a
 codec frame larger than the dictionary declares. None of it is ever
 drawn, so OCR never sees it, and text in it is pixels, so the raw

@@ -67,7 +67,9 @@ longer sufficient for `DECODED` on its own.
   Any unrecognised warning means `FLAGGED`.
 - **Decodes to no more than declared** (owner decision B, 2026-09-27):
   any image data in the file beyond the main decoded picture -- an EXIF
-  or other thumbnail (a JPEG APP1 or APP13 segment), additional JPEG
+  or other thumbnail (for example in a JPEG APP0/JFXX, APP1/EXIF,
+  APP2/MPF or APP13 segment, or data after the EOI marker -- any
+  segment, the examples are not a complete list), additional JPEG
   2000 codestreams, extra JBIG2 pages, decoded samples beyond
   `/Width`×`/Height`×components×bits per component, or a codec frame
   larger than the dictionary declares -- means the image is `FLAGGED`
