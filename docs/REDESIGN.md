@@ -47,7 +47,16 @@ cases K1–K7). Structural causes:
 
 A matching problem: built-in pattern classes have no context and raise
 false **hard** findings on 7.5–13% of clean real-world files (dates as
-card numbers, UUID digits as SSNs).
+card numbers, UUID digits as SSNs). Phase 1 measured 23.1% for the `ssn`/
+`us-phone` classes alone (the actual false hards -- a validated `email`
+match is a true positive, not a miscolored digit run, so it is excluded
+from this number) on the text-bearing stratum of a 2,031-file real corpus
+(484 text-bearing files) — still well above the cited range; see
+[ADR 0005](adr/0005-pattern-class-default-tier.md) (accepted): built-in
+classes **stay hard** through the Move and until Phase 5 ships its own
+fix, since demoting them earlier would contradict
+this plan's own "never less strict" rule and Phase 2's differential
+gate.
 
 What already works and is kept: fail-closed on tool failure (qpdf
 failure, missing OCR, a repaired earlier revision → exit `2`), two-tier findings, the xref-chain revision walk, the matching
@@ -57,7 +66,11 @@ engine and rules formats.
 
 - One module mixing parsing, decoding, matching, policy and I/O.
 - Tuned magic numbers, each a bypass (0.8 readable-code ratio, 8×32 px
-  image gate, fewer than 3 content operators, 16 MB, 50 revisions).
+  image gate, fewer than 3 content operators, 16 MB, 50 revisions). The
+  new design removes the 8×32 image gate outright: an image of any size
+  is enlarged and OCR'd, and `FLAGGED` until a recall bound covers it,
+  and an image nothing in the document uses is always `FLAGGED`
+  ([ADR 0004](adr/0004-image-ocr-envelope.md); K21).
 - Objects are enumerated via `xref_length()`, which runs to the
   trailer's `/Size` and makes 1.4% of real files exit `2` for entries
   that do not exist.
@@ -281,9 +294,18 @@ are never enumerated via `xref_length()`.
   form). This is what content streams need to decode (below).
 - **Encryption**: per-object decryption using each revision's
   `/Encrypt`; unindexed ranges in an encrypted file cannot be decrypted
-  and are flagged. Our decrypted strings and streams are compared with
-  MuPDF's for every object MuPDF can reach; any mismatch is a flag (a
-  wrong key yields garbage that still tokenises). Details in an ADR.
+  and are flagged. Our decrypted values are cross-checked against a
+  second, independent decryption wherever one is available (MuPDF's for
+  every object with an xref entry, including an orphaned one, and for a
+  superseded revision through the same prefix cut today's
+  `scan_earlier_revisions` already reopens, which carries that
+  revision's own `/Encrypt`); any key path no second decryption reaches
+  — a body outside every xref — is flagged, not `DECODED` on one
+  decryption's word alone. Details in
+  [ADR 0001](adr/0001-encryption-and-decryption-cross-check.md)
+  (accepted): **pikepdf** decrypts each revision's prefix cut, and its
+  decrypted-but-unfiltered stream bytes are cross-checked against
+  MuPDF's `xref_stream_raw`; pikepdf is pinned when Phase 3a adds it.
 - **Resource resolution** is cross-checked the same way: for content
   drawn on current pages, the fonts we resolve must match the fonts
   MuPDF reports in its text trace.
@@ -305,12 +327,41 @@ missing context gives silently wrong text (no error, no warning).
   Unicode source (ToUnicode covering the codes used, a standard encoding,
   or `/Differences` with standard glyph names). MuPDF gives no signal of
   its own.
-- **Consumption witness**: MuPDF's interpreter silently skips malformed
-  operators, unbalanced `BT`/`q` and bad inline images, so our own
-  content tokenizer counts the character codes in every text-show
-  operand (using each font's code length) and this must equal the glyph
-  count in the text trace. Any MuPDF warning while interpreting the
-  stream also means not `DECODED`. Feasibility is part of spike S1.
+- **Consumption witness**: MuPDF's interpreter silently skips or
+  reshapes some input rather than raising, so our own content tokenizer
+  counts the character codes in every text-show operand (using each
+  font's code length) and this must equal the glyph count in the text
+  trace; a mismatch means `FLAGGED`, unconditionally
+  ([ADR 0008](adr/0008-consumption-witness-granularity.md), accepted:
+  a hard gate from Phase 4a, no shadow-mode period). A MuPDF warning
+  while interpreting the stream also means not `DECODED`, except under
+  [ADR 0009](adr/0009-benign-interpretation-warnings.md)'s guarded rule
+  (accepted): a warned unit is excused only when its own witness balances
+  with a non-zero count, no warning on it is a filter/decode error, an
+  image-decoder warning is vouched for only by that image's own witness
+  and only if it is on the reviewed-harmless allowlist (an image-decoder
+  error, a warning that suggests lost data or an unrecognised one always
+  flags the image; owner decision C, ADR 0004), the warning belongs to
+  the unit the witness measured (annotations and widgets are vouched for
+  by their own unit), and warnings are collected
+  with the interpreter run first on a freshly opened document. A warning
+  the implementation does not recognise keeps its unit flagged, and the
+  rate is re-measured on every PyMuPDF/MuPDF update.
+
+  Count rules (from spike S1b, accepted with ADR 0008): the count needs
+  two adjustments to reconcile on real content: a ToUnicode continuation entry is not a glyph, and on a
+  unit that sets text render mode 2 or 6 (fill+stroke) MuPDF reports
+  each glyph twice, as two separate spans (on any other unit a repeated
+  glyph is a real second draw and must be counted). With those, and
+  after fixing several bugs in the measuring spike itself, every
+  measured text page reconciled (2,345 of 2,345; 856 pages that draw a
+  form XObject were not measured). `Tr 7` (clip-only) text and text in
+  a switched-off optional-content group (§8's K6) show codes with no
+  texttrace glyphs and no MuPDF warning; today's tool finds both through
+  its Objects layer, so the witness matters for this design's `DECODED`
+  discharge, not as a gap in today's tool. The raw warning rule would
+  flag 45.7% of text-bearing files (PyMuPDF 1.28.2); ADR 0009's guarded
+  rule flags 7.6%.
 - **Every token** is covered: strings outside text-show operators
   (`/ActualText`, marked-content property lists, `BX`/`EX` sections)
   are decoded and searched too.
@@ -325,8 +376,14 @@ missing context gives silently wrong text (no error, no warning).
   `DECODED`. This is stricter than today, where an orphaned stream of
   plain-looking strings passes; it is exactly the leftover a redactor
   that saves without garbage collection produces, and "clean up the
-  file" is the right advice. Phase 1 measures how often it fires; an
-  ADR accepts the cost or defines a narrower sound rule.
+  file" is the right advice. Phase 1 measures how often it fires: 11.4%
+  of the text-bearing stratum of a 2,031-file real corpus (55/484,
+  a lower bound — it does not count a paint-only orphan, the K5 shape,
+  or a body outside the xref entirely — and a gross cost: today's tool
+  already exits `2` on an orphan it cannot decode, and that overlap was
+  not measured; Phase 3a measures it); see
+  [ADR 0007](adr/0007-orphaned-content-streams.md) (accepted): "always
+  `FLAGGED`", no narrower rule.
 - **Deduplication** key: hash(decrypted stream) + hash(resolved
   dependency closure: fonts, resources, colour spaces, masks). Evidence
   keeps every `UnitRef` that shared it.
@@ -338,7 +395,7 @@ missing context gives silently wrong text (no error, no warning).
 | Filtered stream (any) | Explicit filter-chain stage | Bytes after a filter's end marker become a `RESIDUE` child (raw-searched, flagged if non-whitespace); unknown filter → `UNREADABLE` |
 | Content stream, form XObject, annotation appearance, Type3 glyph proc | Scratch page, per context (above) | Font witness; unrendered paint → flagged |
 | String / name / key in a dictionary | PDF token decoding | Whole object tokenised |
-| Image (incl. each SMask as its own unit) | Normalise (stencil + `/Decode`, CMYK/Indexed/ICC → grey, JBIG2/JPX), OCR the image; composited masks/strips OCR'd as rendered | `DECODED` only inside a recall-validated envelope (format, size, mask type); outside it, or conversion failure → flagged; per-image cap in pixels, ≥ 35 Mpx |
+| Image (incl. each SMask as its own unit; a `/SMask` or `/Mask` is used exactly when its image is used, owner decision 2026-09-27) | Normalise (stencil + `/Decode`, CMYK/Indexed/ICC → grey, JBIG2/JPX), OCR the image; composited masks/strips OCR'd as rendered | Geometry (envelope: colour space/filter, at most 10,000 px per side, ≤35 Mpx, compatible mask) narrows what is attempted. There is no size excusal (owner decision A, 2026-09-27): an image under today's 8×32 `_text_sized` floor is enlarged and OCR'd like any other, and the envelope's lower bound is whatever Phase 4b validates with enlargement; this closes a single small image. An unused image is always `FLAGGED`, whatever its size or OCR result (owner decision D, like [ADR 0007](adr/0007-orphaned-content-streams.md)'s orphaned content streams). "Used" is the owner's definition: drawn by the current revision (not only an earlier one); by content that actually runs when a page is shown — the page's content streams and the forms, annotation appearances and patterns those draw, not only a switched-off layer, a hidden annotation, a non-current appearance state (`/AS` "off") or a form nothing draws; and with some of it landing on the page after the crop box and clipping (not entirely off-page, clipped to nothing, zero-size or fully transparent). Any page counts; when use cannot be established, the image is unused. So orphaned images, images a page lists but never draws, images drawn only in an earlier revision, hidden layers, hidden annotations or undrawn forms, page thumbnails (`/Thumb`) and `/Alternates` images, and images drawn entirely off-page or clipped away are all `FLAGGED`. A render cut into 7 px strips cannot be read strip by strip, and nothing reassembles unused strips, so D, not the missing size excusal, closes them. Images drawn visibly but covered by something painted over them are outside the definition, so used: strips under a box, drawn apart or partly clipped are a known miss of per-image OCR — the render does not reassemble them either, today's tool exits `0` on them, and D does not apply; how Phase 4b handles them is an open question for the owner. Every filter-chain stage of the image's bytes (encoded and decoded) is raw-searched (value rules, and pattern classes at review tier). A decode error, any warning that suggests lost data (truncation, a corrupt or premature end of a codestream, a zlib or flate error) or any unrecognised warning means `FLAGGED`; a warning reviewed as harmless (e.g. JPX `numcomps doesn't match color_space`, openjpeg `misplaced cmap box`) is on a reviewed allowlist and only the image's own witness may vouch for it, from Phase 4b (owner decision C). An image that decodes to more than declared — any image data beyond the main decoded picture: an EXIF or other thumbnail, an extra JPEG 2000 codestream, an extra JBIG2 page, decoded samples beyond `/Width`×`/Height`×components×bits per component, a codec frame larger than declared — means `FLAGGED` (owner decision B). `DECODED` requires a recall bound Phase 4b has not measured yet, so until then image-OCR evidence is `FLAGGED` for every image, whatever its size — [ADR 0004](adr/0004-image-ocr-envelope.md) (accepted; the pixel bounds are re-checked against Apple Vision's real limits in Phase 4b) |
 | Embedded file | By signature: text → detect and unwrap encoded runs (base64, quoted-printable, hex) then search; PDF → recursive verify (sub-ledger folded as worst status); zip/Office → unpack, per-paragraph text incl. deletions, comments, properties; else flagged | Shared global budget |
 | XMP / Info | XML text / strings | — |
 | Script stream | Raw text | — |
@@ -349,10 +406,33 @@ missing context gives silently wrong text (no error, no warning).
 `NOT_APPLICABLE` reasons (closed list, each confirmed by parse):
 xref-stream field data, object-stream header table, a font program
 whose parsed tables span the stream and whose strings were searched,
-image data fully consumed by the image decoder. Extended only by ADR.
+image data fully consumed by the image decoder. Extended only by ADR;
+[ADR 0003](adr/0003-not-applicable-reasons.md) (accepted) adopts exactly
+these four, rejects three other candidates considered, and adopts the
+governing rule this list depends on, a requirement on every decoder:
+`NOT_APPLICABLE` excuses a decoder from re-parsing bytes a structural
+parse already accounted for — it never excuses those bytes from the raw
+matcher. The matcher runs over every filter-chain stage, including the
+encoded bytes an image codec consumes, not only decoded samples (a JPEG
+comment segment, a JPEG 2000 metadata box or a JBIG2 extension segment
+never reaches the pixels). Pattern classes, not only value rules, run
+over the same image bytes at review tier.
 
-**Budget**: one object for the whole run including recursion — depth,
-bytes inflated, units, OCR pixels. Exhaustion → flagged.
+**Budget**: one object for the whole run including decoding recursion —
+depth, bytes inflated, units, OCR pixels. Exhaustion → that unit
+`FLAGGED` (an ordinary status, not a special override — this already
+blocks exit `0` under the ledger model).
+[ADR 0006](adr/0006-recursion-and-decode-budget.md) (accepted, as
+placeholders) sets decoding-recursion depth ≤ 25 (reference-graph recursion — `/Kids`
+chains, `/Parent` loops — is a separate, still-open problem for Phase
+3a/3d), units sized against a measured corpus maximum of 32,971 *objects*
+(a rough proxy: it undercounts objects compressed in an `/ObjStm`, and a
+unit is not the same thing as an object — Phase 3a must re-derive this),
+≤ 2 GiB inflated bytes, and OCR pixels capped at 200 Mpx per page **plus**
+a whole-run cap derived from that (200 Mpx × the anchored page count, not
+an independent flat number — a flat cumulative cap conflicts with §5's
+own ~300-page-scan corpus requirement) — none of this from a dedicated
+stress spike; the numbers are placeholders, re-derived in Phase 3a.
 
 ### Views
 
@@ -367,8 +447,28 @@ Compare the inventory's in-use object set and page tree against PyMuPDF
 and against qpdf (separate process) for the current revision. "Repair"
 means parse-level warnings (`qpdf <file> --object-streams=disable
 /dev/null`, MuPDF warnings) — **not** `qpdf --check`'s linearization
-lint, which fires on 12% of real Acrobat files. Measured flag rate with
-this definition: ~1.5%. Benign warning categories are listed in an ADR.
+lint, which fires on 12% of real Acrobat files. This spike measures "any
+qpdf/MuPDF warning" as a proxy for the real check (the inventory's own
+object-set/page-tree comparison, which does not exist until Phase 3a) —
+Phase 3c must re-measure against the real comparison before judging this
+gate, not assume the proxy's rate transfers unchanged. Measured raw flag
+rate with the proxy, on the text-bearing stratum of a 2,031-file real
+corpus: 32.4% — two spec-adjacent but not spec-mandated categories
+account for most of it (a wrong/zero xref offset that is benign *only
+when no object body exists anywhere in the file for that number* --
+nothing was actually lost; a duplicated dictionary key with identical
+values, where no reader's resolution choice could differ).
+[ADR 0002](adr/0002-benign-parser-warning-categories.md) (accepted)
+verifies each instance of those two categories against the file's own
+bytes (not assumed from qpdf's wording) and drops two other categories
+the first version of that ADR wrongly called benign; the resulting
+combined flag rate is **7.2% of text-bearing files** (2.9% of all
+files) — well above the original ~1.5% estimate, and REDESIGN §4's own
+"Ambiguity detection" bullet already treats duplicate keys and bad xref
+offsets as flag-worthy at the byte-tiling level, which this measurement
+does not contradict: ADR 0002 narrows only the *parser-agreement*
+cross-check's judgment of when such an instance is additional
+corroborating evidence versus provably inert.
 
 ## 5. Evaluation: the case library
 
@@ -503,21 +603,21 @@ artifact.
 | Phase | Work | Gate |
 | --- | --- | --- |
 | **0a. Reference** | `--json` on today's `verify.py`: exit, findings (layer, masked rule, tier, storage class, object, revision, page, location) and warnings (stable code, kind, layer, storage class, rule, adjacency, tool, object, revision, page); `--version`; no verdict change. Tag it `eval-ref-0`. | Existing suite passes; JSON validated |
-| **0b. Case library** | PR 0b-1: schema (truth, secret cells vs features, pinned known gaps, storage-qualified expectations), cell ids checked against COVERAGE.md glyph by glyph, the 85 end-to-end cases (labels corrected, portable fonts), K1–K9 pinned, a raw-bytes writer, the real-redactor tier, a build lock. PR 0b-2a: the carriers × producer-layouts grid (replacing `corpus_builders`) and the page-text grid (the page-layer corpus's 27 document layouts; a pattern-only rule set pins `match.pattern-split`); the judge checks storage exactly per expected rule. Then: a non-fitz case for every claimed cell (a may-only-shrink list; `rawpdf` gains incremental updates and xref/object streams); real-tool files with a provenance sidecar each (tool, version, settings, sha256, scrubbed metadata) and a privacy scrub test (raw bytes, decompressed streams, every decoded PDF string token — including UTF-16 and hex strings — metadata and XMP, a reasoned allowlist for exceptions whose entries are exact literals — kind and finding text compared with `==`, each required to match a finding the case actually produces) — done; the blind red-team slot (`caselib/redteam/<round>/`, labels frozen on commit via a hash in `round.json` checked against a recorded `adjudications.log` entry, an origin="redteam" invariant against the loader's own registry, required attestation fields plus a README per round, a `new.*` cell placeholder gated by `cells.NEW_CELL_ALLOWLIST`'s tracking issue numbers, first-run score kept as hold-out) — done, with a worked (non-blind) example round exercising the machinery in CI; gallery fields (`mistake`, `recovery`) required on leak cases, `model.GALLERY_FIELDS_PENDING` as the may-only-shrink allowlist — done, filled for all leak cases as of this PR; `eval/check_ratchets.py` diffing every may-only-shrink allowlist and the red-team anchor against the merge-base with `main` (or `HEAD~1` on a direct push), since a single commit editing a list and its own same-commit consistency check together is otherwise undetected — done (single-commit case; see §8's "To check in Phase 0b" for the deferred multi-commit gap); cases for the remaining `UNDOCUMENTED_GAPS`; the large performance files. | Every ✓/⚑ cell has a caught leak case; every ✗ cell a pinned case or an allowlist entry |
+| **0b. Case library** | PR 0b-1: schema (truth, secret cells vs features, pinned known gaps, storage-qualified expectations), cell ids checked against COVERAGE.md glyph by glyph, the 85 end-to-end cases (labels corrected, portable fonts), K1–K9 pinned, a raw-bytes writer, the real-redactor tier, a build lock. PR 0b-2a: the carriers × producer-layouts grid (replacing `corpus_builders`) and the page-text grid (the page-layer corpus's 27 document layouts; a pattern-only rule set pins `match.pattern-split`); the judge checks storage exactly per expected rule. Then: a non-fitz case for every claimed cell (a may-only-shrink list; `rawpdf` gains incremental updates and xref/object streams); real-tool files with a provenance sidecar each (tool, version, settings, sha256, scrubbed metadata) and a privacy scrub test (raw bytes, decompressed streams, every decoded PDF string token — including UTF-16 and hex strings — metadata and XMP, a reasoned allowlist for exceptions whose entries are exact literals — kind and finding text compared with `==`, each required to match a finding the case actually produces) — done; the blind red-team slot (`caselib/redteam/<round>/`, labels frozen on commit via a hash in `round.json` checked against a recorded `adjudications.log` entry, an origin="redteam" invariant against the loader's own registry, required attestation fields plus a README per round, a `new.*` cell placeholder gated by `cells.NEW_CELL_ALLOWLIST`'s tracking issue numbers, first-run score kept as hold-out) — done, with a worked (non-blind) example round exercising the machinery in CI; gallery fields (`mistake`, `recovery`) required on leak cases, `model.GALLERY_FIELDS_PENDING` as the may-only-shrink allowlist — done, filled for all leak cases as of this PR; `eval/check_ratchets.py` diffing every may-only-shrink allowlist and the red-team anchor against the merge-base with `main` (or `HEAD~1` on a direct push), since a single commit editing a list and its own same-commit consistency check together is otherwise undetected — done (single-commit case; see §8's "To check in Phase 0b" for the deferred multi-commit gap); cases for the remaining `UNDOCUMENTED_GAPS`; a case with a value hidden in an image's raw sample bytes rather than rendered as glyphs and one with a value in a JPEG comment segment (in the encoded bytes, never the decoded pixels), to pin [ADR 0003](adr/0003-not-applicable-reasons.md)'s rule that `NOT_APPLICABLE`/`DECODED` never exempts a unit's bytes, at any filter-chain stage, from the raw matcher; the large performance files. | Every ✓/⚑ cell has a caught leak case; every ✗ cell a pinned case or an allowlist entry |
 | **0c. Scorecard** | Runner, differential against `eval-ref-0`, `accepted_diffs.yaml`, real-corpus manifest with strata and large files, CI tiers. Normalised key: exit, `error.code`, findings as (rule, tier, storage), review warnings as (rule, review, storage, adjacency), other warnings as (code, layer, tool). Additive report fields it needs: a per-layer status block (ran / unavailable / crashed), so Linux runs can recompute an OCR-excluded verdict, and `target_sha256`. Real-corpus results commit only the normalised key — never samples, messages or file names. The reference records storage class only; the new path adds the carrier kind (page content, annotation, Info dict …). One runner for pytest and the scorecard: the CLI as a subprocess per case with a timeout, judged on the process's exit code. CI tiers: Linux runs every case not needing OCR; macOS (pinned image) runs `requires: ocr` cases plus a clean false-alarm subset, and a scheduled full-environment run covers the grids (their OCR-free labels must keep holding with OCR); sharding and xdist; results cached by (PDF hash, rules hash, tree hash). Case labels hold verdicts and storage; exact legacy warning codes live in the `eval-ref-0` baseline. The judge checks finding storage exactly per expected rule; extend the same to warnings (a review warning filed under the wrong storage class). | Baseline committed; CI fails on unlisted diffs |
 | **0d. Hygiene** | ruff, mypy (non-strict), coverage report; hash-locked deps; Actions pinned by SHA; Dependabot; subprocess argv (`--`, `-config ''`, absolute paths, minimal env); `CHANGELOG.md`; the `--json` report records qpdf, exiftool, OS and Vision versions and the rules file's provenance (SHA-256, format, rule counts). Independent of 0a–0c. | CI green |
 | **0e. Gallery** | Generated from the case library. | — |
-| **1. Decisions** | ADRs: encryption; benign parser-warning categories; `NOT_APPLICABLE` list; image-OCR envelope method; pattern-class default tier; recursion budget; orphaned content streams. Spike S1b: consumption witness (code count vs texttrace glyph count). Measure on the corpus: parser-agreement, unindexed-byte and orphaned-content-stream rates. | ADRs approved |
+| **1. Decisions** ✅ done — all nine ADRs accepted by the owner on 2026-09-27 | ADRs: [encryption](adr/0001-encryption-and-decryption-cross-check.md); [benign parser-warning categories](adr/0002-benign-parser-warning-categories.md); [`NOT_APPLICABLE` list](adr/0003-not-applicable-reasons.md); [image-OCR envelope method](adr/0004-image-ocr-envelope.md); [pattern-class default tier](adr/0005-pattern-class-default-tier.md); [recursion budget](adr/0006-recursion-and-decode-budget.md); [orphaned content streams](adr/0007-orphaned-content-streams.md). Spike S1b: [consumption witness](adr/0008-consumption-witness-granularity.md). Found while measuring 0008: [benign interpretation warnings](adr/0009-benign-interpretation-warnings.md). Four further owner decisions on images the same day, recorded in ADRs 0003/0004 (and 0007, 0009): A, no size excusal; B, image data beyond the decoded main frame is `FLAGGED`; C, image-decoder errors and data-loss warnings always flag, reviewed-harmless warnings are vouched for only by the image's own witness from 4b, unrecognised ones flag; D, images nothing uses are always `FLAGGED`, with "used" defined by the owner (drawn by the current revision, by content that runs when a page is shown, some of it landing on the page; fail-closed). Drawn strips under a box are an open question before 4b. Measured on a 2,031-file real corpus (484 text-bearing), both denominators: parser-agreement flag rate 32.4% raw / 7.2% refined (text-bearing); pattern-class false-hard rate 23.1% for `ssn`/`us-phone` alone (text-bearing; the 45.5% four-class union overstates it -- `email` is a true positive); orphaned-content-stream rate 11.4% (text-bearing); unindexed non-whitespace byte rate 3.1e-6 by bytes; consumption-witness reconciliation 100.0% of measured text pages (2,345/2,345; 856 form-drawing pages unmeasured), after root-causing bugs in the measuring spike itself; interpretation-warning rate 11.2%/45.7% (all/text-bearing, against the pinned PyMuPDF 1.28.2 -- down from 32.2%/53.5% on 1.27.2.3, about 3x on all files but about 1.2x on text-bearing files) -- the largest single Phase 1 finding, not sized before this pass; 7.6% of text-bearing files under ADR 0009's accepted guarded rule (with the annotation guard). Full numbers: [`eval/spikes/RESULTS.md`](../eval/spikes/RESULTS.md). | ADRs approved — met 2026-09-27 |
 | **2. Move** | Move pure parts into the package; port behavioural tests to the case library or CLI; rewrite mutation tests against new module paths. | Per-case differential identical |
-| **3a. Inventory** | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. | Tiling holds on every corpus file; no crashes |
+| **3a. Inventory** | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. Fix, in the new tokenizer, the two PDF-32000 §7.3.4.2 line-ending bugs Phase 1 found in `verify._decode_pdf_string` (a backslash-end-of-line continuation is kept as a literal newline instead of contributing nothing; a raw CRLF inside a literal is not normalised to a single LF) -- today's tool appears to fail closed on every case tried despite this (normalisation strips the stray newline before matching), but the string decoder is on the exit-0 audit surface (Principle 2) and the bug is real. From the Phase 1 decisions: add and pin `pikepdf` for decryption, confirm its decrypted-but-unfiltered read matches the `xref_stream_raw` stage, and add a fixture whose earlier revision carries a different `/Encrypt` ([ADR 0001](adr/0001-encryption-and-decryption-cross-check.md)); add, before Phase 4b, the hidden-image case (a 10×10 image whose samples spell the SSN), the JPEG-comment case (a JPEG whose comment segment holds the SSN, present in the encoded `DCTDecode` bytes but not the decoded pixels), the EXIF-thumbnail case (a small JPEG whose EXIF thumbnail shows the SSN; the image must be `FLAGGED`) and next to it the extra-rows case (a referenced 200×20 DeviceGray image with a blank declared frame plus 20 extra rows holding an SSN render; the image must be `FLAGGED`; today's tool exits `0`, see §8's note below the K-table) ([ADR 0003](adr/0003-not-applicable-reasons.md), [ADR 0004](adr/0004-image-ocr-envelope.md) decision B), and the pixel-text-under-the-floor case, a leftover image under 8×32 holding pixel-drawn text (caselib's existing `leftover.small-image`, K21, a 7 px tall SSN render, already expects `LEFTOVER_IMAGE`; add the strips variant K21 describes, two leftover 90×7 strips of one render, which pins decision D, and next to it a strips-under-a-box case, both strips drawn with a black box painted over them, which today's tool exits `0` on) ([ADR 0004](adr/0004-image-ocr-envelope.md)); re-derive the unit budget ([ADR 0006](adr/0006-recursion-and-decode-budget.md)); measure the overlap of "always `FLAGGED`" orphans with today's exit `2` ([ADR 0007](adr/0007-orphaned-content-streams.md)), and the unmeasured cost of decision D under the owner's definition of "used": every unused image flagged, including images listed but never drawn, drawn only in an earlier revision, a hidden layer or annotation, page thumbnails and `/Alternates` images, and off-page or clipped-away images ([ADR 0004](adr/0004-image-ocr-envelope.md) decision D). | Tiling holds on every corpus file; no crashes |
 | **3b. Ledger + verdict** | Obligations, parent anchors, child protocol and completion sentinel, witnesses, single verdict function, shadow and enforced verdicts, worst-of shipping, `--explain`. | Shipped exit identical to reference on every case; shadow verdict reported; a truncated or empty child report exits `2` |
-| **3c. Parser agreement** | As §4. | Flag rate as measured in Phase 1 |
+| **3c. Parser agreement** | As §4. Close the two check gaps [ADR 0002](adr/0002-benign-parser-warning-categories.md) accepted for now: a benign-offset body inside an `/ObjStm`, and duplicate keys compared on the first token only. | Flag rate as measured in Phase 1 |
 | **3d. Sandbox** | Limits, watchdog, private temp dir around the child from 3b. Prerequisite for 4b–4c. | Bomb/hang cases exit `2` |
-| **4a. Content decoder** | Scratch-page decoding with contexts, font witness, every token, render pass. Enforce for content kinds. | K3–K6 and the switched-off-layer / hidden-annotation / unused-resource cells closed; every per-case change is stricter and listed; review-rate change within what the orphan ADR accepted |
-| **4b. Image decoder** | Normalisation, OCR, validated envelope. | Leftover-image cells closed inside envelope; recall measured |
+| **4a. Content decoder** | Scratch-page decoding with contexts, font witness, every token, render pass. Enforce for content kinds. The consumption witness is a hard gate, enforced from this phase ([ADR 0008](adr/0008-consumption-witness-granularity.md)); a warned unit is excused only under [ADR 0009](adr/0009-benign-interpretation-warnings.md)'s guarded rule, with unrecognised warnings failing closed; forms, measured as their own units here, are what the Phase 1 spike could not measure. The witness de-duplicates a glyph drawn twice by fill-then-stroke keyed on (font, glyph, origin) and only for text drawn under `Tr` 2 or 6 — the spike keyed on (glyph, origin) across every span of a page that sets either mode ([ADR 0008](adr/0008-consumption-witness-granularity.md), causes 5 and 7). | K3–K6 and the switched-off-layer / hidden-annotation / unused-resource cells closed; every per-case change is stricter and listed; review-rate change within the rates measured in ADR [0007](adr/0007-orphaned-content-streams.md) (11.4% of text-bearing files) and ADR [0009](adr/0009-benign-interpretation-warnings.md) (7.6%); a larger rate goes back to the owner |
+| **4b. Image decoder** | Normalisation, OCR, validated envelope. Image OCR stays `FLAGGED`-only until this phase measures a recall bound, and that bound must cover images under 8×32, enlarged (there is no size excusal); re-check the 35 Mpx / 10,000 px bounds against Apple Vision's real limits; pattern classes run over raw image bytes (every filter-chain stage, encoded and decoded) at review tier; the reviewed allowlist of harmless image-decoder warnings, each vouched for only by the image's own witness (decision C); unused images always `FLAGGED` (decision D, with the owner's definition of "used") ([ADR 0003](adr/0003-not-applicable-reasons.md), [ADR 0004](adr/0004-image-ocr-envelope.md)). **Open question for the owner before this phase** ([ADR 0004](adr/0004-image-ocr-envelope.md)): how drawn strips that are covered, drawn apart or clipped are discharged — for example, whether the recall bound must include banded images, or whether each content stream's images are also OCR'd composited as that stream draws them, without whatever is painted over them. | Leftover-image cells closed inside envelope; recall measured; K21, including the strips variant, exits `2`; the owner has answered the open question on drawn strips under a box, and the strips-under-a-box case exits `2` (or carries the answer as its label) |
 | **4c. Containers** | Recursive PDFs, zip/Office, encoded-run unwrapping; global budget. | Container cells closed |
 | **4d. Filters + residue** | Filter-chain stage, `RESIDUE` children. | K1, K2 closed |
-| **5. Matching precision** | Context rules for pattern classes or demote built-ins to review; geometry-based matching for values split by columns or page furniture. | False hard < 1% on text-bearing real files |
+| **5. Matching precision** | Context rules for pattern classes, or a demotion to review -- per [ADR 0005](adr/0005-pattern-class-default-tier.md) (accepted) built-ins stay hard until this phase, which chooses between the two; geometry-based matching for values split by columns or page furniture. | False hard < 1% on text-bearing real files |
 | **6. Retire** | Legacy path removed; strict mypy on the core; 100% branch coverage on `model` and `verdict`. | New path alone passes every gate |
 
 ADRs are required only for the Phase 1 questions and for any change to
@@ -590,17 +690,17 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K11 | An untyped leftover text with three stand-alone words that are content operators (`n`, `m`, `q`) is taken for page content and never searched (pre-existing) |
 | K12 | A scanned image with a box drawn over it on the same page: OCR only ever sees the rendered, composited page, never the image object itself |
 | K13 | Font-coded text off the page in a real embedded font whose `/ToUnicode` map has been stripped: the glyphs are genuine (rendering the page with a widened media box and OCRing it reads the secret plainly), but no character-based reading, on or off the page, can turn the codes back into text without the map |
-| K14 | Pixels drawn entirely outside the page's media box: never rendered, so OCR never sees them |
+| K14 | Pixels drawn entirely outside the page's media box: never rendered, so OCR never sees them. In the new design the image is unused under owner decision D's definition of "used" ([ADR 0004](adr/0004-image-ocr-envelope.md)), so `FLAGGED` |
 | K15 | Font-coded text in a switched-off optional-content layer: the layer is never rendered, and the Objects layer's literal scan does not apply a font's map |
 | K16 | A hidden annotation's appearance drawing font-coded text |
-| K17 | A hidden annotation's appearance drawing pixels |
+| K17 | A hidden annotation's appearance drawing pixels. In the new design the image is unused under decision D, so `FLAGGED` |
 | K18 | A form XObject in a page's resources, never drawn, showing font-coded text |
-| K19 | A form XObject in a page's resources, never drawn, showing pixels |
+| K19 | A form XObject in a page's resources, never drawn, showing pixels. In the new design the image is unused under decision D, so `FLAGGED` |
 | K20 | An orphaned stream shows a plain-looking string; a font mapping those exact (ordinary) codes to other glyphs would render it as the secret, but nothing flags plain-looking codes as undecodable and the literal characters do not match |
-| K21 | An orphaned image just under the leftover-image size gate (7 px tall; still fully readable — OCR reads it back exactly once upscaled 10x) |
+| K21 | An orphaned image just under the leftover-image size gate (7 px tall; still fully readable — OCR reads it back exactly once upscaled 10x). The same gap covers a render cut into strips, each under the gate: a 90×14 render of the SSN stored as two orphaned 90×7 images also exits `0` (reproduced; the same render stored whole exits `2`, `LEFTOVER_IMAGE`), not yet a case of its own. Strips that are drawn are read only when the render shows them joined: drawn side by side and uncovered they exit `1`, but under a black box (K12's strips variant), or one strip drawn alone and enlarged, they exit `0` (reproduced). The new design closes the single image by removing the size excusal and leftover strips by flagging every unused image ([ADR 0004](adr/0004-image-ocr-envelope.md), owner decisions A and D); drawn strips under a box stay a known miss and an open question before Phase 4b |
 | K22 | The secret as a base64 thumbnail image inside the document's own (live) XMP metadata packet |
 | K23 | Same, inside an orphaned/superseded XMP packet |
-| K24 | The secret as a page's own `/Thumb` preview image: referenced (live), but never rendered or OCR'd |
+| K24 | The secret as a page's own `/Thumb` preview image: referenced (live), but never rendered or OCR'd. In the new design a `/Thumb` image is unused under decision D, so `FLAGGED` |
 | K25 | A zip attached as base64 text inside an `.eml`: no zip signature at the start, so it is read (and searched) as plain text, which the base64 does not literally contain |
 | K26 | A PDF 2.0 `/AF` file matched only by a pattern rule: the Binary (qpdf) sweep — the only thing that reads such a file at all — is value secrets only |
 | K27 | Same, a `/AF` file that is a scanned image: qpdf's raw sweep is a byte-text match, and compressed image bytes do not contain the value's literal digits |
@@ -624,6 +724,26 @@ a byproduct of the ramp itself. The Binary (qpdf) layer's raw byte sweep
 cannot distinguish that coincidence from a real leak inside binary data,
 so it warns (exit `2`) on a genuinely clean file
 (`false-alarm.binary-value-collision`).
+
+Two more silent misses in today's tool have no K-number yet, because
+every K-number must have a case and these do not (Phase 3a adds both,
+in its follow-ups):
+
+- **Image data beyond the declared frame.** A referenced 200×20
+  DeviceGray image whose declared frame is blank, but whose stream
+  holds 20 more rows with an SSN render, exits `0` (reproduced), and
+  MuPDF gives no warning: the undeclared rows are never drawn, so
+  neither the render nor OCR sees them, and the digits are pixels, not
+  bytes. Under [ADR 0004](adr/0004-image-ocr-envelope.md)'s decision B
+  the new design flags it.
+- **Strips of one render that the page never shows joined.** A 90×14
+  SSN render split into two 90×7 images exits `0` when both strips are
+  drawn under a black box, when either is drawn alone at 4×, or when
+  both are listed in `/Resources` but never drawn (reproduced; drawn
+  side by side and uncovered, the rendered page's OCR reads it, exit
+  `1`). Decision D flags the never-drawn strips (unused); the covered or
+  separated drawn strips are used, so they are a known miss of per-image OCR and an open
+  question for the owner before Phase 4b (ADR 0004).
 
 To check in Phase 0b:
 

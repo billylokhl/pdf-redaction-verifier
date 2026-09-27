@@ -408,6 +408,12 @@ the gap is stated rather than implied away.
   a 10-digit order number that satisfies NANP rules. Tune the rules file
   to the document set.
 
+[docs/REDESIGN.md](docs/REDESIGN.md) is the plan to replace enumeration
+(searching the places this tool knows about) with an accounted ledger
+(every byte of the file, every obligation discharged or flagged); its
+[docs/adr/](docs/adr/) records the nine accepted Phase 1 design
+decisions, with the real corpus measurements behind them.
+
 ## Testing
 
 Every test pins a bug that was once real, and its comment says which. The
