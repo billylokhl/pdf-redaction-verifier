@@ -454,7 +454,7 @@ family and COVERAGE.md cell, with a page-1 render (built fresh, never
 committed, with a derived caption when the cell's own row means nothing
 would show there anyway, or — for a layout-splitting `match.*` cell —
 when page 1's own extracted text holds the value only across lines, only
-in part, or not at all), the pinned fabricated secret, the mistake and
+in part, only on a later page, or nowhere), the pinned fabricated secret, the mistake and
 recovery, and today's shown verdict per leak case — measured, from a
 `scorecard diff --json` report, where one covers the case, the case's
 own label otherwise, marked as such either way; a clear "MISSES IT

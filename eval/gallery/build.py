@@ -11,7 +11,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import fitz
 
@@ -42,15 +42,16 @@ _LIVE_ROW = "live"
 _MATCH_ROW = "match"
 
 # Captions for the render, keyed by _secret_visibility's answer ("full"
-# gets none).
+# gets none). They say where the value is, never whether it is legible.
 _CAPTIONS = {
     "none": "Nothing visible here: the secret is elsewhere in the file (see above).",
-    "partial": "Only part of the value appears on page 1; the rest is on a later page.",
+    "later": "Not on page 1: the value is on a later page.",
+    "partial": "Only part of the value is on page 1; the rest is on a later page.",
     "wrapped": "The value is on this page, split across lines.",
 }
 # Best first: a case with several pinned values is captioned by the one
 # page 1 shows most of.
-_VISIBILITY_RANK = ("full", "wrapped", "partial", "none")
+_VISIBILITY_RANK = ("full", "wrapped", "partial", "later", "none")
 # The fewest characters of a value page 1 must show to count as "part"
 # of it (a value's 3-digit SSN area number, say).
 _MIN_PART = 3
@@ -133,76 +134,98 @@ def _value_visibility(value: str, pages: list[str]) -> str:
         return "full"
     if _readings(v, page1):
         return "wrapped"
-    if len(pages) > 1:
-        later = [(False, line) for page in pages[1:] for line in _lines(page)]
+    later = [(False, line) for page in pages[1:] for line in _lines(page)]
+    if later:
         # A prefix of the value on page 1 and the rest after it, or (read
         # the other way round) a suffix on page 1 and the rest on a later page.
         for order in (page1 + later, later + page1):
             if any(p1 >= _MIN_PART and used_later for p1, used_later in _readings(v, order)):
                 return "partial"
+        if any(v in line for _p1, line in later) or _readings(v, later):
+            return "later"
     return "none"
 
 
-def _join_lines(text: str) -> str:
-    return re.sub(r"[ \t]*\n[ \t]*", "", text)
+def _joins(text: str) -> tuple[str, str, str]:
+    """*text*'s lines joined three ways — with nothing, with one space,
+    and with nothing after dropping separators at each break — since a
+    wrapped value reads back one of those ways ("123-45-" + "6789", "123
+    45" + "6789", "123" + "45-" + "6789"). A regex can then match across
+    a line break without every line on the page being fused together."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    trimmed = [re.sub(r"^[\W_]+|[\W_]+$", "", line) for line in lines]
+    return "".join(lines), " ".join(lines), "".join(trimmed)
 
 
-def _pattern_visibility(regex: re.Pattern[str], pages: list[str]) -> str:
-    """The same three answers for a rule with no literal value (a built-in
-    class like "ssn", or a regex): judged by where the rule's own regex
-    matches, in page 1's lines ("full"), in page 1 read as one run of
-    text ("wrapped"), or starting on page 1 and running on into the next
-    pages ("partial"). A run of text is tried both normalised (the
-    value's separators gone) and with just the line breaks joined (its
-    separators kept), since a regex can depend on either."""
+def _pattern_visibility(regex: re.Pattern[str], valid: Callable[[str], bool] | None,
+                        pages: list[str]) -> str:
+    """The same answers for a rule with no literal value (a built-in
+    class like "ssn", or a regex), judged by where the rule's own regex
+    finds a match its validator (if any) accepts: on one line of page 1
+    ("full"); across page 1's line breaks ("wrapped"); starting on page 1
+    and running on into the next page ("partial"); only on later pages
+    ("later"). Matching runs line by line or across joined lines, never
+    over text with every separator stripped, so digits from unrelated
+    lines are not fused into a false match."""
+    def found(text: str) -> list[re.Match[str]]:
+        return [m for m in regex.finditer(text) if valid is None or valid(m.group())]
+
     if not pages:
         return "none"
-    if any(regex.search(view) for line in pages[0].splitlines()
-           for view in (line, _norm(line))):
+    if any(found(line) for line in pages[0].splitlines()):
         return "full"
-    best = "none"
-    for view in (_norm, _join_lines):
-        head = view(pages[0])
-        tail = view("\n".join(pages[1:]))
-        if any(m.end() <= len(head) for m in regex.finditer(head)):
-            return "wrapped"
-        if len(pages) > 1:
+    later_text = "\n".join(pages[1:])
+    heads, tails = _joins(pages[0]), _joins(later_text)
+    if any(found(head) for head in heads):
+        return "wrapped"
+    if len(pages) > 1:
+        for sep, head, tail in zip(("", " ", ""), heads, tails):
+            if not (head and tail):
+                continue
             if any(m.start() <= len(head) - _MIN_PART and m.end() > len(head)
-                   for m in regex.finditer(head + tail)):
-                best = "partial"
-            if any(m.start() < len(tail) and m.end() >= len(tail) + _MIN_PART
-                   for m in regex.finditer(tail + head)):
-                best = "partial"
-    return best
+                   for m in found(head + sep + tail)):
+                return "partial"
+            if any(m.start() < len(tail) and m.end() >= len(tail) + len(sep) + _MIN_PART
+                   for m in found(tail + sep + head)):
+                return "partial"
+        if any(found(tail) for tail in tails):
+            return "later"
+    return "none"
 
 
-def _rule_regex(rule: dict[str, str]) -> re.Pattern[str] | None:
+def _rule_regex(rule: dict[str, str]) -> tuple[re.Pattern[str], Callable[[str], bool] | None] | None:
+    """A pattern rule's regex and validator (a built-in class has both,
+    as verify.py applies them; a custom regex has no validator)."""
     if "class" in rule:
         import verify
         spec = verify.BUILTIN_PATTERN_CLASSES.get(rule["class"])
-        return re.compile(spec[0]) if spec else None
+        return (re.compile(spec[0]), spec[1]) if spec else None
     if "pattern" in rule:
         try:
-            return re.compile(rule["pattern"])
+            return re.compile(rule["pattern"]), None
         except re.error:
             return None
     return None
 
 
 def _secret_visibility(case: Case, pdf_path: Path) -> str:
-    """"full", "wrapped", "partial", or "none": how much of a leak case's
-    pinned secret the rendered page 1 holds, for captioning the render
-    (never for gating anything). The cell's row settles everything but
+    """"full", "wrapped", "partial", "later" or "none": where a leak
+    case's pinned secret is relative to page 1, for captioning the render
+    (never for gating anything). This reports where the value is in the
+    page's text, not whether a reader can make it out: a value under a
+    box, drawn white on white, or in invisible render mode 3 is still
+    "full" and gets no caption. The cell's row settles everything but
     "match"; a "match" case is judged from the pages' own extracted text,
-    rule by rule (a literal value, or the rule's regex when it has
-    none), and captioned by the rule page 1 shows most of:
+    rule by rule (a literal value, or the rule's regex and validator when
+    it has none), and captioned by the rule page 1 shows most of:
 
     - "full": the whole value on one line of page 1 (no caption);
     - "wrapped": the whole value on page 1, but only reading across
       lines (match.line-wrap and friends);
     - "partial": at least _MIN_PART characters of it on page 1 and the
       rest on a later page (match.page-break and friends);
-    - "none": nothing of it on page 1 (match.extreme-coordinates, K35,
+    - "later": none of it on page 1, but the value is on a later page;
+    - "none": in no page's text at all (match.extreme-coordinates, K35,
       draws its text where PyMuPDF's extraction never returns it, so
       page 1 is blank)."""
     if not case.cells:
@@ -218,9 +241,9 @@ def _secret_visibility(case: Case, pdf_path: Path) -> str:
         if "value" in rule:
             results.append(_value_visibility(rule["value"], pages))
         else:
-            regex = _rule_regex(rule)
-            if regex is not None:
-                results.append(_pattern_visibility(regex, pages))
+            pattern = _rule_regex(rule)
+            if pattern is not None:
+                results.append(_pattern_visibility(*pattern, pages))
     return min(results, key=_VISIBILITY_RANK.index, default="none")
 
 

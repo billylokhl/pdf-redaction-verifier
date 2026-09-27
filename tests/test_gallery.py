@@ -158,7 +158,8 @@ def test_caption_matches_the_cells_own_row_taxonomy() -> None:
 
 # ── "match" is not decisive on its own: the value is on SOME page, but ──
 # ── page 1 may hold all of it on one line, all of it only across lines, ──
-# ── part of it (the rest on a later page), or none of it at all. The    ──
+# ── part of it (the rest later), none of it (all on a later page), or  ──
+# ── it may be in no page's text at all. The                             ──
 # ── reviewer found 57 of ~150 match.* cases captioned wrongly; this     ──
 # ── pins every one of them against a hand-checked table.                ──
 
@@ -174,7 +175,7 @@ def _match_leak_ids() -> set[str]:
 def test_visibility_table_covers_every_match_leak_case() -> None:
     assert sorted(set(_VISIBILITY_TABLE) ^ _match_leak_ids()) == [], (
         f"{_VISIBILITY_TABLE_PATH.name} must list exactly the match.* leak cases")
-    assert set(_VISIBILITY_TABLE.values()) <= {"full", "wrapped", "partial", "none"}
+    assert set(_VISIBILITY_TABLE.values()) <= {"full", "wrapped", "partial", "later", "none"}
     assert _VISIBILITY_TABLE["page.extreme-coordinates"] == "none"
 
 
@@ -186,9 +187,10 @@ def test_secret_visibility_matches_the_table_for_every_match_case(tmp_path) -> N
     repeated-line-wraps, vertical-stack, raw-line-wrap, wrap-boxed-lines,
     two-column-wrap, ...), "partial" (a prefix on page 1, the rest on a
     later page: every split-pages / form-boxes / split-four-pages /
-    vertical-stack-split-pages variant, page-break, ...), "none"
-    (page.extreme-coordinates, and the several-values variants whose only
-    rules are for the SSN, which sits on pages 2-3)."""
+    vertical-stack-split-pages variant, page-break, ...), "later" (none
+    of it on page 1, but on a later page: the several-values variants
+    whose only rules are for the SSN, which sits on pages 2-3), "none" (in
+    no page's text: page.extreme-coordinates)."""
     from caselib.run import build as build_case
     from gallery.build import _secret_visibility
     wrong = []
@@ -205,6 +207,7 @@ _VISIBILITY_SUBSET = (
     "page.extreme-coordinates",  # row "match", but nothing of the value is on page 1 at all
     "layout.page-break",         # row "match", but only half the value is on page 1
     "layout.raw-line-wrap",      # row "match": all of it on page 1, split across two lines
+    "layout.several-values-ssn", # row "match": the SSN is only on pages 2-3
     "page.box-over-text",        # row "live": uncaptioned by design
 )
 
@@ -216,13 +219,15 @@ def visibility_built(tmp_path_factory: pytest.TempPathFactory):
     return (out / "index.html").read_text()
 
 
-_ALL_CAPTIONS = ("Nothing visible here", "Only part of the value", "split across lines")
+_ALL_CAPTIONS = ("Nothing visible here", "Only part of the value", "split across lines",
+                 "Not on page 1")
 
 
 @pytest.mark.parametrize(("case_id", "caption"), [
     ("page.extreme-coordinates", "Nothing visible here"),
-    ("layout.page-break", "Only part of the value appears on page 1"),
+    ("layout.page-break", "Only part of the value is on page 1"),
     ("layout.raw-line-wrap", "The value is on this page, split across lines"),
+    ("layout.several-values-ssn", "Not on page 1: the value is on a later page"),
     ("page.box-over-text", None),
 ])
 def test_each_visibility_gets_its_own_caption(visibility_built, case_id: str,

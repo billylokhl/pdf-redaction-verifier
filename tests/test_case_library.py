@@ -18,8 +18,7 @@ from pathlib import Path
 import fitz
 import pytest
 
-from caselib import (CELLS, GALLERY_FIELDS_PENDING, NEW_CELL_ALLOWLIST, NONFITZ_PENDING,
-                     PRIVACY_KINDS, REGISTRY, UNDOCUMENTED_GAPS, load)
+from caselib import CELLS, NEW_CELL_ALLOWLIST, PRIVACY_KINDS, REGISTRY, load
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
@@ -37,6 +36,18 @@ SIZE_CAP = 100_000
 
 
 RUN_PERF = os.environ.get("RUN_PERF") == "1"
+
+
+def _verified(name: str) -> frozenset[str]:
+    """A may-only-shrink set (``check_ratchets.RATCHET_SETS``) as
+    eval/check_ratchets.py verified it: the literal parsed from its
+    defining file's source, read fresh on every call. The tests below use
+    this, never an imported module global, so nothing that rebinds a
+    global at runtime (in this module or in caselib) changes the set they
+    check against. test_ratchet_sets_in_effect_equal_their_literal
+    separately checks that what other importers see agrees."""
+    (path,) = [p for p, n in RATCHET_SETS if n == name]
+    return frozenset(_frozenset_literal((REPO_ROOT / path).read_text(), name))
 
 
 def _params():
@@ -160,9 +171,10 @@ class TestEvidence:
     def test_every_gap_has_a_pinned_case(self) -> None:
         pinned = {c.known_gap.cell for c in REGISTRY.values() if c.known_gap}
         gaps = {cid for cid, cell in CELLS.items() if cell.status in ("gap", "false-alarm")}
-        assert sorted(gaps - pinned - UNDOCUMENTED_GAPS) == []
-        assert sorted(UNDOCUMENTED_GAPS & pinned) == [], "pinned now: remove from UNDOCUMENTED_GAPS"
-        assert UNDOCUMENTED_GAPS <= gaps
+        undocumented = _verified("UNDOCUMENTED_GAPS")
+        assert sorted(gaps - pinned - undocumented) == []
+        assert sorted(undocumented & pinned) == [], "pinned now: remove from UNDOCUMENTED_GAPS"
+        assert undocumented <= gaps
 
     def test_claimed_cells_have_non_fitz_evidence(self) -> None:
         """Every claimed cell needs a caught leak case whose bytes were not
@@ -172,32 +184,51 @@ class TestEvidence:
         covered = {cid for cid, cases in _evidence().items()
                   if any(c.writer != "fitz" for c in cases)}
         claimed = {cid for cid, cell in CELLS.items() if cell.status in ("read", "flagged")}
-        assert sorted(claimed - covered - NONFITZ_PENDING) == []
-        assert sorted(NONFITZ_PENDING & covered) == [], "covered now: shrink NONFITZ_PENDING"
+        pending = _verified("NONFITZ_PENDING")
+        assert sorted(claimed - covered - pending) == []
+        assert sorted(pending & covered) == [], "covered now: shrink NONFITZ_PENDING"
 
     @pytest.mark.parametrize(("path", "name"), RATCHET_SETS)
     def test_ratchet_sets_in_effect_equal_their_literal(self, path: str, name: str) -> None:
-        """The value every consumer actually uses — this module's own
-        import (via the ``caselib`` package), ``caselib.<name>`` and the
+        """What any other importer sees — ``caselib.<name>`` and the
         defining module's attribute, after every family has loaded — must
         equal the literal eval/check_ratchets.py reads from the defining
         file's source. That static check can only see what is written;
-        this closes every rebind it cannot (a name built at runtime, an
-        exec of a computed string, a module swapped in sys.modules, a
-        rebind from any other module at import time)."""
+        this catches a rebind done while caselib imports (a name built at
+        runtime, an exec of a computed string, a module swapped in
+        sys.modules). It cannot catch one done later, which is why this
+        file's own checks read the literal instead (``_verified``); code a
+        pull request adds to mutate state at runtime is left to review —
+        see eval/README.md's ratchet threat model."""
         import importlib
 
         import caselib
         literal = _frozenset_literal((REPO_ROOT / path).read_text(), name)
         defining = importlib.import_module(f"caselib.{Path(path).stem}")
         in_effect = {
-            "tests' own import": globals()[name],
             f"caselib.{name}": getattr(caselib, name),
             f"caselib.{Path(path).stem}.{name}": getattr(defining, name),
         }
         for where, value in in_effect.items():
             assert type(value) is frozenset and value == literal, (
                 f"{where} is {value!r}, but {path} writes {sorted(literal)!r}")
+
+    @pytest.mark.parametrize(("path", "name"), RATCHET_SETS)
+    def test_checks_do_not_read_a_mutable_global(self, path: str, name: str,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+        """The reviewer's late rebind: code running after the equality
+        test above (e.g. inside caselib's build) replaces a set this
+        module imported. There is no such global here any more, and the
+        checks read the literal, so a rebind anywhere at runtime does not
+        change what they compare against."""
+        import importlib
+
+        import caselib
+        assert name not in globals()
+        grown = _verified(name) | {"sneaky.grown"}
+        monkeypatch.setattr(caselib, name, grown)
+        monkeypatch.setattr(importlib.import_module(f"caselib.{Path(path).stem}"), name, grown)
+        assert "sneaky.grown" not in _verified(name)
 
     def test_known_gaps_name_gap_cells(self) -> None:
         for case in REGISTRY.values():
@@ -790,13 +821,13 @@ class TestGalleryFields:
 
     def test_missing_fields_are_all_pending(self) -> None:
         missing = self._missing()
-        assert sorted(missing - GALLERY_FIELDS_PENDING) == []
+        assert sorted(missing - _verified("GALLERY_FIELDS_PENDING")) == []
 
     def test_pending_list_has_no_stale_entries(self) -> None:
         missing = self._missing()
-        assert sorted(GALLERY_FIELDS_PENDING - missing) == [], (
+        assert sorted(_verified("GALLERY_FIELDS_PENDING") - missing) == [], (
             "filled in now: remove from GALLERY_FIELDS_PENDING")
 
     def test_pending_ids_are_real_leak_cases(self) -> None:
         leak_ids = {c.id for c in REGISTRY.values() if c.truth == "leak"}
-        assert GALLERY_FIELDS_PENDING <= leak_ids
+        assert _verified("GALLERY_FIELDS_PENDING") <= leak_ids

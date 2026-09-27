@@ -129,8 +129,10 @@ XMP document/instance ids that look machine-generated (a real UUID in
 A genuine exception is a `Case.privacy_allowlist` entry of exactly
 `{"kind": ..., "text": ..., "reason": ...}`: `"kind"` one of
 `model.PRIVACY_KINDS`, `"text"` the finding's text exactly as the scrub
-reports it (`/Users/jsmith` — the home-path check stops at the user
-directory, never the full path), and a `"reason"`. An entry excuses a
+reports it, and a `"reason"`. A home-path finding stops at the username
+(`/Users/jsmith`, never the full path), so a home-path entry excuses
+every path under that one home directory — all of `/Users/jsmith/...` —
+not a single file. An entry excuses a
 finding only when both its kind and its text are equal (`==`) to the
 finding's: it is a literal, never a pattern, so it can excuse nothing but
 the one finding it names, and an `"email"` entry never excuses the same
@@ -225,15 +227,49 @@ an import binding it (including an alias), `except ... as NAME`, a
 constant containing it other than a docstring (`globals()["NAME"]`,
 `vars()`/`locals()` subscripts, `setattr(sys.modules[__name__], "NAME",
 ...)`, `exec("NAME = ...")`). Rebinding `frozenset` itself also fails.
+The string rule is deliberately broad: even an error message or comment
+string that mentions the name outside a docstring counts, and the
+failure names each writer and why it counts ("a string constant
+mentioning UNDOCUMENTED_GAPS at line 12", "def UNDOCUMENTED_GAPS at line
+40", ...), so a harmless one is quick to spot and reword.
 Consumers import the sets through the `caselib` package, so
 `eval/caselib/__init__.py` is checked too (`check_reexports`): it may
 bind a ratchet name only by re-exporting it unchanged
-(`from .cells import UNDOCUMENTED_GAPS`), nothing else. What no static
-reading can see — a name built at runtime, `exec` of a computed string —
-is closed at runtime instead: `tests/test_case_library.py` asserts that
-the value the tests themselves import, `caselib.<NAME>` and the defining
-module's own attribute (after every family has loaded) all equal the
-literal `_frozenset_literal` reads from the defining file.
+(`from .cells import UNDOCUMENTED_GAPS`), nothing else.
+
+The tests that use the sets (`test_every_gap_has_a_pinned_case`,
+`test_claimed_cells_have_non_fitz_evidence`, `TestGalleryFields`) don't
+read an imported global: they call `_verified(NAME)`, which parses the
+literal from the defining file with the same `_frozenset_literal` — the
+value this check verified — so nothing that rebinds a global at runtime
+changes what they compare against. Separately,
+`test_ratchet_sets_in_effect_equal_their_literal` asserts that
+`caselib.<NAME>` and the defining module's attribute (after every family
+has loaded) equal that literal, which catches a rebind done while caselib
+imports (a name built at runtime, `exec` of a computed string) for any
+other importer. It cannot catch code that rebinds them later.
+
+The base's own list of ratchets counts too (`check_registry`): the
+`RATCHET_SETS` and `RATCHET_REEXPORTS` in the base's copy of
+`eval/check_ratchets.py` — read from the base ref, not the running
+script — must all still be checked. Deleting an entry, or renaming or
+moving a set along with a matching entry, would otherwise pass ("nothing
+to shrink from") and let the set grow in the same change. A ratchet the
+base lists must also be readable in the base, so a set that is missing
+there was renamed or moved, not introduced. Retiring or renaming a
+ratchet therefore always fails this check: it has to land as its own
+pull request after anything replacing it, where the failing `ratchets`
+job makes the removal explicit and a maintainer accepts it deliberately.
+
+**Threat model.** The ratchets guard against accidental or unreviewed
+growth: a set grown by any ordinary edit, a rebind in some block or
+form the author didn't think of, a rename, move or removal of a ratchet,
+or a re-export that changes it. They do not defend against deliberately
+malicious code in a pull request: edits to this checker's own logic, or
+runtime code planted to mutate state the tests read (monkeypatching
+`_frozenset_literal`, say). Both are visible in the diff, and adversarial
+review of every pull request is mandatory on this repository; that is
+what those rely on.
 
 Its comparison logic (`run_all_checks` and friends) takes an abstract
 "tree" (`read(path)`, `glob(pattern)`), so `tests/test_check_ratchets.py`
@@ -527,15 +563,23 @@ from the case's primary cell rather than a hand list:
   (`match.line-wrap` and friends, a two-column wrap) gets "The value is
   on this page, split across lines"; at least 3 characters of it on
   page 1 with the rest on a later page (`match.page-break` and friends)
-  gets "Only part of the value appears on page 1; the rest is on a later
-  page"; nothing of it on page 1 gets "Nothing visible here" (e.g.
-  `match.extreme-coordinates`, K35, which draws its text where PyMuPDF's
-  extraction never returns it, so the page-1 PNG is blank). A rule with
-  no literal value (a built-in class like `ssn`) is judged the same way
-  by where its own regex matches. With several rules, the one page 1
-  shows most of decides. `tests/test_gallery.py` pins the answer for
-  every `match.*` leak case against a hand-checked table
+  gets "Only part of the value is on page 1; the rest is on a later
+  page"; none of it on page 1 but all of it on a later page gets "Not on
+  page 1: the value is on a later page"; and in no page's text at all
+  gets "Nothing visible here" (e.g. `match.extreme-coordinates`, K35,
+  which draws its text where PyMuPDF's extraction never returns it, so
+  the page-1 PNG is blank). A rule with no literal value (a built-in
+  class like `ssn`) is judged by where its own regex finds a match its
+  validator accepts, one line at a time or across joined lines — never
+  over the whole page with every separator stripped, which would fuse
+  digits from unrelated lines. With several rules, the one page 1 shows
+  most of decides. `tests/test_gallery.py` pins the answer for every
+  `match.*` leak case against a hand-checked table
   (`tests/gallery_visibility.json`).
+
+Captions report where the value is in the page's text, not whether it is
+legible: a value under a box, drawn white on white, or in invisible
+text render mode 3 is on page 1 all the same, so it gets no caption.
 
 **The miss marker** — the gallery's most important one — is "MISSES IT
 TODAY" on any leak case whose *shown* verdict has exit `0`: not the

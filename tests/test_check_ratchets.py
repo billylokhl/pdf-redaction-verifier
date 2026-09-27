@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from check_ratchets import (RATCHET_REEXPORTS, DictTree, check_ratchet_set, check_redteam_anchors,
-                            check_reexports, determine_base_ref, run_all_checks)
+from check_ratchets import (CHECKER_PATH, RATCHET_REEXPORTS, DictTree, check_ratchet_set,
+                            check_redteam_anchors, check_registry, check_reexports,
+                            determine_base_ref, run_all_checks)
 
 CELLS_TEMPLATE = """
 UNDOCUMENTED_GAPS: frozenset[str] = frozenset({{
@@ -59,10 +60,13 @@ class TestCheckRatchetSet:
         old = DictTree({})
         assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
 
-    def test_file_missing_in_new_tree_is_not_a_failure(self) -> None:
+    def test_file_missing_in_new_tree_fails_closed(self) -> None:
+        # Still listed in RATCHET_SETS but its file is gone: nothing left
+        # to verify, which must never read as "fine".
         old = DictTree({"cells.py": _cells_source(("a.gap",))})
         new = DictTree({})
-        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0]
 
     def test_empty_frozenset_literal_parses(self) -> None:
         old = DictTree({"model.py": "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n"})
@@ -310,6 +314,131 @@ class TestReexports:
     def test_run_all_checks_includes_the_init(self) -> None:
         tree = DictTree({_INIT: _INIT_OK + _INIT_ATTACKS["assignment"]})
         assert any(_INIT in p for p in run_all_checks(DictTree({}), tree))
+
+
+# ── the checker edited in the same change: the base's own RATCHET_SETS  ──
+# ── (read from the base's copy of check_ratchets.py, not the running   ──
+# ── script) says what must still be checked. Deleting an entry, or     ──
+# ── renaming or moving a set along with a matching entry, used to pass ──
+# ── ("nothing to shrink from") and let the set grow in the same change. ──
+
+_CELLS = "eval/caselib/cells.py"
+_MODEL = "eval/caselib/model.py"
+
+
+def _checker(sets: tuple[tuple[str, str], ...], reexports: tuple[str, ...] | None = None) -> str:
+    text = f"RATCHET_SETS: tuple[tuple[str, str], ...] = {sets!r}\n"
+    if reexports is not None:
+        text += f"RATCHET_REEXPORTS: tuple[str, ...] = {reexports!r}\n"
+    return text
+
+
+class TestRegistry:
+    SETS = ((_CELLS, "UNDOCUMENTED_GAPS"), (_MODEL, "GALLERY_FIELDS_PENDING"))
+    CELLS_OLD = 'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap"})\n'
+    MODEL_OLD = "GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()\n"
+
+    def _old(self, sets=SETS, **extra: str) -> DictTree:
+        return DictTree({CHECKER_PATH: _checker(sets), _CELLS: self.CELLS_OLD,
+                         _MODEL: self.MODEL_OLD, **extra})
+
+    def test_unchanged_registry_passes(self) -> None:
+        old = self._old()
+        new = DictTree({_CELLS: self.CELLS_OLD, _MODEL: self.MODEL_OLD})
+        assert run_all_checks(old, new, sets=self.SETS, reexports=()) == []
+
+    def test_deleting_an_entry_fails(self) -> None:
+        # The entry goes and the set grows in the same change.
+        old = self._old()
+        new = DictTree({_CELLS: 'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap", "b"})\n',
+                        _MODEL: self.MODEL_OLD})
+        problems = run_all_checks(old, new, sets=self.SETS[1:], reexports=())
+        assert any("UNDOCUMENTED_GAPS" in p and "no longer" in p for p in problems), problems
+
+    def test_renaming_a_set_with_a_matching_entry_fails(self) -> None:
+        old = self._old()
+        new = DictTree({_CELLS: 'RENAMED_GAPS: frozenset[str] = frozenset({"a.gap", "b"})\n',
+                        _MODEL: self.MODEL_OLD})
+        sets = ((_CELLS, "RENAMED_GAPS"), self.SETS[1])
+        problems = run_all_checks(old, new, sets=sets, reexports=())
+        assert any("UNDOCUMENTED_GAPS" in p and "no longer" in p for p in problems), problems
+
+    def test_moving_a_set_with_a_matching_entry_fails(self) -> None:
+        old = self._old()
+        new = DictTree({_CELLS: "\n", _MODEL: self.MODEL_OLD + 'UNDOCUMENTED_GAPS: frozenset[str] '
+                        '= frozenset({"a.gap", "b"})\n'})
+        sets = ((_MODEL, "UNDOCUMENTED_GAPS"), self.SETS[1])
+        problems = run_all_checks(old, new, sets=sets, reexports=())
+        assert any(_CELLS in p and "no longer" in p for p in problems), problems
+
+    def test_listed_in_the_base_but_missing_there_fails(self) -> None:
+        # The base's registry names it, so "not in the old tree" is no
+        # longer "a brand-new ratchet": it was renamed or moved.
+        old = self._old(**{_CELLS: "SOMETHING_ELSE = 1\n"})
+        new = DictTree({_CELLS: self.CELLS_OLD, _MODEL: self.MODEL_OLD})
+        problems = run_all_checks(old, new, sets=self.SETS, reexports=())
+        assert any("UNDOCUMENTED_GAPS" in p and "cannot verify" in p for p in problems), problems
+
+    def test_listed_in_the_base_but_its_file_missing_there_fails(self) -> None:
+        old = DictTree({CHECKER_PATH: _checker(self.SETS), _MODEL: self.MODEL_OLD})
+        new = DictTree({_CELLS: self.CELLS_OLD, _MODEL: self.MODEL_OLD})
+        problems = run_all_checks(old, new, sets=self.SETS, reexports=())
+        assert any(_CELLS in p and "cannot verify" in p for p in problems), problems
+
+    def test_a_genuinely_new_ratchet_has_nothing_to_shrink_from(self) -> None:
+        # Not in the base's registry, not in the base: no comparison.
+        old = self._old()
+        new = DictTree({_CELLS: self.CELLS_OLD + 'NEW_LIST: frozenset[str] = frozenset({"x"})\n',
+                        _MODEL: self.MODEL_OLD})
+        sets = self.SETS + ((_CELLS, "NEW_LIST"),)
+        assert run_all_checks(old, new, sets=sets, reexports=()) == []
+
+    def test_dropping_a_reexport_module_fails(self) -> None:
+        old = DictTree({CHECKER_PATH: _checker(self.SETS, (_INIT,))})
+        problems = check_registry(old, sets=self.SETS, reexports=())
+        assert problems and _INIT in problems[0]
+
+    def test_base_without_a_checker_has_no_registry(self) -> None:
+        assert check_registry(DictTree({}), sets=(), reexports=()) == []
+
+    def test_base_checker_predating_reexports_is_fine(self) -> None:
+        old = DictTree({CHECKER_PATH: _checker(self.SETS)})
+        assert check_registry(old, sets=self.SETS, reexports=(_INIT,)) == []
+
+    def test_unreadable_base_registry_fails_closed(self) -> None:
+        old = DictTree({CHECKER_PATH: "RATCHET_SETS = tuple(compute())\n"})
+        assert check_registry(old, sets=self.SETS, reexports=())
+
+    def test_the_real_base_registry_is_still_checked(self) -> None:
+        from check_ratchets import REPO_ROOT, RATCHET_SETS
+        this = DictTree({CHECKER_PATH: (REPO_ROOT / CHECKER_PATH).read_text()})
+        assert check_registry(this) == []
+        assert (_CELLS, "UNDOCUMENTED_GAPS") in RATCHET_SETS
+
+
+class TestWriterMessages:
+    """"N possible writers" names each one and why it counts."""
+
+    @pytest.mark.parametrize(("attack", "reason"), [
+        ("globals-subscript", "a string constant mentioning UNDOCUMENTED_GAPS at line 2"),
+        ("import-alias", "an import binding UNDOCUMENTED_GAPS at line 2"),
+        ("def-named-it", "def UNDOCUMENTED_GAPS at line 2"),
+        ("except-as", "except ... as UNDOCUMENTED_GAPS at line 4"),
+        ("del", "a del of UNDOCUMENTED_GAPS at line 2"),
+    ])
+    def test_reason_is_named(self, attack: str, reason: str) -> None:
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": _LITERAL + _REBIND_ATTACKS[attack]})
+        (problem,) = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert "an assignment to UNDOCUMENTED_GAPS at line 1" in problem
+        assert reason in problem
+
+    def test_star_import_is_named(self) -> None:
+        # A star import could rebind frozenset itself, reported first.
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": _LITERAL + _REBIND_ATTACKS["star-import"]})
+        (problem,) = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert "a star import at line 2" in problem
 
 
 # ── check_redteam_anchors: initial_labels_sha256 must never move,      ──

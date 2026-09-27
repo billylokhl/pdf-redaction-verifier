@@ -29,8 +29,11 @@ requests does not have this gap (it compares the whole PR against main
 in one shot), so the practical exposure is limited to direct pushes to
 main, which branch protection should be discouraging anyway.
 
-Two things this deliberately does not trust:
+Three things this deliberately does not trust:
 
+- Which ratchets to check is read from the *base's* copy of this script
+  (``check_registry``), not only from the running one, so a change
+  cannot drop, rename or move a ratchet and grow it at the same time.
 - A round is matched between trees by round.json's own ``"round"`` field,
   never by path — a directory rename alone changes nothing, but a rename
   that also forges a fresh ``initial_labels_sha256`` is still caught,
@@ -42,6 +45,12 @@ Two things this deliberately does not trust:
   looks like a genuinely local run (``is_ci_context``); inside anything
   that looks like CI, it is a failure — an unresolvable base must never
   quietly turn into "nothing to check".
+
+Threat model: this guards against accidental or unreviewed growth. It
+does not defend against deliberately malicious code in the change under
+review (edits to this script's logic, runtime code mutating what the
+tests read); those are visible in the diff and left to the mandatory
+review. See eval/README.md.
 """
 
 from __future__ import annotations
@@ -75,6 +84,10 @@ RATCHET_SETS: tuple[tuple[str, str], ...] = (
 RATCHET_REEXPORTS: tuple[str, ...] = ("eval/caselib/__init__.py",)
 
 REDTEAM_ROUND_GLOB = "eval/caselib/redteam/*/round.json"
+
+# This script, as a path in a tree: the base's copy says which ratchets
+# the base checked (``check_registry``), so dropping one here is caught.
+CHECKER_PATH = "eval/check_ratchets.py"
 
 
 # ── Trees: an old and a new view of the repo, git-backed or fake ────────
@@ -280,8 +293,38 @@ def _binding_sites(tree: ast.Module, name: str, strings: bool = True) -> list[as
     return hits
 
 
-def _where(nodes: list[ast.AST]) -> str:
-    return ", ".join(f"line {getattr(n, 'lineno', '?')}" for n in nodes)
+def _describe(node: ast.AST, name: str) -> str:
+    """What *node* (one of ``_binding_sites``) is, for a failure message
+    — so "2 possible writers" says which, and why each counts."""
+    if isinstance(node, ast.Constant):
+        what = f"a string constant mentioning {name}"
+    elif isinstance(node, ast.alias):
+        what = "a star import" if node.name == "*" else f"an import binding {name}"
+    elif isinstance(node, (ast.Name, ast.Attribute)):
+        what = f"a del of {name}" if isinstance(node.ctx, ast.Del) else f"an assignment to {name}"
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        what = f"def {name}"
+    elif isinstance(node, ast.ClassDef):
+        what = f"class {name}"
+    elif isinstance(node, ast.Global):
+        what = f"global {name}"
+    elif isinstance(node, ast.Nonlocal):
+        what = f"nonlocal {name}"
+    elif isinstance(node, ast.ExceptHandler):
+        what = f"except ... as {name}"
+    elif isinstance(node, ast.arg):
+        what = f"a parameter named {name}"
+    elif isinstance(node, ast.keyword):
+        what = f"a keyword argument {name}=..."
+    elif isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping)):
+        what = f"a match pattern capturing {name}"
+    else:
+        what = f"a {type(node).__name__} naming {name}"
+    return f"{what} at line {getattr(node, 'lineno', '?')}"
+
+
+def _where(nodes: list[ast.AST], name: str) -> str:
+    return "; ".join(_describe(n, name) for n in nodes)
 
 
 def _frozenset_literal(source: str, name: str) -> set[str]:
@@ -298,14 +341,15 @@ def _frozenset_literal(source: str, name: str) -> set[str]:
     shadows = _binding_sites(tree, "frozenset", strings=False)
     if shadows:
         raise _NotAFrozensetLiteral(
-            f"frozenset itself is rebound ({_where(shadows)}), so {name}'s literal cannot be "
+            f"frozenset itself is rebound ({_where(shadows, 'frozenset')}), so {name}'s "
+            "literal cannot be "
             "trusted")
     hits = _binding_sites(tree, name)
     if not hits:
         raise _RatchetNameMissing(f"{name} not found")
     if len(hits) > 1:
         raise _NotAFrozensetLiteral(
-            f"{name} has {len(hits)} possible writers ({_where(hits)}) — this check requires "
+            f"{name} has {len(hits)} possible writers ({_where(hits, name)}) — this check requires "
             "exactly one, a top-level literal assignment, since any other could grow the "
             "ratchet unseen")
     (hit,) = hits
@@ -314,7 +358,7 @@ def _frozenset_literal(source: str, name: str) -> set[str]:
                  or (isinstance(s, ast.Assign) and s.targets == [hit]))), None)
     if stmt is None:
         raise _NotAFrozensetLiteral(
-            f"{name}'s only writer ({_where(hits)}) is not a top-level "
+            f"{name}'s only writer ({_where(hits, name)}) is not a top-level "
             "NAME = frozenset(...) assignment")
     value = stmt.value
     if isinstance(value, ast.Call) and getattr(value.func, "id", None) == "frozenset" \
@@ -333,13 +377,22 @@ def _frozenset_literal(source: str, name: str) -> set[str]:
     raise _NotAFrozensetLiteral(f"{name} is not assigned a literal frozenset(...)")
 
 
-def check_ratchet_set(old: Tree, new: Tree, path: str, name: str) -> list[str]:
-    """*name* (a frozenset in *path*) may only shrink from *old* to *new*."""
+def check_ratchet_set(old: Tree, new: Tree, path: str, name: str,
+                      in_old_registry: bool = False) -> list[str]:
+    """*name* (a frozenset in *path*) may only shrink from *old* to *new*.
+    A ratchet the old tree's own RATCHET_SETS already listed
+    (*in_old_registry*) must be readable in the old tree too: if it is
+    not there, it was renamed or moved, and "nothing to shrink from"
+    would let the renamed set start over at any size."""
     new_text = new.read(path)
     if new_text is None:
-        return []  # file removed entirely — not this check's concern
+        return [f"{path}:{name}: {path} is missing in the new tree — ratchet check cannot "
+                "verify it"]
     old_text = old.read(path)
     if old_text is None:
+        if in_old_registry:
+            return [f"{path}:{name}: listed in the base's RATCHET_SETS, but {path} is missing "
+                    "in the base — ratchet check cannot verify it"]
         return []  # file is new — nothing to have grown from
     try:
         new_set = _frozenset_literal(new_text, name)
@@ -350,15 +403,19 @@ def check_ratchet_set(old: Tree, new: Tree, path: str, name: str) -> list[str]:
                 "cannot verify it"]
     try:
         old_set = _frozenset_literal(old_text, name)
-    except (_NotAFrozensetLiteral, SyntaxError):
-        return []  # didn't exist as a literal before (e.g. just introduced): nothing to shrink from
+    except (_NotAFrozensetLiteral, SyntaxError) as exc:
+        if in_old_registry:
+            return [f"{path}:{name}: listed in the base's RATCHET_SETS, but unreadable in the "
+                    f"base ({exc}) — renamed or moved? Ratchet check cannot verify it"]
+        return []  # a new ratchet (not in the base's registry): nothing to shrink from
     grown = new_set - old_set
     if grown:
         return [f"{path}:{name}: grew by {sorted(grown)} — this list may only shrink"]
     return []
 
 
-def check_reexports(new: Tree, path: str) -> list[str]:
+def check_reexports(new: Tree, path: str,
+                    sets: tuple[tuple[str, str], ...] = RATCHET_SETS) -> list[str]:
     """*path* (a package ``__init__.py`` consumers import the ratchet
     sets through — tests do ``from caselib import UNDOCUMENTED_GAPS``)
     may bind a ratchet name only by re-exporting it unchanged from its
@@ -377,7 +434,7 @@ def check_reexports(new: Tree, path: str) -> list[str]:
         return [f"{path}: does not parse ({exc}) — ratchet re-exports cannot be verified"]
     here = PurePosixPath(path).parent
     problems = []
-    for ratchet_path, name in RATCHET_SETS:
+    for ratchet_path, name in sets:
         defining = PurePosixPath(ratchet_path)
         allowed: set[int] = set()
         if defining.parent == here:
@@ -390,17 +447,87 @@ def check_reexports(new: Tree, path: str) -> list[str]:
         if bad:
             problems.append(
                 f"{path}:{name}: may only be re-exported unchanged (from .{defining.stem} "
-                f"import {name}), but something else here could bind it ({_where(bad)}) — "
+                f"import {name}), but something else here could bind it ({_where(bad, name)}) — "
                 "ratchet check cannot verify it")
     return problems
 
 
-def run_all_checks(old: Tree, new: Tree) -> list[str]:
+class _RegistryError(Exception):
+    pass
+
+
+def _declared(tree: Tree, var: str) -> tuple | None:
+    """The literal value of top-level *var* in *tree*'s own copy of this
+    script (``CHECKER_PATH``): None if that tree has no copy at all, ()
+    if its copy predates *var*. Raises _RegistryError if the copy exists
+    but *var* can't be read as a literal."""
+    text = tree.read(CHECKER_PATH)
+    if text is None:
+        return None
+    try:
+        module = ast.parse(text)
+    except SyntaxError as exc:
+        raise _RegistryError(f"{CHECKER_PATH} does not parse ({exc})") from exc
+    for stmt in module.body:
+        target: ast.expr
+        value: ast.expr | None
+        if isinstance(stmt, ast.AnnAssign):
+            target, value = stmt.target, stmt.value
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id == var and value is not None:
+            try:
+                return tuple(ast.literal_eval(value))
+            except (ValueError, TypeError, SyntaxError) as exc:
+                raise _RegistryError(f"{CHECKER_PATH}: {var} is not a literal ({exc})") from exc
+    return ()
+
+
+def check_registry(old: Tree, sets: tuple[tuple[str, str], ...] = RATCHET_SETS,
+                   reexports: tuple[str, ...] = RATCHET_REEXPORTS) -> list[str]:
+    """Every ratchet the *old* tree's own copy of this script checked
+    (its RATCHET_SETS and RATCHET_REEXPORTS, read from the base, never
+    from the running script) must still be checked now. Without this, a
+    pull request could stop a ratchet being checked — delete its
+    RATCHET_SETS entry, or rename or move the set along with a matching
+    entry — and grow it in the same change, unseen. Retiring or renaming
+    a ratchet is therefore never silent: it always fails this check, so
+    it has to land as its own, deliberate step (see eval/README.md)."""
+    try:
+        old_sets = _declared(old, "RATCHET_SETS")
+        old_reexports = _declared(old, "RATCHET_REEXPORTS")
+    except _RegistryError as exc:
+        return [f"base: {exc} — cannot tell which ratchets must still be checked"]
+    problems = []
+    for entry in old_sets or ():
+        if tuple(entry) not in sets:
+            path, name = entry
+            problems.append(
+                f"{path}:{name}: the base checks this ratchet, but RATCHET_SETS no longer "
+                "does — a ratchet may not be removed, renamed or moved in the same change "
+                "that could grow it")
+    for path in old_reexports or ():
+        if path not in reexports:
+            problems.append(f"{path}: the base checks this module's ratchet re-exports, but "
+                            "RATCHET_REEXPORTS no longer does")
+    return problems
+
+
+def run_all_checks(old: Tree, new: Tree, sets: tuple[tuple[str, str], ...] = RATCHET_SETS,
+                   reexports: tuple[str, ...] = RATCHET_REEXPORTS) -> list[str]:
     problems = list(check_redteam_anchors(old, new))
-    for path, name in RATCHET_SETS:
-        problems += check_ratchet_set(old, new, path, name)
-    for path in RATCHET_REEXPORTS:
-        problems += check_reexports(new, path)
+    problems += check_registry(old, sets, reexports)
+    try:
+        old_sets = {tuple(entry) for entry in _declared(old, "RATCHET_SETS") or ()}
+    except _RegistryError:
+        old_sets = set()  # already reported by check_registry
+    for path, name in sets:
+        problems += check_ratchet_set(old, new, path, name,
+                                      in_old_registry=(path, name) in old_sets)
+    for path in reexports:
+        problems += check_reexports(new, path, sets)
     return problems
 
 
