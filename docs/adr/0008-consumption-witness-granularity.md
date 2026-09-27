@@ -214,6 +214,12 @@ the stream was consumed, not proof that every code was read correctly.
   accepted") must account for.
 - The gate is enforced from the moment content units can be `DECODED`
   (Phase 4a); it is not staged through shadow mode first.
+- Phase 4a's witness narrows the spike's fill-then-stroke
+  de-duplication (causes 5 and 7): the key is (font, glyph, origin),
+  not (glyph, origin), and it applies only to text drawn under `Tr` 2 or
+  6, not to every span on a page that sets either mode. Two fonts can
+  share a glyph id at one origin, and a page can mix modes, so the
+  spike's page-wide (glyph, origin) rule could still remove a real draw.
 
 ## Owner decision (2026-09-27)
 

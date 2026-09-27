@@ -14,7 +14,7 @@ per-file text, per this directory's privacy rule. Reported on both
 denominators (all files, text-bearing files), consistent with the other
 Phase 1 measurements.
 
-It then measures docs/adr/0009's proposed rule on the same warned pages,
+It then measures docs/adr/0009's accepted rule on the same warned pages,
 with pages as units and s1b_consumption_witness.witness(unit_only=True)
 as the per-unit witness:
 

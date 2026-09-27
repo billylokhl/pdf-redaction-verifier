@@ -38,9 +38,13 @@ attachments). Non-standard security handlers (`/Filter` other than
 `/Standard`) are `UNREADABLE` at the document level -- exit `2`, not a
 best-effort skip.
 
-**Key derivation.** Always attempt the empty user password first (per
-Algorithm 2 in the spec). If that fails to authenticate against `/U`
-(or `/UE` for R5/R6), the file needs a real user password we don't
+**Key derivation.** Always attempt the empty user password first. For
+R2-R4 the key comes from Algorithm 2 in the spec and is authenticated
+against `/U`. For R5/R6 the password is authenticated against `/U`'s
+validation salt (the hash of the password with that salt must equal
+`/U`'s first 32 bytes); `/UE` only unwraps the file key once that check
+passes, and the decrypted `/Perms` must then also check out. If
+authentication fails, the file needs a real user password we don't
 have: exit `2` -- unchanged from today's behavior (see Correction
 above). No password is ever logged, retried against a wordlist, or
 otherwise brute-forced.
@@ -66,8 +70,8 @@ a dependency, the same way `pymupdf` is pinned. Phase 3a must also:
   (`xref_stream_raw`) -- this was not checked in this pass and is
   currently **unconfirmed**.
 
-**The one thing not chosen (option 1, hand-rolled key derivation) would
-have added is searching dead bodies in an encrypted file; those stay
+**The one thing option 1 (not chosen: hand-rolled key derivation) would
+have added is searching dead bodies in an encrypted file. Those stay
 `FLAGGED` under pikepdf too (no second decryption exists for them), so
 the difference was exit `1` versus `2` when a secret sits in one --
 never a false `0` either way.** See "Options considered" below for the

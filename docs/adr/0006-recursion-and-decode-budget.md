@@ -91,7 +91,7 @@ times the flat cap.
 
 **A per-page cap alone is not enough either -- review correctly pointed
 out it contradicts §4's "one Budget for the whole run" framing and
-Principle 6 ("Limits are work-based... "; a per-page-only cap has no
+Principle 6 ("Limits are work-based... "); a per-page-only cap has no
 whole-run ceiling at all, which is exactly the kind of unbounded-total
 resource use Principle 4's hostile-input handling exists to prevent.**
 The corrected design keeps both: 200 Mpx per page (comfortably above one
@@ -145,9 +145,9 @@ Owner decision: "approve all recommendations."
 
 - **Accept the four numeric bounds as placeholders** (depth 25, units
   200,000, inflated bytes 2 GiB, OCR 200 Mpx/page) -- sized by analogy
-  and corpus headroom, not a dedicated adversarial stress spike, and
-  acceptable to ship as-is on that basis. No stress spike is commissioned
-  now.
+  and corpus headroom, not a dedicated adversarial stress spike. They
+  are re-derived in Phase 3a, and Phase 3d's gate (bomb/hang cases exit
+  `2`) is where they are stress-tested.
 - **Re-derive units in Phase 3a** once it can enumerate real units
   (including ObjStm members and decoder-discovered children) -- 200,000
   is a placeholder, not a number to carry forward as measured.

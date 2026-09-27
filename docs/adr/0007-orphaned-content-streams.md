@@ -71,9 +71,9 @@ first version did not state:**
    xref table does not index -- is a different phenomenon this function
    cannot see (`eval/spikes/inventory_lite.py`'s byte tiler is the tool
    that would find those, as unindexed bytes that happen to parse as an
-   object; see docs/adr/0003's unindexed-byte measurement, which found
-   none matching this exact shape in this corpus, but did not
-   specifically search for it either).
+   object; see `eval/spikes/RESULTS.md`'s unindexed-byte section, whose
+   three observed shapes include none matching this exact one in this
+   corpus, though it did not specifically search for it either).
 
 The "two outliers" framing (2 files at 356 each) is kept as a real,
 useful observation about *distribution* (median 1, most affected files

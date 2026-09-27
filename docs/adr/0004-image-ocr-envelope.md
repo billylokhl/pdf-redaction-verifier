@@ -53,6 +53,9 @@ longer sufficient for `DECODED` on its own.
   lookup, and is out of scope for Phase 1. JBIG2Decode and JPXDecode are
   in scope only once MuPDF decodes them to raw samples first -- the
   envelope check runs on the decoded bitmap, never the compressed bytes.
+  (The raw matcher is a different matter: per docs/adr/0003's governing
+  rule it runs over every filter-chain stage, the compressed bytes the
+  codec consumes included.)
 - **Dimensions**: the upper bound is `10,000` px per side. For the lower
   bound, **do not simply exclude every image below some floor from the
   envelope and flag it** (see Measurement below: 248 images under 8 px
@@ -63,15 +66,21 @@ longer sufficient for `DECODED` on its own.
   (`verify.py`'s `_MIN_TEXT_IMAGE_SIDE` = 8 and
   `_MIN_TEXT_IMAGE_LENGTH` = 32: an image under 8 px on its short side
   *or* under 32 px on its long side is too small for text to plausibly
-  fit, so it is excused from `DECODED` scrutiny the same way it is
-  excused from being flagged today) -- **and** always run
-  docs/adr/0003's raw-byte matcher pass over the decoded samples
-  regardless of size, closing the actual gap (a value hidden in small
-  sample data) without the size-floor cost. (An earlier version of this
-  ADR called the floor "not keeping today's gate's intent" and treated
-  flagging every sub-floor image as a deliberate strictness increase;
-  measurement showed that increase is neither free nor obviously
-  justified, so the recommendation is reversed here.)
+  fit). **Such an image is outside the envelope but is not `FLAGGED`:
+  it is discharged as `NOT_APPLICABLE` under docs/adr/0003's reason 4,
+  without OCR and without a recall bound** (owner decision, 2026-09-27),
+  on two conditions: (a) every filter-chain stage of its bytes, encoded
+  and decoded, has been raw-searched (value rules, and pattern classes
+  at review tier), which closes the actual gap (a value hidden in small
+  sample data or in codec metadata) without the size-floor cost; and
+  (b) its **actual decoded** sample dimensions and sample count, not
+  merely the declared `/Width` and `/Height`, are under the floor. A
+  declared-small image whose payload decodes to more samples than
+  declared is `FLAGGED`. (An earlier version of this ADR called the
+  floor "not keeping today's gate's intent" and treated flagging every
+  sub-floor image as a deliberate strictness increase; measurement
+  showed that increase is neither free nor obviously justified, so that
+  version's position was reversed.)
 - **Total pixels**: `width * height <= 35,000,000` (35 Mpx), taken as a
   fixed cap rather than the plan's floor.
 - **Mask type**: an `/SMask` or `/Mask` is only accepted when its own
@@ -79,7 +88,9 @@ longer sufficient for `DECODED` on its own.
   a stencil mask (`/ImageMask true`) is OCR'd directly after `/Decode`.
   Any other mask shape is outside the envelope.
 
-Outside the envelope, or on conversion failure, the unit is `FLAGGED`.
+Outside the envelope, or on conversion failure, the unit is `FLAGGED`
+-- except an image under the size floor that meets both conditions
+above, which is `NOT_APPLICABLE`.
 **Inside** the envelope, until a recall bound exists, an OCR-clean result
 is *also* `FLAGGED` (not `DECODED`) -- the envelope narrows what gets
 attempted; it does not yet certify a clean attempt.
@@ -127,14 +138,16 @@ image object's `/Width`/`/Height` directly (no decompression needed):
 | ...of which not under 8 px (the 8×32 rule's addition) | 51 images in 13 files | 11 images in 1 file |
 | Images over the 35 Mpx cap | 2 images in 1 file | 2 images in 1 file |
 
-**Recommendation, corrected**: rather than flagging every one of these
+**Decision, corrected**: rather than flagging every one of these
 images under the new envelope (a real, avoidable review-rate cost),
 apply today's 8×32 `_text_sized` excusal to decide when a small image
 is *worth flagging at all* -- i.e. keep today's judgment that a
 genuinely small image (an icon, a bullet, a checkbox glyph) is
 implausible as a text carrier and excuse it -- **and** always still run
-docs/adr/0003's raw-byte matcher pass over its decoded samples
-regardless of size. This keeps the strictness increase docs/adr/0003's
+docs/adr/0003's raw-byte matcher pass over every filter-chain stage of
+its bytes regardless of size. These counts use the declared
+`/Width`/`/Height`; the discharge itself checks the actual decoded
+sample dimensions (Decision, above). This keeps the strictness increase docs/adr/0003's
 hidden-image case actually needs (byte content is always searched)
 without also flagging 299 ordinary icons (235 in text-bearing files)
 that were never going to be `DECODED` as text anyway.
@@ -148,11 +161,15 @@ that were never going to be `DECODED` as text anyway.
   activity that happens after enforcement ships.
 - No strictness regression claim is made or needed: every leftover image
   that exits `2` today keeps exiting `2` (or worse) under this design,
-  because nothing here grants `DECODED` yet.
+  because nothing here grants `DECODED` yet, and the one `NOT_APPLICABLE`
+  discharge (a sub-floor image) covers only images whose declared size
+  today's tool already excuses (`verify._is_text_sized_image` reads the
+  declared `/Width`/`/Height`) -- now also requiring the decoded size to
+  be under the floor, and with all their bytes searched.
 - The Indexed-base restriction is an implementation-facing correction
   that does not change a measured rate in this pass (no
   Separation/DeviceN-based Indexed images in the corpus). The size-floor
-  recommendation does change a real rate: reusing today's 8×32
+  decision does change a real rate: reusing today's 8×32
   `_text_sized` excusal instead of flagging every small image avoids
   flagging 299 images in 51 files (2.5% of all files) -- 235 images in
   27 files (5.6% of text-bearing files) -- that were never going to
@@ -167,9 +184,19 @@ Owner decision: "approve all recommendations."
   sooner.
 - **Keep today's 8x32 `_text_sized` excusal** for the envelope's lower
   size bound (299 images in 51 files, 2.5% of all files; 235 in 27,
-  5.6% of text-bearing) **while still always raw-searching sample
-  bytes** per docs/adr/0003's governing rule, rather than flagging every
-  small image under the new envelope.
+  5.6% of text-bearing) **while still always raw-searching every
+  filter-chain stage of the image's bytes** (encoded and decoded) per
+  docs/adr/0003's governing rule, rather than flagging every small image
+  under the new envelope.
+- **Small images (owner decision, 2026-09-27, taken after the approval
+  above).** An image under the 8×32 floor is discharged under
+  docs/adr/0003's `NOT_APPLICABLE` reason 4 without OCR and without a
+  recall bound, but only once all its bytes (every filter-chain stage,
+  encoded and decoded) have been raw-searched (value rules, and pattern
+  classes at review tier), and only if its **actual decoded** sample
+  dimensions and count, not merely its declared `/Width` and `/Height`,
+  are under the floor. A declared-small image whose payload decodes to
+  more samples than declared is `FLAGGED`.
 - **The 35 Mpx per-image cap stands** as specified -- it already
   excludes two real 38.3 Mpx images in one text-bearing file. It is
   **not yet independently verified against Apple Vision's actual request

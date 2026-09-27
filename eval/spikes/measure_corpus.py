@@ -178,7 +178,7 @@ def measure_orphaned_streams(files: list[Path], text_bearing: set[Path]) -> dict
 
 # ── (c) parser-agreement flag rate ──────────────────────────────────────
 #
-# Benign categories (docs/adr/0002, "proposed" -- tightened after review):
+# Benign categories (docs/adr/0002, accepted -- tightened after review):
 # a wrong/zero xref offset is benign only when the inventory's own raw
 # byte scan finds NO body for that object number anywhere in the file
 # (nothing was actually lost); a duplicated dictionary key is benign only

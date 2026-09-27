@@ -38,6 +38,16 @@ warned page would excuse 7 pages carrying filter/decode warnings, all 7
 at 0 codes = 0 glyphs -- the stream decoded to nothing that shows text,
 which is balance only in the most useless sense.
 
+Guard 2 below only helps when the filter loss produces a warning. A
+filter can also lose text silently: a Flate stream whose second zlib
+member holds a `Tj` (bytes after the first member's end marker) is
+dropped by MuPDF with no warning, and the witness balances on what is
+left -- known gap K1 (REDESIGN §8). The backstop for that is not this
+rule but Phase 4d's filter-chain stage, which turns bytes after a
+filter's end marker into a `RESIDUE` child that is raw-searched and
+flagged if non-whitespace (REDESIGN §4, "Filtered stream"; §5, 4d:
+"K1, K2 closed").
+
 **A warned unit is excused from the "not `DECODED`" rule only when all
 of the following hold:**
 
@@ -50,11 +60,23 @@ of the following hold:**
    only by that image's own witness** (Phase 4b, docs/adr/0004), never
    by a text-code count on the page that draws it. Until Phase 4b, a
    unit carrying one stays flagged.
-4. **The warning belongs to the unit the witness measured.** Measured
-   with pages as units, the witness compares the page's own content
-   stream (annotations and widgets removed), while the warnings were
-   collected with them present; a warning from an annotation's appearance
-   stream must be vouched for by that annotation's own unit.
+4. **The warning belongs to the unit the witness measured.** A warning
+   raised while the interpreter runs any other unit in the same window
+   -- an annotation's or widget's appearance stream, a Form XObject, a
+   Type3 glyph procedure, a pattern, a soft-mask group -- must be
+   vouched for by that unit's own witness, never by the witness of the
+   unit whose run happened to trigger it. (Measured with pages as units,
+   the witness compares the page's own content stream, annotations and
+   widgets removed, while the warnings were collected with them present;
+   the measurement below applies this guard to annotations and widgets
+   only.) With guard 5, the owning unit's own later run may be silent
+   (MuPDF emits some warnings only on the first load of a resource), so
+   the warning is on record only for the run that first triggered it.
+   That does not open a false exit `0`: the warning is still vouched for
+   only by the owning unit's witness, a family guard 2's allowlist has
+   not reviewed is never excused whichever unit carries it, and the
+   verdict is per file, so a warning left unexcused on any unit keeps
+   the whole file from exiting `0`.
 5. **Warnings are collected by running the interpreter first, on a
    freshly opened document.** MuPDF emits some warnings only the first
    time it loads a resource, so an earlier pass on the same document
@@ -135,7 +157,7 @@ witness):
 | --- | --- | --- |
 | Raw rule (any warning → not `DECODED`) | 221 of 484 (45.7%) | 0 of 453 |
 | Witness balances, no guards | 3 of 221 (1.4%) | 436 of 453 |
-| **Witness balances, guards 1-3** | **34 of 221 (15.4%) -- 7.0% of the 484 text-bearing files** | **403 of 453** |
+| Witness balances, guards 1-3 | 34 of 221 (15.4%) -- 7.0% of the 484 text-bearing files | 403 of 453 |
 | **Guards 1-4 (annotated pages not excused) -- the decided rule** | **37 of 221 (16.7%) -- 7.6% of 484** | **395 of 453** |
 
 - Without the guards, the rule would excuse 31 pages carrying JPEG 2000
@@ -148,7 +170,7 @@ witness):
   XObject the spike does not measure -- plus 2 that use an unmodelled
   CJK CMap and 2 that carry a filter warning.
 - 41 warned pages carry annotations or widgets; guards 1-3 excuse 8 of
-  them on the page-content witness alone, which guard 4 would not.
+  them on the page-content witness alone, which guard 4 does not.
 - All files, guards 1-3: 39 of the 227 warned files stay flagged
   (17.2%), 1.9% of all 2,031.
 
@@ -157,9 +179,9 @@ witness):
 - Raw, at 45.7% of text-bearing files, this is a materially larger
   review-rate contributor than docs/adr/0002's parser-agreement warnings
   (7.2% text-bearing) or docs/adr/0007's orphaned streams (11.4%
-  text-bearing). Under the guarded rule it falls to 7.0-7.6% of
-  text-bearing files, most of it images (Phase 4b) and forms (Phase 4a)
-  that the spike does not witness yet.
+  text-bearing). Under the accepted guarded rule it falls to 7.6% of
+  text-bearing files (7.0% without guard 4), most of it images (Phase
+  4b) and forms (Phase 4a) that the spike does not witness yet.
 - The guards key partly on warning text, which this ADR shows is
   version-sensitive: a renamed filter warning would slip past guard 2 if
   it were implemented as "excusable unless recognised as a filter

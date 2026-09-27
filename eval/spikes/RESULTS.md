@@ -14,7 +14,7 @@ every number held except the interpretation-warning rate, which fell
 from 32.2% to 11.2% of all files but only from 53.5% to 45.7% of
 text-bearing files -- see that section below. The fourth pass fixed two
 more bugs in the S1b witness spike (which explained its whole remaining
-residual), measured docs/adr/0009's proposed rule, and extended the
+residual), measured docs/adr/0009's then-proposed (since accepted) rule, and extended the
 image-size measurement to today's 8×32 rule and the 35 Mpx cap. Every
 number below is the latest corrected one, and states which script
 produced it. See each ADR's own "Measurement" / "Correction" section for
@@ -72,8 +72,8 @@ date is -- folding it into the four-class union overstates the case for
 demotion by roughly double. `credit-card`'s 0% is a sample-size limit (no
 corpus file happens to contain a Luhn-valid, non-date digit run of the
 right length), not evidence its validator would reject a real false
-positive if one existed. See docs/adr/0005 for the decision this changes
-(recommend built-ins stay hard until Phase 5).
+positive if one existed. See docs/adr/0005 for the decision this informed
+(built-ins stay hard until Phase 5; accepted).
 
 ## Parser-agreement flag rate -- docs/adr/0002
 
@@ -136,7 +136,8 @@ Byte-level rate is vanishingly small either way; three observed shapes
 (ExifTool `%BeginExifToolUpdate` markers, a linearized file's repeated
 header comment, one file with a genuinely unreachable xref table --
 confirmed independently by `qpdf --check` also needing to repair it) are
-described in detail in docs/adr/0003 and 0007.
+described only here; the ADRs (docs/adr/0007, for one) point to this
+section rather than repeat it.
 
 **Object-count distribution** (same script, `inventory_lite.tile()`'s
 `object_count` field, cited by docs/adr/0006): median 13, 95th percentile
@@ -164,9 +165,10 @@ be worth flagging as a leftover.
 
 The first version of docs/adr/0004 claimed no small images existed in
 this corpus, and the second that none came near 35 Mpx; both corrected
-here. See docs/adr/0004 for the resulting recommendation (excuse via
-today's 8×32 `_text_sized` rule with samples still raw-searched, don't
-flag every one).
+here. See docs/adr/0004 for the resulting decision (accepted: excuse
+via today's 8×32 `_text_sized` rule, checked against the decoded size,
+with every filter-chain stage of the image's bytes still raw-searched;
+don't flag every one).
 
 ## Interpretation warnings -- docs/adr/0009
 
@@ -218,8 +220,8 @@ text count.
 | --- | --- | --- |
 | Raw rule | 221 of 484 (45.7%) | 0 of 453 |
 | Witness balances, no guards | 3 of 221 (1.4%) | 436 of 453 |
-| **Witness balances, guards 1-3** | **34 of 221 (15.4%); 7.0% of 484** | **403 of 453** |
-| Also not excusing warned pages with annotations/widgets | 37 of 221 (16.7%); 7.6% of 484 | 395 of 453 |
+| Witness balances, guards 1-3 | 34 of 221 (15.4%); 7.0% of 484 | 403 of 453 |
+| **Guards 1-4, also not excusing warned pages with annotations/widgets -- the accepted rule** | **37 of 221 (16.7%); 7.6% of 484** | **395 of 453** |
 
 Without the guards, 31 pages carrying JPEG 2000 warnings and 2 carrying
 filter warnings (both at 0 = 0; 7 across all files, all at 0 = 0) would
@@ -233,7 +235,8 @@ This is the real cost of REDESIGN §4's "any MuPDF warning while
 interpreting the stream also means not `DECODED`" as literally written,
 **as of the currently pinned PyMuPDF version** -- 11.2%/45.7%
 (all/text-bearing), still the single largest Phase 1 review-rate
-finding, and 7.0% of text-bearing files under the guarded rule. A
+finding, and 7.6% of text-bearing files under the accepted guarded rule
+(7.0% without guard 4). A
 category that disappears on a routine dependency bump was never a stable
 signal about document content, so a name-based benign/not-benign list
 would silently change behaviour on the next upgrade. See docs/adr/0009.

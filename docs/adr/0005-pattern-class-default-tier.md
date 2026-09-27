@@ -28,9 +28,9 @@ an accepted decision. That directly contradicts:
   review" is one of *Phase 5's* two named options, not Phase 1's to
   spend early).
 
-This version reverses that: it treats the tier question as the owner's
-call, proposes options, and recommends the one that does not violate the
-transition invariant.
+The second version reversed that: it treated the tier question as the
+owner's call and set out options, and the owner chose the one that does
+not violate the transition invariant (Owner decision, below).
 
 ## Decision
 
@@ -41,8 +41,8 @@ ships its own fix.** This keeps Phase 2's differential gate meaningful
 (no case's expected tier needs to change just to move code around) and
 does not pre-empt Phase 5's own decision between its two named options.
 
-**Cases this would affect if demoted instead** (so the owner can weigh
-the size of the change): `eval/caselib/families/live.py`'s
+**Cases a demotion would have affected** (the size of the change the
+owner weighed when deciding): `eval/caselib/families/live.py`'s
 `page.visible-pattern-rule` case (its only expected finding is
 `("Any SSN", "live")`); every `page_text_labels.py` grid entry whose
 expected findings list is exactly `(("Any SSN", "live"),)` (the
@@ -51,9 +51,10 @@ expected findings list is exactly `(("Any SSN", "live"),)` (the
 these currently expect exit `1`. (`families/layout.py`'s one SSN-class
 case, `layout.undashed-ssn-wrapped`, is not on this list: it already
 expects exit `2`, a review warning, so a demotion would not relabel it.)
-Demoting the class would need every one on the list relabelled to expect
-`2` (or a mixed hard/review finding set) *before* Phase 2's differential
-gate could pass -- this is Phase 2 work, not a Phase 1 ADR's to do.
+Demoting the class would have needed every one on the list relabelled
+to expect `2` (or a mixed hard/review finding set) *before* Phase 2's
+differential gate could pass -- Phase 2 work, not a Phase 1 ADR's to do,
+and not needed under the decision taken.
 
 ## Options considered
 
@@ -98,10 +99,10 @@ validated `email` match is not one by this ADR's own reasoning above --
 it is a true positive for "there is an email address here." Folding it
 into a single headline number overstates the case for demotion by
 roughly double. 23.1% (text-bearing, `ssn`/`us-phone` only) is still far
-above the plan's originally cited 7.5-13% -- worth flagging to the owner
-as a possible sign that Phase 5's work is more urgent, or more involved,
-than the plan's original estimate assumed, but the number to cite going
-forward is 23.1%, not 45.5%.
+above the plan's originally cited 7.5-13% -- a possible sign, put
+before the owner with this decision, that Phase 5's work is more urgent,
+or more involved, than the plan's original estimate assumed, but the
+number to cite going forward is 23.1%, not 45.5%.
 
 This measurement's own scope is a lower bound, stated plainly: it scans
 page **text** only, not Metadata (XMP/Info) or Objects (string literals,
@@ -111,12 +112,11 @@ capped by it.
 
 ## Consequences
 
-- No verdict changes as a result of this ADR: the recommended default
+- No verdict changes as a result of this ADR: the decided default
   (option 1) is "change nothing yet."
-- The case-list above is the concrete input Phase 2's implementers need
-  if the owner instead picks option 2 or 3 -- relabel those cases'
-  expected findings/tiers before the Move, or Phase 2's differential
-  gate will (correctly) fail on them.
+- The case-list above is kept as history: it is what options 2 and 3
+  (not chosen) would have required relabelling before the Move. If
+  Phase 5 later demotes a class, it is where that relabelling starts.
 - This ADR does not claim any effect on downstream CI gates beyond
   Phase 2's differential -- the first version's discussion of scorecard
   behavior under demotion is removed as unsupported speculation.

@@ -113,9 +113,11 @@ review rate" targets) would obviously tolerate without further work.
 ## Consequences
 
 - This ADR does not close the affordability question REDESIGN §4 raised
-  -- it corrects a wrong answer to it. A 7.2% review-rate contribution
-  from parser agreement alone is a real cost the owner needs to weigh
-  against the plan's Phase 3c gate ("Flag rate as measured in Phase 1").
+  -- it corrects a wrong answer to it. The owner accepted the two benign
+  categories and the two known gaps, not the rate: whether a 7.2%
+  review-rate contribution from parser agreement alone is affordable is
+  judged by the plan's existing Phase 3c gate ("Flag rate as measured in
+  Phase 1"), against the real object-set/page-tree comparison.
 - Category 1's fix requires the byte-tiler's own object-header scan to be
   available wherever parser-agreement is judged (already true in
   `inventory_lite.py`/the eventual Phase 3a inventory) -- it is not a
@@ -172,12 +174,12 @@ Owner decision: "approve all recommendations."
 
 - **Accept the two benign categories** (a wrong/zero xref offset only
   when no body exists anywhere for that object number; a duplicated key
-  only when both occurrences' values are textually identical) **and the
-  measured combined refined flag rate** (2.9% of all files, 7.2% of
-  text-bearing files) as affordable to ship as-is -- keeping in mind the
-  rate is from the warning-based proxy, not the real
-  object-set/page-tree comparison, which Phase 3c must re-measure
-  against before treating it as settled.
+  only when both occurrences' values are textually identical).
+- **The measured flag rate is not itself accepted here.** The combined
+  refined rate (2.9% of all files, 7.2% of text-bearing files) comes
+  from the warning-based proxy, not the real object-set/page-tree
+  comparison; Phase 3c re-measures it against that comparison, and its
+  existing gate judges whether the rate is affordable.
 - **Accept both known check gaps** -- ObjStm offset bodies (rule 1 is
   fail-open for an object compressed into an `/ObjStm`); duplicate keys
   compared on the first token only (does not distinguish an indirect

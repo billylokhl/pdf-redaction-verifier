@@ -6,9 +6,9 @@ is the decision this measures).
 The claim being tested: MuPDF's content-stream interpreter silently
 skips or reshapes some input rather than raising, so a decoder that
 trusts `get_texttrace()` alone can miss text a redactor left behind, or
-misjudge how much was drawn. The proposed defence is a witness: our own
-content tokenizer counts the character *codes* passed to every
-text-show operator (dividing each shown string's length by its font's
+misjudge how much was drawn. The defence (REDESIGN §4, docs/adr/0008,
+accepted) is a witness: our own content tokenizer counts the character
+*codes* passed to every text-show operator (dividing each shown string's length by its font's
 code length -- 1 byte for a simple font, 2 for an Identity-H/V Type0
 font) and this must equal the number of glyphs MuPDF reports in the
 page's texttrace, after excluding a texttrace char entry that is a
