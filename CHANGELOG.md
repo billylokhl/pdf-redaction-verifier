@@ -30,6 +30,8 @@ Four bugs found by a post-merge adversarial review, all in the eval/gallery tool
 
 **Dependencies**: PyMuPDF 1.27.2.3 → 1.28.2 (plus pyyaml, pytest, pytest-cov patch/minor bumps). The case library's generated PDFs change byte-for-byte (lock regenerated), but the scorecard shows no verdict change on any case.
 
+Hash-locked dependencies via `uv.lock` (resolved for macOS and Linux, Python 3.10–3.13), so a silent upstream change can no longer alter a verdict. Lint tools (ruff, mypy) moved from an ad hoc unpinned `pip install` in CI to a pinned `dev` dependency group. CI now installs with `uv sync --locked` (failing the build if the lock drifts from `pyproject.toml`) instead of `pip install -e`, and Dependabot's `pip` ecosystem switched to `uv`. uv itself is pinned to 0.12.3 (`[tool.uv].required-version` in `pyproject.toml`, matched by every CI `setup-uv` step's `version:`), since a different uv binary can resolve or install differently even against an identical lock file.
+
 ### Verdict changes
 The following changes can move a file's exit code:
 - **Exit 0 → 2**: Files with compactly written content streams (no spaces between operators), long inline images or text in leftover streams without BT operators, or font-before-BT patterns in leftover streams (now properly tokenized). The scanner cannot certify these files as fully clean because it cannot reliably extract the content.

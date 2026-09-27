@@ -32,6 +32,12 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "pytest-cov==7.1.0"]
 
+[dependency-groups]
+# Lint tools, pinned exact like everything else here: CI's lint job
+# installs from these instead of an unpinned `pip install ruff mypy`, so a
+# new tool release can't change what "clean" means out from under a PR.
+dev = ["ruff==0.16.9", "mypy==2.3.1"]
+
 [project.scripts]
 pdf-verify = "verify:run_cli"
 
@@ -40,6 +46,21 @@ py-modules = ["verify"]
 
 [tool.setuptools.dynamic]
 version = {attr = "verify.__version__"}
+
+[tool.uv]
+# Pin the uv binary itself, not just the lock: a different uv version can
+# resolve or install differently even against the same uv.lock. CI's
+# setup-uv steps pass a matching `version:`; this makes a local uv refuse
+# to run at all if it doesn't match, rather than silently drifting.
+required-version = ">=0.12.3,<0.13"
+# requires-python is an open-ended ">=3.10"; without a cap uv's universal
+# resolver would also have to solve for not-yet-released interpreters.
+# The lock only needs to cover what CI and the README actually promise
+# (3.10 through 3.13).
+required-environments = [
+    "python_version >= '3.10' and python_version < '3.14' and sys_platform == 'darwin'",
+    "python_version >= '3.10' and python_version < '3.14' and sys_platform == 'linux'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
