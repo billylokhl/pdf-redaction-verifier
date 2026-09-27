@@ -14,9 +14,9 @@ requires-python = ">=3.10"
 # Pinned for reproducibility: this is a verification tool whose verdict
 # gates releases, so a silent upstream change must not change a verdict.
 dependencies = [
-    "pymupdf==1.27.2.3",
+    "pymupdf==1.28.2",
     # Reading a redactor's redact_config.yaml as a shared rules file.
-    "pyyaml==6.0.2",
+    "pyyaml==6.0.3",
     # Apple Vision OCR bridge. The marker is the whole point: these are
     # required on macOS (without them the OCR layer degrades and the run
     # exits 2, never a certified clean) and impossible anywhere else, so
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest==9.0.3", "pytest-cov==6.0.0"]
+test = ["pytest==9.1.1", "pytest-cov==7.1.0"]
 
 [project.scripts]
 pdf-verify = "verify:run_cli"
