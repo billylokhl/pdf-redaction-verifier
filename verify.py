@@ -84,68 +84,76 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NoReturn, Sequence
 
 # ──────────────────────────────────────────────────────────────────────────
-# Third-party imports (fail with a clear message, not a traceback)
+# Third-party and first-party imports (fail with a clear message, not a
+# traceback): an operational failure must exit 2, never fall through to
+# Python's default traceback + exit 1, which this code otherwise shares
+# with "secret found".
 # ──────────────────────────────────────────────────────────────────────────
+def _fatal_import(what: str, exc: BaseException) -> NoReturn:
+    """Report a fatal import-time failure and exit 2 — defensively.
+
+    Every guard below catches BaseException, not just ImportError or
+    Exception: a corrupt or partial install, a bytecode/ABI mismatch, or
+    any other failure while executing a dependency's module bodies (a
+    SyntaxError, an AttributeError, …) must exit 2 the same way a missing
+    dependency does. Exception alone is not broad enough —
+    SystemExit/KeyboardInterrupt (and GeneratorExit, asyncio's
+    CancelledError, …) are BaseException, not Exception, so a stub or a
+    corrupt module calling sys.exit() at import time, or a Ctrl-C or
+    cancellation during import, would otherwise slip straight through as
+    the process's own exit code — silently, with no message at all. A
+    Ctrl-C here exiting 2 (rather than the interpreter's usual 130) is
+    acceptable: this runs before any scanning has started, and the
+    fail-closed contract does not carve out an exception for it.
+
+    Formatting *exc* is itself untrusted: an ImportError subclass's (or
+    anything else's) __str__ is arbitrary code and can raise, which must
+    not turn this handler into a second, worse traceback in place of the
+    first. Every step here is wrapped accordingly, down to the write
+    itself.
+    """
+    try:
+        detail = f"{type(exc).__name__}: {exc}"
+    except BaseException:
+        try:
+            detail = type(exc).__name__
+        except BaseException:
+            detail = "unknown error"
+    try:
+        sys.stderr.write(
+            f"[ERROR] cannot import {what} ({detail}); install it or run "
+            "verify.py from the repository\n"
+        )
+    except BaseException:
+        pass
+    sys.exit(2)
+
+
 try:
     import fitz  # PyMuPDF
 except BaseException as exc:  # pragma: no cover
-    # BaseException, not Exception: a corrupt install, a bytecode/ABI
-    # mismatch, or any other failure importing this dependency must exit
-    # 2 (operational failure), never fall through to a traceback and
-    # Python's default exit 1 — which this code otherwise shares with
-    # "secret found". Exception alone is not broad enough — SystemExit
-    # and KeyboardInterrupt are BaseException, not Exception, so a stub
-    # or a corrupt module calling sys.exit() at import time (or a Ctrl-C
-    # during import) would otherwise slip straight through as the
-    # process's own exit code, silently, with no message at all. A Ctrl-C
-    # here exiting 2 (rather than the interpreter's usual 130) is
-    # acceptable: this code has not started scanning anything yet, and
-    # the fail-closed contract does not carve out an exception for it.
-    sys.stderr.write(
-        f"[ERROR] cannot import PyMuPDF ({type(exc).__name__}: {exc}); "
-        "install it: pip install pymupdf\n"
-    )
-    sys.exit(2)
+    _fatal_import("PyMuPDF", exc)
 
 try:
     import Vision
     from Foundation import NSData
 
     _OCR_IMPORTS_OK = True
-except (SystemExit, KeyboardInterrupt) as exc:  # pragma: no cover
-    # Checked before the broad Exception catch below (order matters):
-    # unlike a merely missing or broken OCR bridge, an import that itself
-    # calls sys.exit() or is interrupted must stop the tool loudly here,
-    # not be swallowed into a silent "OCR unavailable" degrade.
-    sys.stderr.write(
-        f"[ERROR] cannot import the OCR bridge (Vision) "
-        f"({type(exc).__name__}: {exc})\n"
-    )
-    sys.exit(2)
 except Exception:  # pragma: no cover
-    # Broad on purpose, same reasoning as the PyMuPDF guard above — but
-    # the design here is to degrade, not exit: any ordinary failure
-    # importing the OCR bridge (missing package, or a corrupt pyobjc
-    # install) means OCR is simply unavailable on this machine. That
-    # already surfaces later as an OCR_UNAVAILABLE warning (fail-closed:
-    # exit 2, never a silent clean verdict) rather than a crash, so it is
-    # not itself an operational failure worth a stderr message here.
+    # Broad on purpose, but the design here is to degrade, not exit: any
+    # ORDINARY failure importing the OCR bridge (missing package, or a
+    # corrupt pyobjc install) means OCR is simply unavailable on this
+    # machine. That already surfaces later as an OCR_UNAVAILABLE warning
+    # (fail-closed: exit 2, never a silent clean verdict) rather than a
+    # crash, so it is not itself an operational failure worth a stderr
+    # message here. Checked BEFORE the BaseException clause below (order
+    # matters: Exception is itself a BaseException, so the reverse order
+    # would make this clause unreachable) — that one exists precisely for
+    # what this one must NOT swallow: see _fatal_import's docstring.
     _OCR_IMPORTS_OK = False
+except BaseException as exc:  # pragma: no cover
+    _fatal_import("the OCR bridge (Vision)", exc)
 
-# ──────────────────────────────────────────────────────────────────────────
-# First-party package import (fail with a clear message, not a traceback —
-# same contract as the third-party imports above: an operational failure
-# must exit 2, never fall through to Python's default traceback + exit 1,
-# which this code otherwise shares with "secret found"). Catches
-# BaseException, not just ImportError or even Exception: a corrupt or
-# partial install, a bytecode/ABI mismatch, or any other failure while
-# executing the package's module bodies (a SyntaxError, an
-# AttributeError, …) must exit 2 the same way a missing package does —
-# and SystemExit/KeyboardInterrupt are BaseException, not Exception, so
-# Exception alone would let a module that calls sys.exit() at import time
-# (or a Ctrl-C during import) slip through as the process's own silent
-# exit code instead of this guard's message.
-#
 # docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
 # normalizer/value matcher, the pattern-class scanning engine and the
 # rules loader now live in redaction_verifier.model, .matching and
@@ -201,12 +209,7 @@ try:
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
 except BaseException as exc:  # pragma: no cover
-    sys.stderr.write(
-        f"[ERROR] cannot import redaction_verifier "
-        f"({type(exc).__name__}: {exc}); install the package or run "
-        "verify.py from the repository\n"
-    )
-    sys.exit(2)
+    _fatal_import("redaction_verifier", exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -264,46 +267,6 @@ EXIFTOOL_FILESYSTEM_FIELDS: frozenset[str] = frozenset({
     "FileInodeChangeDate",
     "FilePermissions",
 })
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Moved to redaction_verifier (docs/REDESIGN.md §4, §6 "Move, don't wrap"):
-# the pure data model, the normalizer/value matcher and the pattern-class
-# scanning engine now live in redaction_verifier.model and
-# redaction_verifier.matching. Re-exported here so existing `verify.X`
-# references, imports and the CLI keep working unchanged.
-# ──────────────────────────────────────────────────────────────────────────
-# Every name is imported `as` itself (the explicit re-export convention,
-# recognized by ruff's F401) because verify.py's OWN code below no longer
-# defines these — it just uses them — while tests and other callers still
-# reach them as `verify.X`.
-from redaction_verifier.model import ADJACENCY as ADJACENCY  # noqa: E402
-from redaction_verifier.model import LAYERS as LAYERS  # noqa: E402
-from redaction_verifier.model import STORAGE_CLASSES as STORAGE_CLASSES  # noqa: E402
-from redaction_verifier.model import WARNING_CODES as WARNING_CODES  # noqa: E402
-from redaction_verifier.model import WARNING_FIELDS as WARNING_FIELDS  # noqa: E402
-from redaction_verifier.model import Finding as Finding  # noqa: E402
-from redaction_verifier.model import ScanReport as ScanReport  # noqa: E402
-from redaction_verifier.model import Secret as Secret  # noqa: E402
-from redaction_verifier.model import VerifyError as VerifyError  # noqa: E402
-from redaction_verifier.model import Warn as Warn  # noqa: E402
-from redaction_verifier.model import WarnList as WarnList  # noqa: E402
-from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES as BUILTIN_PATTERN_CLASSES  # noqa: E402
-from redaction_verifier.matching import PATTERN_SCAN_BATCH as PATTERN_SCAN_BATCH  # noqa: E402
-from redaction_verifier.matching import PATTERN_SCAN_OVERLAP as PATTERN_SCAN_OVERLAP  # noqa: E402
-from redaction_verifier.matching import PatternRule as PatternRule  # noqa: E402
-from redaction_verifier.matching import PatternScanner as PatternScanner  # noqa: E402
-from redaction_verifier.matching import RollingScanner as RollingScanner  # noqa: E402
-from redaction_verifier.matching import SecretMatcher as SecretMatcher  # noqa: E402
-from redaction_verifier.matching import _fold_for_patterns as _fold_for_patterns  # noqa: E402
-from redaction_verifier.matching import _luhn_ok as _luhn_ok  # noqa: E402
-from redaction_verifier.matching import _valid_card as _valid_card  # noqa: E402
-from redaction_verifier.matching import _valid_email as _valid_email  # noqa: E402
-from redaction_verifier.matching import _valid_nanp as _valid_nanp  # noqa: E402
-from redaction_verifier.matching import _valid_ssn as _valid_ssn  # noqa: E402
-from redaction_verifier.matching import mask as mask  # noqa: E402
-from redaction_verifier.matching import match_patterns as match_patterns  # noqa: E402
-from redaction_verifier.matching import normalize_string as normalize_string  # noqa: E402
 
 
 # ──────────────────────────────────────────────────────────────────────────

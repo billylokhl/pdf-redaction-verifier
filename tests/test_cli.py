@@ -133,6 +133,22 @@ class TestExitCodeContract:
             # argument including --target/--secrets.
             ("SystemExit(0)", "raise SystemExit(0)\n", "SystemExit"),
             ("SystemExit(1)", "raise SystemExit(1)\n", "SystemExit"),
+            # Formatting the exception is itself untrusted: an
+            # ImportError subclass's __str__ is arbitrary code and can
+            # raise. That must not turn the guard's own error handling
+            # into a second, worse traceback in place of the first —
+            # reproduced: a __str__ that raises made the f-string
+            # building the [ERROR] message itself raise, escaping with a
+            # traceback and exit 1. _fatal_import falls back to the bare
+            # exception type name when formatting fails.
+            (
+                "str_raises",
+                'class _BadImportError(ImportError):\n'
+                '    def __str__(self):\n'
+                '        raise RuntimeError("str failed")\n'
+                'raise _BadImportError("stub")\n',
+                "_BadImportError",
+            ),
         ],
     )
     def test_missing_redaction_verifier_package_exits_2(
@@ -176,15 +192,33 @@ class TestExitCodeContract:
         # inside it failed.
         assert expect_substr in result.stderr, result.stderr
 
-    def test_ocr_bridge_system_exit_at_import_exits_2(self, tmp_path) -> None:
-        # Same BaseException gap as above, but for the Vision/OCR import
-        # guard specifically: unlike an ordinary missing or broken OCR
-        # bridge (which must degrade to _OCR_IMPORTS_OK = False, not
-        # crash — see TestBaselines below), an import that itself calls
-        # sys.exit() or is interrupted must stop the tool loudly here.
-        # Order matters in the guard: (SystemExit, KeyboardInterrupt) is
-        # checked before the broad Exception catch that implements the
-        # degrade, so this must exit 2, not silently continue.
+    @pytest.mark.parametrize(
+        "exc_id, stub_code, expect_substr",
+        [
+            ("SystemExit(0)", "raise SystemExit(0)\n", "SystemExit"),
+            # GeneratorExit (like asyncio's CancelledError) is a
+            # BaseException the same way SystemExit/KeyboardInterrupt
+            # are, but is not one of them specifically — reproduced: an
+            # earlier version of this guard special-cased only
+            # (SystemExit, KeyboardInterrupt) before falling through to
+            # `except Exception`, so a GeneratorExit at import time still
+            # escaped with a traceback and exit 1. The trailing `except
+            # BaseException` clause (order matters: after `except
+            # Exception`, not before, or the degrade below would never
+            # run) covers every such case instead of naming them one by
+            # one.
+            ("GeneratorExit", 'raise GeneratorExit("stub")\n', "GeneratorExit"),
+        ],
+    )
+    def test_ocr_bridge_base_exception_at_import_exits_2(
+        self, tmp_path, exc_id, stub_code, expect_substr
+    ) -> None:
+        # Same BaseException gap as the redaction_verifier test above, but
+        # for the Vision/OCR import guard specifically: unlike an
+        # ordinary missing or broken OCR bridge (which must degrade to
+        # _OCR_IMPORTS_OK = False, not crash — see TestBaselines below),
+        # an import that itself calls sys.exit(), is interrupted, or
+        # raises any other BaseException must stop the tool loudly here.
         #
         # A stub top-level Vision.py placed on PYTHONPATH shadows any
         # real pyobjc Vision the same way a script's own directory
@@ -194,7 +228,7 @@ class TestExitCodeContract:
         # the Vision import is being intercepted, not redaction_verifier).
         stub_dir = tmp_path / "stub_vision"
         stub_dir.mkdir()
-        (stub_dir / "Vision.py").write_text("raise SystemExit(0)\n")
+        (stub_dir / "Vision.py").write_text(stub_code)
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(
             [str(stub_dir), env.get("PYTHONPATH", "")]
@@ -203,10 +237,10 @@ class TestExitCodeContract:
             [sys.executable, str(REPO_ROOT / "verify.py"), "--help"],
             capture_output=True, text=True, timeout=60, env=env,
         )
-        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert result.returncode == 2, (exc_id, result.stdout, result.stderr)
         assert "Traceback" not in result.stderr
         assert "[ERROR] cannot import the OCR bridge (Vision)" in result.stderr
-        assert "SystemExit" in result.stderr
+        assert expect_substr in result.stderr, result.stderr
 
 
 @requires_full_env
