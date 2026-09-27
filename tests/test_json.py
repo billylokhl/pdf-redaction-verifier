@@ -408,7 +408,9 @@ class TestToolReturnCodeField:
         )
         report = verify.ScanReport()
         verify._collect_qpdf(proc, verify.SecretMatcher([]), report)
-        data = verify.build_json_report(report, 2, target=Path("t.pdf"))
+        data = verify.build_json_report(
+            report, 2, target=Path("t.pdf"), tool_version=verify.__version__
+        )
         (warning,) = [w for w in data["warnings"] if w["code"] == "TOOL_EXIT_NONZERO"]
         assert warning["returncode"] == 3
 
