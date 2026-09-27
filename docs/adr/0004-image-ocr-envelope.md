@@ -76,16 +76,19 @@ longer sufficient for `DECODED` on its own.
   200×20 DeviceGray image whose declared frame is blank, with 20 extra
   rows holding an SSN render, exits `0`, and MuPDF gives no warning
   (REDESIGN §8; the case is added in Phase 3a).
-- **Used by the document** (owner decision D, 2026-09-27): a leftover
-  image, one nothing in the document uses, is always `FLAGGED`,
-  whatever its size and whatever OCR finds -- the image counterpart of
-  docs/adr/0007's orphaned content streams. "Used" means *drawn*: some
-  reached content stream or appearance (a page's contents, or a form
-  XObject, pattern, Type3 glyph procedure or annotation appearance the
-  document reaches) paints the image, directly or as the mask of an
-  image it paints. An image referenced only as a resource and never
-  drawn is leftover, so `FLAGGED`. The envelope applies only to drawn
-  images. Reason: see "Strips" under Known misses below.
+- **Used by the document** (owner decision D, 2026-09-27): an image
+  nothing in the document uses is always `FLAGGED`, whatever its size
+  and whatever OCR finds -- the image counterpart of docs/adr/0007's
+  orphaned content streams. "Used" has the owner's precise definition
+  (decision D, under Owner decision below): drawn by the current
+  revision, by content that actually runs when a page is shown, with
+  some of it landing on the page; when use cannot be established, the
+  image is unused. So an image a page lists but never draws, one drawn
+  only in an earlier revision, only in a hidden layer, hidden annotation
+  or undrawn form, a page thumbnail or `/Alternates` image, and one
+  drawn entirely off-page or clipped away are all `FLAGGED`. The
+  envelope applies only to used images. Reason: see "Strips" under
+  Known misses below.
 - **Dimensions**: the upper bound is `10,000` px per side. **There is
   no size excusal at the lower end** (owner decision A, 2026-09-27,
   superseding an earlier same-day decision): an image under today's 8×32
@@ -118,8 +121,8 @@ is *also* `FLAGGED` (not `DECODED`) -- the envelope narrows what gets
 attempted; it does not yet certify a clean attempt.
 
 **Known misses of per-image OCR**, for the record ahead of Phase 4b's
-recall measurement (the first two and the drawn half of the third are
-inside the envelope; the third is also why a leftover image is outside
+recall measurement (the first two, and the third for used images, are
+inside the envelope; the third is also why an unused image is outside
 it):
 
 - **Post-downsample small glyphs.** Apple Vision's own internal
@@ -137,11 +140,12 @@ it):
   cannot be read strip by strip: tested, each 90×7 half of a 90×14 SSN
   render OCRs to nothing useful after 10× upscaling, while the whole
   90×14 image reads the SSN. Removing the size excusal (decision A)
-  therefore does not close this. Nothing reassembles strips that
-  nothing draws, so those (unreferenced, or listed as a resource and
-  never drawn) are closed by decision D, not by A: this is the strips
-  variant of REDESIGN §8's K21 (two leftover 90×7 strips exit `0`
-  today); it is not yet a case of its own, and Phase 3a adds it.
+  therefore does not close this. Nothing reassembles strips that are
+  not used (unreferenced, listed as a resource and never drawn, or
+  unused in any other way D's definition gives), so those are closed by
+  decision D, not by A: this is the strips variant of REDESIGN §8's K21
+  (two leftover 90×7 strips exit `0` today); it is not yet a case of
+  its own, and Phase 3a adds it.
   **Drawn strips are not closed by anything yet.** The page render
   reassembles them only when they are drawn side by side and nothing
   covers them. Reproduced on today's `verify.py` with the 90×14 render
@@ -149,10 +153,11 @@ it):
   (the rendered page's OCR reads the SSN); either strip drawn alone at
   4× exits `0`; both drawn under a black box (K12's strips variant)
   exits `0`; both listed in `/Resources` but never drawn exits `0`.
-  Covered, split-up or clipped strips that *are* drawn are therefore a
-  known miss of per-image OCR: after Phase 4b, per-image OCR reads
-  nothing from either strip, the render shows only the box (or only
-  one strip), and decision D does not apply to drawn images, so they would be
+  Covered, drawn-apart or partly clipped strips that *are* used are
+  therefore a known miss of per-image OCR (D's definition leaves covered
+  images out on purpose): after Phase 4b, per-image OCR reads nothing
+  from either strip, the render shows only the box (or only one strip),
+  and decision D does not apply to used images, so they would be
   `DECODED` and exit `0`. Phase 3a adds a strips-under-a-box case next
   to the K21 strips case.
 
@@ -197,14 +202,14 @@ image object's `/Width`/`/Height` directly (no decompression needed):
 excusal), these 299 images in 51 files (235 in 27 text-bearing files)
 are in scope for enlarged OCR like any other image: `FLAGGED` until
 Phase 4b's recall bound covers images this small, then `DECODED` when
-an enlarged OCR pass finds nothing -- except a leftover one, which stays
+an enlarged OCR pass finds nothing -- except an unused one, which stays
 `FLAGGED` whatever OCR finds (decision D; the spike does not split used
-from leftover images). They are the population Phase 4b's small-image
+from unused images). They are the population Phase 4b's small-image
 recall measurement has to cover. The counts use the declared
 `/Width`/`/Height`.
 
 **Decision D's cost is not measured.** Nothing in this pass counts how
-many files carry a leftover image (of any size) that today's tool does
+many files carry an unused image (of any size) that today's tool does
 not already flag; Phase 3a measures it, as it measures docs/adr/0007's
 overlap with today's exit `2`.
 
@@ -222,12 +227,15 @@ overlap with today's exit `2`.
   (`verify._is_text_sized_image`), is now always `FLAGGED` (decision D):
   a strictness increase. For K21 the two decisions divide the work:
   removing the size excusal (A) closes the single small image, which
-  OCR reads once enlarged; flagging every leftover image (D) closes the
+  OCR reads once enlarged; flagging every unused image (D) closes the
   strips variant, which no per-image OCR can read. Drawn strips under a
   box stay open (Known misses; the open question above).
-- Decision D adds an unmeasured review-rate cost: every leftover image,
-  not only a text-sized one, is `FLAGGED`, including one a page lists
-  as a resource but never draws. Phase 3a measures it.
+- Decision D adds an unmeasured review-rate cost: every unused image
+  under the owner's definition, not only a text-sized leftover one, is
+  `FLAGGED` -- including one a page lists but never draws, page
+  thumbnails and `/Alternates` images, and images drawn only in hidden
+  layers or annotations, off-page or in an earlier revision. Phase 3a
+  measures it under this definition.
 - Decision C makes image-decoder warnings a reviewed allowlist, the same
   fail-closed shape as docs/adr/0009's: a warning not on it, including
   one a MuPDF update renames, keeps the image `FLAGGED`.
@@ -309,14 +317,40 @@ this ADR is its home.
   vouch for them. Any unrecognised warning means `FLAGGED`. This
   replaces the clean-decode rule and agrees with docs/adr/0009's guard
   3.
-- **D. Leftover images are always `FLAGGED`.** An image nothing in the
-  document uses is `FLAGGED` whatever its size and whatever OCR finds,
+- **D. Unused (leftover) images are always `FLAGGED`.** An image
+  nothing in the document uses is `FLAGGED` whatever its size and whatever OCR finds,
   like docs/adr/0007's orphaned content streams. Reason: an SSN image
   cut into 7 px strips cannot be read strip by strip (tested: each
   90×7 half OCRs to nothing useful after 10× upscaling, while the whole
-  90×14 image reads the SSN), and nothing reassembles strips that
-  nothing draws. "Uses" is read as *draws*: an image is used only if
-  some reached content stream or appearance draws it, so one referenced
-  only as a resource and never drawn is leftover. D does not cover
-  drawn strips under a box (Known misses; open question above). The
-  cost is unmeasured; Phase 3a measures it.
+  90×14 image reads the SSN), and nothing reassembles strips that are
+  not used. The cost is unmeasured; Phase 3a measures it under the
+  definition below.
+
+  **What "used" means** (owner decision, 2026-09-27). An image is used
+  only if all of these hold:
+
+  1. It is drawn by the *current* revision of the document, not only by
+     an earlier, superseded revision.
+  2. It is drawn by content that actually runs when a page is shown: the
+     page's own content streams, and the forms, annotation appearances
+     and patterns those draw. Not used: drawn only inside a switched-off
+     optional-content layer, only in a hidden annotation's appearance,
+     only in an annotation appearance for a non-current state (for
+     example the `/AS` "off" look of a checked box), or only inside a
+     form XObject nothing draws.
+  3. Some of it lands on the page after the crop box and clipping: it is
+     not drawn entirely off-page, clipped to nothing, at zero size, or
+     fully transparent.
+
+  Drawn by *any* page of the document counts: a resource dictionary
+  shared across pages does not make an image unused on the pages that
+  do not draw it. When use cannot be established, the image is unused
+  (fail-closed). Everything else is unused, and always `FLAGGED` under
+  D: orphaned images; images a page lists but never draws; images drawn
+  only in an earlier revision; images drawn only by hidden layers,
+  hidden annotations or undrawn forms; page thumbnails (`/Thumb`) and
+  `/Alternates` images; images drawn entirely off-page or clipped away.
+  Out of scope of this definition: an image drawn visibly but covered by
+  something painted over it (strips under a black box, say) is used. It
+  stays the known miss recorded under "Strips" and the open question
+  before Phase 4b; "fully covered" is not folded into "unused".

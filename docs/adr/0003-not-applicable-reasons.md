@@ -65,14 +65,14 @@ Verified directly against `verify.py` (not a claim taken on faith):
 | No (unreferenced) | class | `0` (same reason; `2` at 10×40) |
 
 The unreferenced rows exit `0` today only because of the 8×32
-`_text_sized` floor. In the new design a leftover image (one no reached
-content stream or appearance draws, whether unreferenced or only listed
-as a resource) is always `FLAGGED`, whatever its size or what OCR finds
-(owner decision D, 2026-09-27; docs/adr/0004), and a drawn one has no
-size excusal (owner decision A; see reason 4 and docs/adr/0004): a
-10×10 image is
-treated like any other image -- enlarged and OCR'd, `FLAGGED` until
-Phase 4b's recall bound covers small images. Either way its bytes are
+`_text_sized` floor. In the new design an unused image (unreferenced,
+listed as a resource but never drawn, or unused in any other way the
+owner's definition under decision D below gives) is always `FLAGGED`,
+whatever its size or what OCR finds (owner decision D, 2026-09-27;
+docs/adr/0004), and a used one has no size excusal (owner decision A;
+see reason 4 and docs/adr/0004): a 10×10 image is treated like any
+other image -- enlarged and OCR'd, `FLAGGED` until Phase 4b's recall
+bound covers small images. Either way its bytes are
 still raw-searched under the governing rule above, so none of the four
 rows can exit `0`.
 
@@ -85,7 +85,7 @@ excusal would have been an exit-`0` path; it is also a gap in today's
 tool (REDESIGN §8, K21). Removing the excusal closes the single small
 image. It does not close the same render cut into strips: OCR'd one at
 a time, each strip reads as nothing, so leftover strips are closed by
-decision D (every leftover image is `FLAGGED`), not by enlargement.
+decision D (every unused image is `FLAGGED`), not by enlargement.
 Strips that are drawn but covered by something painted over them, or
 drawn apart, are not closed by either: they are a known miss of
 per-image OCR and an open question for the owner before Phase 4b
@@ -161,13 +161,13 @@ restated by the owner's decisions of 2026-09-27):
    the name/metadata strings inside those tables must still go through
    the matcher.
 4. **Image data fully consumed by the image decoder.** One path: the
-   image is used by the document, meaning drawn by some reached content
-   stream or appearance (a leftover image, including one listed as a
-   resource that nothing draws, is always `FLAGGED`, owner decision D),
-   it is inside docs/adr/0004's
-   recall-validated envelope and its recall bound is satisfied
-   (docs/adr/0004, accepted: geometry and a
-   completed OCR pass are *not* enough on their own -- REDESIGN §4
+   image is used by the document -- drawn by the current revision, by
+   content that actually runs when a page is shown, with some of it
+   landing on the page (the owner's definition, decision D below); an
+   unused image, such as one a page lists but never draws, is always
+   `FLAGGED` -- it is inside docs/adr/0004's recall-validated envelope
+   and its recall bound is satisfied (docs/adr/0004, accepted: geometry
+   and a completed OCR pass are *not* enough on their own -- REDESIGN §4
    requires a recall-validated envelope, which does not exist until
    Phase 4b measures it). The envelope has no size excusal: its lower
    bound is whatever Phase 4b validates with enlargement, so the recall
@@ -318,16 +318,43 @@ images (recorded in full in docs/adr/0004).
   vouch for them. Any unrecognised warning means `FLAGGED`. This
   replaces the clean-decode rule and agrees with docs/adr/0009's guard
   3.
-- **D. Leftover images are always `FLAGGED`.** An image nothing in the
-  document uses is `FLAGGED` whatever its size and whatever OCR finds,
-  like docs/adr/0007's orphaned content streams. "Uses" is read as
-  *draws*: an image is used only if some reached content stream or
-  appearance draws it, so one referenced only as a resource and never
-  drawn is leftover. Reason: an SSN image cut into 7 px strips cannot be
-  read strip by strip, and nothing reassembles strips that nothing
-  draws. See docs/adr/0004 for the evidence, for drawn strips (not
-  covered by D; an open question before Phase 4b), and for the cost,
-  which Phase 3a measures.
+- **D. Unused (leftover) images are always `FLAGGED`.** An image
+  nothing in the document uses is `FLAGGED` whatever its size and whatever OCR finds,
+  like docs/adr/0007's orphaned content streams. Reason: an SSN image
+  cut into 7 px strips cannot be read strip by strip, and nothing
+  reassembles strips that are not used. See docs/adr/0004 for the
+  evidence, for drawn strips under a box (not covered by D; an open
+  question before Phase 4b), and for the cost, which Phase 3a measures
+  under the definition below.
+
+  **What "used" means** (owner decision, 2026-09-27). An image is used
+  only if all of these hold:
+
+  1. It is drawn by the *current* revision of the document, not only by
+     an earlier, superseded revision.
+  2. It is drawn by content that actually runs when a page is shown: the
+     page's own content streams, and the forms, annotation appearances
+     and patterns those draw. Not used: drawn only inside a switched-off
+     optional-content layer, only in a hidden annotation's appearance,
+     only in an annotation appearance for a non-current state (for
+     example the `/AS` "off" look of a checked box), or only inside a
+     form XObject nothing draws.
+  3. Some of it lands on the page after the crop box and clipping: it is
+     not drawn entirely off-page, clipped to nothing, at zero size, or
+     fully transparent.
+
+  Drawn by *any* page of the document counts: a resource dictionary
+  shared across pages does not make an image unused on the pages that
+  do not draw it. When use cannot be established, the image is unused
+  (fail-closed). Everything else is unused, and always `FLAGGED` under
+  D: orphaned images; images a page lists but never draws; images drawn
+  only in an earlier revision; images drawn only by hidden layers,
+  hidden annotations or undrawn forms; page thumbnails (`/Thumb`) and
+  `/Alternates` images; images drawn entirely off-page or clipped away.
+  Out of scope of this definition: an image drawn visibly but covered by
+  something painted over it (strips under a black box, say) is used. It
+  stays the known miss docs/adr/0004 records under "Strips", and the open question
+  before Phase 4b; "fully covered" is not folded into "unused".
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
 recall bound is a scheduling gate (it cannot actually be reached until

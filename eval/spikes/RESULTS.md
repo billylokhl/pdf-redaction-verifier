@@ -169,8 +169,8 @@ this corpus, and the second that none came near 35 Mpx; both corrected
 here. See docs/adr/0004 for the resulting decision: the owner removed
 the size excusal (2026-09-27), so these small images are enlarged and
 OCR'd like any other image, and Phase 4b's recall bound must cover
-them; a leftover one is always flagged whatever OCR finds (owner
-decision D). The script does not split used from leftover images, so
+them; an unused one is always flagged whatever OCR finds (owner
+decision D). The script does not split used from unused images, so
 decision D's cost is not measured here (Phase 3a measures it).
 
 ## Interpretation warnings -- docs/adr/0009

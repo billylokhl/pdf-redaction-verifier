@@ -119,14 +119,21 @@ Owner decision: "approve all recommendations."
   3a**, to establish the added (not gross) review-rate cost.
 
 **Owner decision D (2026-09-27), taken after the approval, recorded in
-docs/adr/0004.** Leftover images, images nothing in the document
+docs/adr/0004.** Unused images, images nothing in the document
 uses, are always `FLAGGED` too, like the orphaned content streams above
 and regardless of OCR: an SSN image cut into 7 px strips cannot be read
-strip by strip, and nothing reassembles strips that nothing draws.
-"Uses" means *draws*: an image is used only if some reached content
-stream or appearance draws it, so one referenced only as a resource and
-never drawn is leftover, and `FLAGGED`, even though it is not orphaned
-in this ADR's sense (it has a reference). Strips that are drawn but
-covered are not closed by D; docs/adr/0004 records them as a known miss
-and an open question before Phase 4b. Its cost is not part of this ADR's 11.4%, which counts content
-streams only; it is unmeasured, and Phase 3a measures it.
+strip by strip, and nothing reassembles strips that are not used. The
+owner defined "used" precisely (2026-09-27; the full definition is in
+docs/adr/0004's decision D): drawn by the current revision, by content
+that actually runs when a page is shown, with some of it landing on the
+page; when use cannot be established, the image is unused. So D is
+wider than this ADR's "orphaned": an image a page lists but never
+draws, one drawn only in an earlier revision or only in a hidden layer,
+hidden annotation or undrawn form, a page thumbnail or `/Alternates`
+image, and one drawn entirely off-page or clipped away are all
+`FLAGGED`, though each still has a reference. An image drawn visibly
+but covered (strips under a black box) is used, so not closed by D;
+docs/adr/0004 records it as a known miss and an open question before
+Phase 4b. D's cost is not part of this ADR's 11.4%, which counts
+content streams only; it is unmeasured, and Phase 3a measures it under
+the owner's definition.
