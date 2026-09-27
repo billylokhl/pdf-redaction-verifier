@@ -68,7 +68,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import datetime
 import functools
 import json
 import os
@@ -79,28 +78,138 @@ import subprocess
 import sys
 import tempfile
 import time
-import unicodedata
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Collection, Iterator, NoReturn, Sequence
+from typing import Any, Callable, Iterator, NoReturn, Sequence
 
 # ──────────────────────────────────────────────────────────────────────────
-# Third-party imports (fail with a clear message, not a traceback)
+# Third-party and first-party imports (fail with a clear message, not a
+# traceback): an operational failure must exit 2, never fall through to
+# Python's default traceback + exit 1, which this code otherwise shares
+# with "secret found".
 # ──────────────────────────────────────────────────────────────────────────
+def _fatal_import(what: str, exc: BaseException) -> NoReturn:
+    """Report a fatal import-time failure and exit 2 — defensively.
+
+    Every guard below catches BaseException, not just ImportError or
+    Exception: a corrupt or partial install, a bytecode/ABI mismatch, or
+    any other failure while executing a dependency's module bodies (a
+    SyntaxError, an AttributeError, …) must exit 2 the same way a missing
+    dependency does. Exception alone is not broad enough —
+    SystemExit/KeyboardInterrupt (and GeneratorExit, asyncio's
+    CancelledError, …) are BaseException, not Exception, so a stub or a
+    corrupt module calling sys.exit() at import time, or a Ctrl-C or
+    cancellation during import, would otherwise slip straight through as
+    the process's own exit code — silently, with no message at all. A
+    Ctrl-C here exiting 2 (rather than the interpreter's usual 130) is
+    acceptable: this runs before any scanning has started, and the
+    fail-closed contract does not carve out an exception for it.
+
+    Formatting *exc* is itself untrusted: an ImportError subclass's (or
+    anything else's) __str__ is arbitrary code and can raise, which must
+    not turn this handler into a second, worse traceback in place of the
+    first. Every step here is wrapped accordingly, down to the write
+    itself.
+    """
+    try:
+        detail = f"{type(exc).__name__}: {exc}"
+    except BaseException:
+        try:
+            detail = type(exc).__name__
+        except BaseException:
+            detail = "unknown error"
+    try:
+        sys.stderr.write(
+            f"[ERROR] cannot import {what} ({detail}); install it or run "
+            "verify.py from the repository\n"
+        )
+    except BaseException:
+        pass
+    sys.exit(2)
+
+
 try:
     import fitz  # PyMuPDF
-except ImportError:  # pragma: no cover
-    sys.stderr.write("[ERROR] PyMuPDF is required: pip install pymupdf\n")
-    sys.exit(2)
+except BaseException as exc:  # pragma: no cover
+    _fatal_import("PyMuPDF", exc)
 
 try:
     import Vision
     from Foundation import NSData
 
     _OCR_IMPORTS_OK = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
+    # Broad on purpose, but the design here is to degrade, not exit: any
+    # ORDINARY failure importing the OCR bridge (missing package, or a
+    # corrupt pyobjc install) means OCR is simply unavailable on this
+    # machine. That already surfaces later as an OCR_UNAVAILABLE warning
+    # (fail-closed: exit 2, never a silent clean verdict) rather than a
+    # crash, so it is not itself an operational failure worth a stderr
+    # message here. Checked BEFORE the BaseException clause below (order
+    # matters: Exception is itself a BaseException, so the reverse order
+    # would make this clause unreachable) — that one exists precisely for
+    # what this one must NOT swallow: see _fatal_import's docstring.
     _OCR_IMPORTS_OK = False
+except BaseException as exc:  # pragma: no cover
+    _fatal_import("the OCR bridge (Vision)", exc)
+
+# docs/REDESIGN.md §4, §6 ("Move, don't wrap"): the pure data model, the
+# normalizer/value matcher, the pattern-class scanning engine and the
+# rules loader now live in redaction_verifier.model, .matching and
+# .rules. Re-exported here (one block, so there is exactly one place that
+# needs this guard) so every name used outside the package — existing
+# `verify.X` references, imports and the CLI — keeps working unchanged.
+# Each is imported `as` itself (the explicit re-export convention,
+# recognized by ruff's F401) because verify.py's OWN code below no
+# longer defines these, it just uses them. Three implementation-detail
+# constants are NOT re-exported, because nothing outside their own
+# submodule ever reaches them as a bare name or `verify.X`:
+# matching.values._NON_ALNUM_RE, matching.patterns._PATTERN_FOLD_TABLE,
+# matching.validators._EMAIL_FILE_EXTENSIONS.
+try:
+    from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES as BUILTIN_PATTERN_CLASSES
+    from redaction_verifier.matching import PATTERN_SCAN_BATCH as PATTERN_SCAN_BATCH
+    from redaction_verifier.matching import PATTERN_SCAN_OVERLAP as PATTERN_SCAN_OVERLAP
+    from redaction_verifier.matching import PatternRule as PatternRule
+    from redaction_verifier.matching import PatternScanner as PatternScanner
+    from redaction_verifier.matching import RollingScanner as RollingScanner
+    from redaction_verifier.matching import SecretMatcher as SecretMatcher
+    from redaction_verifier.matching import _fold_for_patterns as _fold_for_patterns
+    from redaction_verifier.matching import _luhn_ok as _luhn_ok
+    from redaction_verifier.matching import _valid_card as _valid_card
+    from redaction_verifier.matching import _valid_email as _valid_email
+    from redaction_verifier.matching import _valid_nanp as _valid_nanp
+    from redaction_verifier.matching import _valid_ssn as _valid_ssn
+    from redaction_verifier.matching import mask as mask
+    from redaction_verifier.matching import match_patterns as match_patterns
+    from redaction_verifier.matching import normalize_string as normalize_string
+    from redaction_verifier.model import ADJACENCY as ADJACENCY
+    from redaction_verifier.model import LAYERS as LAYERS
+    from redaction_verifier.model import STORAGE_CLASSES as STORAGE_CLASSES
+    from redaction_verifier.model import WARNING_CODES as WARNING_CODES
+    from redaction_verifier.model import WARNING_FIELDS as WARNING_FIELDS
+    from redaction_verifier.model import Finding as Finding
+    from redaction_verifier.model import ScanReport as ScanReport
+    from redaction_verifier.model import Secret as Secret
+    from redaction_verifier.model import VerifyError as VerifyError
+    from redaction_verifier.model import Warn as Warn
+    from redaction_verifier.model import WarnList as WarnList
+    from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS as ENTITY_TYPE_TO_CLASS
+    from redaction_verifier.rules import PARTIAL_ENTITY_COVERAGE as PARTIAL_ENTITY_COVERAGE
+    from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS
+    from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES as UPSTREAM_ENTITY_TYPES
+    from redaction_verifier.rules import RuleSet as RuleSet
+    from redaction_verifier.rules import _load_rules_json as _load_rules_json
+    from redaction_verifier.rules import _load_rules_yaml as _load_rules_yaml
+    from redaction_verifier.rules import _make_class_rule as _make_class_rule
+    from redaction_verifier.rules import _make_pattern_rule as _make_pattern_rule
+    from redaction_verifier.rules import _make_value_rule as _make_value_rule
+    from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
+    from redaction_verifier.rules import _yaml_section as _yaml_section
+    from redaction_verifier.rules import load_rules as load_rules
+except BaseException as exc:  # pragma: no cover
+    _fatal_import("redaction_verifier", exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -138,13 +247,6 @@ _BINARY_STREAM_FILTERS: frozenset[str] = frozenset({
 _OPAQUE_STREAM_SUBTYPES: frozenset[str] = frozenset({
     "/Image", "/Type1C", "/CIDFontType0C", "/OpenType",
 })
-# Pattern scanning: matches may span feed boundaries up to the overlap;
-# feeds are batched before regex sweeps (per-tiny-literal sweeps measure
-# ~100x slower than batched ones).
-PATTERN_SCAN_OVERLAP: int = 512
-PATTERN_SCAN_BATCH: int = 64 << 10
-
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # PDF string objects in QDF output: (literal with \-escapes) or <hex>.
 # Hex strings only. Literal strings nest, so they are tokenized by
 # _iter_pdf_strings rather than by a regex.
@@ -165,513 +267,6 @@ EXIFTOOL_FILESYSTEM_FIELDS: frozenset[str] = frozenset({
     "FileInodeChangeDate",
     "FilePermissions",
 })
-
-
-class VerifyError(Exception):
-    """Operational failure that must exit with code 2, never 1."""
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Data model
-# ──────────────────────────────────────────────────────────────────────────
-@dataclass(frozen=True)
-class Secret:
-    """A named sensitive value's normalized search key."""
-
-    name: str
-    normalized: str
-
-
-@dataclass(frozen=True)
-class Finding:
-    """A single leak: which rule surfaced in which layer, and where.
-
-    *sample* carries the raw matched text for pattern rules (empty for
-    value secrets); it is masked and sanitized at render time only, and
-    excluded from equality so dedup keys on (layer, rule, location).
-    """
-
-    layer: str          # Text | OCR | Metadata | Objects | Binary | Hidden
-    secret_name: str
-    location: str
-    sample: str = field(default="", compare=False)
-    # Where the matched content is stored (STORAGE_CLASSES) and, for the
-    # Objects layer, which object and earlier revision; for page layers,
-    # the page when the match is on one page. Informational: dedup keys
-    # on (layer, rule, location) alone, which already encodes them.
-    storage: str = field(default="live", compare=False)
-    object: int | None = field(default=None, compare=False)
-    revision: int | None = field(default=None, compare=False)
-    page: int | None = field(default=None, compare=False)
-
-
-# Every warning carries a stable code, so machine consumers (the --json
-# report, the evaluation harness) never depend on message wording. The
-# kind says why it blocks certification:
-#   review   — a possible match a human must judge
-#   coverage — content that was not (fully) scanned or read
-#   scope    — the rules cannot express or verify what was asked
-WARNING_CODES: dict[str, str] = {
-    # review
-    "REVIEW_CROSS_LINE": "review",
-    "REVIEW_CROSS_PAGE": "review",
-    "REVIEW_FUSED_PATTERN": "review",
-    "REVIEW_HIDDEN_TEXT": "review",
-    "REVIEW_METADATA_RAW": "review",
-    "REVIEW_OBJECT_TEXT": "review",
-    "REVIEW_ADJACENT_LITERALS": "review",
-    "REVIEW_BINARY": "review",
-    # coverage
-    "PAGE_FAILED": "coverage",
-    "LAYER_CRASHED": "coverage",
-    "OCR_UNAVAILABLE": "coverage",
-    "SKIPPED_FAIL_FAST": "coverage",
-    "EMPTY_DOCUMENT": "coverage",
-    "TOOL_MISSING": "coverage",
-    "TOOL_START_FAILED": "coverage",
-    "TOOL_TIMEOUT": "coverage",
-    "TOOL_EXIT_NONZERO": "coverage",
-    "TOOL_NO_OUTPUT": "coverage",
-    "TOOL_OUTPUT_MALFORMED": "coverage",
-    "XMP_UNREADABLE": "coverage",
-    "XREF_UNREADABLE": "coverage",
-    "OBJECT_UNREADABLE": "coverage",
-    "UNTERMINATED_STRING": "coverage",
-    "LEFTOVER_UNDECODABLE_TEXT": "coverage",
-    "LEFTOVER_IMAGE": "coverage",
-    "LEFTOVER_CONTAINER": "coverage",
-    "PAYLOAD_TRUNCATED": "coverage",
-    "REVISION_SCAN_FAILED": "coverage",
-    "REVISION_UNREADABLE": "coverage",
-    "REVISION_CAP": "coverage",
-    "HIDDEN_ITEM_FAILED": "coverage",
-    "ATTACHMENT_TOO_LARGE": "coverage",
-    "ATTACHMENT_EMPTY": "coverage",
-    "ATTACHMENT_NOT_TEXT": "coverage",
-    # scope
-    "RULES_UNKNOWN_KEY": "scope",
-    "RULES_UNQUOTED_VALUE": "scope",
-    "RULES_TRUNCATED_PATTERN": "scope",
-    "RULES_CAPTURING_GROUP": "scope",
-    "SCOPE_PARTIAL_ENTITY": "scope",
-    "SCOPE_UNVERIFIABLE": "scope",
-}
-
-
-# Where the content a finding or warning is about is stored:
-#   live         — content the current document uses
-#   orphaned     — an object nothing references (reachability trusted)
-#   unreferenced — not reached by a reachability walk that is not trusted
-#   superseded   — an earlier revision's version of a rewritten object
-STORAGE_CLASSES: frozenset[str] = frozenset({"live", "orphaned", "unreferenced", "superseded"})
-# How the text a review match was found in was assembled — a match that
-# needs joining, or comes from an arbitrary run of text, may be a
-# coincidence (see the two-tier model in DESIGN.md).
-ADJACENCY: frozenset[str] = frozenset(
-    {"JOINED_LINES", "JOINED_PAGES", "JOINED_LITERALS", "NOISY_SOURCE"}
-)
-LAYERS: frozenset[str] = frozenset(
-    {
-        "Text",
-        "OCR",
-        "Metadata",
-        "Objects",
-        "Binary",
-        "Hidden",
-        "Metadata/Binary",
-        "Rules",
-        "Document",
-    }
-)
-# Structured fields a warning may carry, beyond code, layer and message.
-WARNING_FIELDS: tuple[str, ...] = (
-    "storage",
-    "rule",
-    "adjacency",
-    "tool",
-    "page",
-    "object",
-    "revision",
-    # The tool's own exit status on TOOL_EXIT_NONZERO, separated out from
-    # the message text so a consumer can tell a real qpdf failure from its
-    # benign (version-dependent) exit 3 "succeeded with warnings" without
-    # parsing prose (see #3).
-    "returncode",
-)
-
-
-class Warn(str):
-    """A warning message with a stable code, the layer that raised it, and
-    optional structured fields (see WARNING_FIELDS).
-
-    A str subclass, so the human report and every existing comparison
-    treat it as the message; the rest rides along for the JSON report.
-    An unregistered code or field raises at construction, which a layer
-    turns into a crash warning — never a silent pass.
-    """
-
-    code: str
-    layer: str
-    fields: dict[str, Any]
-
-    def __new__(cls, code: str, layer: str, message: str, **fields: Any) -> "Warn":
-        if code not in WARNING_CODES:
-            raise ValueError(f"unregistered warning code {code!r}")
-        if layer not in LAYERS:
-            raise ValueError(f"unknown layer {layer!r}")
-        unknown = set(fields) - set(WARNING_FIELDS)
-        if unknown:
-            raise ValueError(f"unknown warning field(s) {sorted(unknown)}")
-        if fields.get("storage") not in STORAGE_CLASSES | {None}:
-            raise ValueError(f"unknown storage class {fields['storage']!r}")
-        if fields.get("adjacency") not in ADJACENCY | {None}:
-            raise ValueError(f"unknown adjacency {fields['adjacency']!r}")
-        self = super().__new__(cls, message)
-        self.code = code
-        self.layer = layer
-        self.fields = fields
-        return self
-
-    @property
-    def kind(self) -> str:
-        return WARNING_CODES[self.code]
-
-
-class WarnList(list):
-    """A list that accepts only Warn items, so a warning cannot reach the
-    report without a code — however it is added. Rejecting raises, which
-    a layer turns into a crash warning: exit 2, never a silent pass."""
-
-    @staticmethod
-    def _check(items: Any) -> list[Warn]:
-        items = list(items)
-        for item in items:
-            if not isinstance(item, Warn):
-                raise TypeError(f"warnings must be Warn, not {type(item).__name__}")
-        return items
-
-    def append(self, item: Any) -> None:
-        super().append(*self._check([item]))
-
-    def extend(self, items: Any) -> None:
-        super().extend(self._check(items))
-
-    def insert(self, index: Any, item: Any) -> None:
-        super().insert(index, *self._check([item]))
-
-    def __iadd__(self, items: Any) -> "WarnList":
-        super().extend(self._check(items))
-        return self
-
-    def __setitem__(self, index: Any, value: Any) -> None:
-        if isinstance(index, slice):
-            super().__setitem__(index, self._check(value))
-        else:
-            super().__setitem__(index, *self._check([value]))
-
-
-@dataclass
-class ScanReport:
-    """Aggregated results across all layers. Findings are unique."""
-
-    findings: list[Finding] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=WarnList)
-    _seen: set[Finding] = field(default_factory=set, repr=False)
-
-    def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
-        self.warnings.append(Warn(code, layer, message, **fields))
-
-    def record(
-        self, layer: str, secret_name: str, location: str, sample: str = "", **origin: Any
-    ) -> None:
-        finding = Finding(layer, secret_name, location, sample, **origin)
-        if finding not in self._seen:
-            self._seen.add(finding)
-            self.findings.append(finding)
-
-    @property
-    def leaked(self) -> bool:
-        return bool(self.findings)
-
-    @property
-    def degraded(self) -> bool:
-        return bool(self.warnings)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# PHASE 1: The Normalizer
-# ──────────────────────────────────────────────────────────────────────────
-def normalize_string(text: str) -> str:
-    """Collapse a string to its forensic essence.
-
-    NFKD decomposition folds fullwidth/compatibility forms (１２３ → 123)
-    and splits accents into combining marks, which are then stripped
-    (José → jose); casefold handles case beyond ASCII (ß → ss); finally
-    everything non-alphanumeric is removed. "123-45-6789", "123 45 6789",
-    and "１２３－４５－６７８９" all normalize to "123456789".
-    """
-    decomposed = unicodedata.normalize("NFKD", text)
-    without_marks = "".join(c for c in decomposed if not unicodedata.combining(c))
-    return _NON_ALNUM_RE.sub("", without_marks.casefold())
-
-
-class SecretMatcher:
-    """Single-pass, overlap-safe search for every secret at once.
-
-    Uses a lookahead alternation so one occurrence cannot consume the
-    text of an overlapping occurrence of another secret.
-    """
-
-    def __init__(self, secrets: Sequence[Secret]) -> None:
-        self._secrets: list[Secret] = list(secrets)
-        norms = sorted({s.normalized for s in self._secrets}, key=len, reverse=True)
-        # A rules file may hold only pattern rules — an empty matcher is
-        # valid and simply never matches.
-        self._pattern = (
-            re.compile("(?=(" + "|".join(map(re.escape, norms)) + "))") if norms else None
-        )
-        self.max_len: int = max(map(len, norms), default=0)
-
-    def crossing(self, left: str, right: str) -> list[str]:
-        """Names of secrets with an occurrence that straddles the join of
-        *left* and *right* (both normalized).
-
-        Decided by position, not by comparing which names occur on each
-        side: a secret wholly inside one side must not mask a *separate*
-        occurrence that crosses the join.
-        """
-        joined, cut = left + right, len(left)
-        names: set[str] = set()
-        for secret in self._secrets:
-            needle = secret.normalized
-            if len(needle) < 2:
-                continue            # a 1-character value cannot straddle
-            start = joined.find(needle, max(0, cut - len(needle) + 1))
-            if 0 <= start < cut:
-                names.add(secret.name)
-        return sorted(names)
-
-    def search(self, normalized_haystack: str) -> list[Secret]:
-        if self._pattern is None:
-            return []
-        hits = {m.group(1) for m in self._pattern.finditer(normalized_haystack)}
-        return [s for s in self._secrets if s.normalized in hits]
-
-
-class RollingScanner:
-    """Feed normalized text incrementally with bounded memory.
-
-    Keeps a tail of max_len-1 characters so matches spanning feed
-    boundaries (page breaks, adjacent PDF string tokens, byte-stream
-    chunks) are still found.
-    """
-
-    def __init__(self, matcher: SecretMatcher) -> None:
-        self._matcher = matcher
-        self._tail: str = ""
-        self.found: set[Secret] = set()
-
-    def feed(self, normalized_chunk: str) -> None:
-        window = self._tail + normalized_chunk
-        self.found.update(self._matcher.search(window))
-        keep = self._matcher.max_len - 1
-        self._tail = window[-keep:] if keep > 0 else ""
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Pattern rules: match CLASSES of sensitive data, not just known values
-# ──────────────────────────────────────────────────────────────────────────
-@dataclass(frozen=True)
-class PatternRule:
-    """A rule that matches a class of sensitive data (e.g. "any SSN").
-
-    Patterns run against the *raw* extracted text of each layer (visual
-    reconstruction, OCR output, decoded metadata values, decoded PDF
-    literals), folded through _fold_for_patterns first so Unicode dashes,
-    exotic spaces, and fullwidth digits cannot evade an ASCII regex.
-    """
-
-    name: str
-    regex: re.Pattern[str]
-    validator: Callable[[str], bool] | None = None
-
-
-# Unicode look-alikes folded to ASCII before pattern matching: hyphen and
-# dash variants to '-', space variants to ' ', NULs (UTF-16 interleaving
-# residue) removed. NFKC in _fold_for_patterns handles fullwidth digits.
-# U+00AD (soft hyphen) is included because fonts embedded by some producers
-# (PyMuPDF with Arial, for one) extract an ordinary '-' as U+00AD, which
-# NFKC leaves alone — so "123-45-6789" read back as "123\xad45\xad6789".
-_PATTERN_FOLD_TABLE = {
-    **{cp: "-" for cp in (0x00AD, 0x2010, 0x2011, 0x2012, 0x2013, 0x2014,
-                          0x2015, 0x2043, 0x2212)},
-    **{cp: " " for cp in (0x00A0, 0x2007, 0x2009, 0x200A, 0x202F, 0x3000)},
-    0x0000: None,
-}
-
-
-def _fold_for_patterns(text: str) -> str:
-    """Fold text so class regexes see canonical ASCII digits/separators."""
-    return unicodedata.normalize("NFKC", text).translate(_PATTERN_FOLD_TABLE)
-
-
-def _luhn_ok(digits: str) -> bool:
-    total = 0
-    for i, ch in enumerate(reversed(digits)):
-        n = int(ch)
-        if i % 2 == 1:
-            n *= 2
-            if n > 9:
-                n -= 9
-        total += n
-    return total % 10 == 0
-
-
-def _valid_ssn(matched: str) -> bool:
-    """SSA-issued SSNs never use area 000/666/9xx, group 00, or serial 0000."""
-    d = re.sub(r"\D", "", matched)
-    return not (
-        d[:3] in ("000", "666") or d[0] == "9" or d[3:5] == "00" or d[5:] == "0000"
-    )
-
-
-def _valid_card(matched: str) -> bool:
-    d = re.sub(r"\D", "", matched)
-    if not (13 <= len(d) <= 19 and len(set(d)) > 1 and _luhn_ok(d)):
-        return False
-    # PDF date stamps (D:YYYYMMDDHHmmSS) are 14-digit runs that pass Luhn
-    # ~10% of the time; no real 14-digit card IIN starts with 19 or 20.
-    if len(d) == 14 and d[:2] in ("19", "20"):
-        return False
-    return True
-
-
-_EMAIL_FILE_EXTENSIONS = frozenset({
-    "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "tif", "tiff",
-    "pdf", "eps", "ico", "heic",
-})
-
-
-def _valid_email(matched: str) -> bool:
-    """Reject retina-asset-style filenames like logo@2x.png."""
-    return matched.rsplit(".", 1)[-1].lower() not in _EMAIL_FILE_EXTENSIONS
-
-
-def _valid_nanp(matched: str) -> bool:
-    """NANP: 10 digits (optionally +1); area and exchange start with 2-9."""
-    d = re.sub(r"\D", "", matched)
-    if len(d) == 11 and d[0] == "1":
-        d = d[1:]
-    return len(d) == 10 and d[0] in "23456789" and d[3] in "23456789"
-
-
-# name -> (regex source, validator). Regexes tolerate common separators,
-# use digit-boundary guards (including a preceding '.', so decimal
-# fractions cannot match), and require CONSISTENT separators via a
-# backreference so ZIP+4 codes ('12345-6789') cannot regroup into SSNs.
-BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
-    "ssn": (r"(?<![\d.])(?:\d{3}([-\s.])\d{2}\1\d{4}|\d{9})(?!\d)", _valid_ssn),
-    "credit-card": (r"(?<![\d.])(?:\d[-\s.]?){12,18}\d(?!\d)", _valid_card),
-    "email": (
-        r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
-        _valid_email,
-    ),
-    "us-phone": (
-        r"(?<![\d.])(?:\+?1[-\s.]?)?\(?\d{3}\)?[-\s.]?\d{3}[-\s.]?\d{4}(?!\d)",
-        _valid_nanp,
-    ),
-}
-
-
-def mask(matched: str) -> str:
-    """Mask a matched sample for the report.
-
-    Reveals at most 4 trailing characters and never more than half the
-    match; the fixed '****' prefix hides the true length.
-    """
-    reveal = min(4, len(matched) // 2)
-    return "****" + (matched[-reveal:] if reveal else "")
-
-
-def match_patterns(
-    raw_text: str,
-    patterns: Sequence[PatternRule],
-    already: Collection[str] = (),
-    *,
-    collapse_separators: bool = False,
-) -> dict[str, str]:
-    """First validated match per rule not in *already*: {name: matched text}.
-
-    A validator rejection retries from just inside the rejected span (a
-    greedy superspan must not swallow an embedded valid match), and
-    zero-width matches are never findings. *collapse_separators* squeezes
-    runs of dashes/whitespace to one '-' so line-wrapped values like
-    '123-45-\\n6789' still match — fusion-prone, so only the soft
-    (manual-review) tier enables it.
-    """
-    remaining = [r for r in patterns if r.name not in already]
-    if not remaining:
-        return {}
-    text = _fold_for_patterns(raw_text)
-    if collapse_separators:
-        text = re.sub(r"[-\s]{2,}", "-", text)
-    hits: dict[str, str] = {}
-    for rule in remaining:
-        pos = 0
-        while pos <= len(text):
-            m = rule.regex.search(text, pos)
-            if m is None:
-                break
-            matched = m.group(0)
-            if not matched:
-                pos = m.end() + 1
-                continue
-            if rule.validator is None or rule.validator(matched):
-                hits[rule.name] = matched
-                break
-            pos = m.start() + 1
-    return hits
-
-
-class PatternScanner:
-    """Rolling raw-text pattern scanner with bounded memory.
-
-    Feeds are buffered and matched in batches (per-literal regex sweeps
-    are ~100x slower); the overlap tail lets a match span feed boundaries
-    up to PATTERN_SCAN_OVERLAP chars. Callers must flush() when the
-    stream ends.
-    """
-
-    def __init__(
-        self, patterns: Sequence[PatternRule], *, collapse_separators: bool = False
-    ) -> None:
-        self._patterns = list(patterns)
-        self._collapse = collapse_separators
-        self._buffer: list[str] = []
-        self._buffered = 0
-        self._tail: str = ""
-        self.hits: dict[str, str] = {}
-
-    def feed(self, raw_text: str) -> None:
-        if len(self.hits) == len(self._patterns):
-            return  # every rule already hit; further scanning is unobservable
-        self._buffer.append(raw_text)
-        self._buffered += len(raw_text)
-        if self._buffered >= PATTERN_SCAN_BATCH:
-            self.flush()
-
-    def flush(self) -> None:
-        if not self._buffer:
-            return
-        window = self._tail + "".join(self._buffer)
-        self._buffer.clear()
-        self._buffered = 0
-        for name, sample in match_patterns(
-            window, self._patterns, self.hits,
-            collapse_separators=self._collapse,
-        ).items():
-            self.hits[name] = sample
-        self._tail = window[-PATTERN_SCAN_OVERLAP:]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -3136,397 +2731,6 @@ def check_hidden_layers(
 # ──────────────────────────────────────────────────────────────────────────
 # PHASE 5: The CLI Orchestrator
 # ──────────────────────────────────────────────────────────────────────────
-# The redactor's entity types that have a regex equivalent here. The value
-# is one of THIS tool's built-in classes: verification deliberately uses
-# its own regexes and validators rather than importing the redactor's, so
-# a flaw in the redactor's detection cannot hide itself from the check.
-# The full entity-type roster the redactor supports (its EntityType enum).
-# Declared explicitly so an unknown string is distinguishable from a known
-# coverage gap: a typo must be rejected, not reported as "LLM-only".
-UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
-    "person_name", "ssn", "email", "phone", "address", "date_of_birth",
-    "account_number", "credit_card", "drivers_license", "passport",
-})
-
-# The redactor's entity types that have a regex equivalent here. The value is
-# one of THIS tool's built-in classes: verification deliberately uses its
-# own regexes and validators rather than importing the redactor's, so a
-# flaw in the redactor's detection cannot hide itself from the check.
-ENTITY_TYPE_TO_CLASS: dict[str, str] = {
-    "ssn": "ssn",
-    "email": "email",
-    "phone": "us-phone",
-    "credit_card": "credit-card",
-}
-
-# Mapped types whose class covers only PART of what the redactor means by
-# that name. Having a regex for a name is not the same as covering the
-# name, so these raise the same scope warning an unmapped type does.
-PARTIAL_ENTITY_COVERAGE: dict[str, str] = {
-    "phone": "only North American (NANP) numbers are checked; "
-             "international formats are not",
-}
-
-# Top-level keys the redactor itself understands. Anything else is a typo or
-# an upstream addition; either way the section it names is not scanned, so
-# it is surfaced rather than silently dropped.
-UPSTREAM_CONFIG_KEYS: frozenset[str] = frozenset({
-    "entity_types", "exact_values", "patterns",
-    "backend", "model", "llm_url", "ollama_url", "scrub_metadata",
-})
-
-# These tables are edited for different reasons and live far apart; an
-# unguarded subscript would turn a rename into a KeyError that exits 1,
-# this tool's code for "secret detected".
-assert set(ENTITY_TYPE_TO_CLASS) <= UPSTREAM_ENTITY_TYPES
-assert set(ENTITY_TYPE_TO_CLASS.values()) <= set(BUILTIN_PATTERN_CLASSES)
-assert set(PARTIAL_ENTITY_COVERAGE) <= set(ENTITY_TYPE_TO_CLASS)
-
-
-def _make_value_rule(name: str, spec: str, label: str = "") -> Secret:
-    """Build a value rule, shared by both rule formats so the guards
-    cannot drift apart (they already did once: the JSON path rejected a
-    non-string spec while the YAML path coerced it, which is how YAML
-    implicit typing silently changed what was searched for)."""
-    normalized = normalize_string(spec)
-    if not normalized:
-        raise VerifyError(
-            f"{label or name} normalizes to an empty string — it would "
-            "match everything or nothing; refusing to scan"
-        )
-    return Secret(name, normalized)
-
-
-def _make_pattern_rule(
-    name: str, spec: str, flags: int, label: str = ""
-) -> PatternRule:
-    """Build a custom-regex rule, shared by both rule formats."""
-    try:
-        regex = re.compile(spec, flags)
-    except re.error as exc:
-        raise VerifyError(f"{label or name}: invalid regex: {exc}")
-    if regex.match(""):
-        raise VerifyError(
-            f"{label or name}: pattern matches the empty string; "
-            "refusing to scan"
-        )
-    return PatternRule(name, regex)
-
-
-def _make_class_rule(
-    name: str, class_name: str, label: str = ""
-) -> PatternRule:
-    """Build a built-in class rule, shared by both rule formats."""
-    if class_name not in BUILTIN_PATTERN_CLASSES:
-        raise VerifyError(
-            f"{label or name}: unknown class {class_name!r} — valid "
-            f"classes: {', '.join(sorted(BUILTIN_PATTERN_CLASSES))}"
-        )
-    regex_src, validator = BUILTIN_PATTERN_CLASSES[class_name]
-    return PatternRule(name, re.compile(regex_src), validator)
-
-
-@dataclass
-class RuleSet:
-    """Rules to scan for, plus what the source config asked for that
-    cannot be scanned for at all."""
-
-    secrets: list[Secret] = field(default_factory=list)
-    patterns: list[PatternRule] = field(default_factory=list)
-    # Entity types a redactor was told to remove that have no regex
-    # equivalent (LLM-detected categories). Recorded, never dropped:
-    # they are a hole in verification scope and must be reported.
-    unverifiable: list[str] = field(default_factory=list)
-    # Problems with the rules file that do not stop the scan but make a
-    # clean result untrustworthy (surfaced as warnings -> exit 2).
-    warnings: list[str] = field(default_factory=WarnList)
-
-    def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
-        self.warnings.append(Warn(code, layer, message, **fields))
-
-
-def load_rules(rules_path: Path) -> RuleSet:
-    """Load verification rules from a JSON rules file or a YAML config.
-
-    A '.yaml'/'.yml' suffix selects the redactor's redact_config format,
-    so one file can drive both redaction and verification; anything else
-    is parsed as this tool's native JSON rules array.
-    """
-    if rules_path.suffix.lower() in (".yaml", ".yml"):
-        return _load_rules_yaml(rules_path)
-    return _load_rules_json(rules_path)
-
-
-def _yaml_section(raw: dict, key: str) -> list:
-    """Read a list-valued section, distinguishing absent from malformed.
-
-    `raw.get(key) or []` would collapse {} and '' into an empty section
-    before any type check ran, silently narrowing the scan instead of
-    refusing it.
-    """
-    if key not in raw:
-        return []
-    value = raw[key]
-    if value is None:           # `key:` with nothing under it
-        return []
-    if not isinstance(value, list):
-        raise VerifyError(f"{key} must be a list, got {type(value).__name__}")
-    return value
-
-
-def _yaml_coercion_kind(value: Any) -> str:
-    """Name the TYPE a coercing YAML loader read a scalar as — never the
-    value itself.
-
-    Used only by the RULES_UNQUOTED_VALUE warning. That warning used to
-    show mask() of both the coerced value and the literal spec; since the
-    coerced value is a deterministic function of the whole spec, the two
-    masked tails together narrow a short secret by orders of magnitude
-    (see #2). Saying only the kind ("a number", "a boolean", ...) carries
-    no digit or character of the value.
-    """
-    if value is None:
-        return "null"
-    if isinstance(value, bool):        # bool is an int subclass: check first
-        return "a boolean"
-    if isinstance(value, (int, float)):
-        return "a number"
-    if isinstance(value, (datetime.date, datetime.datetime)):
-        return "a date"
-    return f"a {type(value).__name__}"
-
-
-def _load_rules_yaml(rules_path: Path) -> RuleSet:
-    """Load a redactor's redact_config.yaml as verification rules.
-
-    Mapping:
-      exact_values -> value rules (normalized matching)
-      patterns     -> pattern rules, compiled IGNORECASE exactly as the
-                      redactor compiles them
-      entity_types -> this tool's own built-in classes; types with no
-                      regex equivalent, or only partial coverage, are
-                      recorded so the scope gap is reported
-
-    Keys the redactor needs but verification does not (backend, model,
-    llm_url, ollama_url, scrub_metadata) are ignored.
-    """
-    try:
-        import yaml
-    except ImportError:  # pragma: no cover - declared dependency
-        raise VerifyError("reading a YAML config needs PyYAML: pip install pyyaml")
-
-    # YAML's implicit typing is actively dangerous for secrets: unquoted
-    # 00123456 is octal int 42798, 1.50 is float 1.5, `yes` is True.
-    # Coercing those back with str() makes the tool search for a string
-    # the user never wrote. Drop the coercing scalar resolvers so plain
-    # scalars stay literal — but KEEP the merge resolver, or `<<: *anchor`
-    # silently stops merging and whole sections vanish from the scan.
-    _MERGE = "tag:yaml.org,2002:merge"
-
-    class RawScalars(yaml.SafeLoader):
-        def construct_mapping(self, node, deep=False):  # type: ignore[override]
-            # PyYAML keeps the LAST of duplicate keys without complaint,
-            # which silently discards an entire earlier section.
-            seen_keys: set[str] = set()
-            for key_node, _ in node.value:
-                key = key_node.value
-                if isinstance(key, str) and key in seen_keys:
-                    raise VerifyError(f"duplicate key {key!r} in {rules_path}")
-                if isinstance(key, str):
-                    seen_keys.add(key)
-            return super().construct_mapping(node, deep)
-
-    RawScalars.yaml_implicit_resolvers = {
-        ch: [(tag, rx) for tag, rx in resolvers if tag == _MERGE]
-        for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
-    }
-
-    try:
-        text = rules_path.read_text(encoding="utf-8")
-        raw: Any = yaml.load(text, RawScalars)
-        coerced: Any = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        # PyYAML's message quotes the offending line — which in a rules
-        # file is a secret. Report the problem and position only.
-        mark = getattr(exc, "problem_mark", None)
-        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        problem = getattr(exc, "problem", None) or type(exc).__name__
-        raise VerifyError(
-            f"Cannot read rules file {rules_path}: invalid YAML{where}: " f"{problem}"
-        )
-    except (OSError, ValueError) as exc:
-        # ValueError covers UnicodeDecodeError: a non-UTF-8 config is an
-        # operational error (exit 2), never the leak code.
-        raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
-    if not isinstance(raw, dict):
-        raise VerifyError("a YAML rules file must be a mapping")
-
-    rules = RuleSet()
-
-    unknown_keys = sorted(set(raw) - UPSTREAM_CONFIG_KEYS)
-    if unknown_keys:
-        rules.warn(
-            "RULES_UNKNOWN_KEY",
-            "Rules",
-            f"Rules: unrecognized config key(s) {', '.join(unknown_keys)} — "
-            "if one is a misspelled section its rules were NOT scanned",
-        )
-
-    def literal(section: str, i: int, value: Any) -> str:
-        """Every rule spec must be literal text. A non-string survived
-        YAML's typing (an explicit !!int tag, or a nested mapping), which
-        means the tool would search for something other than what is
-        written in the file."""
-        if not isinstance(value, str):
-            raise VerifyError(
-                f"{section}[{i}] must be a quoted string, got "
-                f"{type(value).__name__} — quote it in the config"
-            )
-        return value
-
-    # A redactor reading this file with a plain safe_load sees coerced
-    # values and removes THOSE strings, so divergence means the two tools
-    # are working from different text. The warning names only the TYPE
-    # YAML coerced the value to, never a masked form of either value: the
-    # coerced value is a deterministic function of the whole literal spec,
-    # so showing mask() of both together narrowed a short secret by orders
-    # of magnitude (#2) — the warning must not itself leak what it is
-    # warning about.
-    coerced_values = (coerced or {}).get("exact_values") or []
-    values = _yaml_section(raw, "exact_values")
-    for i, value in enumerate(values):
-        spec = literal("exact_values", i, value)
-        if i < len(coerced_values) and str(coerced_values[i]) != spec:
-            rules.warn(
-                "RULES_UNQUOTED_VALUE",
-                "Rules",
-                f"Rules: exact_values[{i}] is unquoted, so YAML reads it as "
-                f"{_yaml_coercion_kind(coerced_values[i])} rather than the "
-                "literal text written — a redactor sharing this file may "
-                "have removed the wrong string. Quote the value in the "
-                "config.",
-            )
-        rules.secrets.append(_make_value_rule(f"exact_values[{i}]", spec))
-
-    for i, value in enumerate(_yaml_section(raw, "patterns")):
-        spec = literal("patterns", i, value)
-        if f"{spec} #" in text:
-            rules.warn(
-                "RULES_TRUNCATED_PATTERN",
-                "Rules",
-                f"Rules: patterns[{i}] appears to be truncated at an "
-                "unquoted '#' (YAML comment) — quote the pattern",
-            )
-        # IGNORECASE only, matching the redactor's own _compile_patterns;
-        # adding MULTILINE here would make a shared rule mean different
-        # things in the two tools.
-        rule = _make_pattern_rule(f"patterns[{i}]", spec, re.IGNORECASE)
-        if rule.regex.groups:
-            rules.warn(
-                "RULES_CAPTURING_GROUP",
-                "Rules",
-                f"Rules: patterns[{i}] has a capturing group — the redactor "
-                "removes only the group text, so this rule verifies more "
-                "than it removed; manual review recommended",
-            )
-        rules.patterns.append(rule)
-
-    # Upstream defaults entity_types to the FULL roster when the key is
-    # absent, so treating absent as empty would certify clean a document
-    # whose ten redacted categories were never searched for.
-    if "entity_types" in raw:
-        entity_types = _yaml_section(raw, "entity_types")
-    else:
-        entity_types = sorted(UPSTREAM_ENTITY_TYPES)
-    for i, entity in enumerate(dict.fromkeys(str(e) for e in entity_types)):
-        if entity not in UPSTREAM_ENTITY_TYPES:
-            # Not echoed: a value pasted under the wrong key is a secret.
-            raise VerifyError(
-                f"entity_types[{i}] is not a known entity type — valid types: "
-                f"{', '.join(sorted(UPSTREAM_ENTITY_TYPES))}"
-            )
-        mapped = ENTITY_TYPE_TO_CLASS.get(entity)
-        if mapped is None:
-            rules.unverifiable.append(entity)
-            continue
-        rules.patterns.append(_make_class_rule(f"entity_types:{entity}", mapped))
-        if entity in PARTIAL_ENTITY_COVERAGE:
-            rules.warn(
-                "SCOPE_PARTIAL_ENTITY",
-                "Rules",
-                f"Scope: entity type {entity!r} is only partly verifiable — "
-                f"{PARTIAL_ENTITY_COVERAGE[entity]}",
-            )
-
-    # A config of only unverifiable entity types is allowed: it scans
-    # nothing, warns loudly, and exits 2 — which is the honest answer.
-    if not (rules.secrets or rules.patterns or rules.unverifiable):
-        raise VerifyError("the rules file contains no rules")
-    return rules
-
-
-def _load_rules_json(rules_path: Path) -> RuleSet:
-    """Parse the rules JSON file, validating its shape.
-
-    Each entry carries a 'name' and exactly one of:
-      'value'   — a known secret string, matched via normalization;
-      'pattern' — a custom regex matched against raw extracted text;
-      'class'   — a built-in pattern class (see BUILTIN_PATTERN_CLASSES).
-
-    Raises VerifyError for every operational problem so main can exit 2.
-    """
-    try:
-        payload: Any = json.loads(rules_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        # ValueError covers UnicodeDecodeError: a non-UTF-8 rules file is
-        # an operational error (exit 2), never the leak code.
-        raise VerifyError(f"Cannot read rules file {rules_path}: {exc}")
-
-    if not isinstance(payload, list):
-        raise VerifyError("the rules file must be a JSON array of objects")
-
-    secrets: list[Secret] = []
-    patterns: list[PatternRule] = []
-    seen_names: set[str] = set()
-    for i, entry in enumerate(payload):
-        if not isinstance(entry, dict) or "name" not in entry:
-            raise VerifyError(f"rules entry {i} must be an object with 'name'")
-        name = str(entry["name"])
-        # Names are rule identity throughout the pipeline; a duplicate
-        # would silently overwrite another rule's hits in the report.
-        if name in seen_names:
-            raise VerifyError(f"rules entry {i}: duplicate rule name {name!r}")
-        seen_names.add(name)
-        kind_keys = [k for k in ("value", "pattern", "class") if k in entry]
-        if len(kind_keys) != 1:
-            raise VerifyError(
-                f"rules entry {i} ({name!r}) must have exactly one of "
-                f"'value', 'pattern', or 'class' (found: {kind_keys or 'none'})"
-            )
-        kind = kind_keys[0]
-        spec = entry[kind]
-        if not isinstance(spec, str):
-            raise VerifyError(
-                f"rules entry {i} ({name!r}): {kind!r} must be a string, "
-                f"got {type(spec).__name__}"
-            )
-
-        if kind == "value":
-            secrets.append(_make_value_rule(name, spec, f"secret {name!r}"))
-        elif kind == "pattern":
-            # MULTILINE so grep-style ^/$ anchors match per line of the
-            # extracted page text instead of silently never matching.
-            patterns.append(
-                _make_pattern_rule(name, spec, re.MULTILINE, f"rule {name!r}")
-            )
-        else:
-            patterns.append(_make_class_rule(name, spec, f"rule {name!r}"))
-
-    if not secrets and not patterns:
-        raise VerifyError("the rules file contains no rules")
-    return RuleSet(secrets=secrets, patterns=patterns)
-
-
 def _sanitize_report_text(text: str) -> str:
     """Strip control characters so PDF-derived bytes (ANSI escapes,
     newlines) cannot inject into or spoof the terminal report."""

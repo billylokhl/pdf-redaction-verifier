@@ -23,7 +23,16 @@ import verify
 
 from .conftest import REPO_ROOT, SSN, run_verify
 
-SOURCE = (REPO_ROOT / "verify.py").read_text()
+# verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
+# live in redaction_verifier/ — the static checks below must still see
+# every Warn()/warn() call and every yield, wherever it now lives.
+SOURCE = "\n".join(
+    path.read_text()
+    for path in [
+        REPO_ROOT / "verify.py",
+        *sorted((REPO_ROOT / "redaction_verifier").rglob("*.py")),
+    ]
+)
 VERDICTS = {0: "pass", 1: "fail", 2: "uncertified"}
 
 
