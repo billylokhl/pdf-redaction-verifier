@@ -5,8 +5,10 @@ covers from a single checkout's point of view)."""
 
 from __future__ import annotations
 
-from check_ratchets import (DictTree, check_ratchet_set, check_redteam_anchors,
-                            determine_base_ref, run_all_checks)
+import pytest
+
+from check_ratchets import (RATCHET_REEXPORTS, DictTree, check_ratchet_set, check_redteam_anchors,
+                            check_reexports, determine_base_ref, run_all_checks)
 
 CELLS_TEMPLATE = """
 UNDOCUMENTED_GAPS: frozenset[str] = frozenset({{
@@ -151,6 +153,163 @@ class TestCheckRatchetSet:
         problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
         assert len(problems) == 1
         assert "b.gap" in problems[0]
+
+
+# ── the whole module, not just its top level: every way the reviewer   ──
+# ── found to rebind a ratchet name besides a second top-level statement ──
+# ── (24 of 25 attacks passed the top-level-only scan). Each must fail   ──
+# ── closed. The literal assignment itself stays exactly as it was.       ──
+
+_LITERAL = 'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap"})\n'
+_GROWN = 'frozenset({"a.gap", "sneaky.gap"})'
+
+_REBIND_ATTACKS: dict[str, str] = {
+    "if-block": f"if True:\n    UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "else-block": f"if False:\n    pass\nelse:\n    UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "try-block": f"try:\n    UNDOCUMENTED_GAPS = {_GROWN}\nexcept Exception:\n    pass\n",
+    "with-block": (f"import contextlib\nwith contextlib.nullcontext():\n"
+                   f"    UNDOCUMENTED_GAPS = {_GROWN}\n"),
+    "while-block": f"while True:\n    UNDOCUMENTED_GAPS = {_GROWN}\n    break\n",
+    "tuple-unpacking": f"UNDOCUMENTED_GAPS, _other = {_GROWN}, 1\n",
+    "starred-unpacking": f"_first, *UNDOCUMENTED_GAPS = [1, {_GROWN}]\n",
+    "chained-assignment": f"_other = UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "for-target": f"for UNDOCUMENTED_GAPS in [{_GROWN}]:\n    pass\n",
+    "walrus": f"(UNDOCUMENTED_GAPS := {_GROWN})\n",
+    "augmented": 'UNDOCUMENTED_GAPS |= frozenset({"sneaky.gap"})\n',
+    "annotated-reassignment": f"UNDOCUMENTED_GAPS: frozenset[str] = {_GROWN}\n",
+    "del": "del UNDOCUMENTED_GAPS\n",
+    "global-in-def-called-at-import": (
+        f"def _grow():\n    global UNDOCUMENTED_GAPS\n    UNDOCUMENTED_GAPS = {_GROWN}\n_grow()\n"),
+    "globals-subscript": f'globals()["UNDOCUMENTED_GAPS"] = {_GROWN}\n',
+    "vars-subscript": f'vars()["UNDOCUMENTED_GAPS"] = {_GROWN}\n',
+    "locals-subscript": f'locals()["UNDOCUMENTED_GAPS"] = {_GROWN}\n',
+    "globals-update-keyword": f"globals().update(UNDOCUMENTED_GAPS={_GROWN})\n",
+    "globals-update-dict": f'globals().update({{"UNDOCUMENTED_GAPS": {_GROWN}}})\n',
+    "setattr-sys-modules": (
+        f'import sys\nsetattr(sys.modules[__name__], "UNDOCUMENTED_GAPS", {_GROWN})\n'),
+    "attribute-store-sys-modules": (
+        f"import sys\nsys.modules[__name__].UNDOCUMENTED_GAPS = {_GROWN}\n"),
+    "exec": 'exec("UNDOCUMENTED_GAPS = frozenset({\'a.gap\', \'sneaky.gap\'})")\n',
+    "exec-bytes": 'exec(b"UNDOCUMENTED_GAPS = frozenset({\'a.gap\', \'sneaky.gap\'})")\n',
+    "import-alias": "import json as UNDOCUMENTED_GAPS\n",
+    "from-import-alias": "from os import sep as UNDOCUMENTED_GAPS\n",
+    "from-import-same-name": "from sneaky_module import UNDOCUMENTED_GAPS\n",
+    "star-import": "from sneaky_module import *\n",
+    "with-as": (f"import contextlib\nwith contextlib.nullcontext({_GROWN}) as UNDOCUMENTED_GAPS:\n"
+                "    pass\n"),
+    "except-as": "try:\n    raise ValueError\nexcept ValueError as UNDOCUMENTED_GAPS:\n    pass\n",
+    "match-capture": f"match {_GROWN}:\n    case UNDOCUMENTED_GAPS:\n        pass\n",
+    "match-as": f"match {_GROWN}:\n    case frozenset() as UNDOCUMENTED_GAPS:\n        pass\n",
+    "match-star": "match [1]:\n    case [*UNDOCUMENTED_GAPS]:\n        pass\n",
+    "match-mapping-rest": "match {}:\n    case {**UNDOCUMENTED_GAPS}:\n        pass\n",
+    "class-body": f"class _Holder:\n    UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "class-named-it": "class UNDOCUMENTED_GAPS:\n    pass\n",
+    "def-named-it": "def UNDOCUMENTED_GAPS():\n    pass\n",
+    "async-def-named-it": "async def UNDOCUMENTED_GAPS():\n    pass\n",
+    "parameter-named-it": "def _f(UNDOCUMENTED_GAPS=None):\n    pass\n",
+}
+
+# Rebinding frozenset itself makes the literal assignment compute
+# something else entirely; these go BEFORE the literal.
+_SHADOW_ATTACKS: dict[str, str] = {
+    "frozenset-assigned": 'frozenset = lambda items: {*items, "sneaky.gap"}\n',
+    "frozenset-def": 'def frozenset(items):\n    return {*items, "sneaky.gap"}\n',
+    "frozenset-imported": "from sneaky_module import frozenset\n",
+}
+
+
+class TestRebindAnywhereFailsClosed:
+    @pytest.mark.parametrize("attack", sorted(_REBIND_ATTACKS))
+    def test_rebind_after_the_literal_is_caught(self, attack: str) -> None:
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": _LITERAL + _REBIND_ATTACKS[attack]})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0], attack
+
+    @pytest.mark.parametrize("attack", sorted(_REBIND_ATTACKS))
+    def test_rebind_alone_is_not_accepted_as_the_literal(self, attack: str) -> None:
+        # With the literal gone, the attack is the only writer: either not
+        # a top-level NAME = frozenset(...) literal at all (not trusted), or
+        # one that is, and then it grew.
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": _REBIND_ATTACKS[attack]})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems, attack
+        assert "cannot verify" in problems[0] or "sneaky.gap" in problems[0], attack
+
+    @pytest.mark.parametrize("attack", sorted(_SHADOW_ATTACKS))
+    def test_shadowing_frozenset_is_caught(self, attack: str) -> None:
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": _SHADOW_ATTACKS[attack] + _LITERAL})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0], attack
+
+    def test_reading_the_name_and_mentioning_it_in_docs_is_fine(self) -> None:
+        # Control: loads, docstrings and a same-prefix name are not writers.
+        source = ('"""Mentions UNDOCUMENTED_GAPS in the docstring."""\n' + _LITERAL
+                  + "UNDOCUMENTED_GAPS_COUNT = len(UNDOCUMENTED_GAPS)\n"
+                  "def _f():\n    \"\"\"UNDOCUMENTED_GAPS again.\"\"\"\n"
+                  "    return sorted(UNDOCUMENTED_GAPS)\n")
+        old = DictTree({"cells.py": _LITERAL})
+        new = DictTree({"cells.py": source})
+        assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
+
+    def test_the_real_ratchet_modules_pass(self) -> None:
+        from check_ratchets import REPO_ROOT, RATCHET_SETS, _frozenset_literal
+        for path, name in RATCHET_SETS:
+            _frozenset_literal((REPO_ROOT / path).read_text(), name)
+
+
+# ── the package __init__ consumers import the sets through: re-export ──
+# ── only, never a rebind (no ratchet looked at this file before).      ──
+
+_INIT = "eval/caselib/__init__.py"
+_INIT_OK = ('"""The case library."""\n'
+            "from .cells import CELLS, NONFITZ_PENDING, UNDOCUMENTED_GAPS\n"
+            "from .model import GALLERY_FIELDS_PENDING, REGISTRY\n"
+            '__all__ = ["CELLS", "GALLERY_FIELDS_PENDING", "NONFITZ_PENDING", "REGISTRY",\n'
+            '           "UNDOCUMENTED_GAPS"]\n')
+
+_INIT_ATTACKS: dict[str, str] = {
+    "assignment": f"UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "augmented": 'UNDOCUMENTED_GAPS |= frozenset({"sneaky.gap"})\n',
+    "if-block": f"if True:\n    UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "globals-subscript": f'globals()["UNDOCUMENTED_GAPS"] = {_GROWN}\n',
+    "globals-update-keyword": f"globals().update(UNDOCUMENTED_GAPS={_GROWN})\n",
+    "setattr-self": f'import sys\nsetattr(sys.modules[__name__], "UNDOCUMENTED_GAPS", {_GROWN})\n',
+    "attribute-store-on-cells": f"from . import cells\ncells.UNDOCUMENTED_GAPS = {_GROWN}\n",
+    "reimport-from-elsewhere": "from .families.sneaky import UNDOCUMENTED_GAPS\n",
+    "reimport-under-alias": "from .cells import NEW_CELL_ALLOWLIST as UNDOCUMENTED_GAPS\n",
+    "star-import": "from .cells import *\n",
+    "exec": 'exec("UNDOCUMENTED_GAPS = frozenset({\'sneaky.gap\'})")\n',
+    "def-named-it": "def UNDOCUMENTED_GAPS():\n    pass\n",
+}
+
+
+class TestReexports:
+    def test_plain_reexport_is_fine(self) -> None:
+        assert check_reexports(DictTree({_INIT: _INIT_OK}), _INIT) == []
+
+    def test_missing_init_is_fine(self) -> None:
+        assert check_reexports(DictTree({}), _INIT) == []
+
+    def test_the_real_init_passes(self) -> None:
+        from check_ratchets import REPO_ROOT
+        tree = DictTree({_INIT: (REPO_ROOT / _INIT).read_text()})
+        assert check_reexports(tree, _INIT) == []
+
+    def test_init_is_under_the_check(self) -> None:
+        assert _INIT in RATCHET_REEXPORTS
+
+    @pytest.mark.parametrize("attack", sorted(_INIT_ATTACKS))
+    def test_rebind_in_init_fails_closed(self, attack: str) -> None:
+        problems = check_reexports(DictTree({_INIT: _INIT_OK + _INIT_ATTACKS[attack]}), _INIT)
+        assert problems and "cannot verify" in problems[0], attack
+        assert "UNDOCUMENTED_GAPS" in problems[0]
+
+    def test_run_all_checks_includes_the_init(self) -> None:
+        tree = DictTree({_INIT: _INIT_OK + _INIT_ATTACKS["assignment"]})
+        assert any(_INIT in p for p in run_all_checks(DictTree({}), tree))
 
 
 # ── check_redteam_anchors: initial_labels_sha256 must never move,      ──

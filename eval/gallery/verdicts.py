@@ -48,8 +48,8 @@ def load_results(path: Path) -> dict[str, dict[str, Any] | None]:
     return out
 
 
-REFERENCE_CRASHED_NOTE = ("the reference crashed running this case this run; the measured "
-                          "verdict above is from the candidate only")
+REFERENCE_CRASHED_NOTE = ("the reference run crashed on this case; the candidate's result is "
+                          "shown as usual, with nothing to compare it against")
 
 
 def reference_crashed_cases(path: Path) -> frozenset[str]:

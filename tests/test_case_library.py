@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+from pathlib import Path
 
 import fitz
 import pytest
@@ -24,6 +25,7 @@ from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
 from caselib.model import Case, expect
 from caselib.run import Scan, available, build, judge, scan
+from check_ratchets import RATCHET_SETS, _frozenset_literal
 
 from .conftest import REPO_ROOT
 
@@ -172,6 +174,30 @@ class TestEvidence:
         claimed = {cid for cid, cell in CELLS.items() if cell.status in ("read", "flagged")}
         assert sorted(claimed - covered - NONFITZ_PENDING) == []
         assert sorted(NONFITZ_PENDING & covered) == [], "covered now: shrink NONFITZ_PENDING"
+
+    @pytest.mark.parametrize(("path", "name"), RATCHET_SETS)
+    def test_ratchet_sets_in_effect_equal_their_literal(self, path: str, name: str) -> None:
+        """The value every consumer actually uses — this module's own
+        import (via the ``caselib`` package), ``caselib.<name>`` and the
+        defining module's attribute, after every family has loaded — must
+        equal the literal eval/check_ratchets.py reads from the defining
+        file's source. That static check can only see what is written;
+        this closes every rebind it cannot (a name built at runtime, an
+        exec of a computed string, a module swapped in sys.modules, a
+        rebind from any other module at import time)."""
+        import importlib
+
+        import caselib
+        literal = _frozenset_literal((REPO_ROOT / path).read_text(), name)
+        defining = importlib.import_module(f"caselib.{Path(path).stem}")
+        in_effect = {
+            "tests' own import": globals()[name],
+            f"caselib.{name}": getattr(caselib, name),
+            f"caselib.{Path(path).stem}.{name}": getattr(defining, name),
+        }
+        for where, value in in_effect.items():
+            assert type(value) is frozenset and value == literal, (
+                f"{where} is {value!r}, but {path} writes {sorted(literal)!r}")
 
     def test_known_gaps_name_gap_cells(self) -> None:
         for case in REGISTRY.values():
@@ -331,60 +357,6 @@ _HOSTNAME_RE = re.compile(
     rb"localdomain)\b", re.IGNORECASE)
 _UUID = rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _XMP_ID_RE = re.compile(rb"xmpMM:(?:Document|Instance)ID=\"[^\"]*" + _UUID + rb"[^\"]*\"")
-# Patterns .privacy_allowlist rejects outright, kept alongside the probe
-# check below (belt and suspenders — cheap to check, catches the common
-# cases by name in an assertion message instead of just "matched a probe").
-_TRIVIAL_PATTERNS = frozenset({"", ".", ".*", ".+", "(?s).*", "(?s:.*)"})
-
-# A literal denylist is trivially dodged by anything equivalent but
-# spelled differently (`[\s\S]*`, `.*?`, `(?s)^.*$`, ...). Instead, a
-# pattern is rejected if it fullmatches any of these probe strings: no
-# legitimate, narrowly-scoped exception (a specific fixture value) should
-# ever match unrelated, unplanned text. The generic probes catch
-# "matches anything" patterns regardless of kind; the per-kind ones catch
-# a pattern that is specific to *looking* like that kind (e.g.
-# `/Users/.*`) without actually being narrow.
-_GENERIC_PROBES: tuple[str, ...] = (
-    "kQ7#mZ2$vB9!wK4^pL6&nR1*sD8@fG3%tY5~uJ0X",  # ~40 mixed letters/digits/punctuation
-    "probe line one\nprobe line two",             # contains a newline
-)
-# Several varied, fixed values per kind — not just one. A single fixed
-# probe per kind can itself be dodged (e.g. a negative lookahead pinned
-# to exactly that one value, `(?!probe)`); several realistically-diverse
-# values close that hole without needing every dodge to be anticipated
-# individually. Lookarounds are additionally rejected outright below,
-# which is the primary defense — this is belt and suspenders.
-_KIND_PROBES: dict[str, tuple[str, ...]] = {
-    "home-path": (
-        "/Users/probe/x.txt", "/home/probe/x.txt", r"C:\Users\probe\x.txt",
-        "/Users/jsmith/notes.txt", "/Users/anna-lee/Desktop/report.docx",
-        "/home/jdoe/data.csv", "/home/test-user1/inbox.eml",
-        r"C:\Users\bob.martinez\file.txt",
-    ),
-    "email": (
-        "probe@probe.invalid", "john.doe@example.com", "a.smith+work@example.org",
-        "no-reply@corp-mail.io", "user42@sub.example.net",
-    ),
-    "hostname": (
-        "probe-host.local", "db-prod-01.local", "office-printer.lan",
-        "ws-42.corp", "backup-server.internal", "mail01.localdomain",
-    ),
-    "xmp-id": (
-        'xmpMM:DocumentID="uuid:00000000-0000-0000-0000-000000000000"',
-        'xmpMM:InstanceID="uuid:12345678-90ab-cdef-1234-567890abcdef"',
-    ),
-}
-
-# Any lookaround defeats probing itself: a pattern can be written so it
-# fails to match whatever fixed probe values happen to be listed above
-# while still matching everything else (`/Users/(?!probe)[a-zA-Z0-9_-]+/.*`
-# matches every real home path except the one probe it was built to
-# dodge). No legitimate, narrowly-scoped allowlist entry — one pinned to
-# a specific fixture value via re.escape — ever needs a lookaround, so
-# these are rejected outright regardless of what they exclude.
-_LOOKAROUND_TOKENS = ("(?=", "(?!", "(?<=", "(?<!")
-
-
 def _email_allowed(domain: bytes) -> bool:
     domain = domain.lower()
     return domain in _ALLOWED_EMAIL_DOMAINS or domain.endswith(b".test")
@@ -531,40 +503,38 @@ def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
     return unique
 
 
-def _is_trivial_pattern(pattern: str, kind: str | None = None) -> bool:
-    """True if *pattern* is on the literal denylist, contains a lookaround
-    (rejected outright — see ``_LOOKAROUND_TOKENS``), fails to compile, or
-    fullmatches any probe string — generic ones always, plus *kind*'s own
-    (a pattern scoped to one kind can still be too broad for that kind
-    specifically, e.g. ``/Users/.*`` for "home-path")."""
-    if pattern.strip() in _TRIVIAL_PATTERNS:
-        return True
-    if any(token in pattern for token in _LOOKAROUND_TOKENS):
-        return True
-    probes = _GENERIC_PROBES + (_KIND_PROBES.get(kind, ()) if kind else ())
-    for probe in probes:
-        try:
-            if re.fullmatch(pattern, probe):
-                return True
-        except re.error:
-            return True  # cannot even compile: certainly not a narrow, specific pattern
-    return False
-
-
 def _allowlisted(case, kind: str, text: str) -> bool:
-    """True only for an entry whose ``kind`` matches *kind* exactly and
-    whose ``pattern`` fully matches *text* (a regex, not a substring) —
-    one kind's exception never excuses another kind's finding."""
+    """True only for an entry whose ``kind`` equals *kind* and whose
+    ``text`` equals *text* exactly — a literal, never a pattern, so no
+    entry can excuse anything but the one finding it names (and one
+    kind's exception never excuses another kind's finding)."""
+    return any(entry.get("kind") == kind and entry.get("text") == text
+               for entry in case.privacy_allowlist)
+
+
+def _allowlist_problems(case, findings) -> list[str]:
+    """Every problem with *case*'s privacy_allowlist, given the (kind,
+    text) *findings* the case actually produces: an entry must be exactly
+    ``{"kind", "text", "reason"}`` (``model.Case`` enforces the shape at
+    construction too; checked again here so a hand-built dict can't slip
+    past), and must match one of those findings — a dead entry, or one
+    that doesn't equal any real finding (e.g. a pattern written where the
+    literal text belongs), fails."""
+    problems = []
     for entry in case.privacy_allowlist:
-        if entry.get("kind") != kind:
+        if set(entry) != {"kind", "text", "reason"}:
+            problems.append(f"{case.id}: privacy_allowlist entry {entry!r} must have exactly "
+                            "the keys kind, text, reason")
             continue
-        pattern = entry.get("pattern", "")
-        try:
-            if re.fullmatch(pattern, text):
-                return True
-        except re.error:
-            continue
-    return False
+        if entry["kind"] not in PRIVACY_KINDS:
+            problems.append(f"{case.id}: privacy_allowlist kind {entry['kind']!r} must be one "
+                            f"of {sorted(PRIVACY_KINDS)}")
+        if not entry["reason"]:
+            problems.append(f"{case.id}: privacy_allowlist entry has no reason")
+        if (entry["kind"], entry["text"]) not in set(findings):
+            problems.append(f"{case.id}: privacy_allowlist entry {entry['kind']} "
+                            f"{entry['text']!r} matches no finding this case produces")
+    return problems
 
 
 class TestPrivacyScrub:
@@ -572,8 +542,8 @@ class TestPrivacyScrub:
     round's PDFs, but this runs for any future ``writer="file"`` case —
     may hold a home-directory path, a non-fixture email, a hostname, or a
     machine-looking XMP id, unless the case explicitly allowlists it
-    (``Case.privacy_allowlist``) with a kind, a reason, and a non-trivial
-    pattern."""
+    (``Case.privacy_allowlist``) with a kind, a reason, and the finding's
+    exact text."""
 
     def _file_cases(self):
         return [c for c in REGISTRY.values() if c.writer == "file"]
@@ -592,103 +562,88 @@ class TestPrivacyScrub:
                     problems.append(f"{case.id}: {kind} {text!r}")
         assert problems == []
 
-    def test_allowlist_entries_have_a_reason(self) -> None:
+    def test_allowlist_entries_are_exact_and_live(self, tmp_path) -> None:
+        problems = []
         for case in REGISTRY.values():
-            for entry in case.privacy_allowlist:
-                kind = entry.get("kind")
-                assert kind in PRIVACY_KINDS, (
-                    f"{case.id}: privacy_allowlist entry kind {kind!r} "
-                    f"must be one of {sorted(PRIVACY_KINDS)}")
-                pattern = entry.get("pattern", "")
-                assert pattern and not _is_trivial_pattern(pattern, kind), (
-                    f"{case.id}: privacy_allowlist pattern {pattern!r} is too broad")
-                assert entry.get("reason"), f"{case.id}: privacy_allowlist entry has no reason"
+            if not case.privacy_allowlist:
+                continue
+            # Only committed files are scrubbed, so any entry elsewhere is dead.
+            findings = (_privacy_findings(build(case, tmp_path / f"{case.id}.allow.pdf"))
+                        if case.writer == "file" else [])
+            problems += _allowlist_problems(case, findings)
+        assert problems == []
 
-    @pytest.mark.parametrize("pattern", [
-        r"[\s\S]*",       # matches everything, including newlines, without saying ".*"
-        r".*?",           # non-greedy, but fullmatch still forces it to consume everything
-        r"(?s)^.*$",      # DOTALL with anchors: still "matches everything"
-        r"(?s:.*)",       # scoped inline-flag form of the same
-        r".*",            # already on the literal denylist, sanity-checked here too
+    @staticmethod
+    def _fake(entries, writer: str = "file"):
+        from caselib.model import Case, expect
+        return Case(id="page.allowlist-probe", truth="clean", cells=(), expected=expect(0),
+                    story="probe.", build=lambda p: None, writer=writer,
+                    privacy_allowlist=tuple(entries))
+
+    # The reviewer's patterns, each paired with a real-looking finding it
+    # would have matched as a regex. The scrub reports the finding text
+    # itself (``_HOME_PATH_RE`` stops at the user directory:
+    # "/Users/jsmith", never the full path), so a pattern is never equal
+    # to it: none of these excuse anything, and each is a dead entry.
+    @pytest.mark.parametrize(("kind", "pattern", "finding"), [
+        ("home-path", r"/Users/[^/]+", "/Users/jsmith"),
+        ("home-path", r"/Users/(a)?(?(1)x|[^/]+)", "/Users/jsmith"),
+        ("home-path", r"/Users/(?!probe)[a-zA-Z0-9_-]+", "/Users/jsmith"),
+        ("home-path", r"/home/(?!probe\b)\S+", "/home/jdoe"),
+        ("home-path", r"/Users/.*", "/Users/anna-lee"),
+        ("hostname", r".+\.home", "nas.home"),
+        ("hostname", r"(?!probe-host\.local$)[a-z0-9-]+\.local", "db-prod-01.local"),
+        ("email", r"[^@]+@acme\.com", "j.doe@acme.com"),
+        ("email", r".*@.*", "j.doe@acme.com"),
+        ("xmp-id", r'xmpMM:DocumentID="xmp\.did:[^"]+"',
+         'xmpMM:DocumentID="xmp.did:0f8fad5b-d9cb-469f-a165-70867728950e"'),
+        ("xmp-id", r'xmpMM:InstanceID="xmp\.iid:[^"]+"',
+         'xmpMM:InstanceID="xmp.iid:0f8fad5b-d9cb-469f-a165-70867728950e"'),
+        ("hostname", r"[\s\S]*", "db-prod-01.local"),
+        ("hostname", r".*", "db-prod-01.local"),
     ])
-    def test_generic_bypass_patterns_are_still_trivial(self, pattern: str) -> None:
-        """These are not on the literal _TRIVIAL_PATTERNS denylist (a
-        reviewer found several of them still slip through it), but each
-        still fullmatches an arbitrary-text probe and must be rejected."""
-        assert _is_trivial_pattern(pattern, "hostname")
+    def test_a_pattern_is_rejected(self, kind: str, pattern: str, finding: str) -> None:
+        scrub = {"home-path": _HOME_PATH_RE, "email": _EMAIL_RE, "hostname": _HOSTNAME_RE,
+                 "xmp-id": _XMP_ID_RE}[kind]
+        assert scrub.fullmatch(finding.encode()), "sanity check: a finding the scrub reports"
+        assert re.fullmatch(pattern, finding), "sanity check: the regex would have matched"
+        fake = self._fake([{"kind": kind, "text": pattern, "reason": "attempted pattern"}])
+        assert not _allowlisted(fake, kind, finding)
+        assert _allowlist_problems(fake, [(kind, finding)]), "a dead entry must fail"
 
-    @pytest.mark.parametrize(("kind", "pattern"), [
-        ("home-path", r"/Users/.*"),
-        ("home-path", r"/Users/[^/]+/.*"),
-        ("email", r".*@.*"),
-        ("email", r"[^@]+@[^@]+"),
-        ("hostname", r".*\.local"),
+    def test_an_exact_value_is_accepted(self) -> None:
+        fake = self._fake([{"kind": "home-path", "text": "/Users/fixture-only",
+                            "reason": "fixture path"}])
+        findings = [("home-path", "/Users/fixture-only")]
+        assert _allowlisted(fake, "home-path", "/Users/fixture-only")
+        assert not _allowlisted(fake, "home-path", "/Users/fixture-only2")
+        assert not _allowlisted(fake, "home-path", "/Users/fixture")
+        assert _allowlist_problems(fake, findings) == []
+
+    def test_an_entry_matching_no_finding_is_dead(self) -> None:
+        fake = self._fake([{"kind": "email", "text": "ci@acme.com", "reason": "fixture"}])
+        assert _allowlist_problems(fake, [("email", "other@acme.com")])
+        assert _allowlist_problems(fake, [])
+
+    @pytest.mark.parametrize("entry", [
+        {"kind": "email", "pattern": "ci@acme\\.com", "reason": "old regex form"},
+        {"kind": "email", "text": "ci@acme.com"},
+        {"kind": "email", "text": "ci@acme.com", "reason": ""},
+        {"kind": "email", "text": "", "reason": "empty"},
+        {"kind": "phone", "text": "ci@acme.com", "reason": "unknown kind"},
+        {"kind": "email", "text": "ci@acme.com", "reason": "x", "pattern": ".*"},
     ])
-    def test_kind_specific_bypass_patterns_are_still_trivial(self, kind: str, pattern: str) -> None:
-        """A pattern shaped like the kind it claims to narrow (a path
-        prefix, an "anything@anything" email) is still too broad — it
-        fullmatches the kind-specific probe even though it wouldn't match
-        the fully generic ones."""
-        assert _is_trivial_pattern(pattern, kind)
-
-    def test_a_genuinely_narrow_pattern_is_not_trivial(self) -> None:
-        """The probe check must not reject everything — a pattern tied to
-        one specific, already-known fixture value is exactly what
-        privacy_allowlist exists for."""
-        assert not _is_trivial_pattern(re.escape("ci@example.com"), "email")
-        assert not _is_trivial_pattern(re.escape("/Users/fixture-only/known.txt"), "home-path")
-
-    @pytest.mark.parametrize(("kind", "pattern"), [
-        # The reviewer's exact reproductions: a negative lookahead pinned
-        # to exactly the one fixed probe value, so the probe check alone
-        # (before this fix) never noticed how broad the rest of the
-        # pattern really is.
-        ("home-path", r"/Users/(?!probe)[a-zA-Z0-9_-]+/.*"),
-        ("hostname", r"(?!probe-host\.local$)[a-z0-9-]+\.local"),
-        ("home-path", r"/home/(?!probe\b)\S+"),
-        # A couple of our own attempts in the same family: a lookahead
-        # tied to the generic probe instead of a kind probe, and a
-        # lookbehind excluding an arbitrary prefix.
-        ("email", r"(?!probe@probe\.invalid$)[^@]+@[^@]+"),
-        ("home-path", r"(?<!not-)/Users/[a-zA-Z0-9_-]+/.*"),
-    ])
-    def test_lookaround_bypass_patterns_are_rejected_outright(self, kind: str, pattern: str) -> None:
-        """Any lookaround is rejected regardless of what it excludes —
-        the fix does not try to enumerate every way a lookahead/lookbehind
-        could be built to dodge a fixed probe set; it refuses the whole
-        category."""
-        assert _is_trivial_pattern(pattern, kind)
-
-    def test_diverse_probes_catch_a_pattern_that_only_dodges_one_fixed_value(self) -> None:
-        """Before this fix, "home-path" probed a single fixed value
-        ("/Users/probe/x.txt"). A pattern narrow enough to dodge exactly
-        that one value (no lookaround needed at all — just knowledge of
-        the one probe) but still far too broad for a real home path must
-        still be rejected once probing uses several varied values."""
-        pattern = r"/Users/[a-oq-z][a-z]*/[a-z]+\.[a-z]+"
-        assert not re.fullmatch(pattern, "/Users/probe/x.txt"), (
-            "sanity check: this pattern must dodge the old sole probe")
-        assert _is_trivial_pattern(pattern, "home-path")
-
-    def test_lookaround_is_not_rejected_for_unrelated_kinds_only(self) -> None:
-        """Control: the lookaround rejection is unconditional — it does
-        not need a matching kind to trigger, unlike the probe checks."""
-        assert _is_trivial_pattern(r"(?!x)y", kind=None)
-        assert _is_trivial_pattern(r"(?!x)y", kind="xmp-id")
+    def test_model_rejects_a_malformed_entry(self, entry: dict) -> None:
+        with pytest.raises(ValueError, match="privacy_allowlist"):
+            self._fake([entry])
 
     def test_allowlist_kind_does_not_cross_exempt(self) -> None:
         """A fake case allowlisting an 'email' finding must not also
         exempt an identical string reported as a 'hostname' finding."""
-        from caselib.model import Case, expect
-
-        fake = Case(
-            id="page.allowlist-probe", truth="clean", cells=(), expected=expect(0),
-            story="probe.", build=lambda p: None,
-            privacy_allowlist=({"kind": "email", "pattern": re.escape("ci@example.com"),
-                               "reason": "fixture address, not a real leak"},),
-        )
-        assert _allowlisted(fake, "email", "ci@example.com")
-        assert not _allowlisted(fake, "hostname", "ci@example.com")
+        fake = self._fake([{"kind": "email", "text": "ci@acme.local",
+                            "reason": "fixture address, not a real leak"}])
+        assert _allowlisted(fake, "email", "ci@acme.local")
+        assert not _allowlisted(fake, "hostname", "ci@acme.local")
 
     def test_catches_home_path_in_utf16be_literal_string(self, tmp_path) -> None:
         """A home path stored as a UTF-16BE literal string (as a

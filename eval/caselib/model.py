@@ -61,6 +61,8 @@ GALLERY_FIELDS_PENDING: frozenset[str] = frozenset()
 # Case.privacy_allowlist entry must name exactly one of these — matched
 # only against a finding of that same kind, never any other.
 PRIVACY_KINDS = frozenset({"home-path", "email", "hostname", "xmp-id"})
+# A Case.privacy_allowlist entry's keys: exactly these (see Case).
+_PRIVACY_ENTRY_KEYS = frozenset({"kind", "text", "reason"})
 
 
 @dataclass(frozen=True)
@@ -134,13 +136,14 @@ class Case:
     # Explicit exceptions for tests/test_case_library.py's privacy scrub
     # (a committed binary's bytes, or its decompressed streams, matching a
     # home-directory path, an email, a hostname or a machine-generated XMP
-    # id): ({"kind": <one of PRIVACY_KINDS>, "pattern": <full-match regex>,
-    # "reason": <why it's fine>}, ...). "kind" must match the finding's own
-    # kind exactly (an "email" entry never excuses a "hostname" finding);
-    # "pattern" is matched with re.fullmatch against the finding's text, not
-    # as a substring, and must not be trivially broad (bare "." or ".*").
+    # id): ({"kind": <one of PRIVACY_KINDS>, "text": <the exact finding>,
+    # "reason": <why it's fine>}, ...) and no other keys. An entry excuses
+    # only a finding of that same kind whose text is exactly equal to
+    # "text" — a literal, never a pattern (an "email" entry never excuses a
+    # "hostname" finding). The scrub test also requires every entry to
+    # match a finding the case actually produces, so a dead entry fails.
     # Only meaningful for a case whose bytes are committed as-is
-    # (writer="file"); every entry is checked by the scrub test itself.
+    # (writer="file").
     privacy_allowlist: tuple[dict[str, str], ...] = ()
     # A large performance file (docs/REDESIGN.md §5's representative-file
     # requirement): slow to build and/or slow to scan on purpose, so it is
@@ -180,6 +183,14 @@ class Case:
             raise ValueError(f"{self.id}: unknown writer or origin")
         if not self.requires <= REQUIREMENTS:
             raise ValueError(f"{self.id}: unknown requirement(s) {set(self.requires) - REQUIREMENTS}")
+        for entry in self.privacy_allowlist:
+            if (not isinstance(entry, dict) or set(entry) != _PRIVACY_ENTRY_KEYS
+                    or entry["kind"] not in PRIVACY_KINDS
+                    or not all(isinstance(entry[k], str) and entry[k] for k in _PRIVACY_ENTRY_KEYS)):
+                raise ValueError(
+                    f"{self.id}: privacy_allowlist entry {entry!r} must be exactly "
+                    '{"kind": <one of PRIVACY_KINDS>, "text": <the exact finding text>, '
+                    '"reason": <why>}, each a non-empty string')
 
 
 REGISTRY: dict[str, Case] = {}

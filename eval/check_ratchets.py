@@ -53,7 +53,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -67,6 +67,12 @@ RATCHET_SETS: tuple[tuple[str, str], ...] = (
     ("eval/caselib/cells.py", "NONFITZ_PENDING"),
     ("eval/caselib/model.py", "GALLERY_FIELDS_PENDING"),
 )
+
+# Package modules that re-export those names to their consumers (tests
+# import them through ``caselib``). Each may only re-export a ratchet name
+# unchanged from its defining module, never bind it any other way
+# (``check_reexports``).
+RATCHET_REEXPORTS: tuple[str, ...] = ("eval/caselib/__init__.py",)
 
 REDTEAM_ROUND_GLOB = "eval/caselib/redteam/*/round.json"
 
@@ -212,73 +218,107 @@ class _NotAFrozensetLiteral(Exception):
     pass
 
 
-def _module_level_writer(node: ast.stmt, name: str) -> bool:
-    """True if top-level statement *node* writes to *name* in any form
-    this check can detect: a plain ``NAME = ...``/``NAME: T = ...``, an
-    augmented ``NAME |= ...``, or an indirect rebind via
-    ``globals()["NAME"] = ...``. Used only to COUNT competing writers to
-    *name* — a second writer anywhere below the first is exactly how a
-    ratchet set can be silently grown: ``ast.walk``'s "first match wins"
-    reads the never-changing initial value while Python itself binds the
-    *last* assignment, so a later ``UNDOCUMENTED_GAPS = frozenset({...,
-    "sneaky.new.gap"})`` was invisible to this check even though it is
-    exactly what ends up imported. Rather than trust whichever single
-    assignment happens to look like a literal, this now fails closed the
-    moment there is more than one writer at all."""
-    if isinstance(node, ast.AnnAssign):
-        return isinstance(node.target, ast.Name) and node.target.id == name
-    if isinstance(node, ast.AugAssign):
-        return isinstance(node.target, ast.Name) and node.target.id == name
-    if isinstance(node, ast.Assign):
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == name:
-                return True
-            if (isinstance(target, ast.Subscript)
-                    and isinstance(target.value, ast.Call)
-                    and getattr(target.value.func, "id", None) == "globals"
-                    and isinstance(target.slice, ast.Constant)
-                    and target.slice.value == name):
-                return True
-        return False
-    return False
+class _RatchetNameMissing(_NotAFrozensetLiteral):
+    pass
+
+
+def _inert_constants(tree: ast.Module) -> set[int]:
+    """ids of the string constants in *tree* that cannot bind anything: a
+    bare expression statement (a docstring, anywhere) and the elements of
+    a top-level ``__all__ = [...]`` literal, which only names exports."""
+    inert: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            inert.add(id(node.value))
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == "__all__"
+                and isinstance(stmt.value, (ast.List, ast.Tuple))):
+            inert.update(id(element) for element in stmt.value.elts)
+    return inert
+
+
+def _binding_sites(tree: ast.Module, name: str, strings: bool = True) -> list[ast.AST]:
+    """Every node anywhere in *tree* that could bind *name*, which is
+    anything that mentions it other than reading it: a ``Name`` or
+    attribute stored or deleted (plain, augmented, annotated, unpacked,
+    ``for``/``with``/walrus targets, in any block, at any depth), ``global
+    NAME``, ``def``/``class NAME``, an import binding it, ``except ... as
+    NAME``, a ``match`` capture, a parameter or keyword argument named
+    NAME (``globals().update(NAME=...)``), any star import, and — when
+    *strings* is true — any string or bytes constant containing NAME
+    (``globals()["NAME"]``, ``setattr(module, "NAME", ...)``, ``exec("NAME
+    = ...")``) other than a docstring or an ``__all__`` entry.
+
+    Deliberately over-inclusive: a mention this cannot tell is harmless
+    (a local of the same name, say) still counts, since the ratchet only
+    ever needs exactly one. What no static reading can see (a name built
+    at runtime, ``exec`` of a computed string) is left to the runtime
+    check in tests/test_case_library.py, which compares the value
+    consumers actually import against the literal read here."""
+    inert = _inert_constants(tree) if strings else set()
+    encoded = name.encode()
+    hits: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+            continue  # reading NAME (or x.NAME) never rebinds it
+        if isinstance(node, ast.alias) and node.name == "*":
+            hits.append(node)  # a star import can bind any name at all
+            continue
+        if isinstance(node, ast.Constant):
+            value = node.value
+            if strings and id(node) not in inert and (
+                    (isinstance(value, str) and name in value)
+                    or (isinstance(value, bytes) and encoded in value)):
+                hits.append(node)
+            continue
+        for _field, value in ast.iter_fields(node):
+            values = value if isinstance(value, list) else [value]
+            if any(isinstance(v, str) and name in v.split(".") for v in values):
+                hits.append(node)
+                break
+    return hits
+
+
+def _where(nodes: list[ast.AST]) -> str:
+    return ", ".join(f"line {getattr(n, 'lineno', '?')}" for n in nodes)
 
 
 def _frozenset_literal(source: str, name: str) -> set[str]:
     """The elements of ``NAME: frozenset[str] = frozenset({...})`` (or
-    ``frozenset()``) as written at the top level of *source*. Raises if
-    *name* is missing, is written to by more than one top-level statement
-    (including an augmented ``|=`` or an indirect ``globals()[...]``
-    rebind — see ``_module_level_writer``), or is not itself written as a
-    literal frozenset — this check only ever trusts what it can read
-    statically, never an import (a ratchet's own module may not even be
-    importable standalone, and executing untrusted historical revisions
-    of it is not something to do lightly)."""
+    ``frozenset()``) in *source*. Fails closed (raises) unless that one
+    top-level assignment is the *only* thing in the whole module that
+    could bind NAME (``_binding_sites``) and nothing rebinds
+    ``frozenset`` itself — any second writer, in any form or block,
+    could grow the set Python actually binds while this reads the
+    literal. It only ever reads source statically, never imports it (a
+    ratchet's module may not be importable standalone, and executing
+    historical revisions of it is not something to do lightly)."""
     tree = ast.parse(source)
-    writers = [node for node in tree.body if _module_level_writer(node, name)]
-    if len(writers) > 1:
+    shadows = _binding_sites(tree, "frozenset", strings=False)
+    if shadows:
         raise _NotAFrozensetLiteral(
-            f"{name} is written to by {len(writers)} top-level statements — this check "
-            "requires exactly one, unambiguous literal assignment, since any later "
-            "reassignment would silently grow the ratchet unseen")
-    if not writers:
-        raise _NotAFrozensetLiteral(f"{name} not found")
-    node = writers[0]
-    if isinstance(node, ast.AugAssign):
+            f"frozenset itself is rebound ({_where(shadows)}), so {name}'s literal cannot be "
+            "trusted")
+    hits = _binding_sites(tree, name)
+    if not hits:
+        raise _RatchetNameMissing(f"{name} not found")
+    if len(hits) > 1:
         raise _NotAFrozensetLiteral(
-            f"{name} is assigned via augmented assignment (e.g. |=), not a literal "
+            f"{name} has {len(hits)} possible writers ({_where(hits)}) — this check requires "
+            "exactly one, a top-level literal assignment, since any other could grow the "
+            "ratchet unseen")
+    (hit,) = hits
+    stmt = next((s for s in tree.body if isinstance(hit, ast.Name) and (
+                 (isinstance(s, ast.AnnAssign) and s.target is hit)
+                 or (isinstance(s, ast.Assign) and s.targets == [hit]))), None)
+    if stmt is None:
+        raise _NotAFrozensetLiteral(
+            f"{name}'s only writer ({_where(hits)}) is not a top-level "
             "NAME = frozenset(...) assignment")
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-        raise _NotAFrozensetLiteral(  # pragma: no cover — _module_level_writer's own contract
-            f"{name}: unrecognized top-level assignment form")
-    if isinstance(node, ast.Assign) and not any(
-            isinstance(t, ast.Name) and t.id == name for t in node.targets):
-        raise _NotAFrozensetLiteral(
-            f"{name} is rebound indirectly (e.g. via globals()[...]), not a literal "
-            "NAME = frozenset(...) assignment")
-    value = node.value
-    if value is None:
-        raise _NotAFrozensetLiteral(f"{name} is not assigned a literal frozenset(...)")
-    if isinstance(value, ast.Call) and getattr(value.func, "id", None) == "frozenset":
+    value = stmt.value
+    if isinstance(value, ast.Call) and getattr(value.func, "id", None) == "frozenset" \
+            and not value.keywords and len(value.args) <= 1:
         if not value.args:
             return set()
         try:
@@ -305,9 +345,12 @@ def check_ratchet_set(old: Tree, new: Tree, path: str, name: str) -> list[str]:
         new_set = _frozenset_literal(new_text, name)
     except _NotAFrozensetLiteral as exc:
         return [f"{path}:{name}: {exc} in the new tree — ratchet check cannot verify it"]
+    except SyntaxError as exc:
+        return [f"{path}:{name}: does not parse in the new tree ({exc}) — ratchet check "
+                "cannot verify it"]
     try:
         old_set = _frozenset_literal(old_text, name)
-    except _NotAFrozensetLiteral:
+    except (_NotAFrozensetLiteral, SyntaxError):
         return []  # didn't exist as a literal before (e.g. just introduced): nothing to shrink from
     grown = new_set - old_set
     if grown:
@@ -315,10 +358,49 @@ def check_ratchet_set(old: Tree, new: Tree, path: str, name: str) -> list[str]:
     return []
 
 
+def check_reexports(new: Tree, path: str) -> list[str]:
+    """*path* (a package ``__init__.py`` consumers import the ratchet
+    sets through — tests do ``from caselib import UNDOCUMENTED_GAPS``)
+    may bind a ratchet name only by re-exporting it unchanged from its
+    defining module in the same package (``from .cells import
+    UNDOCUMENTED_GAPS``). Anything else that could bind it there —
+    assigning it, importing it from elsewhere or under another name's
+    alias, a star import, a string naming it — fails closed, since
+    ``check_ratchet_set`` never looks at this file and a rebind here
+    would grow exactly the set the tests use."""
+    text = new.read(path)
+    if text is None:
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return [f"{path}: does not parse ({exc}) — ratchet re-exports cannot be verified"]
+    here = PurePosixPath(path).parent
+    problems = []
+    for ratchet_path, name in RATCHET_SETS:
+        defining = PurePosixPath(ratchet_path)
+        allowed: set[int] = set()
+        if defining.parent == here:
+            for stmt in tree.body:
+                if (isinstance(stmt, ast.ImportFrom) and stmt.level == 1
+                        and stmt.module == defining.stem):
+                    allowed.update(id(a) for a in stmt.names
+                                   if a.name == name and a.asname in (None, name))
+        bad = [n for n in _binding_sites(tree, name) if id(n) not in allowed]
+        if bad:
+            problems.append(
+                f"{path}:{name}: may only be re-exported unchanged (from .{defining.stem} "
+                f"import {name}), but something else here could bind it ({_where(bad)}) — "
+                "ratchet check cannot verify it")
+    return problems
+
+
 def run_all_checks(old: Tree, new: Tree) -> list[str]:
     problems = list(check_redteam_anchors(old, new))
     for path, name in RATCHET_SETS:
         problems += check_ratchet_set(old, new, path, name)
+    for path in RATCHET_REEXPORTS:
+        problems += check_reexports(new, path)
     return problems
 
 

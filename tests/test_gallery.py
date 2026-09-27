@@ -15,6 +15,7 @@ from caselib import REGISTRY, load
 from caselib.cells import parts as cell_parts
 from gallery.build import REDESIGN_MD, build
 from gallery.knumbers import CASE_TO_K, documented_k_numbers
+from gallery.verdicts import REFERENCE_CRASHED_NOTE
 
 load()
 
@@ -155,17 +156,56 @@ def test_caption_matches_the_cells_own_row_taxonomy() -> None:
         assert expect_caption == (case_id == "document.xmp-thumbnail")
 
 
-# ── "match" is not decisive on its own: a matching-limit case can be     ──
-# ── parked at coordinates page-1 text extraction never returns at all    ──
-# ── (match.extreme-coordinates, K35) even though its row says "match",   ──
-# ── or straddle a page break (match.page-break*, only PART of the value  ──
-# ── is on page 1) — reviewer-confirmed: the old row-only check called    ──
-# ── both of these "visible" and showed neither caption. ──────────────────
+# ── "match" is not decisive on its own: the value is on SOME page, but ──
+# ── page 1 may hold all of it on one line, all of it only across lines, ──
+# ── part of it (the rest on a later page), or none of it at all. The    ──
+# ── reviewer found 57 of ~150 match.* cases captioned wrongly; this     ──
+# ── pins every one of them against a hand-checked table.                ──
+
+_VISIBILITY_TABLE_PATH = Path(__file__).parent / "gallery_visibility.json"
+_VISIBILITY_TABLE: dict[str, str] = json.loads(_VISIBILITY_TABLE_PATH.read_text())
+
+
+def _match_leak_ids() -> set[str]:
+    return {cid for cid, case in REGISTRY.items()
+            if case.truth == "leak" and case.cells and cell_parts(case.cells[0])[0] == "match"}
+
+
+def test_visibility_table_covers_every_match_leak_case() -> None:
+    assert sorted(set(_VISIBILITY_TABLE) ^ _match_leak_ids()) == [], (
+        f"{_VISIBILITY_TABLE_PATH.name} must list exactly the match.* leak cases")
+    assert set(_VISIBILITY_TABLE.values()) <= {"full", "wrapped", "partial", "none"}
+    assert _VISIBILITY_TABLE["page.extreme-coordinates"] == "none"
+
+
+def test_secret_visibility_matches_the_table_for_every_match_case(tmp_path) -> None:
+    """Every entry was checked by hand against what page 1's extracted
+    text holds: "full" (the whole value on one line: the overlapping
+    short-tail grid, and the several-values grid's card number),
+    "wrapped" (on page 1 but only across lines: split-lines, table-rows,
+    repeated-line-wraps, vertical-stack, raw-line-wrap, wrap-boxed-lines,
+    two-column-wrap, ...), "partial" (a prefix on page 1, the rest on a
+    later page: every split-pages / form-boxes / split-four-pages /
+    vertical-stack-split-pages variant, page-break, ...), "none"
+    (page.extreme-coordinates, and the several-values variants whose only
+    rules are for the SSN, which sits on pages 2-3)."""
+    from caselib.run import build as build_case
+    from gallery.build import _secret_visibility
+    wrong = []
+    for case_id, expected in sorted(_VISIBILITY_TABLE.items()):
+        pdf = tmp_path / f"{case_id}.pdf"
+        build_case(REGISTRY[case_id], pdf)
+        got = _secret_visibility(REGISTRY[case_id], pdf)
+        if got != expected:
+            wrong.append(f"{case_id}: expected {expected}, got {got}")
+    assert wrong == []
+
 
 _VISIBILITY_SUBSET = (
     "page.extreme-coordinates",  # row "match", but nothing of the value is on page 1 at all
     "layout.page-break",         # row "match", but only half the value is on page 1
-    "page.box-over-text",        # row "live": the whole value is genuinely on page 1
+    "layout.raw-line-wrap",      # row "match": all of it on page 1, split across two lines
+    "page.box-over-text",        # row "live": uncaptioned by design
 )
 
 
@@ -176,22 +216,23 @@ def visibility_built(tmp_path_factory: pytest.TempPathFactory):
     return (out / "index.html").read_text()
 
 
-def test_extreme_coordinates_gets_the_nothing_visible_caption(visibility_built) -> None:
-    section = _section(visibility_built, "page.extreme-coordinates")
-    assert "Nothing visible here" in section
-    assert "Only part of the value" not in section
+_ALL_CAPTIONS = ("Nothing visible here", "Only part of the value", "split across lines")
 
 
-def test_page_break_case_gets_the_partial_caption(visibility_built) -> None:
-    section = _section(visibility_built, "layout.page-break")
-    assert "Only part of the value appears on page 1" in section
-    assert "Nothing visible here" not in section
-
-
-def test_box_over_text_gets_neither_caption(visibility_built) -> None:
-    section = _section(visibility_built, "page.box-over-text")
-    assert "Nothing visible here" not in section
-    assert "Only part of the value" not in section
+@pytest.mark.parametrize(("case_id", "caption"), [
+    ("page.extreme-coordinates", "Nothing visible here"),
+    ("layout.page-break", "Only part of the value appears on page 1"),
+    ("layout.raw-line-wrap", "The value is on this page, split across lines"),
+    ("page.box-over-text", None),
+])
+def test_each_visibility_gets_its_own_caption(visibility_built, case_id: str,
+                                              caption: str | None) -> None:
+    section = _section(visibility_built, case_id)
+    for other in _ALL_CAPTIONS:
+        if caption is None or other not in caption:
+            assert other not in section, (case_id, other)
+    if caption:
+        assert caption in section
 
 
 # ── the badge follows the measured verdict, not just the pinned label ───
@@ -309,7 +350,7 @@ def test_reference_only_crash_still_surfaces_the_candidates_real_miss(tmp_path) 
     section = _section(html, "page.box-over-text")
     assert 'class="verdict crashed"' not in section
     assert "NEW MISS (not a known gap)" in section
-    assert "reference crashed" in section  # a note, not a substitute for the real verdict
+    assert REFERENCE_CRASHED_NOTE in section  # a note, not a substitute for the real verdict
     assert result.misses == 3  # same count as the ordinary undocumented-miss test above
 
 
@@ -325,7 +366,7 @@ def test_reference_only_crash_with_a_caught_candidate_is_not_a_miss_or_a_crash(t
     assert 'class="verdict crashed"' not in section
     assert "NEW MISS" not in section
     assert "MISSES IT TODAY" not in section
-    assert "reference crashed" in section
+    assert REFERENCE_CRASHED_NOTE in section
 
 
 # ── K-numbers: an explicit, hand-verified table, checked against §8 ─────

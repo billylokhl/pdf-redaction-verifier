@@ -4,8 +4,10 @@ here is committed — see eval/README.md's "Gallery" section)."""
 
 from __future__ import annotations
 
+import functools
 import html
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,87 +26,203 @@ from .style import CSS
 from .verdicts import (REFERENCE_CRASHED_NOTE, Verdict, gap_disagreement, is_miss,
                        is_undocumented_miss, load_results, reference_crashed_cases, verdict_for)
 
-# A cell's row (caselib.cells.parts) says where the secret is, which tells
-# us whether the page-1 render could plausibly show it at all: "live" is
-# drawn on a page — nothing about a box over it, or a font encoding it,
-# keeps it off the render, so the row alone settles "live". Everything
-# else the row can name outright (off-page, a switched-off layer, an
-# unused resource, an orphaned/superseded object, metadata, an
-# attachment, a script, private data, unindexed bytes, ...) never reaches
-# the rendered page at all. "match" (a layout-splitting limit) is NOT
-# settled by the row alone: the value is somewhere on a page, but not
-# necessarily on *page 1*, and not necessarily whole there — see
-# _secret_visibility below, which checks page 1's own extracted text
-# instead of trusting "match" to mean "visible".
-_FULLY_VISIBLE_ROW = "live"
-_AMBIGUOUS_ROW = "match"
+# A cell's row (caselib.cells.parts) says where the secret is. Everything
+# the row can name outright other than "live" and "match" (off-page, a
+# switched-off layer, an unused resource, an orphaned/superseded object,
+# metadata, an attachment, a script, private data, unindexed bytes, ...)
+# never reaches the rendered page at all: "Nothing visible here". "live"
+# rows are left uncaptioned by design; the value may be covered (a box
+# drawn over it, a font encoding it) — the caption says where the value
+# is, not whether a reader can make it out. "match" (a layout-splitting
+# limit) is NOT settled by the row alone: the value is somewhere on a
+# page, but not necessarily on *page 1*, and not necessarily in one
+# piece there — see _secret_visibility, which reads the pages' own
+# extracted text instead.
+_LIVE_ROW = "live"
+_MATCH_ROW = "match"
 
-# Captions for the render, keyed by how much of the case's pinned secret
-# page 1's own extracted text actually contains.
-_NOTHING_VISIBLE_CAPTION = ("Nothing visible here: the secret is elsewhere in the file "
-                            "(see above).")
-_PARTIAL_VISIBLE_CAPTION = ("Only part of the value appears on page 1; the rest is on a "
-                            "later page.")
+# Captions for the render, keyed by _secret_visibility's answer ("full"
+# gets none).
+_CAPTIONS = {
+    "none": "Nothing visible here: the secret is elsewhere in the file (see above).",
+    "partial": "Only part of the value appears on page 1; the rest is on a later page.",
+    "wrapped": "The value is on this page, split across lines.",
+}
+# Best first: a case with several pinned values is captioned by the one
+# page 1 shows most of.
+_VISIBILITY_RANK = ("full", "wrapped", "partial", "none")
+# The fewest characters of a value page 1 must show to count as "part"
+# of it (a value's 3-digit SSN area number, say).
+_MIN_PART = 3
+# Pages read for the rest of a split value; a value split further than
+# this is "none" as far as the caption is concerned.
+_MAX_PAGES_READ = 10
 
 
-def _page1_text(pdf_path: Path) -> str:
-    """Page 1's own extracted text, or "" if it cannot even be opened —
-    the decisive check for an ambiguous ("match") row, since a row alone
-    cannot tell "split across a page break" (part of the value really is
-    on page 1) from "parked at coordinates text extraction never returns"
-    (match.extreme-coordinates, K35: PyMuPDF's own extraction returns no
-    glyphs at ~10^9,10^9 on a 612x792 MediaBox, so the page-1 PNG is
-    blank even though the row says "match")."""
+def _norm(text: str) -> str:
+    """*text* without anything but letters and digits: separators,
+    spaces and line breaks all vanish, so "123-45-\\n6789" and the value
+    "123-45-6789" compare equal."""
+    return re.sub(r"[\W_]+", "", text)
+
+
+def _page_texts(pdf_path: Path) -> list[str]:
+    """The extracted text of the first pages of *pdf_path* (up to
+    _MAX_PAGES_READ), or [] if it cannot be opened."""
     try:
         doc = fitz.open(str(pdf_path))
     except Exception:
-        return ""
+        return []
     try:
-        if doc.page_count < 1:
-            return ""
-        return doc[0].get_text()
+        return [doc[i].get_text() for i in range(min(doc.page_count, _MAX_PAGES_READ))]
     except Exception:
-        return ""
+        return []
     finally:
         doc.close()
 
 
-def _fragment_visible(value: str, text: str, min_run: int = 4) -> bool:
-    """True if some run of at least *min_run* consecutive characters of
-    *value* appears in *text* — a value split across a page break need
-    not be contiguous or whole on page 1 for *some* recognisable piece of
-    it to genuinely be there."""
-    if len(value) <= min_run:
-        return value in text
-    return any(value[i:i + min_run] in text for i in range(len(value) - min_run + 1))
+def _lines(text: str) -> list[str]:
+    return [line for line in (_norm(raw) for raw in text.splitlines()) if line]
+
+
+def _readings(value: str, lines: list[tuple[bool, str]]) -> set[tuple[int, bool]]:
+    """Every way to read *value* (normalised) off *lines* — ``(on page 1,
+    normalised line)`` in reading order — in two or more pieces: the end
+    of one line, then zero or more whole lines, then the start of a later
+    line, with any lines in between skipped (a column beside it, a
+    footer). Returns ``(characters read off page 1, capped at _MIN_PART;
+    whether any piece came from a later page)`` for each."""
+    length = len(value)
+    # For each offset into the value, the lines that could continue it there.
+    candidates = [[j for j, (_p1, text) in enumerate(lines)
+                   if text.startswith(value[pos:]) or value.startswith(text, pos)]
+                  for pos in range(length)]
+
+    @functools.lru_cache(maxsize=None)
+    def rest(pos: int, after: int) -> frozenset[tuple[int, bool]]:
+        out: set[tuple[int, bool]] = set()
+        remaining = length - pos
+        for j in candidates[pos]:
+            if j <= after:
+                continue
+            on_page1, text = lines[j]
+            if text.startswith(value[pos:]):          # the last piece
+                out.add((min(remaining, _MIN_PART) if on_page1 else 0, not on_page1))
+            elif len(text) < remaining:               # a whole line in the middle
+                for p1, later in rest(pos + len(text), j):
+                    out.add((min(p1 + (len(text) if on_page1 else 0), _MIN_PART),
+                             later or not on_page1))
+        return frozenset(out)
+
+    found: set[tuple[int, bool]] = set()
+    for i, (on_page1, text) in enumerate(lines):
+        for k in range(1, length):
+            if text.endswith(value[:k]):
+                for p1, later in rest(k, i):
+                    found.add((min(p1 + (k if on_page1 else 0), _MIN_PART),
+                               later or not on_page1))
+    return found
+
+
+def _value_visibility(value: str, pages: list[str]) -> str:
+    v = _norm(value)
+    if not v or not pages:
+        return "none"
+    page1 = [(True, line) for line in _lines(pages[0])]
+    if any(v in line for _p1, line in page1):
+        return "full"
+    if _readings(v, page1):
+        return "wrapped"
+    if len(pages) > 1:
+        later = [(False, line) for page in pages[1:] for line in _lines(page)]
+        # A prefix of the value on page 1 and the rest after it, or (read
+        # the other way round) a suffix on page 1 and the rest on a later page.
+        for order in (page1 + later, later + page1):
+            if any(p1 >= _MIN_PART and used_later for p1, used_later in _readings(v, order)):
+                return "partial"
+    return "none"
+
+
+def _join_lines(text: str) -> str:
+    return re.sub(r"[ \t]*\n[ \t]*", "", text)
+
+
+def _pattern_visibility(regex: re.Pattern[str], pages: list[str]) -> str:
+    """The same three answers for a rule with no literal value (a built-in
+    class like "ssn", or a regex): judged by where the rule's own regex
+    matches, in page 1's lines ("full"), in page 1 read as one run of
+    text ("wrapped"), or starting on page 1 and running on into the next
+    pages ("partial"). A run of text is tried both normalised (the
+    value's separators gone) and with just the line breaks joined (its
+    separators kept), since a regex can depend on either."""
+    if not pages:
+        return "none"
+    if any(regex.search(view) for line in pages[0].splitlines()
+           for view in (line, _norm(line))):
+        return "full"
+    best = "none"
+    for view in (_norm, _join_lines):
+        head = view(pages[0])
+        tail = view("\n".join(pages[1:]))
+        if any(m.end() <= len(head) for m in regex.finditer(head)):
+            return "wrapped"
+        if len(pages) > 1:
+            if any(m.start() <= len(head) - _MIN_PART and m.end() > len(head)
+                   for m in regex.finditer(head + tail)):
+                best = "partial"
+            if any(m.start() < len(tail) and m.end() >= len(tail) + _MIN_PART
+                   for m in regex.finditer(tail + head)):
+                best = "partial"
+    return best
+
+
+def _rule_regex(rule: dict[str, str]) -> re.Pattern[str] | None:
+    if "class" in rule:
+        import verify
+        spec = verify.BUILTIN_PATTERN_CLASSES.get(rule["class"])
+        return re.compile(spec[0]) if spec else None
+    if "pattern" in rule:
+        try:
+            return re.compile(rule["pattern"])
+        except re.error:
+            return None
+    return None
 
 
 def _secret_visibility(case: Case, pdf_path: Path) -> str:
-    """"full", "partial", or "none": how much of a leak case's pinned
-    secret(s) page 1 itself actually shows, for captioning the render
-    (never for gating anything). "live" is decisive on its own; "match"
-    is decided by checking page 1's own extracted text against the
-    case's pinned rule values, since a matching-limit case can straddle a
-    page break (only part of the value is on page 1: match.page-break*)
-    or sit at coordinates page-1 text extraction never returns at all
-    (match.extreme-coordinates) despite the row saying "match" either
-    way."""
+    """"full", "wrapped", "partial", or "none": how much of a leak case's
+    pinned secret the rendered page 1 holds, for captioning the render
+    (never for gating anything). The cell's row settles everything but
+    "match"; a "match" case is judged from the pages' own extracted text,
+    rule by rule (a literal value, or the rule's regex when it has
+    none), and captioned by the rule page 1 shows most of:
+
+    - "full": the whole value on one line of page 1 (no caption);
+    - "wrapped": the whole value on page 1, but only reading across
+      lines (match.line-wrap and friends);
+    - "partial": at least _MIN_PART characters of it on page 1 and the
+      rest on a later page (match.page-break and friends);
+    - "none": nothing of it on page 1 (match.extreme-coordinates, K35,
+      draws its text where PyMuPDF's extraction never returns it, so
+      page 1 is blank)."""
     if not case.cells:
         return "full"   # nothing to judge (shouldn't happen for a leak case)
     row, _column, _qualifier = cell_parts(case.cells[0])
-    if row == _FULLY_VISIBLE_ROW:
+    if row == _LIVE_ROW:
         return "full"
-    if row != _AMBIGUOUS_ROW:
+    if row != _MATCH_ROW:
         return "none"
-    values = [rule["value"] for rule in case.rules if "value" in rule]
-    if not values:
-        return "full"  # nothing pinned to check against — trust the row
-    text = _page1_text(pdf_path)
-    if any(value in text for value in values):
-        return "full"
-    if any(_fragment_visible(value, text) for value in values):
-        return "partial"
-    return "none"
+    pages = _page_texts(pdf_path)
+    results = []
+    for rule in case.rules:
+        if "value" in rule:
+            results.append(_value_visibility(rule["value"], pages))
+        else:
+            regex = _rule_regex(rule)
+            if regex is not None:
+                results.append(_pattern_visibility(regex, pages))
+    return min(results, key=_VISIBILITY_RANK.index, default="none")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COVERAGE_MD = REPO_ROOT / "COVERAGE.md"
@@ -207,10 +325,9 @@ def _case_section(case: Case, out_dir: Path, verdict: Verdict, k_numbers: dict[s
     if image_ok:
         img_block = (f'<img src="images/{_esc(case.id)}.png" '
                     f'alt="page 1 of {_esc(case.id)}.pdf" loading="lazy">')
-        if visibility == "none":
-            img_block += f'<p class="no-visible-secret">{_esc(_NOTHING_VISIBLE_CAPTION)}</p>'
-        elif visibility == "partial":
-            img_block += f'<p class="no-visible-secret">{_esc(_PARTIAL_VISIBLE_CAPTION)}</p>'
+        caption = _CAPTIONS.get(visibility)
+        if caption:
+            img_block += f'<p class="no-visible-secret">{_esc(caption)}</p>'
     else:
         img_block = '<p class="no-render">(page could not be rendered)</p>'
     secrets = _pinned_secrets(case)
