@@ -129,10 +129,19 @@ XMP document/instance ids that look machine-generated (a real UUID in
 A genuine exception is a `Case.privacy_allowlist` entry naming a
 `"kind"` (one of `model.PRIVACY_KINDS`), a `"pattern"` matched with
 `re.fullmatch` against the finding's own text (a regex, not a
-substring — and not a bare `.`/`.*`, rejected as too broad to mean
-anything), and a `"reason"`. `"kind"` must equal the finding's own kind
+substring), and a `"reason"`. `"kind"` must equal the finding's own kind
 exactly: an entry allowlisting an `"email"` finding never excuses the
-same text reported as a `"hostname"`.
+same text reported as a `"hostname"`. `"pattern"` must not be too broad
+to mean anything: rather than a denylist of specific spellings (trivially
+dodged — `[\s\S]*`, `.*?` and `(?s)^.*$` all "mean" the same thing as
+`.*` without saying it), a pattern is rejected if it `re.fullmatch`es any
+of a handful of fixed probe strings — an arbitrary 40-character mix of
+letters, digits and punctuation, one containing a newline, and per-kind
+ones a plausible instance would look like (`/Users/probe/x.txt` for
+`"home-path"`, `probe@probe.invalid` for `"email"`, …). A pattern tied to
+one already-known fixture value (`re.escape("ci@example.com")`) never
+matches any of these; a pattern that actually means "anything at all", or
+"anything shaped like this kind", always does.
 
 ### The blind red-team slot (`caselib/redteam/`)
 
@@ -150,16 +159,22 @@ row for yet through the `new.<slug>` placeholder namespace
 (`cells.NEW_CELL_ALLOWLIST`, redteam-only). Red-team cases load through
 the ordinary family mechanism (`families/redteam.py`) and land in the
 same `REGISTRY` with `origin="redteam"` — an invariant
-(`TestRedTeam.test_origin_matches_the_loader`) checks that every case
-claiming that origin is actually one the loader registered
-(`redteam.REGISTERED_IDS`), since nothing else stops an ordinary family
-from setting `origin="redteam"` on its own.
+(`TestRedTeam.test_origin_matches_the_loader`) checks that the set of
+ids claiming that origin equals exactly the ids every round's
+`labels.json` lists **on disk**, recomputed independently there rather
+than read back from the loader's own (mutable, in-process)
+`REGISTERED_IDS` bookkeeping — since nothing else stops an ordinary
+family from setting `origin="redteam"` on its own, and trusting
+`REGISTERED_IDS` alone would only catch a bypass the loader's own code
+happened to also get wrong the same way.
 
 `round.json`'s `labels_sha256` can be checked for internal consistency
 by a test that only sees one commit — but nothing stops that same
 commit from moving `labels_sha256` **and** `initial_labels_sha256`
 together, since the test would just compare the new file against
-itself. See "The ratchet check" below for how that's actually caught.
+itself. See "The ratchet check" below for how that's actually caught —
+including the confirmed bypass of also renaming the round's directory so
+a naive comparison-by-path never notices the old anchor is gone.
 
 ### Gallery fields ratchet
 
@@ -197,6 +212,28 @@ Its comparison logic (`run_all_checks` and friends) takes an abstract
 "tree" (`read(path)`, `glob(pattern)`), so `tests/test_check_ratchets.py`
 exercises it against fake in-memory trees — no git, no filesystem —
 independently of `GitTree`'s subprocess calls.
+
+Two properties a confirmation review specifically probed and confirmed
+were missing, both now closed:
+
+- **A round is matched by identity, not by path.** `check_redteam_anchors`
+  reads round.json's own `"round"` field, not the directory it lives in.
+  `git mv`-ing a round's directory changes nothing by itself; `git
+  mv`-ing it *and* forging a fresh `initial_labels_sha256` at the new
+  path is still caught, because the old anchor is looked up by identity
+  and found regardless of where the file now lives. A round whose
+  identity disappears between the two trees entirely — deleted, or its
+  `"round"` field itself changed, indistinguishable from delete-and-
+  recreate — is always a failure: a round's history may never simply
+  vanish.
+- **An unresolvable base fails closed in CI.** If `eval/check_ratchets.py`
+  can't work out what to diff against (`origin/main` unreachable, no
+  merge-base, no `HEAD~1`), that used to print a message and exit `0` —
+  silently skipping the entire check. Now `is_ci_context` (`GITHUB_ACTIONS
+  =true`, or `GITHUB_BASE_REF` / `GITHUB_EVENT_NAME` set at all) decides:
+  inside anything that looks like CI, no base to compare against is a
+  hard failure; only a genuinely local invocation with none of those
+  variables set may skip cleanly.
 
 ## Running
 

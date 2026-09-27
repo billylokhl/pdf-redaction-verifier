@@ -78,6 +78,19 @@ each below its own `HEAD~1`, landing outside a pull request) — the
 practical answer there is requiring pull requests for `main`, which this
 check does not itself enforce.
 
+A confirmation review found this comparison still had a hole: renaming a
+round's directory (`git mv round-0-example round-0-renamed`) while doing
+the rewrite meant the old path was simply "gone" from the old tree's
+point of view, and a comparison keyed by path never noticed there was
+anything to compare. `check_ratchets.py` now matches a round by
+round.json's own `"round"` field instead of by path, so a rename alone
+changes nothing (the identity is still found, anchor unchanged), a
+rename plus a forged anchor is still caught (the old anchor is still
+looked up by identity, wherever the file now lives), and a round whose
+identity disappears entirely between the two trees — deleted, or its
+`"round"` field itself changed — is always a failure, since a round's
+history is never allowed to just vanish.
+
 ## Cells COVERAGE.md doesn't have yet
 
 A round may find a real storage place the coverage table has no row for.
@@ -116,10 +129,15 @@ checks the verdict against `expected` (or `known_gap.today`).
 `origin="redteam"` is otherwise just a string any family's `case()` call
 could set — nothing about the field itself is special. The actual gate
 is `TestRedTeam.test_origin_matches_the_loader`: the set of ids in
-`REGISTRY` claiming `origin="redteam"` must equal exactly
-`redteam.REGISTERED_IDS`, the ids this loader itself registered. An
-ordinary family case that set `origin="redteam"` would inflate the left
-side without ever appearing in `REGISTERED_IDS` and fail this.
+`REGISTRY` claiming `origin="redteam"` must equal exactly the ids listed
+in every round's `labels.json` **on disk** — recomputed independently by
+the test itself, not read back from this module's own `REGISTERED_IDS`
+(which the test also checks, but only as a secondary sanity check on the
+loader's own bookkeeping, never as the thing that actually decides
+pass/fail). An ordinary family case that set `origin="redteam"` would
+inflate the `REGISTRY` side without ever appearing in any round's
+`labels.json`, and fail against the disk-derived set regardless of
+whatever `REGISTERED_IDS` happens to say.
 
 Every round's `round.json` must carry non-empty `author`, `date`,
 `coverage_md_commit` and `no_code_access_statement` fields, and the

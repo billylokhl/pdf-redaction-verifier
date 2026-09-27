@@ -28,6 +28,20 @@ commit's HEAD~1 diff looks small. The merge-base comparison used for pull
 requests does not have this gap (it compares the whole PR against main
 in one shot), so the practical exposure is limited to direct pushes to
 main, which branch protection should be discouraging anyway.
+
+Two things this deliberately does not trust:
+
+- A round is matched between trees by round.json's own ``"round"`` field,
+  never by path — a directory rename alone changes nothing, but a rename
+  that also forges a fresh ``initial_labels_sha256`` is still caught,
+  because the old anchor is looked up by identity. A round whose identity
+  vanishes entirely between the two trees (deleted, or its identity field
+  itself changed — indistinguishable from delete-and-recreate) is always
+  a failure (``check_redteam_anchors``).
+- When no base ref can be resolved, that is only a clean skip in what
+  looks like a genuinely local run (``is_ci_context``); inside anything
+  that looks like CI, it is a failure — an unresolvable base must never
+  quietly turn into "nothing to check".
 """
 
 from __future__ import annotations
@@ -113,30 +127,84 @@ class DictTree:
 
 # ── The checks themselves (pure functions of two Trees) ─────────────────
 
-def check_redteam_anchors(old: Tree, new: Tree) -> list[str]:
-    """A round's ``initial_labels_sha256`` must never move once it exists.
-    A round that is new in *new* (absent from *old*) has nothing to
-    compare against and is skipped — its anchor is only pinned from here
-    on."""
-    problems = []
-    for path in new.glob(REDTEAM_ROUND_GLOB):
-        new_text = new.read(path)
-        old_text = old.read(path)
-        if old_text is None or new_text is None:
+class _RedteamDataError(Exception):
+    """A round's data could not be read at all — parsed as JSON, or
+    identified — in one of the two trees. Always a hard failure: a
+    ratchet check that can't make sense of a round must never treat that
+    as "nothing to compare", since that is exactly the gap a rename or a
+    malformed commit could hide behind."""
+
+
+def _round_identities(tree: Tree) -> dict[str, tuple[str, dict]]:
+    """{round identity: (path, parsed round.json)} for every round this
+    tree has, keyed by round.json's own ``"round"`` field — never by
+    path. A directory rename alone does not change a round's identity, so
+    it is not by itself a difference this returns; renaming *and* forging
+    a fresh ``initial_labels_sha256`` still leaves the identity mapped to
+    the new (wrong) anchor, which check_redteam_anchors below compares
+    against the old tree's anchor for that same identity."""
+    identities: dict[str, tuple[str, dict]] = {}
+    for path in tree.glob(REDTEAM_ROUND_GLOB):
+        text = tree.read(path)
+        if text is None:
             continue
         try:
-            new_data, old_data = json.loads(new_text), json.loads(old_text)
+            data = json.loads(text)
         except json.JSONDecodeError as exc:
-            problems.append(f"{path}: could not parse as JSON ({exc}) — treating as a failure")
-            continue
-        new_anchor = new_data.get("initial_labels_sha256")
-        old_anchor = old_data.get("initial_labels_sha256")
-        if new_anchor != old_anchor:
+            raise _RedteamDataError(f"{path}: could not parse as JSON ({exc})") from exc
+        identity = data.get("round")
+        if not identity:
+            raise _RedteamDataError(f'{path}: round.json has no non-empty "round" field')
+        if identity in identities:
+            raise _RedteamDataError(
+                f"{path}: round identity {identity!r} is also used by "
+                f"{identities[identity][0]} — round identities must be unique")
+        identities[identity] = (path, data)
+    return identities
+
+
+def check_redteam_anchors(old: Tree, new: Tree) -> list[str]:
+    """A round's ``initial_labels_sha256`` must never move once it exists,
+    and a round may not simply disappear — by path *or* by identity — to
+    dodge that comparison. Rounds are matched by round.json's own
+    ``"round"`` field, not by path: renaming a round's directory without
+    touching its identity or its anchor is not a failure (nothing here
+    changed), but renaming it *and* rewriting the anchor is still caught,
+    because the old anchor is looked up by identity, not by the path that
+    moved. A round whose identity existed in the old tree but is gone
+    from the new one — removed outright, or its identity itself changed,
+    which is indistinguishable from deleting the old one and creating an
+    unrelated new one — is always a failure: an existing round's history
+    is never allowed to simply vanish. A round whose identity did not
+    exist in the old tree at all is a genuinely new round and has nothing
+    to compare against."""
+    try:
+        old_ids = _round_identities(old)
+    except _RedteamDataError as exc:
+        return [f"redteam (old tree): {exc}"]
+    try:
+        new_ids = _round_identities(new)
+    except _RedteamDataError as exc:
+        return [f"redteam (new tree): {exc}"]
+
+    problems = []
+    for identity, (old_path, old_data) in old_ids.items():
+        if identity not in new_ids:
             problems.append(
-                f"{path}: initial_labels_sha256 changed ({old_anchor!r} -> {new_anchor!r}) — "
-                "this anchor is frozen forever once a round exists; if labels genuinely needed "
-                "correcting, that belongs in labels_sha256 plus a redteam/adjudications.log "
-                "entry, never here")
+                f"redteam round {identity!r} ({old_path}) is missing from the new tree — "
+                "an existing round may not be removed or renamed away; its history must "
+                "stay reachable under its own identity")
+            continue
+        new_path, new_data = new_ids[identity]
+        old_anchor = old_data.get("initial_labels_sha256")
+        new_anchor = new_data.get("initial_labels_sha256")
+        if old_anchor != new_anchor:
+            where = old_path if old_path == new_path else f"{old_path} -> {new_path}"
+            problems.append(
+                f"redteam round {identity!r} ({where}): initial_labels_sha256 changed "
+                f"({old_anchor!r} -> {new_anchor!r}) — this anchor is frozen forever once a "
+                "round exists; if labels genuinely needed correcting, that belongs in "
+                "labels_sha256 plus a redteam/adjudications.log entry, never here")
     return problems
 
 
@@ -229,49 +297,70 @@ def rev_parse(ref: str) -> str | None:
     return _run_git("rev-parse", ref)
 
 
-def determine_base_ref(env: Mapping[str, str] | None = None) -> tuple[str | None, str]:
-    """(ref, message): *ref* is what to diff HEAD against, or None to
-    skip (with *message* explaining why either way). Three cases:
+def is_ci_context(env: Mapping[str, str]) -> bool:
+    """True if this run looks like it's happening in CI: GitHub Actions
+    sets ``GITHUB_ACTIONS=true`` on every job, and ``GITHUB_BASE_REF`` /
+    ``GITHUB_EVENT_NAME`` being set at all are further, independent
+    signals (in case some other CI system sets those two but not the
+    first). Only a run that looks purely local may skip cleanly when no
+    base is resolvable — in anything that looks like CI, "no base to
+    compare against" must fail the job, not silently pass it, since that
+    silence is exactly what would let a ratchet move undetected."""
+    return (env.get("GITHUB_ACTIONS") == "true" or bool(env.get("GITHUB_BASE_REF"))
+            or bool(env.get("GITHUB_EVENT_NAME")))
+
+
+def determine_base_ref(env: Mapping[str, str] | None = None) -> tuple[str | None, str, bool]:
+    """(ref, message, fatal_if_none): *ref* is what to diff HEAD against,
+    or None if nothing could be resolved. When *ref* is None,
+    *fatal_if_none* says whether the caller must treat that as a failure
+    (anything that looks like CI — see ``is_ci_context``) or may skip
+    cleanly (a genuinely local run). Three cases:
 
     - A pull request (or merge queue) build: ``GITHUB_BASE_REF`` names the
       target branch. Compare against the merge-base with
       ``origin/<that branch>`` — the whole PR is checked as one unit
       against where it will land, so a rewrite spread across several of
-      the PR's own commits is still caught.
+      the PR's own commits is still caught. ``GITHUB_BASE_REF`` being set
+      at all means this is always a CI context, so failing to resolve it
+      is always fatal here.
     - A direct push to ``main`` (no pull request): there is no PR base to
       compare against. This compares HEAD against HEAD~1 instead — it
       catches a rewrite landing in one commit, not one spread across
       several individually-pushed commits (see the module docstring's
-      "Known limitation").
+      "Known limitation"). ``GITHUB_EVENT_NAME`` being set makes this a
+      CI context too, so no ``HEAD~1`` to compare against is fatal.
     - Anything else (a local run, another branch's push build): prefer
       the merge-base with ``origin/main`` when available, else HEAD~1,
-      else skip outright (e.g. a single-commit repository).
+      else give up — fatal only if this still looks like CI.
     """
     env = os.environ if env is None else env
+    ci = is_ci_context(env)
+
     base_branch = env.get("GITHUB_BASE_REF")
     if base_branch:
         remote = f"origin/{base_branch}"
         if not ref_exists(remote):
-            return None, f"pull request base {remote!r} not found locally — skipping"
+            return None, f"pull request base {remote!r} not found locally", True
         mb = merge_base("HEAD", remote)
         if not mb:
-            return None, f"no merge-base between HEAD and {remote} — skipping"
-        return mb, f"pull request: comparing against the merge-base with {remote} ({mb})"
+            return None, f"no merge-base between HEAD and {remote}", True
+        return mb, f"pull request: comparing against the merge-base with {remote} ({mb})", False
 
     if env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF") == "refs/heads/main":
         if ref_exists("HEAD~1"):
             return "HEAD~1", ("push to main with no pull request: comparing HEAD against "
                               "HEAD~1 (single-commit rewrites only — see the module "
-                              "docstring's known limitation)")
-        return None, "push to main with no HEAD~1 (repository's first commit) — skipping"
+                              "docstring's known limitation)"), False
+        return None, "push to main with no HEAD~1 (repository's first commit)", True
 
     if ref_exists("origin/main"):
         mb = merge_base("HEAD", "origin/main")
         if mb and mb != rev_parse("HEAD"):
-            return mb, f"local run: comparing against the merge-base with origin/main ({mb})"
+            return mb, f"local run: comparing against the merge-base with origin/main ({mb})", False
     if ref_exists("HEAD~1"):
-        return "HEAD~1", "local run: no usable origin/main, falling back to HEAD~1"
-    return None, "no base ref available to compare against — skipping"
+        return "HEAD~1", "local run: no usable origin/main, falling back to HEAD~1", False
+    return None, "no base ref available to compare against", ci
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,12 +368,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", help="compare against this ref instead of the resolved one")
     args = parser.parse_args(argv)
 
-    base_ref, message = (args.base, f"comparing against explicit --base {args.base!r}") \
-        if args.base else determine_base_ref()
-    print(f"check_ratchets: {message}")
+    if args.base:
+        base_ref: str | None = args.base
+        message, fatal = f"comparing against explicit --base {args.base!r}", False
+    else:
+        base_ref, message, fatal = determine_base_ref()
+
     if base_ref is None:
+        if fatal:
+            print(f"check_ratchets: ERROR: {message} — this looks like CI, so refusing to "
+                  "silently pass rather than skip the ratchet check.")
+            return 1
+        print(f"check_ratchets: {message} — skipping (not running in CI).")
         return 0
 
+    print(f"check_ratchets: {message}")
     problems = run_all_checks(GitTree(base_ref), GitTree("HEAD"))
     if problems:
         print("check_ratchets: FAILED")

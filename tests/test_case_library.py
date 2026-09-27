@@ -319,8 +319,29 @@ _HOSTNAME_RE = re.compile(
     rb"localdomain)\b", re.IGNORECASE)
 _UUID = rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _XMP_ID_RE = re.compile(rb"xmpMM:(?:Document|Instance)ID=\"[^\"]*" + _UUID + rb"[^\"]*\"")
-# Patterns .privacy_allowlist rejects as too broad to mean anything.
+# Patterns .privacy_allowlist rejects outright, kept alongside the probe
+# check below (belt and suspenders — cheap to check, catches the common
+# cases by name in an assertion message instead of just "matched a probe").
 _TRIVIAL_PATTERNS = frozenset({"", ".", ".*", ".+", "(?s).*", "(?s:.*)"})
+
+# A literal denylist is trivially dodged by anything equivalent but
+# spelled differently (`[\s\S]*`, `.*?`, `(?s)^.*$`, ...). Instead, a
+# pattern is rejected if it fullmatches any of these probe strings: no
+# legitimate, narrowly-scoped exception (a specific fixture value) should
+# ever match unrelated, unplanned text. The generic probes catch
+# "matches anything" patterns regardless of kind; the per-kind ones catch
+# a pattern that is specific to *looking* like that kind (e.g.
+# `/Users/.*`) without actually being narrow.
+_GENERIC_PROBES: tuple[str, ...] = (
+    "kQ7#mZ2$vB9!wK4^pL6&nR1*sD8@fG3%tY5~uJ0X",  # ~40 mixed letters/digits/punctuation
+    "probe line one\nprobe line two",             # contains a newline
+)
+_KIND_PROBES: dict[str, tuple[str, ...]] = {
+    "home-path": ("/Users/probe/x.txt", "/home/probe/x.txt", r"C:\Users\probe\x.txt"),
+    "email": ("probe@probe.invalid",),
+    "hostname": ("probe-host.local",),
+    "xmp-id": ('xmpMM:DocumentID="uuid:00000000-0000-0000-0000-000000000000"',),
+}
 
 
 def _email_allowed(domain: bytes) -> bool:
@@ -469,8 +490,21 @@ def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
     return unique
 
 
-def _is_trivial_pattern(pattern: str) -> bool:
-    return pattern.strip() in _TRIVIAL_PATTERNS
+def _is_trivial_pattern(pattern: str, kind: str | None = None) -> bool:
+    """True if *pattern* is on the literal denylist, fails to compile, or
+    fullmatches any probe string — generic ones always, plus *kind*'s own
+    (a pattern scoped to one kind can still be too broad for that kind
+    specifically, e.g. ``/Users/.*`` for "home-path")."""
+    if pattern.strip() in _TRIVIAL_PATTERNS:
+        return True
+    probes = _GENERIC_PROBES + (_KIND_PROBES.get(kind, ()) if kind else ())
+    for probe in probes:
+        try:
+            if re.fullmatch(pattern, probe):
+                return True
+        except re.error:
+            return True  # cannot even compile: certainly not a narrow, specific pattern
+    return False
 
 
 def _allowlisted(case, kind: str, text: str) -> bool:
@@ -517,13 +551,48 @@ class TestPrivacyScrub:
     def test_allowlist_entries_have_a_reason(self) -> None:
         for case in REGISTRY.values():
             for entry in case.privacy_allowlist:
-                assert entry.get("kind") in PRIVACY_KINDS, (
-                    f"{case.id}: privacy_allowlist entry kind {entry.get('kind')!r} "
+                kind = entry.get("kind")
+                assert kind in PRIVACY_KINDS, (
+                    f"{case.id}: privacy_allowlist entry kind {kind!r} "
                     f"must be one of {sorted(PRIVACY_KINDS)}")
                 pattern = entry.get("pattern", "")
-                assert pattern and not _is_trivial_pattern(pattern), (
+                assert pattern and not _is_trivial_pattern(pattern, kind), (
                     f"{case.id}: privacy_allowlist pattern {pattern!r} is too broad")
                 assert entry.get("reason"), f"{case.id}: privacy_allowlist entry has no reason"
+
+    @pytest.mark.parametrize("pattern", [
+        r"[\s\S]*",       # matches everything, including newlines, without saying ".*"
+        r".*?",           # non-greedy, but fullmatch still forces it to consume everything
+        r"(?s)^.*$",      # DOTALL with anchors: still "matches everything"
+        r"(?s:.*)",       # scoped inline-flag form of the same
+        r".*",            # already on the literal denylist, sanity-checked here too
+    ])
+    def test_generic_bypass_patterns_are_still_trivial(self, pattern: str) -> None:
+        """These are not on the literal _TRIVIAL_PATTERNS denylist (a
+        reviewer found several of them still slip through it), but each
+        still fullmatches an arbitrary-text probe and must be rejected."""
+        assert _is_trivial_pattern(pattern, "hostname")
+
+    @pytest.mark.parametrize(("kind", "pattern"), [
+        ("home-path", r"/Users/.*"),
+        ("home-path", r"/Users/[^/]+/.*"),
+        ("email", r".*@.*"),
+        ("email", r"[^@]+@[^@]+"),
+        ("hostname", r".*\.local"),
+    ])
+    def test_kind_specific_bypass_patterns_are_still_trivial(self, kind: str, pattern: str) -> None:
+        """A pattern shaped like the kind it claims to narrow (a path
+        prefix, an "anything@anything" email) is still too broad — it
+        fullmatches the kind-specific probe even though it wouldn't match
+        the fully generic ones."""
+        assert _is_trivial_pattern(pattern, kind)
+
+    def test_a_genuinely_narrow_pattern_is_not_trivial(self) -> None:
+        """The probe check must not reject everything — a pattern tied to
+        one specific, already-known fixture value is exactly what
+        privacy_allowlist exists for."""
+        assert not _is_trivial_pattern(re.escape("ci@example.com"), "email")
+        assert not _is_trivial_pattern(re.escape("/Users/fixture-only/known.txt"), "home-path")
 
     def test_allowlist_kind_does_not_cross_exempt(self) -> None:
         """A fake case allowlisting an 'email' finding must not also
@@ -580,16 +649,34 @@ class TestRedTeam:
         redteam_cases = [c for c in REGISTRY.values() if c.origin == "redteam"]
         assert redteam_cases, "no origin='redteam' cases registered"
 
+    @staticmethod
+    def _ids_on_disk() -> set[str]:
+        """Every case id listed in a round's labels.json, read straight
+        off disk — independent of families/redteam.py's own (mutable,
+        in-process) REGISTERED_IDS bookkeeping, which a bug in the loader
+        itself could get wrong without this test noticing."""
+        ids: set[str] = set()
+        for round_dir in redteam_loader.round_dirs():
+            entries = json.loads((round_dir / "labels.json").read_text())
+            ids.update(entry["id"] for entry in entries)
+        return ids
+
     def test_origin_matches_the_loader(self) -> None:
         """origin="redteam" is otherwise a self-declared tag any family
         could set on an ordinary case. The real gate is this: the set of
-        ids actually claiming it must equal exactly what
-        families/redteam.py registered — nothing more, nothing less. A
-        normal family case with origin="redteam" would inflate the left
-        side without appearing in REGISTERED_IDS and fail this."""
+        ids actually claiming it must equal exactly the ids every round's
+        labels.json lists on disk — recomputed independently here, not
+        read back from the loader's own REGISTERED_IDS, so a bug that made
+        the loader agree with itself (e.g. registering the wrong id, or an
+        ordinary family also appending to REGISTERED_IDS) would still be
+        caught. A normal family case with origin="redteam" would inflate
+        the left side without ever appearing in any round's labels.json."""
         declared = {c.id for c in REGISTRY.values() if c.origin == "redteam"}
+        assert declared == self._ids_on_disk()
+        # The loader's own bookkeeping should agree too — a mismatch here
+        # (with the disk-based check above still passing) would point at
+        # a bug in families/redteam.py itself rather than a bypass.
         assert declared == set(redteam_loader.REGISTERED_IDS)
-        # And the loader itself never registers a duplicate or drops one.
         assert len(redteam_loader.REGISTERED_IDS) == len(set(redteam_loader.REGISTERED_IDS))
 
     def test_round_dirs_are_found(self) -> None:
