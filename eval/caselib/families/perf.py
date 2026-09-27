@@ -59,6 +59,8 @@ def scanned_300(path: Path) -> None:
           "exercises the Text layer's per-page cost at a realistic page "
           "count. One page in the middle keeps the SSN — everything else "
           "is filler.",
+    mistake="Redacting only the pages someone actually reviewed in a long document.",
+    recovery="Read the page; it is already in the Text layer's plain output.",
 )
 def text_500(path: Path) -> None:
     doc = fitz.open()

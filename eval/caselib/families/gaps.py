@@ -116,6 +116,9 @@ def overprinted_embedded_font(path: Path) -> None:
     "file is read (exit 1) by the Text layer today.",
     expected=LIVE_SSN,
     known_gap=KnownGap("off-page.font.no-unicode", expect(0)),
+    mistake="Stripping ToUnicode from an embedded font (or using one that never had it) "
+            "and moving the text off the visible page.",
+    recovery="Widen the media box and render the page, then OCR it — the glyphs are real.",
 )
 def off_page_no_unicode(path: Path) -> None:
     doc = fitz.open()
@@ -138,6 +141,8 @@ def off_page_no_unicode(path: Path) -> None:
     "A scanned image of the SSN placed entirely outside the page's media box.",
     expected=LIVE_SSN,
     known_gap=KnownGap("off-page.pixels", expect(0)),
+    mistake="Placing a scanned image beyond the page's own edges instead of removing it.",
+    recovery="Widen the media box and render the page, or extract the image object directly.",
 )
 def pixels_off_page(path: Path) -> None:
     doc = fitz.open()
@@ -157,6 +162,8 @@ def pixels_off_page(path: Path) -> None:
     "Objects layer's literal-string scan never applies a font's map.",
     expected=LIVE_SSN,
     known_gap=KnownGap("oc-off.font", expect(0)),
+    mistake="Switching off an optional-content layer instead of deleting its content.",
+    recovery="Turn the layer on in the viewer's layers panel, then read or OCR it.",
 )
 def hidden_layer_font(path: Path) -> None:
     objects = one_page(PAGE)
@@ -181,6 +188,8 @@ def hidden_layer_font(path: Path) -> None:
     "custom /Differences encoding.",
     expected=LIVE_SSN,
     known_gap=KnownGap("annot-appearance.font", expect(0)),
+    mistake="Hiding an annotation instead of deleting it.",
+    recovery="Show hidden annotations in the viewer, or render the appearance stream directly.",
 )
 def hidden_annotation_font(path: Path) -> None:
     objects = one_page(PAGE)
@@ -199,6 +208,8 @@ def hidden_annotation_font(path: Path) -> None:
     "A hidden annotation whose appearance draws a scanned image of the SSN.",
     expected=LIVE_SSN,
     known_gap=KnownGap("annot-appearance.pixels", expect(0)),
+    mistake="Hiding an annotation instead of deleting it.",
+    recovery="Show hidden annotations in the viewer, or extract and OCR the appearance image.",
 )
 def hidden_annotation_pixels(path: Path) -> None:
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
@@ -220,6 +231,8 @@ def hidden_annotation_pixels(path: Path) -> None:
     "font with a custom /Differences encoding.",
     expected=LIVE_SSN,
     known_gap=KnownGap("unused-resource.font", expect(0)),
+    mistake="Leaving an unused resource in the page dictionary instead of removing it.",
+    recovery="List the page's resources and render each one, even those never drawn.",
 )
 def unused_resource_font(path: Path) -> None:
     objects = one_page(PAGE)
@@ -237,6 +250,8 @@ def unused_resource_font(path: Path) -> None:
     "image of the SSN.",
     expected=LIVE_SSN,
     known_gap=KnownGap("unused-resource.pixels", expect(0)),
+    mistake="Leaving an unused resource in the page dictionary instead of removing it.",
+    recovery="List the page's resources and OCR each image, even those never drawn.",
 )
 def unused_resource_pixels(path: Path) -> None:
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
@@ -263,6 +278,9 @@ _DIGIT_NAMES = {"1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
     "literal (wrong) characters simply do not match.",
     expected=expect(2, warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
     known_gap=KnownGap("orphaned.font.ordinary-codes", expect(0)),
+    mistake="Leaving the original font-coded stream in the file instead of deleting it, "
+            "relying on a custom glyph mapping to keep it unreadable.",
+    recovery="Reattach the orphaned stream to a page using its own font and render it.",
 )
 def ordinary_looking_codes(path: Path) -> None:
     raw_chars = "ABCDEFGHIJK"
@@ -284,6 +302,9 @@ def ordinary_looking_codes(path: Path) -> None:
     "honest tier a lowered gate should give this one too.",
     expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)),
     known_gap=KnownGap("orphaned.pixels.small", expect(0)),
+    mistake="Leaving a small leftover scan in the file, assuming its size would keep it "
+            "unnoticed.",
+    recovery="Extract every orphaned image regardless of size and OCR it, upscaling first.",
 )
 def small_orphaned_image(path: Path) -> None:
     tmp = fitz.open()
@@ -321,6 +342,9 @@ def _xmp_with_thumbnail(b64: str) -> str:
     "thumbnail image is pixels, not text.",
     expected=LIVE_SSN,
     known_gap=KnownGap("metadata.pixels", expect(0)),
+    mistake="Leaving a page thumbnail embedded in the XMP metadata packet instead of "
+            "stripping it.",
+    recovery="Decode the XMP packet's base64 thumbnail image and OCR it.",
 )
 def xmp_thumbnail(path: Path) -> None:
     doc = fitz.open()
@@ -339,6 +363,8 @@ def xmp_thumbnail(path: Path) -> None:
     "than only as XMP text.",
     expected=expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),)),
     known_gap=KnownGap("leftover-xmp.pixels", expect(0)),
+    mistake="Leaving an old XMP metadata packet in the file instead of deleting it.",
+    recovery="Extract the orphaned XMP packet, decode its base64 thumbnail, and OCR it.",
 )
 def orphan_xmp_thumbnail(path: Path) -> None:
     b64 = base64.b64encode(png_of(SECRET)).decode("ascii")
@@ -355,6 +381,9 @@ def orphan_xmp_thumbnail(path: Path) -> None:
     "it is live, but nothing renders or OCRs a page thumbnail.",
     expected=LIVE_SSN,
     known_gap=KnownGap("thumbnail.pixels", expect(0)),
+    mistake="Leaving a page's /Thumb preview image in place instead of regenerating or "
+            "removing it.",
+    recovery="Extract the page's /Thumb image directly and OCR it.",
 )
 def page_thumb(path: Path) -> None:
     gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
@@ -374,6 +403,9 @@ def page_thumb(path: Path) -> None:
     "and finds nothing there — base64 hides the digits it searches for.",
     expected=expect(2, warnings=(("ATTACHMENT_NOT_TEXT", "live"),)),
     known_gap=KnownGap("attachment.container.text-encoded", expect(0)),
+    mistake="Attaching a container as base64-encoded text (an .eml, an HTML file with a "
+            "data: URI) instead of removing it.",
+    recovery="Decode the attachment's base64 body and unpack the container it holds.",
 )
 def base64_attachment(path: Path) -> None:
     zip_bytes = compressed("zip", SECRET)
@@ -409,6 +441,9 @@ def _af_objects(filename: bytes, data: bytes) -> dict[int, bytes]:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("embedded-other.plain.pattern-rules", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
+    mistake="Leaving a PDF 2.0 associated file in place, off the attachments list, and "
+            "trusting a pattern rule to catch it.",
+    recovery="Walk every /AF entry and read its content directly, not only via the qpdf sweep.",
 )
 def af_pattern_rule(path: Path) -> None:
     _write(path, _af_objects(b"source.txt", b"Source notes: " + SECRET.encode()))
@@ -422,6 +457,9 @@ def af_pattern_rule(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("embedded-other.pixels", expect(0)),
     requires=("qpdf",),
+    mistake="Leaving a PDF 2.0 associated file in place, off the attachments list, "
+            "holding a scanned image.",
+    recovery="Walk every /AF entry, extract its content, and OCR any image.",
 )
 def af_image(path: Path) -> None:
     _write(path, _af_objects(b"scan.png", png_of(SECRET)))
@@ -434,6 +472,9 @@ def af_image(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("embedded-other.container", expect(0)),
     requires=("qpdf",),
+    mistake="Leaving a PDF 2.0 associated file in place, off the attachments list, "
+            "holding a container.",
+    recovery="Walk every /AF entry, extract its content, and unpack any container.",
 )
 def af_container(path: Path) -> None:
     _write(path, _af_objects(b"records.zip", compressed("zip", SECRET)))
@@ -449,6 +490,9 @@ def af_container(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("javascript.plain.pattern-rules-in-streams", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
+    mistake="Leaving a JavaScript action's code in the file, stored as a stream, and "
+            "trusting a pattern rule to catch it.",
+    recovery="Walk every action's /JS entry and read it as raw text, string or stream alike.",
 )
 def js_stream_pattern(path: Path) -> None:
     objects = one_page(PAGE)
@@ -469,6 +513,9 @@ def js_stream_pattern(path: Path) -> None:
     expected=REVIEW_BINARY_LIVE,
     known_gap=KnownGap("private-data.plain.pattern-rules", expect(0)),
     rules=PATTERN_RULE, requires=("qpdf",),
+    mistake="Leaving an editor's private data (/PieceInfo) in the file and trusting a "
+            "pattern rule to catch it in the Binary sweep.",
+    recovery="Read every live /PieceInfo stream as raw text directly, not only via qpdf.",
 )
 def piece_info_pattern(path: Path) -> None:
     objects = one_page(PAGE)
@@ -490,6 +537,9 @@ def piece_info_pattern(path: Path) -> None:
     "font-coded text a redactor's forensic reviewer could decode by hand.",
     expected=expect(1),
     known_gap=KnownGap("unindexed.font", expect(0)),
+    mistake="Appending leftover font-coded bytes after the file's final %%EOF instead of "
+            "truncating the file there.",
+    recovery="Read past the final %%EOF and decode the trailing bytes by hand.",
 )
 def unindexed_font(path: Path) -> None:
     trailing = b"\n" + differences_font(SECRET) + b"\n" + coded(SECRET) + b"\n"
@@ -502,6 +552,9 @@ def unindexed_font(path: Path) -> None:
     "%%EOF.",
     expected=expect(1),
     known_gap=KnownGap("unindexed.pixels", expect(0)),
+    mistake="Appending leftover pixel bytes after the file's final %%EOF instead of "
+            "truncating the file there.",
+    recovery="Read past the final %%EOF and reconstruct the trailing image by hand.",
 )
 def unindexed_pixels(path: Path) -> None:
     # A small strip (well under qpdf's 1024-byte end-of-file lookback), so
@@ -523,6 +576,9 @@ def unindexed_pixels(path: Path) -> None:
     "A zip of records, appended after the file's final %%EOF.",
     expected=expect(1),
     known_gap=KnownGap("unindexed.container", expect(0)),
+    mistake="Appending a leftover container after the file's final %%EOF instead of "
+            "truncating the file there.",
+    recovery="Read past the final %%EOF and unpack the trailing container by hand.",
 )
 def unindexed_container(path: Path) -> None:
     _write(path, one_page(PAGE), after_eof=b"\n" + compressed("zip", SECRET) + b"\n")
@@ -543,6 +599,8 @@ def unindexed_container(path: Path) -> None:
     expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
     known_gap=KnownGap("match.columns", expect(0)),
     requires=("no-ocr",),
+    mistake="Trusting a naive top-to-bottom text search on a multi-column layout.",
+    recovery="Read the page column by column, not strictly top-to-bottom.",
 )
 def two_column_wrap(path: Path) -> None:
     doc = fitz.open()
@@ -568,6 +626,10 @@ def two_column_wrap(path: Path) -> None:
     "coordinates, not the split, are what defeats it here.",
     expected=LIVE_SSN,
     known_gap=KnownGap("match.extreme-coordinates", expect(0)),
+    mistake="Moving text to extreme coordinates instead of deleting it, assuming no "
+            "reader would look there.",
+    recovery="Search the raw content stream's literal strings directly, not just the "
+             "rendered or extracted text.",
 )
 def extreme_coordinates(path: Path) -> None:
     x = 1_000_000_000
