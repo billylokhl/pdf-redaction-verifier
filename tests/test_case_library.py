@@ -348,12 +348,41 @@ _GENERIC_PROBES: tuple[str, ...] = (
     "kQ7#mZ2$vB9!wK4^pL6&nR1*sD8@fG3%tY5~uJ0X",  # ~40 mixed letters/digits/punctuation
     "probe line one\nprobe line two",             # contains a newline
 )
+# Several varied, fixed values per kind — not just one. A single fixed
+# probe per kind can itself be dodged (e.g. a negative lookahead pinned
+# to exactly that one value, `(?!probe)`); several realistically-diverse
+# values close that hole without needing every dodge to be anticipated
+# individually. Lookarounds are additionally rejected outright below,
+# which is the primary defense — this is belt and suspenders.
 _KIND_PROBES: dict[str, tuple[str, ...]] = {
-    "home-path": ("/Users/probe/x.txt", "/home/probe/x.txt", r"C:\Users\probe\x.txt"),
-    "email": ("probe@probe.invalid",),
-    "hostname": ("probe-host.local",),
-    "xmp-id": ('xmpMM:DocumentID="uuid:00000000-0000-0000-0000-000000000000"',),
+    "home-path": (
+        "/Users/probe/x.txt", "/home/probe/x.txt", r"C:\Users\probe\x.txt",
+        "/Users/jsmith/notes.txt", "/Users/anna-lee/Desktop/report.docx",
+        "/home/jdoe/data.csv", "/home/test-user1/inbox.eml",
+        r"C:\Users\bob.martinez\file.txt",
+    ),
+    "email": (
+        "probe@probe.invalid", "john.doe@example.com", "a.smith+work@example.org",
+        "no-reply@corp-mail.io", "user42@sub.example.net",
+    ),
+    "hostname": (
+        "probe-host.local", "db-prod-01.local", "office-printer.lan",
+        "ws-42.corp", "backup-server.internal", "mail01.localdomain",
+    ),
+    "xmp-id": (
+        'xmpMM:DocumentID="uuid:00000000-0000-0000-0000-000000000000"',
+        'xmpMM:InstanceID="uuid:12345678-90ab-cdef-1234-567890abcdef"',
+    ),
 }
+
+# Any lookaround defeats probing itself: a pattern can be written so it
+# fails to match whatever fixed probe values happen to be listed above
+# while still matching everything else (`/Users/(?!probe)[a-zA-Z0-9_-]+/.*`
+# matches every real home path except the one probe it was built to
+# dodge). No legitimate, narrowly-scoped allowlist entry — one pinned to
+# a specific fixture value via re.escape — ever needs a lookaround, so
+# these are rejected outright regardless of what they exclude.
+_LOOKAROUND_TOKENS = ("(?=", "(?!", "(?<=", "(?<!")
 
 
 def _email_allowed(domain: bytes) -> bool:
@@ -503,11 +532,14 @@ def _privacy_findings(pdf_path) -> list[tuple[str, str]]:
 
 
 def _is_trivial_pattern(pattern: str, kind: str | None = None) -> bool:
-    """True if *pattern* is on the literal denylist, fails to compile, or
+    """True if *pattern* is on the literal denylist, contains a lookaround
+    (rejected outright — see ``_LOOKAROUND_TOKENS``), fails to compile, or
     fullmatches any probe string — generic ones always, plus *kind*'s own
     (a pattern scoped to one kind can still be too broad for that kind
     specifically, e.g. ``/Users/.*`` for "home-path")."""
     if pattern.strip() in _TRIVIAL_PATTERNS:
+        return True
+    if any(token in pattern for token in _LOOKAROUND_TOKENS):
         return True
     probes = _GENERIC_PROBES + (_KIND_PROBES.get(kind, ()) if kind else ())
     for probe in probes:
@@ -605,6 +637,44 @@ class TestPrivacyScrub:
         privacy_allowlist exists for."""
         assert not _is_trivial_pattern(re.escape("ci@example.com"), "email")
         assert not _is_trivial_pattern(re.escape("/Users/fixture-only/known.txt"), "home-path")
+
+    @pytest.mark.parametrize(("kind", "pattern"), [
+        # The reviewer's exact reproductions: a negative lookahead pinned
+        # to exactly the one fixed probe value, so the probe check alone
+        # (before this fix) never noticed how broad the rest of the
+        # pattern really is.
+        ("home-path", r"/Users/(?!probe)[a-zA-Z0-9_-]+/.*"),
+        ("hostname", r"(?!probe-host\.local$)[a-z0-9-]+\.local"),
+        ("home-path", r"/home/(?!probe\b)\S+"),
+        # A couple of our own attempts in the same family: a lookahead
+        # tied to the generic probe instead of a kind probe, and a
+        # lookbehind excluding an arbitrary prefix.
+        ("email", r"(?!probe@probe\.invalid$)[^@]+@[^@]+"),
+        ("home-path", r"(?<!not-)/Users/[a-zA-Z0-9_-]+/.*"),
+    ])
+    def test_lookaround_bypass_patterns_are_rejected_outright(self, kind: str, pattern: str) -> None:
+        """Any lookaround is rejected regardless of what it excludes —
+        the fix does not try to enumerate every way a lookahead/lookbehind
+        could be built to dodge a fixed probe set; it refuses the whole
+        category."""
+        assert _is_trivial_pattern(pattern, kind)
+
+    def test_diverse_probes_catch_a_pattern_that_only_dodges_one_fixed_value(self) -> None:
+        """Before this fix, "home-path" probed a single fixed value
+        ("/Users/probe/x.txt"). A pattern narrow enough to dodge exactly
+        that one value (no lookaround needed at all — just knowledge of
+        the one probe) but still far too broad for a real home path must
+        still be rejected once probing uses several varied values."""
+        pattern = r"/Users/[a-oq-z][a-z]*/[a-z]+\.[a-z]+"
+        assert not re.fullmatch(pattern, "/Users/probe/x.txt"), (
+            "sanity check: this pattern must dodge the old sole probe")
+        assert _is_trivial_pattern(pattern, "home-path")
+
+    def test_lookaround_is_not_rejected_for_unrelated_kinds_only(self) -> None:
+        """Control: the lookaround rejection is unconditional — it does
+        not need a matching kind to trigger, unlike the probe checks."""
+        assert _is_trivial_pattern(r"(?!x)y", kind=None)
+        assert _is_trivial_pattern(r"(?!x)y", kind="xmp-id")
 
     def test_allowlist_kind_does_not_cross_exempt(self) -> None:
         """A fake case allowlisting an 'email' finding must not also

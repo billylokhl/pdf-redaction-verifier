@@ -134,14 +134,22 @@ exactly: an entry allowlisting an `"email"` finding never excuses the
 same text reported as a `"hostname"`. `"pattern"` must not be too broad
 to mean anything: rather than a denylist of specific spellings (trivially
 dodged — `[\s\S]*`, `.*?` and `(?s)^.*$` all "mean" the same thing as
-`.*` without saying it), a pattern is rejected if it `re.fullmatch`es any
-of a handful of fixed probe strings — an arbitrary 40-character mix of
-letters, digits and punctuation, one containing a newline, and per-kind
-ones a plausible instance would look like (`/Users/probe/x.txt` for
-`"home-path"`, `probe@probe.invalid` for `"email"`, …). A pattern tied to
-one already-known fixture value (`re.escape("ci@example.com")`) never
-matches any of these; a pattern that actually means "anything at all", or
-"anything shaped like this kind", always does.
+`.*` without saying it), a pattern is rejected outright if it contains a
+lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`) — a lookahead or lookbehind can
+otherwise be built to dodge exactly whatever fixed probe strings happen
+to be listed while still matching everything else (a confirmed bypass:
+`/Users/(?!probe)[a-zA-Z0-9_-]+/.*` matches every real home path except
+the one literal probe it was written to exclude) — and, short of that, if
+it `re.fullmatch`es any of several fixed, varied probe strings per kind —
+an arbitrary 40-character mix of letters, digits and punctuation, one
+containing a newline, and several plausible instances per kind
+(several different home paths for `"home-path"`, several emails for
+`"email"`, …), not just one, so a pattern narrow enough to dodge a single
+fixed value is still caught by the others. A pattern tied to one
+already-known fixture value (`re.escape("ci@example.com")`) never matches
+any of these; a pattern that actually means "anything at all", or
+"anything shaped like this kind", or that relies on a lookaround to look
+narrower than it is, always does.
 
 ### The blind red-team slot (`caselib/redteam/`)
 
@@ -195,6 +203,20 @@ Each is checked for internal consistency by
 checkout, so nothing there stops a single commit from editing one of
 these *and* loosening its own check to match, in lockstep. Catching that
 needs a second, different commit to compare against:
+
+Each ratchet name (`UNDOCUMENTED_GAPS`, `NONFITZ_PENDING`,
+`GALLERY_FIELDS_PENDING`) must have **exactly one** top-level assignment
+in its module. `_frozenset_literal` reads a name statically from the
+module's AST rather than importing it, and used to walk the whole tree
+and return the *first* `Assign`/`AnnAssign` matching that name — but
+Python itself binds whichever assignment runs *last*, so a second,
+later top-level assignment (or an augmented `NAME |= {...}`, or an
+indirect `globals()["NAME"] = ...` rebind) silently grows the set at
+runtime while the check kept reading the harmless-looking first one and
+never noticed. It now fails closed the moment a name is written to by
+more than one top-level statement — a growing ratchet with two
+assignments is reported as "cannot verify" (the same outcome as any
+other non-literal ratchet), never silently passed.
 `eval/check_ratchets.py` diffs every ratchet against the merge-base with
 `main` (a pull request) or `HEAD~1` (a direct push to `main`, which
 only catches a single-commit rewrite — see the script's docstring for
@@ -487,8 +509,20 @@ superseded object, metadata, an attachment, a script, private data,
 unindexed bytes, ...) gets a short caption under its render — "Nothing
 visible here: the secret is elsewhere in the file" — derived from the
 cell's own row (`caselib.cells.parts`), not a hand list: "live" (drawn on
-a page) and "match" (a layout-splitting limit — the value IS on the
-page, just split) are the only rows treated as visible.
+a page) is trusted outright, since nothing about a box over it or a font
+encoding it keeps it off the render. "match" (a layout-splitting limit)
+is *not* trusted outright — the value is somewhere on a page, but not
+necessarily on page 1, and not necessarily whole there — so it is settled
+by checking page 1's own extracted text against the case's pinned rule
+value(s) instead: no recognisable fragment of the value there gets the
+same "Nothing visible here" caption (a confirmed gap: `match.extreme-
+coordinates`, K35, draws its text at ~10⁹,10⁹ on a 612×792 MediaBox,
+which PyMuPDF's own text extraction never returns, so the page-1 PNG is
+blank; the row alone said "match" and called it visible), and a
+recognisable fragment but not the whole value gets its own caption
+instead — "Only part of the value appears on page 1; the rest is on a
+later page" — for a `match.page-break*` case, which genuinely does show
+half the value on page 1.
 
 **The miss marker** — the gallery's most important one — is "MISSES IT
 TODAY" on any leak case whose *shown* verdict has exit `0`: not the
@@ -502,7 +536,15 @@ with a pinned known gap in the *reassuring* direction (the label says
 exit `0`, this run's measured verdict caught it anyway), the page says so
 in a note rather than showing a stale badge — the gap may already be
 closed, or this run's environment/version differs from the one the
-label was pinned against. A crashed measured run is never a miss.
+label was pinned against. A crashed measured run is never a miss —
+specifically, a crashed **candidate** run: a `scorecard diff --json`
+row's own `"crashed"` field is true when *either* side crashed
+(`differential.CaseDiff.crashed`), so `gallery.verdicts.load_results`
+keys off the row's `"candidate"` key instead (`None` exactly when the
+candidate itself crashed) — a reference-only crash no longer hides a
+real candidate result (including a real miss) behind "crashed", and gets
+its own "reference crashed" note alongside the candidate's actual
+verdict.
 
 Each case links to its COVERAGE.md cell and, where its known gap is one
 of docs/REDESIGN.md §8's numbered gaps, to its K-number, via

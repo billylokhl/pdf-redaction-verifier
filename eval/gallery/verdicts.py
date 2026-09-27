@@ -31,12 +31,41 @@ def load_results(path: Path) -> dict[str, dict[str, Any] | None]:
     """``{case_id: candidate-key-dict-or-None}`` from a
     ``scorecard diff --json`` report (``report.differential_to_jsonable``'s
     shape: a top-level ``"cases"`` list of
-    ``{"case", "candidate", "crashed", ...}``)."""
+    ``{"case", "candidate", "crashed", ...}``).
+
+    A row's ``"crashed"`` is ``reference.crashed or candidate.crashed``
+    (``differential.CaseDiff.crashed``, ``report.differential_to_jsonable``)
+    — it is true even when only the *reference* crashed and the candidate
+    ran fine. ``"candidate"`` is already exactly what we want: it is
+    ``None`` if and only if the candidate itself crashed (its own key is
+    None only then). Keying off ``"crashed"`` instead used to launder a
+    reference-only crash into "crashed" here too, hiding a real candidate
+    miss (exit 0) as a crash instead of surfacing it as a miss."""
     data = json.loads(path.read_text())
     out: dict[str, dict[str, Any] | None] = {}
     for row in data.get("cases", ()):
-        out[row["case"]] = None if row.get("crashed") else row.get("candidate")
+        out[row["case"]] = row.get("candidate")
     return out
+
+
+REFERENCE_CRASHED_NOTE = ("the reference crashed running this case this run; the measured "
+                          "verdict above is from the candidate only")
+
+
+def reference_crashed_cases(path: Path) -> frozenset[str]:
+    """Case ids from a ``scorecard diff --json`` report at *path* where
+    the reference crashed but the candidate did not — worth flagging
+    distinctly now that ``load_results`` deliberately keys off the
+    candidate alone (a reference-only crash must never be allowed to hide
+    a real candidate result — see ``load_results``'s docstring). A row's
+    own ``"reference"`` key is the candidate/reference key dict or None;
+    None here means that side crashed (``CaseRun.key`` is None only when
+    crashed or timed out)."""
+    data = json.loads(path.read_text())
+    return frozenset(
+        row["case"] for row in data.get("cases", ())
+        if row.get("crashed") and row.get("reference") is None and row.get("candidate") is not None
+    )
 
 
 def _fmt_finding(entry: Any) -> str:

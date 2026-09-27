@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import fitz
+
 from caselib import REGISTRY, load
 from caselib.cells import parts as cell_parts
 from caselib.model import Case
@@ -19,23 +21,90 @@ from caselib.run import available, build as build_case
 from .knumbers import CASE_TO_K
 from .render import render_page1
 from .style import CSS
-from .verdicts import Verdict, gap_disagreement, is_miss, is_undocumented_miss, load_results, verdict_for
+from .verdicts import (REFERENCE_CRASHED_NOTE, Verdict, gap_disagreement, is_miss,
+                       is_undocumented_miss, load_results, reference_crashed_cases, verdict_for)
 
 # A cell's row (caselib.cells.parts) says where the secret is, which tells
 # us whether the page-1 render could plausibly show it at all: "live" is
-# drawn on a page, "match" is a layout-splitting limit (the value IS on
-# the page, just split awkwardly) — everything else (off-page, a
-# switched-off layer, an unused resource, an orphaned/superseded object,
-# metadata, an attachment, a script, private data, unindexed bytes, ...)
-# never reaches the rendered page at all.
-_VISIBLE_ROWS = frozenset({"live", "match"})
+# drawn on a page — nothing about a box over it, or a font encoding it,
+# keeps it off the render, so the row alone settles "live". Everything
+# else the row can name outright (off-page, a switched-off layer, an
+# unused resource, an orphaned/superseded object, metadata, an
+# attachment, a script, private data, unindexed bytes, ...) never reaches
+# the rendered page at all. "match" (a layout-splitting limit) is NOT
+# settled by the row alone: the value is somewhere on a page, but not
+# necessarily on *page 1*, and not necessarily whole there — see
+# _secret_visibility below, which checks page 1's own extracted text
+# instead of trusting "match" to mean "visible".
+_FULLY_VISIBLE_ROW = "live"
+_AMBIGUOUS_ROW = "match"
+
+# Captions for the render, keyed by how much of the case's pinned secret
+# page 1's own extracted text actually contains.
+_NOTHING_VISIBLE_CAPTION = ("Nothing visible here: the secret is elsewhere in the file "
+                            "(see above).")
+_PARTIAL_VISIBLE_CAPTION = ("Only part of the value appears on page 1; the rest is on a "
+                            "later page.")
 
 
-def _secret_visible_on_page(case: Case) -> bool:
+def _page1_text(pdf_path: Path) -> str:
+    """Page 1's own extracted text, or "" if it cannot even be opened —
+    the decisive check for an ambiguous ("match") row, since a row alone
+    cannot tell "split across a page break" (part of the value really is
+    on page 1) from "parked at coordinates text extraction never returns"
+    (match.extreme-coordinates, K35: PyMuPDF's own extraction returns no
+    glyphs at ~10^9,10^9 on a 612x792 MediaBox, so the page-1 PNG is
+    blank even though the row says "match")."""
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception:
+        return ""
+    try:
+        if doc.page_count < 1:
+            return ""
+        return doc[0].get_text()
+    except Exception:
+        return ""
+    finally:
+        doc.close()
+
+
+def _fragment_visible(value: str, text: str, min_run: int = 4) -> bool:
+    """True if some run of at least *min_run* consecutive characters of
+    *value* appears in *text* — a value split across a page break need
+    not be contiguous or whole on page 1 for *some* recognisable piece of
+    it to genuinely be there."""
+    if len(value) <= min_run:
+        return value in text
+    return any(value[i:i + min_run] in text for i in range(len(value) - min_run + 1))
+
+
+def _secret_visibility(case: Case, pdf_path: Path) -> str:
+    """"full", "partial", or "none": how much of a leak case's pinned
+    secret(s) page 1 itself actually shows, for captioning the render
+    (never for gating anything). "live" is decisive on its own; "match"
+    is decided by checking page 1's own extracted text against the
+    case's pinned rule values, since a matching-limit case can straddle a
+    page break (only part of the value is on page 1: match.page-break*)
+    or sit at coordinates page-1 text extraction never returns at all
+    (match.extreme-coordinates) despite the row saying "match" either
+    way."""
     if not case.cells:
-        return True   # nothing to judge (shouldn't happen for a leak case)
+        return "full"   # nothing to judge (shouldn't happen for a leak case)
     row, _column, _qualifier = cell_parts(case.cells[0])
-    return row in _VISIBLE_ROWS
+    if row == _FULLY_VISIBLE_ROW:
+        return "full"
+    if row != _AMBIGUOUS_ROW:
+        return "none"
+    values = [rule["value"] for rule in case.rules if "value" in rule]
+    if not values:
+        return "full"  # nothing pinned to check against — trust the row
+    text = _page1_text(pdf_path)
+    if any(value in text for value in values):
+        return "full"
+    if any(_fragment_visible(value, text) for value in values):
+        return "partial"
+    return "none"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COVERAGE_MD = REPO_ROOT / "COVERAGE.md"
@@ -121,7 +190,7 @@ def _links_html(case: Case, out_dir: Path, k_numbers: dict[str, int]) -> str:
 
 
 def _case_section(case: Case, out_dir: Path, verdict: Verdict, k_numbers: dict[str, int],
-                  image_ok: bool) -> str:
+                  image_ok: bool, visibility: str, reference_crashed: bool = False) -> str:
     miss = is_miss(case, verdict)
     undocumented = is_undocumented_miss(case, verdict)
     if undocumented:
@@ -138,15 +207,21 @@ def _case_section(case: Case, out_dir: Path, verdict: Verdict, k_numbers: dict[s
     if image_ok:
         img_block = (f'<img src="images/{_esc(case.id)}.png" '
                     f'alt="page 1 of {_esc(case.id)}.pdf" loading="lazy">')
-        if not _secret_visible_on_page(case):
-            img_block += ('<p class="no-visible-secret">Nothing visible here: the secret '
-                          'is elsewhere in the file (see above).</p>')
+        if visibility == "none":
+            img_block += f'<p class="no-visible-secret">{_esc(_NOTHING_VISIBLE_CAPTION)}</p>'
+        elif visibility == "partial":
+            img_block += f'<p class="no-visible-secret">{_esc(_PARTIAL_VISIBLE_CAPTION)}</p>'
     else:
         img_block = '<p class="no-render">(page could not be rendered)</p>'
     secrets = _pinned_secrets(case)
     secrets_html = "".join(f"<code>{_esc(s)}</code>" for s in secrets)
+    notes = []
     disagreement = gap_disagreement(case, verdict)
-    note_html = f'<p class="note">{_esc(disagreement)}</p>' if disagreement else ""
+    if disagreement:
+        notes.append(disagreement)
+    if reference_crashed:
+        notes.append(f"Note: {REFERENCE_CRASHED_NOTE}.")
+    note_html = "".join(f'<p class="note">{_esc(n)}</p>' for n in notes)
     return f"""
 <section id="case-{_esc(case.id)}" class="{css_classes}">
   <h4><code>{_esc(case.id)}</code>{badge}</h4>
@@ -212,6 +287,7 @@ def build(out: Path, results_path: Path | None = None,
     load()
     have = available()
     results = load_results(results_path) if results_path else None
+    ref_crashed = reference_crashed_cases(results_path) if results_path else frozenset()
     selected = sorted(case_ids) if case_ids is not None else sorted(REGISTRY)
     k_numbers = CASE_TO_K
 
@@ -252,10 +328,12 @@ def build(out: Path, results_path: Path | None = None,
                     pdf = tmpdir / f"{case.id}.pdf"
                     build_case(case, pdf)
                     image_ok = render_page1(pdf, out / "images" / f"{case.id}.png")
+                    visibility = _secret_visibility(case, pdf)
                     verdict = verdict_for(case, results)
                     if is_miss(case, verdict):
                         misses += 1
-                    sections.append(_case_section(case, out, verdict, k_numbers, image_ok))
+                    sections.append(_case_section(case, out, verdict, k_numbers, image_ok,
+                                                  visibility, reference_crashed=case.id in ref_crashed))
 
         sections.append('<h2 id="clean-cases">Clean &amp; false-alarm cases</h2>')
         for case in sorted(clean_cases, key=lambda c: c.id):

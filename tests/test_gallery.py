@@ -155,6 +155,45 @@ def test_caption_matches_the_cells_own_row_taxonomy() -> None:
         assert expect_caption == (case_id == "document.xmp-thumbnail")
 
 
+# ── "match" is not decisive on its own: a matching-limit case can be     ──
+# ── parked at coordinates page-1 text extraction never returns at all    ──
+# ── (match.extreme-coordinates, K35) even though its row says "match",   ──
+# ── or straddle a page break (match.page-break*, only PART of the value  ──
+# ── is on page 1) — reviewer-confirmed: the old row-only check called    ──
+# ── both of these "visible" and showed neither caption. ──────────────────
+
+_VISIBILITY_SUBSET = (
+    "page.extreme-coordinates",  # row "match", but nothing of the value is on page 1 at all
+    "layout.page-break",         # row "match", but only half the value is on page 1
+    "page.box-over-text",        # row "live": the whole value is genuinely on page 1
+)
+
+
+@pytest.fixture(scope="module")
+def visibility_built(tmp_path_factory: pytest.TempPathFactory):
+    out = tmp_path_factory.mktemp("gallery-visibility")
+    build(out, case_ids=_VISIBILITY_SUBSET)
+    return (out / "index.html").read_text()
+
+
+def test_extreme_coordinates_gets_the_nothing_visible_caption(visibility_built) -> None:
+    section = _section(visibility_built, "page.extreme-coordinates")
+    assert "Nothing visible here" in section
+    assert "Only part of the value" not in section
+
+
+def test_page_break_case_gets_the_partial_caption(visibility_built) -> None:
+    section = _section(visibility_built, "layout.page-break")
+    assert "Only part of the value appears on page 1" in section
+    assert "Nothing visible here" not in section
+
+
+def test_box_over_text_gets_neither_caption(visibility_built) -> None:
+    section = _section(visibility_built, "page.box-over-text")
+    assert "Nothing visible here" not in section
+    assert "Only part of the value" not in section
+
+
 # ── the badge follows the measured verdict, not just the pinned label ───
 
 def _write_results(path: Path, entries: dict[str, int | None]) -> None:
@@ -230,6 +269,63 @@ def test_crashed_result_is_never_a_miss(tmp_path) -> None:
     assert "crashed" in section
     # document.xmp-thumbnail's own (unmeasured) known-gap miss still counts.
     assert result.misses == 1
+
+
+# ── a reference-only crash must never launder a real candidate result   ──
+# ── into "crashed" (reviewer-confirmed: scorecard's own "crashed" is     ──
+# ── reference-OR-candidate, differential.CaseDiff.crashed, but the old   ──
+# ── code keyed load_results off that combined flag instead of off        ──
+# ── whether the CANDIDATE itself crashed). ───────────────────────────────
+
+def _write_reference_crash_row(path: Path, case_id: str, candidate_exit: int) -> None:
+    """A synthetic ``scorecard diff --json`` report where the reference
+    crashed but the candidate ran fine and actually missed (exit 0) — the
+    reviewer's exact reproduction shape."""
+    path.write_text(json.dumps({"cases": [{
+        "case": case_id,
+        "reference": None,       # None here means the reference crashed
+        "candidate": {"exit": candidate_exit, "findings": [], "warnings": []},
+        "crashed": True,         # reference.crashed or candidate.crashed — true either way
+    }]}))
+
+
+def test_load_results_uses_the_candidate_not_the_combined_crashed_flag(tmp_path) -> None:
+    from gallery.verdicts import load_results
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=0)
+    loaded = load_results(results)
+    assert loaded["page.box-over-text"] == {"exit": 0, "findings": [], "warnings": []}
+
+
+def test_reference_only_crash_still_surfaces_the_candidates_real_miss(tmp_path) -> None:
+    # page.box-over-text has no known_gap and is normally caught (exit 1);
+    # a measured candidate exit 0 is a real, undocumented miss. The old
+    # code hid this behind "crashed" just because the reference crashed.
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=0)
+    out = tmp_path / "gallery"
+    result = build(out, results_path=results, case_ids=_SUBSET)
+    html = (out / "index.html").read_text()
+    section = _section(html, "page.box-over-text")
+    assert 'class="verdict crashed"' not in section
+    assert "NEW MISS (not a known gap)" in section
+    assert "reference crashed" in section  # a note, not a substitute for the real verdict
+    assert result.misses == 3  # same count as the ordinary undocumented-miss test above
+
+
+def test_reference_only_crash_with_a_caught_candidate_is_not_a_miss_or_a_crash(tmp_path) -> None:
+    # The candidate genuinely caught it (exit 1) even though the reference
+    # crashed — must show as an ordinary caught verdict, not "crashed".
+    results = tmp_path / "results.json"
+    _write_reference_crash_row(results, "page.box-over-text", candidate_exit=1)
+    out = tmp_path / "gallery"
+    build(out, results_path=results, case_ids=_SUBSET)
+    html = (out / "index.html").read_text()
+    section = _section(html, "page.box-over-text")
+    assert 'class="verdict crashed"' not in section
+    assert "NEW MISS" not in section
+    assert "MISSES IT TODAY" not in section
+    assert "reference crashed" in section
 
 
 # ── K-numbers: an explicit, hand-verified table, checked against §8 ─────

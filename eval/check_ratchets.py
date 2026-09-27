@@ -212,41 +212,85 @@ class _NotAFrozensetLiteral(Exception):
     pass
 
 
+def _module_level_writer(node: ast.stmt, name: str) -> bool:
+    """True if top-level statement *node* writes to *name* in any form
+    this check can detect: a plain ``NAME = ...``/``NAME: T = ...``, an
+    augmented ``NAME |= ...``, or an indirect rebind via
+    ``globals()["NAME"] = ...``. Used only to COUNT competing writers to
+    *name* — a second writer anywhere below the first is exactly how a
+    ratchet set can be silently grown: ``ast.walk``'s "first match wins"
+    reads the never-changing initial value while Python itself binds the
+    *last* assignment, so a later ``UNDOCUMENTED_GAPS = frozenset({...,
+    "sneaky.new.gap"})`` was invisible to this check even though it is
+    exactly what ends up imported. Rather than trust whichever single
+    assignment happens to look like a literal, this now fails closed the
+    moment there is more than one writer at all."""
+    if isinstance(node, ast.AnnAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    if isinstance(node, ast.AugAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                return True
+            if (isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Call)
+                    and getattr(target.value.func, "id", None) == "globals"
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == name):
+                return True
+        return False
+    return False
+
+
 def _frozenset_literal(source: str, name: str) -> set[str]:
     """The elements of ``NAME: frozenset[str] = frozenset({...})`` (or
     ``frozenset()``) as written at the top level of *source*. Raises if
-    *name* is missing or is not written as a literal frozenset — this
-    check only ever trusts what it can read statically, never an import
-    (a ratchet's own module may not even be importable standalone, and
-    executing untrusted historical revisions of it is not something to
-    do lightly)."""
+    *name* is missing, is written to by more than one top-level statement
+    (including an augmented ``|=`` or an indirect ``globals()[...]``
+    rebind — see ``_module_level_writer``), or is not itself written as a
+    literal frozenset — this check only ever trusts what it can read
+    statically, never an import (a ratchet's own module may not even be
+    importable standalone, and executing untrusted historical revisions
+    of it is not something to do lightly)."""
     tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        target = None
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            target = node.target.id
-        elif isinstance(node, ast.Assign):
-            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-            target = names[0] if len(names) == 1 else None
-        if target != name or node.value is None:
-            continue
-        value = node.value
-        if isinstance(value, ast.Call) and getattr(value.func, "id", None) == "frozenset":
-            if not value.args:
-                return set()
-            try:
-                literal = ast.literal_eval(value.args[0])
-            except (ValueError, SyntaxError) as exc:
-                raise _NotAFrozensetLiteral(
-                    f"{name}'s frozenset(...) argument is not a literal ({exc})") from exc
-            if not isinstance(literal, (set, frozenset, tuple, list)):
-                raise _NotAFrozensetLiteral(
-                    f"{name}'s frozenset(...) argument is not a set/tuple/list literal")
-            return set(literal)
+    writers = [node for node in tree.body if _module_level_writer(node, name)]
+    if len(writers) > 1:
+        raise _NotAFrozensetLiteral(
+            f"{name} is written to by {len(writers)} top-level statements — this check "
+            "requires exactly one, unambiguous literal assignment, since any later "
+            "reassignment would silently grow the ratchet unseen")
+    if not writers:
+        raise _NotAFrozensetLiteral(f"{name} not found")
+    node = writers[0]
+    if isinstance(node, ast.AugAssign):
+        raise _NotAFrozensetLiteral(
+            f"{name} is assigned via augmented assignment (e.g. |=), not a literal "
+            "NAME = frozenset(...) assignment")
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        raise _NotAFrozensetLiteral(  # pragma: no cover — _module_level_writer's own contract
+            f"{name}: unrecognized top-level assignment form")
+    if isinstance(node, ast.Assign) and not any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets):
+        raise _NotAFrozensetLiteral(
+            f"{name} is rebound indirectly (e.g. via globals()[...]), not a literal "
+            "NAME = frozenset(...) assignment")
+    value = node.value
+    if value is None:
         raise _NotAFrozensetLiteral(f"{name} is not assigned a literal frozenset(...)")
-    raise _NotAFrozensetLiteral(f"{name} not found")
+    if isinstance(value, ast.Call) and getattr(value.func, "id", None) == "frozenset":
+        if not value.args:
+            return set()
+        try:
+            literal = ast.literal_eval(value.args[0])
+        except (ValueError, SyntaxError) as exc:
+            raise _NotAFrozensetLiteral(
+                f"{name}'s frozenset(...) argument is not a literal ({exc})") from exc
+        if not isinstance(literal, (set, frozenset, tuple, list)):
+            raise _NotAFrozensetLiteral(
+                f"{name}'s frozenset(...) argument is not a set/tuple/list literal")
+        return set(literal)
+    raise _NotAFrozensetLiteral(f"{name} is not assigned a literal frozenset(...)")
 
 
 def check_ratchet_set(old: Tree, new: Tree, path: str, name: str) -> list[str]:

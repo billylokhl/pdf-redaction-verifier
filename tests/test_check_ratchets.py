@@ -85,6 +85,73 @@ class TestCheckRatchetSet:
         new = DictTree({"cells.py": _cells_source(("a.gap",))})
         assert check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS") == []
 
+    # ── reviewer's confirmed bypass: ast.walk (and Python's own name       ──
+    # ── binding rules) means a SECOND top-level assignment to the same     ──
+    # ── name silently wins at runtime while the old check kept reading the ──
+    # ── first, never-changing one. Fail closed instead. ────────────────────
+
+    def test_later_reassignment_growing_the_set_is_caught(self) -> None:
+        """The reviewer's exact reproduction: a small, innocent-looking
+        frozenset up top, then a second assignment further down that
+        actually grows it. Python binds the second one; the check must
+        never trust the first."""
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": (
+            'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap"})\n'
+            '\n'
+            '# ... a lot of unrelated code later ...\n'
+            'UNDOCUMENTED_GAPS = frozenset({"a.gap", "sneaky.new.gap"})\n'
+        )})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems, "a later reassignment that grows the set must be caught, not ignored"
+        assert "cannot verify" in problems[0]
+
+    def test_two_top_level_assignments_fail_even_when_the_second_shrinks(self) -> None:
+        # Not just "the effective value grew" — ANY second top-level
+        # writer is inherently ambiguous (which one does a reader trust?)
+        # and must fail closed, even if this particular second assignment
+        # happens to look smaller.
+        old = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        new = DictTree({"cells.py": (
+            'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap", "b.gap"})\n'
+            'UNDOCUMENTED_GAPS = frozenset({"a.gap"})\n'
+        )})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0]
+
+    def test_augmented_assignment_is_rejected(self) -> None:
+        """``NAME |= {...}`` is a rebinding this check must never treat as
+        a harmless no-op literal read."""
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": (
+            'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap"})\n'
+            'UNDOCUMENTED_GAPS |= frozenset({"sneaky.new.gap"})\n'
+        )})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0]
+
+    def test_globals_rebind_is_rejected(self) -> None:
+        """An indirect rebind via ``globals()[...]`` — not a plain ``NAME
+        = ...`` the naive AST-target check would even recognise as
+        touching *name* at all — must still be caught as a second writer."""
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": (
+            'UNDOCUMENTED_GAPS: frozenset[str] = frozenset({"a.gap"})\n'
+            'globals()["UNDOCUMENTED_GAPS"] = frozenset({"a.gap", "sneaky.new.gap"})\n'
+        )})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert problems and "cannot verify" in problems[0]
+
+    def test_single_assignment_still_works_exactly_as_before(self) -> None:
+        # Regression guard: the fix must not make the ordinary, single-
+        # assignment case (the only shape every real ratchet set uses
+        # today) any stricter than it needs to be.
+        old = DictTree({"cells.py": _cells_source(("a.gap",))})
+        new = DictTree({"cells.py": _cells_source(("a.gap", "b.gap"))})
+        problems = check_ratchet_set(old, new, "cells.py", "UNDOCUMENTED_GAPS")
+        assert len(problems) == 1
+        assert "b.gap" in problems[0]
+
 
 # ── check_redteam_anchors: initial_labels_sha256 must never move,      ──
 # ── and a round's identity may not be renamed or removed out from under ──
