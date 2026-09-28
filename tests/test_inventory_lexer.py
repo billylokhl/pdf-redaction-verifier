@@ -126,6 +126,9 @@ def test_one_flag_covers_all_of_a_tokens_bad_spots() -> None:
     assert token.flags == (Flag(FlagReason.INVALID_NAME_ESCAPE, Span(2, 9), (("count", 2),)),)
     (token,) = Lexer(b"/A#20")
     assert token.flags == ()
+    # '#00': readers disagree (MuPDF keeps it literally, qpdf rejects it).
+    (token,) = Lexer(b"/A#00B")
+    assert token.flags == (Flag(FlagReason.INVALID_NAME_ESCAPE, Span(2, 5), (("count", 1),)),)
 
 
 def test_seek_is_clamped_to_the_data_and_the_end() -> None:

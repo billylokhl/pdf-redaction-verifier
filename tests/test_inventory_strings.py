@@ -182,3 +182,11 @@ def test_pdfdoc_matches_latin1_outside_the_table() -> None:
     text = text_string(b"x" + raw).text[1:]  # a leading x: no byte-order mark
     differs = {i for i in range(256) if text[i] != chr(i)}
     assert differs == set(range(0x18, 0x20)) | set(range(0x80, 0x9F)) | {0xA0}
+
+
+def test_a_lossy_decode_is_reported() -> None:
+    assert text_string(b"\xfe\xff\x00A").lossless
+    assert not text_string(b"\xfe\xff\x00A\x00").lossless        # odd byte
+    assert not text_string(b"\xfe\xff\xd8\x00\x00A").lossless    # lone surrogate
+    assert not text_string(b"\xef\xbb\xbf\xff").lossless         # invalid UTF-8
+    assert text_string(b"\x80\xff").lossless                       # PDFDoc: every byte maps

@@ -61,10 +61,20 @@ class Limits:
     # Flags one object keeps; the rest are counted in a FLAGS_TRUNCATED
     # flag, so a hostile object cannot grow the report without bound.
     max_flags_per_object: int = 64
+    # Parsing work over the whole file (bytes the lexer passes over,
+    # rescans included, plus tokens): at most this many units per byte of
+    # the file, plus a floor for tiny files. Linear parsing stays far
+    # below it; a superlinear path hits it and is flagged instead of
+    # hanging (ADR 0010).
+    work_per_byte: int = 64
+    work_floor: int = 1_000_000
     # Owners a CONTESTED region lists (tile() records the true claimant
     # count beside them): bounds the tiling at O(n) for n claims however
     # many claims overlap.
     max_contested_owners: int = 16
+
+    def work_limit(self, file_size: int) -> int:
+        return self.work_floor + self.work_per_byte * max(file_size, 0)
 
     def ocr_run_pixels(self, page_count: int) -> int:
         """ADR 0006's derived whole-run OCR cap, capped by the flat
@@ -81,6 +91,7 @@ class Counter(IntEnum):
     INFLATED_BYTES = 3
     OCR_PAGE_PIXELS = 4
     OCR_RUN_PIXELS = 5
+    WORK = 6
 
 
 def _is_count(value: object) -> bool:
@@ -94,9 +105,12 @@ class Budget:
     malformed charge (negative, not an int) is refused the same way --
     fail closed, never raise."""
 
-    def __init__(self, limits: Limits | None = None, page_count: int = 0) -> None:
+    def __init__(self, limits: Limits | None = None, page_count: int = 0,
+                 file_size: int = 0) -> None:
         self.limits = limits if limits is not None else Limits()
         self.page_count = page_count if _is_count(page_count) else 0
+        self.file_size = file_size if _is_count(file_size) else 0
+        self.work = 0
         self.depth = 0  # the deepest level accepted so far
         self.units = 0
         self.inflated_bytes = 0
@@ -127,6 +141,14 @@ class Budget:
         if self.exhausted(Counter.DEPTH) or not _is_count(depth) or depth > limit:
             return self._refuse(Counter.DEPTH, limit, self.depth, depth)
         self.depth = max(self.depth, depth)
+        return True
+
+    def charge_work(self, n: int) -> bool:
+        """Parsing work, against a cap proportional to the file's size."""
+        limit = self.limits.work_limit(self.file_size)
+        if self.exhausted(Counter.WORK) or not _is_count(n) or self.work + n > limit:
+            return self._refuse(Counter.WORK, limit, self.work, n)
+        self.work += n
         return True
 
     def charge_units(self, n: int = 1) -> bool:

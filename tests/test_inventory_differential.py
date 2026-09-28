@@ -155,3 +155,146 @@ def test_an_unflagged_stream_reads_the_same_in_every_reader(
     qp_raw, qp_code, qp_err = _qpdf(path)
     assert (mu_raw, mu_repaired) == (mine, False), (case, mu_warnings)
     assert (qp_raw, qp_code) == (mine, 0), (case, qp_err)
+
+
+# ── Values: dictionaries of strings, names, numbers and nesting ───────────
+# MuPDF and qpdf each re-serialize an object in their own canonical syntax;
+# parsing that back with our parser compares values without needing any
+# reader's decoding API.
+_VALUE_PIECES = st.sampled_from([
+    b"(abc)", b"(a\\q)", b"(\\400)", b"(\\0053)", b"(a\\\r\nb)", b"(a\\\nb)", b"(a\rb)",
+    b"(a\r\nb)", b"(()())", b"(\\()", b"<41 42>", b"<414>", b"<>", b"< 4 1 >", b"<4g>",
+    b"/N", b"/A#20B", b"/A#00B", b"/A#4", b"/#41", b"/", b"4.", b"-.5", b"+3", b"0",
+    b"-0", b"00012", b"1.50", b"true", b"false", b"null", b"1 0 R", b"[1 (x) /y]", b"[]",
+    b"<< /K 1 >>", b"<<>>", b"(\xfe\xff\x00A)", b"(\xff\xfeA\x00)", b"(\x80\x9f\xad)",
+])
+
+
+@st.composite
+def _dict_bodies(draw: st.DrawFn) -> bytes:
+    # Unique keys: a repeated key is flagged, so it would never reach the readers.
+    entries = draw(st.lists(st.tuples(st.sampled_from([b"/K", b"/L", b"/M", b"/N#41", b"/O"]),
+                                      _VALUE_PIECES), max_size=5, unique_by=lambda e: e[0]))
+    sep = draw(st.sampled_from([b" ", b"\n", b"", b"%c\n"]))
+    return b"<<" + b"".join(k + b" " + v + sep for k, v in entries) + b">>"
+
+
+def _plain(value: object) -> object:
+    """A parsed value as plain data (spans dropped); numbers as floats."""
+    from redaction_verifier.inventory import objects as o
+    match value:
+        case o.PdfNull() | None:
+            return None
+        case o.PdfBool(value=v):
+            return ("bool", v)
+        case o.PdfInt(value=v) | o.PdfReal(value=v):
+            return ("num", None if v is None else float(v))
+        case o.PdfName(raw=raw):
+            return ("name", raw)
+        case o.PdfString(raw=raw):
+            return ("str", raw)
+        case o.PdfRef(num=num, gen=gen):
+            return ("ref", num, gen)
+        case o.PdfArray(items=items):
+            return [_plain(item) for item in items]
+        case o.PdfDict(entries=entries):
+            # §7.3.7: an entry whose value is null is the same as no entry
+            # (qpdf drops it, MuPDF keeps it): equivalent, not a disagreement.
+            return sorted((k.raw, repr(_plain(v))) for k, v in entries
+                          if not isinstance(v, o.PdfNull))
+    return ("other", repr(value))
+
+
+def _value_pdf(body: bytes) -> tuple[bytes, int]:
+    objects = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+        4: body,
+    }
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets: dict[int, int] = {}
+    for num, text in objects.items():
+        offsets[num] = len(out)
+        out += b"%d 0 obj\n" % num + text + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 5\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offsets[n] for n in range(1, 5))
+    out += b"trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    return bytes(out), offsets[4]
+
+
+def _reparse(serialized: bytes) -> object:
+    parsed = ObjectParser(serialized).parse_value_at(0)
+    return _plain(parsed.value)
+
+
+@requires_qpdf
+@settings(max_examples=EXAMPLES, suppress_health_check=[HealthCheck.too_slow])
+@given(_dict_bodies())
+def test_an_unflagged_value_reads_the_same_in_every_reader(
+        tmp_path_factory: pytest.TempPathFactory, body: bytes) -> None:
+    data, offset = _value_pdf(body)
+    ours = ObjectParser(data).parse_indirect_at(offset, len(data))
+    assert ours is not None
+    if ours.flags or not ours.complete:
+        return
+    mine = _plain(ours.value)
+    pymupdf.TOOLS.mupdf_warnings()
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    mu_text = doc.xref_object(4, compressed=True).encode("latin-1")
+    mu_warnings = pymupdf.TOOLS.mupdf_warnings()
+    assert (_reparse(mu_text), mu_warnings, doc.is_repaired) == (mine, "", False), (
+        body, mu_text)
+    path = tmp_path_factory.mktemp("val") / "case.pdf"
+    path.write_bytes(data)
+    result = subprocess.run(["qpdf", "--show-object=4", str(path)], capture_output=True,
+                            timeout=30)
+    assert (_reparse(result.stdout), result.returncode) == (mine, 0), (
+        body, result.stdout, result.stderr)
+
+
+# ── The written allowlist of leniencies (ADR 0010) ────────────────────────
+# Each input below is off the spec's strict path, yet our parser accepts it
+# without a flag. That is allowed only because MuPDF and qpdf read it
+# exactly as we do; this test is the evidence, and the list is the
+# allowlist. Anything readers disagree on is flagged instead (a lone CR
+# after `stream`, '#00' in a name, `endstreamendobj`, bad hex digits...).
+ACCEPTED_LENIENCIES = {
+    "unknown escape (backslash ignored)": b"(a\\qb)",
+    "octal escape overflow (high bits dropped)": b"(\\400\\777)",
+    "one- and two-digit octal escapes": b"(\\0053\\53)",
+    "backslash CR LF continuation": b"(a\\\r\nb)",
+    "backslash CR continuation": b"(a\\\rb)",
+    "raw CR LF in a literal becomes LF": b"(a\r\nb)",
+    "raw CR in a literal becomes LF": b"(a\rb)",
+    "balanced unescaped parentheses": b"(a(b)c)",
+    "odd final hex digit padded with 0": b"<414>",
+    "whitespace inside a hex string": b"< 4 1\n42 >",
+    "real with no fraction digits": b"4.",
+    "real with no integer digits": b"-.5",
+    "explicit plus sign": b"+3",
+    "leading zeros": b"00012",
+    "negative zero": b"-0",
+    "empty name": b"/",
+    "comment between tokens": b"[1 %c\n 2]",
+}
+
+
+@requires_qpdf
+@pytest.mark.parametrize("value", ACCEPTED_LENIENCIES.values(), ids=ACCEPTED_LENIENCIES.keys())
+def test_every_accepted_leniency_reads_the_same_in_every_reader(
+        tmp_path: Path, value: bytes) -> None:
+    data, offset = _value_pdf(b"<< /K " + value + b" >>")
+    ours = ObjectParser(data).parse_indirect_at(offset, len(data))
+    assert ours is not None and ours.flags == () and ours.complete
+    mine = _plain(ours.value)
+    pymupdf.TOOLS.mupdf_warnings()
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    mu_text = doc.xref_object(4, compressed=True).encode("latin-1")
+    assert (_reparse(mu_text), pymupdf.TOOLS.mupdf_warnings()) == (mine, "")
+    path = tmp_path / "case.pdf"
+    path.write_bytes(data)
+    result = subprocess.run(["qpdf", "--show-object=4", str(path)], capture_output=True,
+                            timeout=30)
+    assert (_reparse(result.stdout), result.returncode) == (mine, 0), result.stderr

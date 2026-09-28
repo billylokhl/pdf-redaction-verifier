@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from redaction_verifier.budget import Limits
+from redaction_verifier.budget import Budget, Limits
 from redaction_verifier.inventory.objects import (
     IndirectObject,
     ObjectParser,
@@ -439,3 +439,75 @@ def test_signed_or_real_numbers_are_not_references(text: bytes) -> None:
     assert all(not isinstance(item, PdfRef) for item in
                (parsed.value.items if isinstance(parsed.value, PdfArray) else ()))
     assert "UNEXPECTED_TOKEN" in _reasons(parsed)  # the lone R
+
+
+# ── The file-wide work budget (ADR 0010) ─────────────────────────────────
+def _work(data: bytes, offsets: list[int], bound_ends: bool) -> tuple[int, list[str]]:
+    budget = Budget(file_size=len(data))
+    parser = ObjectParser(data, budget=budget)
+    reasons: list[str] = []
+    for i, offset in enumerate(offsets):
+        end = offsets[i + 1] if bound_ends and i + 1 < len(offsets) else None
+        parsed = parser.parse_indirect_at(offset, end)
+        if parsed is not None:
+            reasons += _reasons(parsed)
+    return budget.work, reasons
+
+
+def _objects(n: int, body: bytes) -> tuple[bytes, list[int]]:
+    chunks = [b"%d 0 obj " % (i + 1) + body + b"\n" for i in range(n)]
+    offsets, pos = [], 0
+    for chunk in chunks:
+        offsets.append(pos)
+        pos += len(chunk)
+    return b"".join(chunks), offsets
+
+
+@pytest.mark.parametrize("body", [
+    b"<< /K [1 2 3] /S (text) >> endobj",
+    b"<< /Length 5 >> stream\nhello\nendstream endobj",
+    b"(unterminated",
+    b"<< /K " + b"[" * 50,
+    b"<< /Length 1 >> stream\nx",
+])
+def test_parsing_work_is_linear_in_the_file(body: bytes) -> None:
+    # Deterministic, not timed: the work charged at 8n is 8x the work at n.
+    small, big = _objects(200, body), _objects(1600, body)
+    work_small, _ = _work(*small, bound_ends=True)
+    work_big, reasons = _work(*big, bound_ends=True)
+    assert work_big <= 8 * work_small * 1.05
+    assert work_big <= 4 * len(big[0]) + 10_000
+    assert "BUDGET_EXHAUSTED" not in reasons
+
+
+def test_a_superlinear_parse_exhausts_the_budget_instead_of_hanging() -> None:
+    # Unbounded ends: every unterminated string is re-lexed to the end of
+    # the file from each offset -- quadratic. The budget stops it.
+    data, offsets = _objects(3000, b"(unterminated")
+    budget = Budget(Limits(work_floor=0, work_per_byte=64), file_size=len(data))
+    parser = ObjectParser(data, budget=budget)
+    started = time.process_time()
+    reasons = []
+    parsed_count = 0
+    for offset in offsets:
+        parsed = parser.parse_indirect_at(offset)
+        if parsed is not None:  # None once the budget is spent: nothing certified
+            parsed_count += 1
+            reasons += _reasons(parsed)
+    assert time.process_time() - started < 30
+    assert "BUDGET_EXHAUSTED" in reasons and parsed_count < len(offsets)
+    assert budget.work <= 64 * len(data)
+    assert [f.reason.name for f in budget.flags()] == ["BUDGET_EXHAUSTED"]
+
+
+def test_an_exhausted_budget_never_certifies_a_duplicate_as_identical() -> None:
+    data = b"1 0 obj << /A [1 2] /A [1 2] >> endobj"
+    # Enough budget to read every token, not enough to compare the repeat.
+    free = Budget(file_size=len(data))
+    ObjectParser(data, budget=free).parse_indirect_at(0)
+    reading = free.work - 2 * len(b"[1 2]")
+    budget = Budget(Limits(work_floor=reading, work_per_byte=0), file_size=len(data))
+    parsed = ObjectParser(data, budget=budget).parse_indirect_at(0)
+    assert parsed is not None and isinstance(parsed.value, PdfDict)
+    assert "BUDGET_EXHAUSTED" in _reasons(parsed)
+    assert parsed.value.ambiguous == {b"A"}  # unaffordable to compare: never "identical"

@@ -125,6 +125,10 @@ class TextString:
     encoding: TextEncoding
     tagged_text: str
     tags_removed: int = 0
+    # False when bytes did not decode and were replaced with U+FFFD: the
+    # text is then one reading among several, and a caller must flag it
+    # (ADR 0010: a lenient branch flags or is allowlisted).
+    lossless: bool = True
 
 
 # PDFDocEncoding (ISO 32000-1 Annex D.2) where it differs from Latin-1.
@@ -163,8 +167,12 @@ def text_string(raw: bytes) -> TextString:
     viewers display must not decode here as NUL-separated letters."""
     for mark, codec, encoding in _UNICODE_MARKS:
         if raw.startswith(mark):
-            tagged = raw[len(mark):].decode(codec, errors="replace")
+            body = raw[len(mark):]
+            try:
+                tagged, lossless = body.decode(codec), True
+            except UnicodeDecodeError:
+                tagged, lossless = body.decode(codec, errors="replace"), False
             text, removed = _LANGUAGE_TAG.subn("", tagged)
-            return TextString(raw, text, encoding, tagged, removed)
+            return TextString(raw, text, encoding, tagged, removed, lossless)
     text = raw.decode("latin-1").translate(_PDFDOC)
     return TextString(raw, text, TextEncoding.PDFDOC, text)
