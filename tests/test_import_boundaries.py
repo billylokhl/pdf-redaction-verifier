@@ -139,7 +139,9 @@ SECRET_HOLDERS = tuple(f"redaction_verifier.{name}" for name in (
 # code, cProfile, doctest, pickle, ctypes, ...) to ban them one by one.
 # Add a module here only when child-side code needs it, after review.
 ALLOWED_STDLIB = frozenset({"__future__", "bisect", "collections", "collections.abc",
-                            "dataclasses", "enum", "typing", "re"})
+                            "dataclasses", "enum", "typing", "re",
+                            # 3a-4a: inflation only; exposes no module and runs no code.
+                            "zlib"})
 ALLOWED_INTERNAL = ("redaction_verifier.inventory", "redaction_verifier.budget",
                     "redaction_verifier.ledger")
 # Kept beside the allowlist for strings, which can name a module to a

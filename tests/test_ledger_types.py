@@ -4,6 +4,7 @@ that exhausts exactly at its limits and never raises."""
 
 from __future__ import annotations
 
+import zlib
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,7 @@ from hypothesis import strategies as st
 from redaction_verifier.budget import GIB, Budget, Counter, Limits
 from redaction_verifier.inventory import tile
 from redaction_verifier.inventory.lexer import Lexer
+from redaction_verifier.inventory.flate import Predictor, flate_decode
 from redaction_verifier.inventory.objects import ObjectParser
 from redaction_verifier.model import (
     Flag,
@@ -72,6 +74,11 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.LENGTH_MISMATCH: lambda: _parsed(b"1 0 obj <<>> stream\nx\nendstream endobj"),
     FlagReason.STREAM_SLACK: lambda: _parsed(
         b"1 0 obj << /Length 1 >> stream\nx y\nendstream endobj"),
+    FlagReason.FLATE_ERROR: lambda: flate_decode(b"not zlib").flags,
+    FlagReason.FLATE_TRUNCATED: lambda: flate_decode(zlib.compress(b"x" * 99)[:5]).flags,
+    FlagReason.AFTER_STREAM_END: lambda: flate_decode(zlib.compress(b"x") + b"!").flags,
+    FlagReason.BAD_DECODE_PARMS: lambda: flate_decode(zlib.compress(b"x"), Predictor(3)).flags,
+    FlagReason.PREDICTOR_ERROR: lambda: flate_decode(zlib.compress(b"\x09a"), Predictor(12)).flags,
     FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
         b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
 }

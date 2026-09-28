@@ -94,6 +94,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   samples, and an image can draw text with them), qpdf does not.
   References are not range-checked here (a huge or dangling number is 3a-7's to flag), and
   comments inside an object are skipped, so 3b must match the whole object span's bytes.
+- 3a-4 split in two (ADR 0010: small parser PRs). 3a-4a (#41) done: inventory/flate.py,
+  capped FlateDecode + PNG/TIFF predictors; only the canonical case (complete zlib stream,
+  checksum good, input consumed exactly, whole rows, valid row types) is unflagged; otherwise
+  output is kept and FLATE_ERROR / FLATE_TRUNCATED / AFTER_STREAM_END (with extra and
+  non-whitespace counts) / BAD_DECODE_PARMS / PREDICTOR_ERROR flag it; output charged to the
+  inflated-bytes budget in 1 MiB steps. Differential: unflagged decodes equal MuPDF's
+  xref_stream and qpdf's --filtered-stream-data (3,000 fuzz examples; TIFF checked by hand).
+  zlib joins the child-side import allowlist. UNSUPPORTED_FILTER waits for 3a-4b, where a
+  filter chain is first read. 3a-4b: the rest of this item --
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy
