@@ -470,5 +470,15 @@ def test_qpdf_check_errors_are_counted_not_gated(tmp_path: Path) -> None:
     table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
                           b" /Resources << >> >>"), 0)
     w.epilogue(w.table(table, b"/Size 4 /Root 1 0 R"))
-    found = compare(bytes(w.out), tmp_path)
-    assert found.agrees and found.qpdf_check_errors == 1
+    data = bytes(w.out)
+    probe = tmp_path / "probe.pdf"
+    probe.write_bytes(data)
+    show = subprocess.run(["qpdf", "--show-xref", str(probe)], capture_output=True, timeout=60)
+    found = compare(data, tmp_path)
+    if show.returncode != 0:
+        # qpdf 12 (macOS Homebrew) also fails --show-xref on this page
+        # tree; then the object map is unverified and the file disagrees:
+        # fail closed, never counted as agreeing.
+        assert (found.agrees, found.check) == (False, Check.OBJECT_SET)
+    else:  # qpdf 11: the map reads, only --check stops with an ERROR
+        assert found.agrees and found.qpdf_check_errors == 1
