@@ -22,7 +22,7 @@ from .conftest import requires_qpdf
 BODIES = {
     1: b"<< /Type /Catalog /Pages 2 0 R >>",
     2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+    3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> >>",
 }
 
 
@@ -80,7 +80,7 @@ def incremental() -> bytes:
     first = classic()
     xref1 = int(re.search(rb"startxref\n(\d+)", first).group(1))  # type: ignore[union-attr]
     out = bytearray(first)
-    offsets = _objects({3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>"}, out)
+    offsets = _objects({3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << >> >>"}, out)
     xref2 = len(out)
     out += (b"xref\n3 1\n%010d 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R /Prev %d >>\n"
             % (offsets[3], xref1) + b"startxref\n%d\n%%%%EOF\n" % xref2)
@@ -220,10 +220,13 @@ def _agree(data: bytes, tmp: Path) -> None:
         # Only page-tree semantics are exempt: the reference graph's (3a-7).
         check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True,
                                timeout=60)
+        # The qpdf version is in the message: its warnings differ across
+        # releases (Linux CI runs 11.x, macOS Homebrew 12.x).
+        version = subprocess.run(["qpdf", "--version"], capture_output=True).stdout[:40]
         structural = [line for line in (check.stdout + check.stderr).splitlines()
                       if line.startswith(b"WARNING")
                       and not any(pattern in line for pattern in _PAGE_TREE_SEMANTICS)]
-        assert structural == [], (revision, structural[:3])
+        assert structural == [], (revision, version, structural[:3])
         pymupdf.TOOLS.mupdf_warnings()
         doc = pymupdf.open(stream=blob, filetype="pdf")
         assert (doc.is_repaired, pymupdf.TOOLS.mupdf_warnings()) == (False, ""), revision
@@ -327,7 +330,7 @@ def test_an_older_revision_cannot_point_past_its_own_end() -> None:
     xref1 = int(re.findall(rb"startxref\n(\d+)", first)[-1])
     out = bytearray(first)
     later = len(out)
-    out += b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] >>\nendobj\n"
+    out += b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << >> >>\nendobj\n"
     # Rewrite revision 1's entry for object 3 to point into revision 0's bytes.
     old = re.search(rb"3 1\n(\d{10})", bytes(out))
     assert old is not None
@@ -374,7 +377,7 @@ def straddle() -> bytes:
     out = bytearray(b"%PDF-1.7\n")
     offsets = _objects({1: BODIES[1], 2: BODIES[2],
                         3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
-                           b" /Contents 4 0 R >>"}, out)
+                           b" /Resources << >> /Contents 4 0 R >>"}, out)
     at = len(out)
     head = b"4 0 obj\n<< /Length %05d >>\nstream\n"
     table_at = at + len(head % 0)
