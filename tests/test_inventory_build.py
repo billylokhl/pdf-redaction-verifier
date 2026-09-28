@@ -77,7 +77,7 @@ class Writer:
 
     def objstm(self, num: int, members: list[tuple[int, bytes]],
                mutate: Callable[[bytes], bytes] | None = None, header: bytes | None = None,
-               filters: bytes = b" /Filter /FlateDecode") -> int:
+               filters: bytes = b" /Filter /FlateDecode", count: int | None = None) -> int:
         offsets, payload = [], b""
         for number, body in members:
             offsets.append(b"%d %d" % (number, len(payload)))
@@ -88,7 +88,7 @@ class Writer:
             packed = mutate(packed)
         data = zlib.compress(packed) if filters else packed
         return self.stream(num, b" /Type /ObjStm /N %d /First %d%s" % (
-            len(members), len(table) + 1, filters), data)
+            len(members) if count is None else count, len(table) + 1, filters), data)
 
     def table(self, entries: dict[int, tuple[int, int, int]], trailer: bytes) -> int:
         at = self.at()
@@ -337,7 +337,7 @@ def test_an_object_stream_is_tiled_in_decoded_coordinates() -> None:
 
 def _objstm_file(members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
                  header: bytes | None = None, filters: bytes = b" /Filter /FlateDecode",
-                 root: int = 1) -> bytes:
+                 root: int = 1, count: int | None = None) -> bytes:
     """Catalog 1 (or as *entries* say), pages 2, page 3 in the file;
     object stream 4 holds *members*; *entries* adds compressed ones."""
     w = Writer()
@@ -347,7 +347,7 @@ def _objstm_file(members: list[tuple[int, bytes]], entries: dict[int, tuple[int,
                     (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << >> >>")):
         if n not in entries:
             table[n] = (1, w.obj(n, body), 0)
-    table[4] = (1, w.objstm(4, members, header=header, filters=filters), 0)
+    table[4] = (1, w.objstm(4, members, header=header, filters=filters, count=count), 0)
     table |= entries
     xref = max(table) + 1
     section = w.xref_stream(xref, table, b"/Size %d /Root %d 0 R" % (xref + 1, root))
@@ -392,6 +392,8 @@ def test_a_malformed_object_stream_header_is_flagged(header: bytes) -> None:
     data = _objstm_file([(1, CATALOG), (6, b"(x)")], {1: (2, 4, 0), 6: (2, 4, 1)},
                         header=header.ljust(len(b"1 0 6 %d" % (len(CATALOG) + 1))))
     assert "OBJSTM_MALFORMED" in reasons(data)
+    huge = [(f.reason.name, dict(f.params)) for f in inventory(_huge_objstm(100)).flags]
+    assert ("OBJSTM_MALFORMED", {"object": 4, "pair": 101}) in huge
 
 
 def test_an_object_stream_with_another_filter_is_unsupported() -> None:
@@ -893,8 +895,10 @@ def _fake_headers(n: int, header: bytes) -> bytes:
 
 
 def _huge_objstm(n: int) -> bytes:
-    return _objstm_file([(1, CATALOG)], {1: (2, 4, 0)},
-                        header=b"1 0 " + b"7 0 " * n).replace(b"/N 1 ", b"/N 999999999 ", 1)
+    """/N a billion over a header table of n pairs, all distinct: read to
+    its end before the count is found wrong."""
+    return _objstm_file([(1, CATALOG)], {1: (2, 4, 0)}, count=999_999_999,
+                        header=b"1 0 " + b"".join(b"%d 0 " % (7 + i) for i in range(n)))
 
 
 def _many_members(n: int, nested: bool) -> bytes:
