@@ -42,7 +42,7 @@ Owner approval, 2026-09-28, of every recommendation:
 
 1. **Readers are the authority.** The inventory's parser certifies that
    the readers agree; it does not decide the reading. Every lenient
-   branch in the parser either raises a flag, or is on a written
+   branch in the parser either flags its input, or is on a written
    allowlist where each entry has a test showing MuPDF and qpdf read it
    identically. REDESIGN §4 is rewritten accordingly.
 2. **Agreement is the 3a gate.** The differential harness started in

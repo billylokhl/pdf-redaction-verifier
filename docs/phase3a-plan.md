@@ -14,8 +14,8 @@ pikepdf; inventory never imports rules/matching/report/views/verify (secret-free
 
 REVISED 2026-09-28 by ADR 0010 (owner decisions, all recommendations adopted):
 - Readers are the authority. Every lenient parser branch flags, or is on a written allowlist
-  with a test showing MuPDF and qpdf agree. Audit the existing leniencies in 3a-3b: a lone CR
-  after `stream` (flagged since 3a-3b), unknown escapes, octal overflow, '#00' in names, a
+  with a test showing MuPDF and qpdf agree. 3a-3b audits the existing leniencies: a lone CR
+  after `stream`, unknown escapes, octal overflow, '#00' in names, a
   header found after skipped whitespace/comments, text_string's replacement characters.
 - 3a-3b (new, before 3a-4): tests/test_inventory_differential.py, a Hypothesis fuzzer that
   reads generated objects with our parser, MuPDF and qpdf and fails on any unflagged
