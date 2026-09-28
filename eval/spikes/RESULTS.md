@@ -375,3 +375,142 @@ worst-of shipping until Phase 6 retires legacy. Its cost on measured
 pages is 0 unexplained mismatches (0 of 399 in-scope files); the open
 cost is the 856 form-drawing pages (206 files) and 12 CJK pages (9
 files) the spike cannot yet measure.
+
+## Phase 3a-6: the inventory agreement gate -- docs/adr/0010
+
+The gate is `python -m scorecard inventory` (eval/README.md, "The
+inventory agreement gate"). For each file it runs `build_inventory` in a
+child process with a 60 s timeout. A second child then runs the shared
+reader differential (`eval/scorecard/inventory.py`) against MuPDF 1.28.2
+and qpdf. **Gate:** zero unflagged disagreements, 0 crashes, 0 timeouts,
+and every unflagged file verified. Flag rates are reported and never gated.
+
+Run 2026-09-28 on Linux with qpdf 11.9.0 and PyMuPDF 1.28.2. Both runs
+reproduce with the command shown in each subsection.
+
+### Case library
+
+Command: `inventory caselib`. 398 of 402 cases ran; the other 4 need a
+tool this Linux machine lacks.
+
+**The gate passed.**
+
+| Result | Files |
+| --- | --- |
+| Unflagged, agree | 394 |
+| Unflagged, agree, encrypted (object set only) | 1 of the 394 |
+| Unflagged, disagree | **0** |
+| Crash | 0 |
+| Timeout | 0 |
+| Flagged | 4 (1.0%) |
+
+- **Flagged files.** All 4 are the after-`%%EOF` leak cases, flagged
+  XREF_TAIL and UNINDEXED_NON_WHITESPACE. Their 4 UNINDEXED regions hold
+  1,612 bytes. No CONTESTED regions.
+- **What was compared.** 9,773 stream objects, counted once per revision,
+  and 92 object-stream members. Every member was compared with MuPDF; up
+  to 8 per revision also with qpdf.
+- **Timing.**
+
+  | Measure | p50 | p99 | max |
+  | --- | --- | --- | --- |
+  | Build child (s) | 0.07 | 0.40 | 1.34 |
+  | Oracle child (s) | 0.20 | 1.8 | 3.5 |
+  | Work units per byte | 3.6 | 4.4 | 4.4 |
+
+  The limit is 64 work units per byte.
+
+**Pending decisions, measured:**
+
+- **Linearized files with an update (#44 item 1).** 1 linearized file;
+  0 updated.
+- **Comment lines claimed after the header, beyond the binary marker, or
+  after an intermediate `%%EOF` (#46 item 1).**
+  - 322 files have them after the header, 30 after an intermediate
+    `%%EOF`.
+  - 533 lines in all. The longest is 25 bytes.
+  - 0 lines hold a non-printable byte; 0 look like `N G obj`.
+- **Streams whose `/Length` lives in an object stream.** 0.
+- **REVISION_AMBIGUOUS.** 0.
+- **Dead object streams.** 0. There are 20 dead bodies, all in the 4
+  flagged files.
+
+### Fuzz
+
+Command: `inventory fuzz --count 3000 --seed 0`. Half the files are
+generated as `pdf_files()` generates them, with junk in a gap. The other
+half are junk-free files with 1-3 bytes overwritten in an object, an
+object stream's header table or probe member, or a gap.
+
+**The gate passed.**
+
+| Result | Files |
+| --- | --- |
+| Unflagged, agree | 740 |
+| Unflagged, disagree | **0** |
+| Crash | 0 |
+| Timeout | 0 |
+| Flagged | 2,260 (75.3%) |
+
+By kind of file:
+
+| Kind | Agree | Flagged |
+| --- | --- | --- |
+| Generated | 554 | 979 |
+| Mutated, gap | 34 | 470 |
+| Mutated, object | 74 | 398 |
+| Mutated, object stream | 78 | 413 |
+
+- **Top flag reasons, in files.**
+
+  | Reason | Files |
+  | --- | --- |
+  | UNINDEXED_NON_WHITESPACE | 1,485 |
+  | MISSING_ENDOBJ | 491 |
+  | EXTRA_TOKENS | 456 |
+  | UNEXPECTED_TOKEN | 325 |
+  | XREF_OFFSET_MISMATCH | 294 |
+
+- **Regions.** UNINDEXED in 1,248 files. CONTESTED in 55 files, 385
+  bytes.
+- **Timing.**
+
+  | Measure | p50 | p99 | max |
+  | --- | --- | --- | --- |
+  | Build child (s) | 0.07 | 0.10 | 0.18 |
+  | Work units per byte | 4.1 | 4.7 | 5.0 |
+
+- **Comment lines that look like `N G obj`.** 32 such lines, in 32
+  files, all flagged -- 31 of them CONTESTED_SPAN: a mutated `%` turns an
+  object's first line into a comment the header or epilogue claims.
+- **Dead object streams.** 31 in 25 files, all flagged.
+
+**The oracle bug the first fuzz run found.** It found 2 unflagged
+"disagreements" on object-stream members holding an empty name
+(`[/ 2.5 ...]` and `<< /  true >>`). Our inventory, qpdf and MuPDF's own
+object model all read these alike. The fault was in MuPDF's tight
+printer (`xref_object(..., compressed=True)`): it writes no separator
+after an empty name, so its text re-parses as a single name (`/2.5`).
+The oracle now parses MuPDF's pretty print instead. The table above is
+the re-run.
+
+### The 2,031-file corpus (owner's run, pending)
+
+Command: `inventory run --root <corpus>`. Paste the `--json` aggregate
+here.
+
+| Quantity | Value |
+| --- | --- |
+| Gate | _pending_ |
+| Unflagged, agree (encrypted) | _pending_ |
+| Unflagged, disagree, by check | _pending_ |
+| Crashes / timeouts / unverified | _pending_ |
+| Flagged (rate), top reasons | _pending_ |
+| UNINDEXED / CONTESTED files, bytes | _pending_ |
+| Build seconds p50 / p99 / max | _pending_ |
+| Work units per byte p50 / max | _pending_ |
+| Linearized files updated (flagged) | _pending_ |
+| Comment lines: files, longest, non-printable, `N G obj` | _pending_ |
+| `/Length` in an object stream: files, streams | _pending_ |
+| REVISION_AMBIGUOUS: equal / differ | _pending_ |
+| Dead object streams: files | _pending_ |

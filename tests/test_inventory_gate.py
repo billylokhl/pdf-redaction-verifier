@@ -266,3 +266,64 @@ def test_an_empty_name_member_agrees(tmp_path: Path, probe: bytes) -> None:
                           mutate=lambda packed: packed.replace(pdfgen.PROBE, probe.ljust(
                               len(pdfgen.PROBE)))))
     assert compare(data, tmp_path).agrees
+
+
+# ── The pending-decision measurements ─────────────────────────────────────
+def _ambiguous_length(new: bytes) -> bytes:
+    """Stream 4's /Length is 5 0 R (12); revision 0 rewrites object 5."""
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> /Contents 4 0 R >>"), 0)
+    table[4] = (1, w.obj(4, b"<< /Length 5 0 R >>\nstream\nBT (x) Tj ET\nendstream"), 0)
+    table[5] = (1, w.obj(5, b"12"), 0)
+    section = w.table(table, b"/Size 6 /Root 1 0 R")
+    w.epilogue(section)
+    w.epilogue(w.table({5: (1, w.obj(5, new), 0)}, b"/Size 6 /Root 1 0 R /Prev %d" % section))
+    return bytes(w.out)
+
+
+def _measured(data: bytes) -> dict[str, int]:
+    return oracle.measure(data, oracle.inventory(data))
+
+
+def test_revision_ambiguous_is_measured_equal_or_not() -> None:
+    assert (_measured(_ambiguous_length(b"12"))["ambiguous_equal"],
+            _measured(_ambiguous_length(b"11"))["ambiguous_differ"]) == (1, 1)
+
+
+def test_a_length_in_an_object_stream_and_a_dead_object_stream_are_counted() -> None:
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> /Contents 5 0 R >>"), 0)
+    table[5] = (1, w.obj(5, b"<< /Length 6 0 R >>\nstream\nBT (x) Tj ET\nendstream"), 0)
+    table[4] = (1, w.objstm(4, [(1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), (6, b"12")]), 0)
+    w.objstm(9, [(10, b"(dead)")])  # listed by no xref: a dead object stream
+    table |= {1: (2, 4, 0), 2: (2, 4, 1), 6: (2, 4, 2)}
+    w.epilogue(w.xref_stream(7, table, b"/Size 8 /Root 1 0 R"))
+    measured = _measured(bytes(w.out))
+    assert (measured["length_in_objstm"], measured["dead_objstms"]) == (1, 1)
+
+
+@requires_qpdf
+def test_an_updated_linearized_file_is_measured(tmp_path: Path) -> None:
+    doc = pymupdf.open()
+    for i in range(2):
+        doc.new_page().insert_text((50, 50), f"page {i}")
+    doc.save(tmp_path / "in.pdf")
+    subprocess.run(["qpdf", "--linearize", str(tmp_path / "in.pdf"), str(tmp_path / "lin.pdf")],
+                   check=True)
+    linear = (tmp_path / "lin.pdf").read_bytes()
+    assert (_measured(linear)["linearized"], _measured(linear)["linearized_updated"]) == (1, 0)
+    doc = pymupdf.open(tmp_path / "lin.pdf")
+    doc[0].insert_text((50, 80), "update")
+    doc.save(tmp_path / "lin.pdf", incremental=True, encryption=0)
+    updated = (tmp_path / "lin.pdf").read_bytes()
+    assert _measured(updated)["linearized_updated"] == 1
+    assert oracle.inventory(updated).flags  # flagged today (#44 item 1)
