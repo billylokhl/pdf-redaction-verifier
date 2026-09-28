@@ -124,12 +124,22 @@ CHILD_SIDE = sorted((REPO_ROOT / "redaction_verifier" / "inventory").rglob("*.py
     REPO_ROOT / "redaction_verifier" / name for name in ("budget.py", "ledger.py")]
 SECRET_HOLDERS = tuple(f"redaction_verifier.{name}" for name in (
     "rules", "matching", "report", "views")) + ("verify",)
-# Modules and builtins that import or run code by name.
-BANNED_MODULES = SECRET_HOLDERS + ("importlib", "runpy", "pkgutil", "builtins")
+# Modules and builtins that import or run code by name (imp exists on
+# the 3.10 floor; the underscored ones are the import system's internals).
+BANNED_MODULES = SECRET_HOLDERS + (
+    "importlib", "runpy", "pkgutil", "builtins", "imp", "zipimport", "_imp",
+    "_frozen_importlib", "_frozen_importlib_external")
 BANNED_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__",
                           "__loader__", "import_module"})
-# ...as attributes: all but compile, which re.compile shares.
-BANNED_ATTRS = BANNED_NAMES - {"compile"}
+# ...as attributes: all but compile, which re.compile shares, plus the
+# import machinery reached through sys (sys.modules, sys.meta_path, ...).
+BANNED_ATTRS = (BANNED_NAMES - {"compile"}) | {
+    "modules", "meta_path", "path_hooks", "path_importer_cache",
+    "load_module", "exec_module", "find_spec"}
+
+
+def _names_banned_module(name: str) -> bool:
+    return any(name == h or name.startswith((h + ".", h + ":")) for h in BANNED_MODULES)
 
 
 def _module_name(path: Path) -> str:
@@ -141,7 +151,9 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
     """Every import in *source* (resolving relative ones against *module*)
     that reaches a secret holder or a banned module, plus any mention of
     a builtin that imports or runs code by name: a name, an attribute
-    (other than ``.compile``) or a string constant equal to one."""
+    (other than ``.compile``) or a string constant equal to one; and
+    any string constant naming a banned module (``sys.modules['runpy']``,
+    ``'verify:main'``)."""
     package = module if is_package else module.rpartition(".")[0]
     hits = []
     for node in ast.walk(ast.parse(source)):
@@ -157,11 +169,11 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             hits.append((node.lineno, f"dynamic code via {node.id}"))
         elif isinstance(node, ast.Attribute) and node.attr in BANNED_ATTRS:
             hits.append((node.lineno, f"dynamic code via .{node.attr}"))
-        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and node.value in BANNED_NAMES):
-            hits.append((node.lineno, f"dynamic code via {node.value!r}"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in BANNED_NAMES or _names_banned_module(node.value):
+                hits.append((node.lineno, f"dynamic code via {node.value!r}"))
         for target in targets:
-            if any(target == h or target.startswith(h + ".") for h in BANNED_MODULES):
+            if _names_banned_module(target):
                 hits.append((getattr(node, "lineno", 0), target))
     return hits
 
@@ -216,6 +228,11 @@ class TestProcessBoundary:
         "f = exec", "import pkgutil; pkgutil.resolve_name('verify:main')",
         "getattr(object, '__import__')", "__loader__.load_module('verify')",
         "sys.modules['importlib'].import_module('verify')",
+        "import imp; imp.load_source('verify', 'verify.py')", "import zipimport",
+        "import _imp", "import _frozen_importlib; _frozen_importlib._gcd_import('verify')",
+        "import _frozen_importlib_external", "sys.modules['runpy'].run_module('verify')",
+        "sys.meta_path[-1].find_spec('verify').loader.load_module('verify')",
+        "m = sys.modules", "x = 'verify:main'", "x = 'redaction_verifier.rules'",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)

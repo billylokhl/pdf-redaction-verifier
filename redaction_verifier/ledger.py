@@ -100,6 +100,9 @@ class UnitRef:
             raise ValueError("UnitRef.start must be an int >= 0")
         if self.within is not None and not isinstance(self.within, UnitRef):
             raise TypeError("UnitRef.within must be a UnitRef or None")
+        # The label crosses the process boundary too: plain ints only.
+        if not all(v is None or _is_count(v) for v in (self.obj, self.gen)):
+            raise ValueError("UnitRef.obj and .gen must be ints >= 0 or None")
 
     def sort_key(self) -> tuple[tuple[int, int], ...]:
         """A total order consistent with ``==``: (start, kind) from the
