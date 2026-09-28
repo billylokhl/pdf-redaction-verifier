@@ -55,6 +55,12 @@ class Limits:
     # Tokens in one indirect object (not its stream data): large /Widths,
     # /Kids or /Nums arrays run to tens of thousands; this is headroom.
     max_tokens_per_object: int = 1_000_000
+    # Digits in one number token: PDF's own implementation limits are far
+    # smaller, and Python's int() refuses more than 4,300 digits.
+    max_number_digits: int = 64
+    # Flags one object keeps; the rest are counted in a FLAGS_TRUNCATED
+    # flag, so a hostile object cannot grow the report without bound.
+    max_flags_per_object: int = 64
     # Owners a CONTESTED region lists (tile() records the true claimant
     # count beside them): bounds the tiling at O(n) for n claims however
     # many claims overlap.
