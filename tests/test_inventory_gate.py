@@ -253,3 +253,16 @@ def test_the_fuzz_gate_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 def test_a_harness_failure_is_a_crash_not_a_pass(tmp_path: Path) -> None:
     missing = gate.run_file(gate.Job("0" * 64, tmp_path / f"{PLANTED}.pdf"), workdir=tmp_path)
     assert (missing.verdict, missing.build.error) == (gate.CRASH, "harness FileNotFoundError")
+
+
+@requires_qpdf
+@pytest.mark.parametrize("probe", [b"<< /D << /  true >> >>", b"<< /L [/ 2.5 /n <41>] >>"])
+def test_an_empty_name_member_agrees(tmp_path: Path, probe: bytes) -> None:
+    # Found by the fuzz gate: MuPDF's tight printer writes `/ 2.5` as `/2.5`
+    # (one name) though MuPDF reads two tokens, as qpdf and we do. The
+    # oracle compares MuPDF's pretty print, which separates every token.
+    from scorecard import pdfgen
+    data = build_pdf(Spec(xref="stream", objstm=True, probe=True,
+                          mutate=lambda packed: packed.replace(pdfgen.PROBE, probe.ljust(
+                              len(pdfgen.PROBE)))))
+    assert compare(data, tmp_path).agrees

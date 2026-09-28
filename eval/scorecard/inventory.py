@@ -305,6 +305,17 @@ def compare(data: bytes, workdir: Path, qpdf_members: int = 8,
 
 def _compare(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
              counts: list[int], encrypted_seen: list[bool]) -> None:
+    opened: list[pymupdf.Document] = []
+    try:
+        _compare_revisions(data, workdir, qpdf_members, inv, counts, encrypted_seen, opened)
+    finally:
+        for doc in opened:
+            doc.close()
+
+
+def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
+                       counts: list[int], encrypted_seen: list[bool],
+                       opened: list[pymupdf.Document]) -> None:
     pymupdf.TOOLS.mupdf_warnings()
     listed: set[int] = set()
     chain = chain_of(data)
@@ -318,7 +329,10 @@ def _compare(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
         blob = revision_blob(chain, data, revision)
         path = workdir / f"r{revision}.pdf"
         path.write_bytes(blob)
+        for previous in opened:  # one revision's document open at a time
+            previous.close()
         doc = pymupdf.open(stream=blob, filetype="pdf")
+        opened[:] = [doc]
         if doc.needs_pass:
             raise _Disagreement(Check.NEEDS_PASSWORD, revision)
         qmap, code = qpdf_map(path)
@@ -375,7 +389,11 @@ def _compare(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
             counts[1] += 1
             span = units[body].spans[0]
             mine = _value_of(decoded, live, span.start, span.end)
-            mu_text = doc.xref_object(number, compressed=True).encode("latin-1")
+            # MuPDF's tight printer (compressed=True) writes no separator after
+            # an empty name: the empty name then 2.5 prints as `/2.5`, and a
+            # key `/` with value true as `/true` -- one name, where MuPDF's own
+            # object holds two tokens. Its pretty printer separates every token.
+            mu_text = doc.xref_object(number, compressed=False).encode("latin-1")
             if _value_of(mu_text, live) != mine:
                 raise _Disagreement(Check.MEMBER_VALUE, revision, number)
             if qpdf_checked >= qpdf_members:
