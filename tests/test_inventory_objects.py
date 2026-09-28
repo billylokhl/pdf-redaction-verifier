@@ -352,10 +352,11 @@ def test_endstream_directly_followed_by_endobj_ends_the_stream_but_is_flagged() 
         ("ENDSTREAM_JOINED", Span(len(data) - 15, len(data)))]
 
 
-def test_a_lone_cr_ends_the_stream_keyword_line() -> None:
+def test_a_lone_cr_ends_the_stream_keyword_line_but_is_flagged() -> None:
+    # The spec allows CRLF or LF; MuPDF skips a lone CR, qpdf warns.
     data = b"1 0 obj <</Length 2>> stream\rab\rendstream endobj"
     parsed = _obj(data)
-    assert parsed.flags == () and parsed.stream is not None
+    assert _reasons(parsed) == ["STREAM_EOL"] and parsed.stream is not None
     assert data[parsed.stream.data.start:parsed.stream.data.end] == b"ab"
 
 

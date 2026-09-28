@@ -545,8 +545,13 @@ class _Run:
         start = keyword.end
         if data.startswith(b"\r\n", start):
             start += 2
-        elif data[start:start + 1] in (b"\n", b"\r"):
+        elif data[start:start + 1] == b"\n":
             start += 1
+        elif data[start:start + 1] == b"\r":
+            # §7.3.8.1 allows CRLF or LF only. MuPDF skips a lone CR; qpdf
+            # warns. Skipped, and flagged.
+            start += 1
+            self.flags.add(FlagReason.STREAM_EOL, keyword.start, keyword.end + 1)
         else:
             self.flags.add(FlagReason.STREAM_EOL, keyword.start, keyword.end)
         start = min(start, end)
