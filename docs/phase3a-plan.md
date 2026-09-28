@@ -27,7 +27,12 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   DUPLICATE_KEY w/ full-value compare, LENGTH_MISMATCH, STREAM_SLACK, EXTRA_TOKENS,
   UNTERMINATED, NESTING_LIMIT, MISSING_ENDOBJ). ~700. Converting an INTEGER token must cap
   its digits first: Python's int() raises ValueError past 4,300 digits, and the lexer
-  accepts a run of any length.
+  accepts a run of any length. The lexer charges no Budget and caps flags per token only (every
+  stray ')' is one flag): 3a-3 charges per token (max_tokens_per_object) and must bound
+  flags per object and per file. From 3a-2's review: a hex string with bad bytes decodes
+  differently in MuPDF (ends the byte) and qpdf (rejects it), so INVALID_HEX_DIGIT is never
+  benign; '#00' in a name, unknown escapes and octal overflow are allowed unflagged (as in
+  MuPDF); a text string's language tags are kept beside the stripped text for 3b to match both.
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy

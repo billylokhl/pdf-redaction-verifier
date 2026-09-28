@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from redaction_verifier.inventory.lexer import WHITESPACE, Lexer, Token, TokenKind
+from redaction_verifier.inventory.lexer import DELIMITERS, WHITESPACE, Lexer, Token, TokenKind
 from redaction_verifier.model import Flag, FlagReason, Span
 
 K = TokenKind
@@ -35,6 +35,17 @@ def test_tokens_and_whitespace_partition_the_bytes(data: bytes) -> None:
         assert all(b in WHITESPACE for b in data[pos:token.start])
         pos = token.end
     assert all(b in WHITESPACE for b in data[pos:])
+
+
+_ATOMS = (TokenKind.INTEGER, TokenKind.REAL, TokenKind.KEYWORD, TokenKind.NAME)
+
+
+@given(_any)
+def test_regular_runs_hold_no_whitespace_or_delimiter(data: bytes) -> None:
+    for token in Lexer(data):
+        if token.kind in _ATOMS:
+            body = data[token.start + (token.kind is TokenKind.NAME):token.end]
+            assert not any(b in WHITESPACE or b in DELIMITERS for b in body)
 
 
 @given(_any, st.data())
@@ -86,6 +97,9 @@ def test_flags_sit_inside_their_token_and_never_exceed_two(data: bytes) -> None:
     (b"<< >> > )", [(K.DICT_OPEN, b"<<"), (K.DICT_CLOSE, b">>"), (K.STRAY, b">"),
                     (K.STRAY, b")")]),
     (b"<4 1\n4>", [(K.HEX_STRING, b"<4 1\n4>")]),
+    # NUL and form feed are whitespace: they end a regular run.
+    (b"a\x00b\x0cc", [(K.KEYWORD, b"a"), (K.KEYWORD, b"b"), (K.KEYWORD, b"c")]),
+    (b"<41\x0c42>", [(K.HEX_STRING, b"<41\x0c42>")]),
 ])
 def test_tokens(data: bytes, expected: list[tuple[TokenKind, bytes]]) -> None:
     assert _lex(data) == expected
@@ -140,3 +154,8 @@ def test_adversarial_inputs_lex_in_linear_time(data: bytes) -> None:
     assert count >= 1
     # A quadratic lexer takes minutes on these; a linear one well under a second.
     assert time.process_time() - started < 10
+
+
+def test_every_whitespace_byte_is_whitespace_inside_a_hex_string() -> None:
+    (token,) = Lexer(b"<4\x001\t4\n2\x0c4\r3 >")
+    assert token.kind is K.HEX_STRING and token.complete and token.flags == ()

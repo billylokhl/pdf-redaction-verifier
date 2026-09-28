@@ -162,8 +162,8 @@ class Lexer:
         return Token(TokenKind.NAME, pos, stop, flags=flags)
 
     def _literal(self, pos: int) -> Token:
-        """Balanced parentheses; a backslash escapes the next byte (and a
-        CR LF pair as one end-of-line)."""
+        """Balanced parentheses; a backslash escapes the next byte. (An
+        escaped CR's LF needs no special case: LF ends nothing here.)"""
         data, end = self.data, self.end
         depth = 1
         i = pos + 1
@@ -176,10 +176,7 @@ class Lexer:
             i = hit.start()
             c = data[i]
             if c == 0x5C:  # '\\'
-                i += 2
-                if i <= end and data[i - 1] == 0x0D and i < end and data[i] == 0x0A:
-                    i += 1
-                i = min(i, end)
+                i = min(i + 2, end)
                 continue
             depth += 1 if c == 0x28 else -1
             i += 1

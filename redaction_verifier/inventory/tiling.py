@@ -52,7 +52,8 @@ def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
     bytes is one CONTESTED region with one CONTESTED_SPAN flag carrying
     the true claimant count; it lists at most ``max_contested_owners`` of
     them. Regions are maximal. An owned region is labelled with the
-    claim whose (obj, gen) is smallest, so the result, flags included,
+    claim whose (obj, gen) is smallest among its claims that cover bytes
+    of the file, so the result, flags included,
     does not depend on claim order.
 
     Iterative; O(n log n) time and O(n) regions and flags for n claims,

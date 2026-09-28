@@ -229,3 +229,11 @@ def test_int_subclasses_never_reach_a_flag() -> None:
     assert not budget.charge_units(_Int(2))
     (flag,) = budget.flags()
     assert all(type(value) is int for _name, value in flag.params)
+
+
+@pytest.mark.parametrize("label", [{"obj": "1"}, {"obj": -1}, {"gen": 1.0}, {"obj": True},
+                                   {"obj": _Int(1)}, {"gen": float("nan")}])
+def test_unit_ref_labels_are_plain_ints_or_none(label: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        UnitRef(UnitKind.OBJECT, 0, **label)
+    assert UnitRef(UnitKind.OBJECT, 0, obj=0, gen=None).obj == 0

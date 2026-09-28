@@ -74,7 +74,11 @@ def literal_bytes(body: bytes) -> bytes:
 def hex_bytes(body: bytes) -> bytes:
     """The bytes a hex string's *body* (between < and >) denotes
     (§7.3.4.3): whitespace skipped, a final odd digit padded with 0.
-    Any other byte (flagged by the lexer) is skipped like whitespace."""
+    Any other byte is skipped like whitespace. Readers disagree there
+    (MuPDF ends the current byte at a bad character, qpdf rejects the
+    token), so this decoding is one reading among several: the lexer
+    flags such a token INVALID_HEX_DIGIT, and that flag must never be
+    treated as benign."""
     digits = b"".join(_HEX_DIGITS.findall(body))
     if len(digits) % 2:
         digits += b"0"
@@ -103,17 +107,24 @@ def token_bytes(data: bytes, token: Token) -> bytes | None:
 
 class TextEncoding(Enum):
     UTF16BE = "utf-16be"          # FE FF byte-order mark
+    UTF16LE = "utf-16le"          # FF FE: not in the spec, but real readers
+                                  # (MuPDF, qpdf) show it as UTF-16LE text
     UTF8 = "utf-8"                # EF BB BF byte-order mark (PDF 2.0)
     PDFDOC = "pdfdocencoding"     # anything else
 
 
 @dataclass(frozen=True)
 class TextString:
-    """A text string (§7.9.2.2) as text, with the bytes it came from."""
+    """A text string (§7.9.2.2) as text, with the bytes it came from.
+    ``text`` has Unicode language tags removed; ``tagged_text`` keeps
+    them, since readers disagree (MuPDF strips them, qpdf shows them)
+    and a tag can split a value either way; ``tags_removed`` counts them."""
 
     raw: bytes
     text: str
     encoding: TextEncoding
+    tagged_text: str
+    tags_removed: int = 0
 
 
 # PDFDocEncoding (ISO 32000-1 Annex D.2) where it differs from Latin-1.
@@ -138,14 +149,22 @@ _PDFDOC: Final = str.maketrans({chr(b): u for b, u in _PDFDOC_DIFFS.items()})
 _LANGUAGE_TAG: Final = re.compile("\x1b[A-Za-z]{2}(?:[A-Za-z]{2})?\x1b")
 
 
+_UNICODE_MARKS: Final = (
+    (b"\xfe\xff", "utf-16-be", TextEncoding.UTF16BE),
+    (b"\xff\xfe", "utf-16-le", TextEncoding.UTF16LE),
+    (b"\xef\xbb\xbf", "utf-8", TextEncoding.UTF8),
+)
+
+
 def text_string(raw: bytes) -> TextString:
-    """Decode a text string: UTF-16BE or UTF-8 when byte-order-marked
-    (language tags removed, undecodable bytes replaced with U+FFFD),
-    otherwise PDFDocEncoding."""
-    if raw[:2] == b"\xfe\xff":
-        text = raw[2:].decode("utf-16-be", errors="replace")
-        return TextString(raw, _LANGUAGE_TAG.sub("", text), TextEncoding.UTF16BE)
-    if raw[:3] == b"\xef\xbb\xbf":
-        text = raw[3:].decode("utf-8", errors="replace")
-        return TextString(raw, _LANGUAGE_TAG.sub("", text), TextEncoding.UTF8)
-    return TextString(raw, raw.decode("latin-1").translate(_PDFDOC), TextEncoding.PDFDOC)
+    """Decode a text string: UTF-16BE, UTF-16LE or UTF-8 when
+    byte-order-marked (undecodable bytes replaced with U+FFFD), otherwise
+    PDFDocEncoding. UTF-16LE is outside the spec, but a secret real
+    viewers display must not decode here as NUL-separated letters."""
+    for mark, codec, encoding in _UNICODE_MARKS:
+        if raw.startswith(mark):
+            tagged = raw[len(mark):].decode(codec, errors="replace")
+            text, removed = _LANGUAGE_TAG.subn("", tagged)
+            return TextString(raw, text, encoding, tagged, removed)
+    text = raw.decode("latin-1").translate(_PDFDOC)
+    return TextString(raw, text, TextEncoding.PDFDOC, text)

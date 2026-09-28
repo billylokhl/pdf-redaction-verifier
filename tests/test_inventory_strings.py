@@ -51,9 +51,21 @@ def test_the_two_legacy_end_of_line_bugs_are_fixed_here_only(
     assert text_string(literal_bytes(body)).text == fixed
 
 
-_ascii_body = st.lists(st.sampled_from(list("abc 019()-/%<>#\t") + [
-    "\\n", "\\t", "\\(", "\\)", "\\\\", "\\12", "\\101", "\\q"]), max_size=40).map("".join).filter(
-    lambda s: s.count("(") - s.count("\\(") == s.count(")") - s.count("\\)"))
+_PIECES = list("abc 019()-/%<>#\t") + [
+    "\\n", "\\t", "\\(", "\\)", "\\\\", "\\12", "\\101", "\\q"]
+
+
+def _balanced(pieces: list[str]) -> bool:
+    # Pieces, not characters: "\\(" is one escaped paren, "\\\\" one backslash.
+    depth = 0
+    for piece in pieces:
+        depth += {"(": 1, ")": -1}.get(piece, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+_ascii_body = st.lists(st.sampled_from(_PIECES), max_size=40).filter(_balanced).map("".join)
 
 
 @given(_ascii_body)
@@ -103,6 +115,8 @@ def test_decoders_never_raise(data: bytes) -> None:
 
 @pytest.mark.parametrize(("body", "expected"), [
     (b"4", b"\x40"), (b"41 42\n4", b"AB\x40"), (b"", b""), (b"4g1", b"\x41"),
+    # Every PDF whitespace byte is skipped, NUL and form feed included.
+    (b"41\x0042\x0c43\t44\r45 46", b"ABCDEF"),
 ])
 def test_hex_bytes(body: bytes, expected: bytes) -> None:
     assert hex_bytes(body) == expected
@@ -133,6 +147,26 @@ def test_text_string_encodings_keep_the_raw_bytes() -> None:
     assert pdfdoc.encoding is TextEncoding.PDFDOC
     # PDFDocEncoding's own characters; undefined bytes keep their Latin-1 code point.
     assert pdfdoc.text == "•—™€é˘\x7f\x9f\xad"
+
+
+def test_utf16le_is_read_as_real_readers_read_it() -> None:
+    raw = b"\xff\xfe" + "SSN 123-45-6789".encode("utf-16-le")
+    decoded = text_string(raw)
+    assert (decoded.text, decoded.encoding) == ("SSN 123-45-6789", TextEncoding.UTF16LE)
+
+
+def test_language_tags_are_removed_but_kept_beside_the_text() -> None:
+    for mark, codec in ((b"\xfe\xff", "utf-16-be"), (b"\xff\xfe", "utf-16-le"),
+                        (b"\xef\xbb\xbf", "utf-8")):
+        tagged = "\x1benUS\x1b123-45-\x1bfr\x1b6789"
+        decoded = text_string(mark + tagged.encode(codec))
+        assert decoded.text == "123-45-6789", codec
+        assert (decoded.tagged_text, decoded.tags_removed) == (tagged, 2), codec
+    # A "tag" can hide letters some readers show: both readings are kept.
+    split = text_string(b"\xfe\xff" + "SE\x1bCR\x1bET".encode("utf-16-be"))
+    assert (split.text, split.tagged_text) == ("SEET", "SE\x1bCR\x1bET")
+    plain = text_string(b"abc")
+    assert (plain.tagged_text, plain.tags_removed) == ("abc", 0)
 
 
 def test_utf16_language_tags_are_removed_and_odd_bytes_replaced() -> None:
