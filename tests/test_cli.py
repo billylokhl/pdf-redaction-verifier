@@ -12,7 +12,7 @@ import os
 import shutil
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 import verify
@@ -195,6 +195,35 @@ class TestExitCodeContract:
         # inside it failed.
         assert expect_substr in result.stderr, result.stderr
 
+    def test_fatal_import_survives_a_neutered_sys_exit(self, tmp_path) -> None:
+        # #26: _fatal_import exits via os._exit(2), not sys.exit(2), so a
+        # dependency that replaces sys.exit before raising can't turn the
+        # guard into a no-op. A stub top-level redaction_verifier.py that
+        # patches sys.exit (a plain module attribute, shared with
+        # verify.py's own `import sys`) to a no-op and then raises
+        # reproduces exactly that: with sys.exit(2), the exception handler
+        # would return instead of exiting, and execution would fall
+        # through into the rest of verify.py's module body with none of
+        # its redaction_verifier imports bound — a NameError with a
+        # traceback, not a clean "operational failure exits 2". os._exit
+        # is a direct syscall this stub cannot intercept, so the guard
+        # still terminates the process immediately, unconditionally.
+        shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
+        (tmp_path / "redaction_verifier.py").write_text(
+            "import sys\n"
+            "sys.exit = lambda *a, **k: None\n"
+            "raise ImportError('stub: sys.exit neutralized')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(tmp_path / "verify.py"),
+             "--target", "x.pdf", "--secrets", "x.json"],
+            capture_output=True, text=True, timeout=60, cwd=tmp_path,
+        )
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr
+        assert "[ERROR] cannot import redaction_verifier" in result.stderr
+        assert "sys.exit neutralized" in result.stderr, result.stderr
+
     @pytest.mark.parametrize(
         "exc_id, stub_code, expect_substr",
         [
@@ -205,11 +234,15 @@ class TestExitCodeContract:
             # earlier version of this guard special-cased only
             # (SystemExit, KeyboardInterrupt) before falling through to
             # `except Exception`, so a GeneratorExit at import time still
-            # escaped with a traceback and exit 1. The trailing `except
-            # BaseException` clause (order matters: after `except
-            # Exception`, not before, or the degrade below would never
-            # run) covers every such case instead of naming them one by
-            # one.
+            # escaped with a traceback and exit 1. redaction_verifier.
+            # views.ocr's own guard around the Vision import is `except
+            # Exception`, which does not catch a GeneratorExit either: it
+            # now escapes views/ocr.py and redaction_verifier's own
+            # import, and is caught by verify.py's single guarded
+            # re-export block instead (see the docstring below) — not by
+            # a dedicated trailing `except BaseException` clause, which no
+            # longer exists now that the Vision import lives in the
+            # package rather than in verify.py itself.
             ("GeneratorExit", 'raise GeneratorExit("stub")\n', "GeneratorExit"),
         ],
     )

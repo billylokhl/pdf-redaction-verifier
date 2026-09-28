@@ -115,3 +115,17 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = "verify"
 ignore_errors = true
+
+# PyMuPDF 1.28's `pymupdf` package ships py.typed, unlike the deprecated
+# `fitz` alias it replaces (#19): mypy now actually follows it instead of
+# treating it as untyped (which `ignore_missing_imports` above did for
+# `fitz`), and its bundled stubs are auto-generated and incomplete —
+# several module-level constants set outside the stub's static view
+# (PDF_WIDGET_TYPE_TEXT, PDF_ENCRYPT_KEEP, ...) and a few methods
+# (Document.__iter__, MuPDF-backed callback signatures) are missing or
+# too narrow, producing spurious errors unrelated to this migration.
+# Skip following it, restoring the same "trust the runtime, not the
+# stub" treatment `fitz` silently had before.
+[[tool.mypy.overrides]]
+module = "pymupdf"
+follow_imports = "skip"

@@ -7,7 +7,7 @@ import io
 import zipfile
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from ..model import CODE, SSN, case, expect
 from ..pdfkit import body, compressed, png_of, save, update, zipbytes

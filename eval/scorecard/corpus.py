@@ -98,7 +98,7 @@ def classify(pdf_path: Path) -> tuple[bool, bool, str]:
     The raw `/Producer` string is read here and immediately reduced to a
     coarse family — it is never returned or stored (it can hold a
     username, hostname, or email address some producers embed)."""
-    import fitz
+    import pymupdf as fitz
 
     text_bearing = False
     raw_producer = None

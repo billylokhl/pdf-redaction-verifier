@@ -21,7 +21,7 @@ import zlib
 from pathlib import Path
 from typing import Callable
 
-import fitz
+import pymupdf as fitz
 
 FILLER = (
     "Quarterly operations summary for the regional office.",

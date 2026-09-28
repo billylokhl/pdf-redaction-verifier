@@ -214,7 +214,7 @@ def _environment_fingerprint(have: frozenset[str]) -> str:
     changes the stored keys, not just this machine's raw capability) —
     the reference's own results depend on all of these, so a cache entry
     from a different environment or mode must never be reused."""
-    import fitz
+    import pymupdf as fitz
 
     parts = [
         f"ocr={'1' if 'ocr' in have else '0'}",

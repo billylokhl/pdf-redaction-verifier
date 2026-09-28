@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-import fitz
+import pymupdf as fitz
 
 OCR_DPI: int = 300
 

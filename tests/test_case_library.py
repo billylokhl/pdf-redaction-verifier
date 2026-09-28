@@ -15,7 +15,7 @@ import os
 import re
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from caselib import CELLS, NEW_CELL_ALLOWLIST, PRIVACY_KINDS, REGISTRY, load
@@ -286,7 +286,7 @@ class TestLibrary:
         # The object-stream layout exists to put the secret inside an
         # /ObjStm body (an annotation is packed; /Info is not): the surface
         # behind the bug that called every packed object ORPHANED.
-        import fitz
+        import pymupdf as fitz
 
         from caselib import SSN
         path = build(REGISTRY["document.annotation-objstm"], tmp_path / "objstm.pdf")

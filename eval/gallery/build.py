@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-import fitz
+import pymupdf as fitz
 
 from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from ..model import SSN, Expect, KnownGap, case, expect
 from ..pdfkit import compressed, embedded_font, png_of

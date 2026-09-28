@@ -6,11 +6,15 @@ experimental]"; "Move, don't wrap"). Behaviour is byte-identical to the
 code this replaced; verify.py re-exports every name here so existing
 imports, `verify.X` references and the CLI keep working unchanged.
 
-`fitz` is imported plainly here (like redaction_verifier.views): by the
-time this module loads, verify.py's own top-level `import fitz` has
-already succeeded and cached the module, so this is never a *new*
-failure mode — it exists so the environment block below (`fitz.
-VersionBind`) does not have to be threaded in as a parameter.
+`fitz` is imported plainly here (like redaction_verifier.views), as
+`import pymupdf as fitz`: by the time this module loads, verify.py's own
+top-level `import pymupdf as fitz` has already succeeded and cached the
+module, so this is never a *new* failure mode when this module is
+reached the way verify.py reaches it — via its own guarded import block,
+only after that top-level import has already succeeded. An importer
+that reaches this module some other way (bypassing verify.py's guard)
+would not get that protection; it exists so the environment block below
+(`fitz.VersionBind`) does not have to be threaded in as a parameter.
 
 `tool_version` is NOT read from a constant owned by this module: the
 tool's version is `verify.__version__`, the single source of truth
@@ -18,10 +22,13 @@ pyproject.toml's dynamic version reads (`attr = "verify.__version__"`),
 and this package must never import verify (one-way dependency). The
 caller (verify.py's own `main()`) passes it in explicitly instead.
 
-`_OCR_IMPORTS_OK` is read from `redaction_verifier.views` — the one place
-that value is ever assigned — rather than duplicated here, so this
-module's report always reflects the same OCR availability verify.py's
-own re-exported copy does.
+`ocr_available` is likewise passed in by the caller rather than read
+from `redaction_verifier.views._OCR_IMPORTS_OK` here: verify.py's `main()`
+already imports that value once (as its own re-exported `_OCR_IMPORTS_OK`)
+to gate the OCR layer, and threads the same value through to this
+function — like `tool_version` — so exactly one value drives both the
+gate and the report, instead of two separate reads of the same module
+attribute that could in principle observe different things.
 """
 
 from __future__ import annotations
@@ -32,12 +39,11 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-import fitz
+import pymupdf as fitz
 
 from redaction_verifier.matching import mask
 from redaction_verifier.model import WARNING_FIELDS, ScanReport, Warn
 from redaction_verifier.report.text import _sanitize_report_text
-from redaction_verifier.views import _OCR_IMPORTS_OK
 
 # Bumped when a field of the --json report is renamed, removed or changes
 # meaning; adding a field does not bump it.
@@ -51,6 +57,7 @@ def build_json_report(
     *,
     target: Path,
     tool_version: str,
+    ocr_available: bool,
     private_paths: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """The machine-readable report: the same content as print_report,
@@ -113,7 +120,7 @@ def build_json_report(
             "python": sys.version.split()[0],
             "platform": sys.platform,
             "pymupdf": fitz.VersionBind,
-            "ocr_available": _OCR_IMPORTS_OK,
+            "ocr_available": ocr_available,
         },
         "target": text(target.name),
         "exit_code": exit_code,
