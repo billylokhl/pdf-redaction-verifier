@@ -100,7 +100,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   output is kept and FLATE_ERROR / FLATE_TRUNCATED / AFTER_STREAM_END (with extra and
   non-whitespace counts) / BAD_DECODE_PARMS / PREDICTOR_ERROR flag it; output charged to the
   inflated-bytes budget in 1 MiB steps. Differential: unflagged decodes equal MuPDF's
-  xref_stream and qpdf's --filtered-stream-data (3,000 fuzz examples; TIFF checked by hand).
+  xref_stream and qpdf's --filtered-stream-data (3,000 fuzz examples over PNG and TIFF
+  predictors, Colors 1-5, BitsPerComponent 1-16, whole and partial rows).
   zlib joins the child-side import allowlist. UNSUPPORTED_FILTER waits for 3a-4b, where a
   filter chain is first read. 3a-4b: the rest of this item --
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain

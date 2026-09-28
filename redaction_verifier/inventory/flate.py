@@ -108,23 +108,31 @@ def _unpredict(data: bytes, parms: Predictor,
             ("predictor", p if isinstance(p, int) else -1),)),)
     row = (colors * bits * columns + 7) // 8
     if p == 2:
-        return _tiff(data, row, colors), ()
-    return _png(data, row, max(1, colors * bits // 8), span)
+        return _tiff(data, row, colors, span)
+    # Bytes per complete pixel, rounded up (§7.4.4.4; as both readers do).
+    return _png(data, row, (colors * bits + 7) // 8, span)
 
 
-def _tiff(data: bytes, row: int, bpp: int) -> bytes:
+def _tiff(data: bytes, row: int, bpp: int, span: Span) -> tuple[bytes, tuple[Flag, ...]]:
     out = bytearray(data)
     for start in range(0, len(out), row):
         for i in range(start + bpp, min(start + row, len(out))):
             out[i] = (out[i] + out[i - bpp]) & 0xFF
-    return bytes(out)
+    partial = len(data) % row
+    if partial:  # readers disagree on it: qpdf pads the row, MuPDF does not
+        return bytes(out), (Flag(FlagReason.PREDICTOR_ERROR, span, (
+            ("partial_row_bytes", partial),)),)
+    return bytes(out), ()
 
 
 def _png(data: bytes, row: int, bpp: int, span: Span) -> tuple[bytes, tuple[Flag, ...]]:
     """Undo PNG row filters (§7.4.4.4; PNG spec §6). Every row carries its
     own filter-type byte whatever /Predictor 10-15 says, as readers do."""
     out = bytearray()
-    prev = bytearray(row)
+    # Never larger than the data: a tiny stream with a huge /Columns must
+    # not allocate a huge row (rows cannot outgrow the data they are in).
+    width = min(row, len(data))
+    prev = bytearray(width)
     flags: list[Flag] = []
     bad_types = 0
     stride = row + 1
@@ -154,7 +162,7 @@ def _png(data: bytes, row: int, bpp: int, span: Span) -> tuple[bytes, tuple[Flag
         elif kind != 0:
             bad_types += 1
         out += cur
-        prev = cur + bytearray(row - n)
+        prev = cur + bytearray(width - n)
     if bad_types:
         flags.append(Flag(FlagReason.PREDICTOR_ERROR, span, (("bad_row_types", bad_types),)))
     return bytes(out), tuple(flags)
