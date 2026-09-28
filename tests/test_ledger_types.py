@@ -95,6 +95,7 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.XREF_CONFLICT: lambda: read_chain(_duplicated_subsection()).flags,
     FlagReason.XREF_OFFSET_MISMATCH: lambda: _offset_mismatch(),
     FlagReason.PREV_CYCLE: lambda: read_chain(_cycle()).flags,
+    FlagReason.HEADER_OFFSET: lambda: read_chain(b"x" + classic()).flags,
     FlagReason.XREF_SIZE_MISMATCH: lambda: read_chain(
         classic().replace(b"/Size 4", b"/Size 5", 1)).flags,
     FlagReason.MISSING_ROOT: lambda: read_chain(

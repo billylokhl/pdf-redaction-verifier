@@ -108,6 +108,11 @@ def read_chain(data: bytes, limits: Limits | None = None,
                budget: Budget | None = None) -> Chain:
     limits = limits if limits is not None else Limits()
     flags: list[Flag] = []
+    if not data.startswith(b"%PDF-"):
+        # Readers find a header after junk and read offsets relative to it;
+        # we would read them absolute. Two readings of one file: flagged.
+        found = data.find(b"%PDF-", 0, 1024)
+        flags.append(Flag(FlagReason.HEADER_OFFSET, None, (("offset", found),)))
     tail = _TAIL.search(data, max(0, len(data) - 64))
     if tail is None:
         flags.append(Flag(FlagReason.XREF_TAIL, Span(max(0, len(data) - 64), len(data))))
@@ -151,40 +156,74 @@ def read_chain(data: bytes, limits: Limits | None = None,
     chain = Chain(tuple(sections), start, Span(tail.start(), len(data)), tuple(flags),
                   tuple(revisions))
     return Chain(chain.sections, chain.startxref, chain.tail,
-                 chain.flags + tuple(_check_offsets(data, chain, limits))
-                 + tuple(_check_roots(data, chain, parser)), chain.revisions)
+                 chain.flags + tuple(_check_revisions(data, chain, parser)), chain.revisions)
 
 
-def _check_roots(data: bytes, chain: Chain, parser: ObjectParser) -> list[Flag]:
-    """Each revision's newest trailer must name its catalog, and say how
-    many objects it has:
+def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Flag]:
+    """Per revision, oldest first, with the object map built up as it
+    goes (linear in entries, however many revisions):
 
-    - /Root, a reference to a /Type /Catalog dictionary in use in that
-      revision (qpdf: "unable to find /Root dictionary"). A catalog in an
-      object stream is checked by 3a-5, which reads object streams.
-    - /Size, exactly one more than the highest object number (§7.5.5;
-      qpdf warns otherwise, and MuPDF may repair)."""
+    - every in-use entry lands exactly on its own ``N G obj``, and that
+      header lies within the revision's own bytes (before its prefix
+      cut); so does a hybrid section's /XRefStm;
+    - every compressed entry names an object stream in use in the
+      revision; object 0 is never in use (MuPDF warns);
+    - the revision's newest trailer names a /Type /Catalog via /Root
+      (qpdf: "unable to find /Root dictionary"; a catalog inside an
+      object stream is 3a-5's to check) and has /Size exactly one more
+      than its highest object number (§7.5.5; qpdf warns otherwise)."""
     flags: list[Flag] = []
-    for revision, group in enumerate(chain.revisions):
-        section = chain.sections[group[0]]
-        trailer = section.trailer
-        objects = chain.object_map(revision)
+    merged: dict[int, Entry] = {}
+    highest = 0
+    catalogs: dict[int, bool] = {}
+    for revision in reversed(range(len(chain.revisions))):
+        group = chain.revisions[revision]
+        end = chain.revision_end(revision)
+        parts: list[Section] = []
+        for index in sorted(group, reverse=True):  # oldest section of the group first
+            section = chain.sections[index]
+            if section.xref_stm is not None:
+                parts.append(section.xref_stm)
+                if section.xref_stm.span.end > end:
+                    flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, section.xref_stm.span,
+                                      (("revision", revision),)))
+            parts.append(section)
+        for part in parts:
+            merged.update(part.entries)
+            if part.entries:
+                highest = max(highest, max(part.entries))
+        for part in parts:
+            for number, entry in part.entries.items():
+                if entry.kind == IN_USE:
+                    header = _header_at(data, entry.a)
+                    if (number == 0 or header is None or header[:2] != (number, entry.b)
+                            or header[2] > end):
+                        flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
+                            ("object", number), ("offset", entry.a))))
+                elif entry.kind == COMPRESSED:
+                    home = merged.get(entry.a)
+                    if number == 0 or home is None or home.kind != IN_USE:
+                        flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
+                            ("object", number), ("stream", entry.a))))
+        newest = chain.sections[group[0]]
+        trailer = newest.trailer
         root = trailer.get(b"Root") if trailer is not None else None
-        entry = objects.get(root.num) if isinstance(root, PdfRef) else None
+        home = merged.get(root.num) if isinstance(root, PdfRef) else None
         catalog = False
-        if isinstance(root, PdfRef) and entry is not None and entry.kind == IN_USE:
-            obj = parser.parse_indirect_at(entry.a)
-            catalog = (obj is not None and entry.b == root.gen and not obj.flags
-                       and isinstance(obj.value, PdfDict)
-                       and _name(obj.value.get(b"Type")) == b"Catalog")
-        elif isinstance(root, PdfRef) and entry is not None and entry.kind == COMPRESSED:
+        if isinstance(root, PdfRef) and home is not None and home.kind == IN_USE:
+            if home.a not in catalogs:
+                obj = parser.parse_indirect_at(home.a, end)
+                catalogs[home.a] = (obj is not None and not obj.flags
+                                    and isinstance(obj.value, PdfDict)
+                                    and _name(obj.value.get(b"Type")) == b"Catalog")
+            catalog = catalogs[home.a] and home.b == root.gen
+        elif isinstance(root, PdfRef) and home is not None and home.kind == COMPRESSED:
             catalog = True
         if not catalog:
-            flags.append(Flag(FlagReason.MISSING_ROOT, section.span, (("revision", revision),)))
+            flags.append(Flag(FlagReason.MISSING_ROOT, newest.span, (("revision", revision),)))
         size = _int(trailer.get(b"Size")) if trailer is not None else None
-        highest = max(objects, default=0)
         if size != highest + 1:
-            flags.append(Flag(FlagReason.XREF_SIZE_MISMATCH, section.span, (
+            flags.append(Flag(FlagReason.XREF_SIZE_MISMATCH, newest.span, (
                 ("revision", revision), ("size", -1 if size is None else size),
                 ("highest", highest))))
     return flags
@@ -209,6 +248,10 @@ def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None
     while (sub := _SUBSECTION.match(data, pos)) is not None:
         first, count = int(sub.group(1)), int(sub.group(2))
         pos = sub.end()
+        if count == 0:  # MuPDF: "broken xref subsection"
+            flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, Span(sub.start(), pos),
+                              (("object", first),)))
+            return None
         if budget is not None and not budget.charge_work(20 * count + 1):
             flags.append(Flag(FlagReason.BUDGET_EXHAUSTED, Span(offset, pos)))
             return None
@@ -244,7 +287,10 @@ def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None
         if xref_stm is not None:
             for number, from_stream in xref_stm.entries.items():
                 mine = entries.get(number)
-                if mine is not None and mine.kind != FREE and mine != from_stream:
+                # Readers disagree on any overlap -- qpdf lets the stream's
+                # entry through a free table entry, MuPDF does not -- so an
+                # object both define is flagged, whatever the kinds.
+                if mine is not None:
                     flags.append(Flag(FlagReason.XREF_CONFLICT, xref_stm.span,
                                       (("object", number),)))
     elif trailer.get(b"XRefStm") is not None:
@@ -327,44 +373,9 @@ def _prev(trailer: PdfDict, span: Span, flags: list[Flag]) -> int | None:
     return prev
 
 
-def _check_offsets(data: bytes, chain: Chain, limits: Limits) -> list[Flag]:
-    """Every in-use entry of every section must land exactly on its own
-    ``N G obj``; every compressed entry must name an object stream that
-    is in use in the same revision. Linear in entries: each number's
-    definitions are indexed by section once."""
-    flags: list[Flag] = []
-    # number -> [(section index, entry)] ascending; a revision's view of a
-    # number is its first definition at that section index or older.
-    defined: dict[int, list[tuple[int, Entry]]] = {}
-    for i, section in enumerate(chain.sections):
-        own = dict(section.xref_stm.entries) if section.xref_stm is not None else {}
-        own.update(section.entries)
-        for number, entry in own.items():
-            defined.setdefault(number, []).append((i, entry))
-
-    def visible(number: int, revision: int) -> Entry | None:
-        for i, entry in defined.get(number, ()):
-            if i >= revision:
-                return entry
-        return None
-
-    for i, section in enumerate(chain.sections):
-        parts = [section] + ([section.xref_stm] if section.xref_stm is not None else [])
-        for part in parts:
-            for number, entry in part.entries.items():
-                if entry.kind == IN_USE and _header_at(data, entry.a) != (number, entry.b):
-                    flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
-                        ("object", number), ("offset", entry.a))))
-                elif entry.kind == COMPRESSED:
-                    home = visible(entry.a, i)
-                    if home is None or home.kind != IN_USE:
-                        flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
-                            ("object", number), ("stream", entry.a))))
-    return flags
-
-
-def _header_at(data: bytes, offset: int) -> tuple[int, int] | None:
-    """(num, gen) when ``N G obj`` starts exactly at *offset*."""
+def _header_at(data: bytes, offset: int) -> tuple[int, int, int] | None:
+    """(num, gen, end of the header) when ``N G obj`` starts exactly at
+    *offset*."""
     if not 0 <= offset < len(data):
         return None
     lexer = Lexer(data, offset, min(len(data), offset + 64))
@@ -377,7 +388,7 @@ def _header_at(data: bytes, offset: int) -> tuple[int, int] | None:
     num, gen = data[first.start:first.end], data[second.start:second.end]
     if not (num.isdigit() and gen.isdigit()):
         return None
-    return int(num), int(gen)
+    return int(num), int(gen), third.end
 
 
 def _int(value: PdfValue | None) -> int | None:

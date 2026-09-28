@@ -107,9 +107,13 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   the file ends `startxref N %%EOF`; each offset lands exactly on an `xref` table (exact
   subsection headers and 20-byte entries, whitespace allowed only before `trailer`) or an
   /XRef stream (valid /Type, /W, /Index, /Size, decoded length exact, FlateDecode only via
-  3a-4a); hybrid /XRefStm merged (a conflict flags); /Prev followed without cycles; a forward
+  3a-4a); `%PDF-` at byte 0 (HEADER_OFFSET otherwise: readers read offsets relative to a
+  late header); hybrid /XRefStm merged, any object both define flagged (readers disagree);
+  /Prev followed without cycles; a forward
   /Prev only as a linearized file's first-page section, whose pair is one revision; every
-  in-use entry on its own `N G obj`, every compressed entry on an object stream in use;
+  in-use entry on its own `N G obj` inside its own revision's bytes, every compressed entry
+  on an object stream in use in that revision, object 0 never in use, no empty subsection;
+  checked in one pass oldest to newest (linear however many revisions);
   each revision's newest trailer names a /Type /Catalog via /Root and has /Size = 1 +
   its highest object number. New flags: XREF_TAIL, XREF_NOT_FOUND, XREF_TABLE_MALFORMED,
   XREF_STREAM_MALFORMED, UNSUPPORTED_FILTER, XREF_CONFLICT, XREF_OFFSET_MISMATCH,
@@ -119,7 +123,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   XREF_TAIL. An exhaustive single-byte mutation sweep of canonical classic, stream and
   incremental files finds no unflagged disagreement (it found the /Root and /Size rules).
   The legacy _earlier_revisions agrees on every file but the linearized one, where it counts
-  the main section as an extra revision; qpdf cannot open that prefix cut. The rest of this item --
+  the main section as an extra revision; qpdf cannot open that prefix cut. Every differential
+  also fails on any MuPDF warning. Not done here: an incremental update on a linearized file is
+  flagged (fail closed; common for signed files -- measure the rate in 3a-6); a catalog or
+  object inside an object stream is 3a-5's; unchained sections and slack between sections are
+  3a-5's tiling. The original item, for reference --
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy

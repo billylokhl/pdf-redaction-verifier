@@ -155,10 +155,11 @@ def test_a_compressed_entry_needs_an_object_stream_in_use() -> None:
     offsets = _objects(BODIES, out)
     xref = len(out)
     entries = {0: (0, 0, 0xFFFF)} | {n: (1, o, 0) for n, o in offsets.items()}
-    entries[4] = (1, xref, 0)
-    entries[5] = (COMPRESSED, 9, 0)  # object stream 9 does not exist
+    entries[4] = (COMPRESSED, 9, 0)  # object stream 9 does not exist
+    entries[5] = (1, xref, 0)        # the xref stream itself, object 5
     out += _stream_xref(entries, 6, xref) + b"startxref\n%d\n%%%%EOF\n" % xref
-    assert "XREF_OFFSET_MISMATCH" in _reasons(bytes(out))
+    reasons = [(f.reason.name, dict(f.params)) for f in read_chain(bytes(out)).flags]
+    assert reasons == [("XREF_OFFSET_MISMATCH", {"object": 4, "stream": 9})]
 
 
 def test_entries_keep_their_kinds() -> None:
@@ -204,7 +205,9 @@ def _agree(data: bytes, tmp: Path) -> None:
         path = tmp / f"r{revision}.pdf"
         path.write_bytes(blob)
         assert _qpdf_map(path) == (_ours(chain.object_map(revision)), 0), revision
-        assert not pymupdf.open(stream=blob, filetype="pdf").is_repaired, revision
+        pymupdf.TOOLS.mupdf_warnings()
+        doc = pymupdf.open(stream=blob, filetype="pdf")
+        assert (doc.is_repaired, pymupdf.TOOLS.mupdf_warnings()) == (False, ""), revision
 
 
 @requires_qpdf
@@ -249,3 +252,92 @@ def test_mutated_chains_are_flagged_or_agree_with_the_readers(
         pos = draw.draw(st.integers(start, len(data) - 1))
         data[pos] = draw.draw(st.sampled_from(list(b"0123456789 \n\rnfx<>/[]")))
     _agree(bytes(data), tmp_path)
+
+
+# ── Shapes found by review: header offset, hybrids, revision bounds ───────
+def hybrid(overlap: bool) -> bytes:
+    """A table for objects 1-4 plus /XRefStm for 5 (compressed in object
+    stream 4) and 6 (the xref stream). With *overlap*, the table also
+    lists 5 and 6 as free, as some writers do -- readers then disagree."""
+    out = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    offsets = _objects({1: b"<< /Type /Catalog /Pages 2 0 R /Extra 5 0 R >>",
+                        2: BODIES[2], 3: BODIES[3]}, out)
+    members = b"5 0 "
+    packed = members + b"<< /K (v) >>"
+    offsets[4] = len(out)
+    out += (b"4 0 obj\n<< /Type /ObjStm /N 1 /First %d /Length %d >>\nstream\n"
+            % (len(members), len(packed)) + packed + b"\nendstream\nendobj\n")
+    stm = len(out)
+    out += _stream_xref({5: (2, 4, 0), 6: (1, stm, 0)}, 7, stm)
+    table = len(out)
+    rows = b"".join(b"%010d 00000 n \n" % offsets[n] for n in (1, 2, 3, 4))
+    if overlap:
+        head = b"xref\n0 7\n0000000000 65535 f \n" + rows + b"0000000000 00001 f \n" * 2
+    else:
+        head = b"xref\n0 5\n0000000000 65535 f \n" + rows
+    out += head + b"trailer\n<< /Size 7 /Root 1 0 R /XRefStm %d >>\n" % stm
+    out += b"startxref\n%d\n%%%%EOF\n" % table
+    return bytes(out)
+
+
+def test_a_header_after_junk_is_flagged() -> None:
+    # Readers read offsets relative to a late header; we would not.
+    assert "HEADER_OFFSET" in _reasons(b"junk\n" + classic())
+
+
+def test_a_hybrid_overlap_is_flagged() -> None:
+    assert "XREF_CONFLICT" in _reasons(hybrid(overlap=True))
+
+
+@requires_qpdf
+def test_a_hybrid_without_overlap_agrees_with_the_readers(tmp_path: Path) -> None:
+    data = hybrid(overlap=False)
+    chain = read_chain(data)
+    assert chain.flags == ()
+    assert chain.object_map()[5] == Entry(COMPRESSED, 4, 0)
+    _agree(data, tmp_path)
+
+
+def test_an_older_revision_cannot_point_past_its_own_end() -> None:
+    first = classic()
+    xref1 = int(re.findall(rb"startxref\n(\d+)", first)[-1])
+    out = bytearray(first)
+    later = len(out)
+    out += b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] >>\nendobj\n"
+    # Rewrite revision 1's entry for object 3 to point into revision 0's bytes.
+    old = re.search(rb"3 1\n(\d{10})", bytes(out))
+    assert old is not None
+    out = bytearray(bytes(out).replace(old.group(0), b"3 1\n%010d" % later, 1))
+    xref2 = len(out)
+    out += (b"xref\n3 1\n%010d 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R /Prev %d >>\n"
+            % (later, xref1) + b"startxref\n%d\n%%%%EOF\n" % xref2)
+    assert "XREF_OFFSET_MISMATCH" in _reasons(bytes(out))
+
+
+def test_object_zero_in_use_and_empty_subsections_are_flagged() -> None:
+    zero = classic().replace(b"0000000000 65535 f \n", b"0000000009 00000 n \n", 1)
+    assert "XREF_OFFSET_MISMATCH" in _reasons(zero)
+    data = classic()
+    empty = data.replace(b"xref\n0 1\n", b"xref\n9 0\n0 1\n", 1)
+    assert "XREF_TABLE_MALFORMED" in _reasons(empty)
+
+
+def test_many_revisions_over_many_objects_stay_linear() -> None:
+    import time
+    out = bytearray(b"%PDF-1.7\n")
+    bodies = {1: b"<< /Type /Catalog /Pages 2 0 R >>", 2: BODIES[2], 3: BODIES[3]}
+    bodies |= {n: b"null" for n in range(4, 100_000)}
+    offsets = _objects(bodies, out)
+    prev = len(out)
+    out += _table(offsets, 100_000) + b"startxref\n%d\n%%%%EOF\n" % prev
+    for _ in range(5_000):
+        at = len(out)
+        out += b"4 0 obj\nnull\nendobj\n"
+        xref = len(out)
+        out += (b"xref\n4 1\n%010d 00000 n \ntrailer\n<< /Size 100000 /Root 1 0 R /Prev %d >>\n"
+                % (at, prev) + b"startxref\n%d\n%%%%EOF\n" % xref)
+        prev = xref
+    started = time.process_time()
+    chain = read_chain(bytes(out))
+    assert time.process_time() - started < 15  # quadratic: ~45 s
+    assert chain.flags == () and len(chain.revisions) == 5_001

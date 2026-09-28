@@ -86,6 +86,7 @@ class FlagReason(Enum):
     PREV_CYCLE = "prev_cycle"                  # /Prev revisits a section, or too many
     MISSING_ROOT = "missing_root"              # a revision's trailer names no catalog
     XREF_SIZE_MISMATCH = "xref_size_mismatch"  # /Size is not 1 + the highest object
+    HEADER_OFFSET = "header_offset"            # %PDF- is not at the file's first byte
 
 
 Reason: TypeAlias = NAReason | FlagReason
