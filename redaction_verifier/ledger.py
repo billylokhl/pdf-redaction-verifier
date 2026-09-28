@@ -55,6 +55,20 @@ class FlagReason(Enum):
     INVALID_HEX_DIGIT = "invalid_hex_digit"
     INVALID_NAME_ESCAPE = "invalid_name_escape"
     STRAY_DELIMITER = "stray_delimiter"
+    # The object parser's (3a-3).
+    UNEXPECTED_TOKEN = "unexpected_token"      # a token where none fits
+    MISSING_VALUE = "missing_value"            # a key or object with no value
+    DUPLICATE_KEY = "duplicate_key"            # a dictionary key repeated
+    NUMBER_OUT_OF_RANGE = "number_out_of_range"
+    NESTING_LIMIT = "nesting_limit"            # containers nested too deep
+    TOKEN_LIMIT = "token_limit"                # an object with too many tokens
+    EXTRA_TOKENS = "extra_tokens"              # tokens after an object's value
+    MISSING_ENDOBJ = "missing_endobj"
+    STREAM_EOL = "stream_eol"                  # no end-of-line after `stream`
+    ENDSTREAM_JOINED = "endstream_joined"      # `endstreamendobj`: readers disagree
+    LENGTH_MISMATCH = "length_mismatch"        # /Length disagrees with endstream
+    STREAM_SLACK = "stream_slack"              # bytes past /Length before endstream
+    FLAGS_TRUNCATED = "flags_truncated"        # an object's flags past the cap
 
 
 Reason: TypeAlias = NAReason | FlagReason
