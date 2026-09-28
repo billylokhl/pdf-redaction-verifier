@@ -20,11 +20,12 @@ shipped CLI never loads the shadow-mode inventory (or pikepdf), and the
 child-side code (the inventory, budget, ledger) never imports the parts
 that hold secrets (rules, matching, report, views) or verify -- checked
 both statically and by importing it in a fresh interpreter -- and never
-imports dynamically at all: the importlib, runpy, pkgutil and builtins
-modules are banned there, and so is any mention of __import__, exec,
-eval, compile, __builtins__ or __loader__ -- by name, as an attribute or
-as a string -- not just a direct call, so aliasing one (``f = exec``) or
-reaching it through getattr is caught too. This guards against mistakes
+imports dynamically at all: child-side code may import only an
+allowlist (a few standard-library modules and the child-side package
+itself), and any mention of __import__, exec, eval, compile,
+__builtins__, __loader__ or the sys import machinery -- by name, as an
+attribute or as a string -- is banned, not just a direct call, so
+aliasing one (``f = exec``) or reaching it through getattr is caught too. This guards against mistakes
 and unreviewed drift; deliberately obfuscated code in a pull request is
 left to the mandatory review, as in eval/README.md's threat model.
 """
@@ -124,8 +125,17 @@ CHILD_SIDE = sorted((REPO_ROOT / "redaction_verifier" / "inventory").rglob("*.py
     REPO_ROOT / "redaction_verifier" / name for name in ("budget.py", "ledger.py")]
 SECRET_HOLDERS = tuple(f"redaction_verifier.{name}" for name in (
     "rules", "matching", "report", "views")) + ("verify",)
-# Modules and builtins that import or run code by name (imp exists on
-# the 3.10 floor; the underscored ones are the import system's internals).
+# What child-side code may import: an allowlist, not a ban list. The
+# standard library has too many ways to run a string of code (timeit,
+# code, cProfile, doctest, pickle, ctypes, ...) to ban them one by one.
+# Add a module here only when child-side code needs it, after review.
+ALLOWED_STDLIB = frozenset({"__future__", "bisect", "collections", "collections.abc",
+                            "dataclasses", "enum", "typing", "re"})
+ALLOWED_INTERNAL = ("redaction_verifier.inventory", "redaction_verifier.budget",
+                    "redaction_verifier.ledger")
+# Kept beside the allowlist for strings, which can name a module to a
+# loader: modules that import or run code by name (imp exists on the 3.10
+# floor; the underscored ones are the import system's internals).
 BANNED_MODULES = SECRET_HOLDERS + (
     "importlib", "runpy", "pkgutil", "builtins", "imp", "zipimport", "_imp",
     "_frozen_importlib", "_frozen_importlib_external")
@@ -142,6 +152,11 @@ def _names_banned_module(name: str) -> bool:
     return any(name == h or name.startswith((h + ".", h + ":")) for h in BANNED_MODULES)
 
 
+def _allowed_import(module: str) -> bool:
+    return module in ALLOWED_STDLIB or any(
+        module == a or module.startswith(a + ".") for a in ALLOWED_INTERNAL)
+
+
 def _module_name(path: Path) -> str:
     parts = list(path.relative_to(REPO_ROOT).with_suffix("").parts)
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
@@ -149,10 +164,10 @@ def _module_name(path: Path) -> str:
 
 def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple[int, str]]:
     """Every import in *source* (resolving relative ones against *module*)
-    that reaches a secret holder or a banned module, plus any mention of
-    a builtin that imports or runs code by name: a name, an attribute
-    (other than ``.compile``) or a string constant equal to one; and
-    any string constant naming a banned module (``sys.modules['runpy']``,
+    of a module not on the allowlist, plus any mention of a builtin that
+    imports or runs code by name: a name, an attribute (other than
+    ``.compile``) or a string constant equal to one; and any str or bytes
+    constant naming a banned module (``sys.modules['runpy']``,
     ``'verify:main'``)."""
     package = module if is_package else module.rpartition(".")[0]
     hits = []
@@ -164,16 +179,20 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             base = package.split(".")
             base = base[:len(base) - node.level + 1] if node.level else []
             root = ".".join(base + ([node.module] if node.module else []))
-            targets = [root] + [f"{root}.{alias.name}" for alias in node.names]
+            # `from X import y` imports X; `from .. import y` imports each
+            # submodule it names, so check those instead of the package.
+            targets = [root] if node.module else [f"{root}.{a.name}" for a in node.names]
         elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
             hits.append((node.lineno, f"dynamic code via {node.id}"))
         elif isinstance(node, ast.Attribute) and node.attr in BANNED_ATTRS:
             hits.append((node.lineno, f"dynamic code via .{node.attr}"))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value in BANNED_NAMES or _names_banned_module(node.value):
-                hits.append((node.lineno, f"dynamic code via {node.value!r}"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            text = (node.value.decode("latin-1") if isinstance(node.value, bytes)
+                    else node.value)
+            if text in BANNED_NAMES or _names_banned_module(text):
+                hits.append((node.lineno, f"dynamic code via {text!r}"))
         for target in targets:
-            if _names_banned_module(target):
+            if not _allowed_import(target):
                 hits.append((getattr(node, "lineno", 0), target))
     return hits
 
@@ -233,6 +252,12 @@ class TestProcessBoundary:
         "import _frozen_importlib_external", "sys.modules['runpy'].run_module('verify')",
         "sys.meta_path[-1].find_spec('verify').loader.load_module('verify')",
         "m = sys.modules", "x = 'verify:main'", "x = 'redaction_verifier.rules'",
+        # Not on the allowlist: stdlib ways to run a string of code, and more.
+        "import timeit; timeit.timeit('import verify', number=1)",
+        "import code", "import cProfile", "import profile", "import trace", "import bdb",
+        "import pdb", "import doctest", "import pickle", "import ctypes", "import os",
+        "import subprocess", "import sys", "from sys import modules", "from os import system",
+        "x = b'verify:main'", "from .. import rules", "from ..matching import values",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
@@ -240,7 +265,9 @@ class TestProcessBoundary:
     @pytest.mark.parametrize("source", [
         "from ..ledger import Span", "from . import types", "from .types import Region",
         "import re", "from redaction_verifier.budget import Budget", "re.compile('x')",
-        "_WS = re.compile(rb'x')", "x = 'executable'",
+        "_WS = re.compile(rb'x')", "x = 'executable'", "from .. import ledger, budget",
+        "from collections.abc import Iterator", "from __future__ import annotations",
+        "from redaction_verifier.inventory.types import Region",
     ])
     def test_check_allows_child_side_imports(self, source: str) -> None:
         assert not _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
