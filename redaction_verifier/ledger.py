@@ -87,6 +87,12 @@ class FlagReason(Enum):
     MISSING_ROOT = "missing_root"              # a revision's trailer names no catalog
     XREF_SIZE_MISMATCH = "xref_size_mismatch"  # /Size is not 1 + the highest object
     HEADER_OFFSET = "header_offset"            # %PDF- is not at the file's first byte
+    # The inventory (3a-5).
+    XREF_EPILOGUE_MISMATCH = "xref_epilogue_mismatch"  # no startxref N %%EOF naming a revision
+    REVISION_AMBIGUOUS = "revision_ambiguous"  # an object read differently across revisions
+    OBJSTM_MALFORMED = "objstm_malformed"      # an object stream's /N, /First or header table
+    OBJSTM_MEMBER_INVALID = "objstm_member_invalid"  # no value, a stream, an object stream
+    OBJSTM_ENTRY_MISMATCH = "objstm_entry_mismatch"  # a compressed entry its home does not hold
 
 
 Reason: TypeAlias = NAReason | FlagReason

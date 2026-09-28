@@ -124,7 +124,8 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
         flags.append(Flag(FlagReason.XREF_TAIL, Span(max(0, len(data) - 64), len(data))))
         return Chain((), None, None, tuple(flags))
     start = int(tail.group(1))
-    parser = ObjectParser(data, limits, budget=budget)
+    lengths = _Lengths(data, limits, budget)
+    parser = ObjectParser(data, limits, lengths, budget)
     sections: list[Section] = []
     seen: set[int] = set()
     offset: int | None = start
@@ -171,10 +172,37 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
                               sections[revisions[revision][0]].span, (("object", -1),)))
     chain = Chain(chain.sections, chain.startxref, chain.tail, tuple(flags), chain.revisions)
     return Chain(chain.sections, chain.startxref, chain.tail,
-                 chain.flags + tuple(_check_revisions(data, chain, parser)), chain.revisions)
+                 chain.flags + tuple(_check_revisions(data, chain, parser, lengths)),
+                 chain.revisions)
 
 
-def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Flag]:
+class _Lengths:
+    """Resolves an indirect /Length for the checks below, against the
+    object map of the revision being checked (``merged``; None while the
+    sections are still being read: a section's own /Length must be
+    direct). The target must be a clean integer object in use there, read
+    once per offset by a parser of its own, so resolution never recurses."""
+
+    def __init__(self, data: bytes, limits: Limits, budget: Budget) -> None:
+        self.parser = ObjectParser(data, limits, budget=budget)
+        self.merged: dict[int, Entry] | None = None
+        self.end = 0
+        self.answers: dict[int, int | None] = {}
+
+    def __call__(self, number: int, gen: int) -> int | None:
+        entry = self.merged.get(number) if self.merged is not None else None
+        if entry is None or entry.kind != IN_USE or entry.b != gen:
+            return None
+        if entry.a not in self.answers:
+            obj = self.parser.parse_indirect_at(entry.a, self.end)
+            clean = (obj is not None and not obj.flags and obj.complete
+                     and obj.span.start == entry.a and obj.num == number)
+            self.answers[entry.a] = _int(obj.value) if clean and obj is not None else None
+        return self.answers[entry.a]
+
+
+def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
+                     lengths: _Lengths) -> list[Flag]:
     """Per revision, oldest first, with the object map built up as it
     goes (linear in entries, however many revisions):
 
@@ -183,7 +211,8 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
       own bytes (before its prefix cut): an object that straddles the
       cut (a stream swallowing the revision's own xref) reads truncated
       in one reader and recovered in another; so does a hybrid
-      section's /XRefStm;
+      section's /XRefStm (an indirect /Length resolves in the revision
+      being checked: ``_Lengths``);
     - every compressed entry names an object stream in use in the
       revision, inherited entries included: a revision that frees an
       object stream (or makes it compressed) while older entries still
@@ -200,9 +229,11 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
     catalogs: dict[int, bool] = {}
     whole: dict[int, int | None] = {}  # offset -> where its object ends (None: never)
     members: dict[int, set[int]] = {}  # object stream -> live compressed entries in it
+    lengths.merged = merged
     for revision in reversed(range(len(chain.revisions))):
         group = chain.revisions[revision]
         end = chain.revision_end(revision)
+        lengths.end = end
         parts: list[Section] = []
         for index in sorted(group, reverse=True):  # oldest section of the group first
             section = chain.sections[index]

@@ -14,11 +14,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from redaction_verifier.budget import GIB, Budget, Counter, Limits
-from redaction_verifier.inventory import tile
+from redaction_verifier.inventory import build_inventory, tile
 from redaction_verifier.inventory.lexer import Lexer
 from redaction_verifier.inventory.flate import Predictor, flate_decode
 from redaction_verifier.inventory.objects import ObjectParser
 
+from .test_inventory_build import CATALOG, _objstm_file, ambiguous_length, replaced_home
 from .test_inventory_xref import chain_of, classic, incremental, xref_stream
 from redaction_verifier.model import (
     Flag,
@@ -101,7 +102,20 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         classic().replace(b"/Root 1 0 R", b"/Rook 1 0 R", 1)).flags,
     FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
         b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
+    FlagReason.XREF_EPILOGUE_MISMATCH: lambda: _inventoried(re.sub(  # names 208, not 209
+        rb"startxref\n(\d+)", lambda m: b"startxref\n%d" % (int(m.group(1)) - 1),
+        incremental(), count=1)),
+    FlagReason.REVISION_AMBIGUOUS: lambda: _inventoried(ambiguous_length()),
+    FlagReason.OBJSTM_MALFORMED: lambda: _inventoried(_objstm_file(
+        [(1, CATALOG)], {1: (2, 4, 0)}, header=b"1 0 6")),
+    FlagReason.OBJSTM_MEMBER_INVALID: lambda: _inventoried(_objstm_file(
+        [(1, CATALOG), (6, b"")], {1: (2, 4, 0), 6: (2, 4, 1)})),
+    FlagReason.OBJSTM_ENTRY_MISMATCH: lambda: _inventoried(replaced_home(same=False)),
 }
+
+
+def _inventoried(data: bytes) -> tuple[Flag, ...]:
+    return build_inventory(data, budget=Budget(file_size=len(data))).flags
 
 
 def _duplicated_subsection() -> bytes:

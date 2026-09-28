@@ -16,7 +16,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from redaction_verifier.budget import Budget
-from redaction_verifier.inventory.objects import ObjectParser
+from redaction_verifier.inventory.objects import ObjectParser, PdfInt
 from redaction_verifier.inventory.xref import (COMPRESSED, FREE, IN_USE, Chain, Entry,
                                                 read_chain)
 
@@ -221,9 +221,19 @@ def _agree(data: bytes, tmp: Path) -> None:
     # after every older one, and holds every in-use object whole.
     ends = [chain.revision_end(r) for r in range(len(chain.revisions))]
     assert ends == sorted(ends, reverse=True) and len(set(ends)) == len(ends), ends
-    parser = ObjectParser(data)
     for revision, end in enumerate(ends):
-        for number, entry in chain.object_map(revision).items():
+        objects = chain.object_map(revision)
+
+        def resolve(num: int, gen: int, objects: dict[int, Entry] = objects,
+                    end: int = end) -> int | None:
+            entry = objects.get(num)
+            if entry is None or entry.kind != IN_USE or entry.b != gen:
+                return None
+            held = ObjectParser(data).parse_indirect_at(entry.a, end)
+            return held.value.value if held is not None and isinstance(
+                held.value, PdfInt) else None
+        parser = ObjectParser(data, resolve_length=resolve)
+        for number, entry in objects.items():
             if entry.kind == IN_USE:
                 obj = parser.parse_indirect_at(entry.a, end)
                 assert obj is not None and not obj.flags and obj.span.end <= end, (
@@ -507,3 +517,27 @@ def freed_object_stream() -> bytes:
 def test_freeing_an_object_stream_its_members_still_live_in_is_flagged() -> None:
     flags = [(f.reason.name, dict(f.params)) for f in chain_of(freed_object_stream()).flags]
     assert flags == [("XREF_OFFSET_MISMATCH", {"stream": 4, "members": 2, "revision": 0})]
+
+
+# ── An indirect /Length resolves in the revision being checked (3a-5) ─────
+def indirect_length(value: int) -> bytes:
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = _objects({1: BODIES[1], 2: BODIES[2],
+                        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
+                           b" /Resources << >> /Contents 4 0 R >>",
+                        4: b"<< /Length 5 0 R >>\nstream\nBT (x) Tj ET\nendstream",
+                        5: b"%d" % value}, out)
+    xref = len(out)
+    out += _table(offsets, 6) + b"startxref\n%d\n%%%%EOF\n" % xref
+    return bytes(out)
+
+
+def test_an_indirect_length_resolves_and_a_wrong_one_is_flagged() -> None:
+    assert chain_of(indirect_length(12)).flags == ()
+    assert "STREAM_SLACK" in _reasons(indirect_length(11))
+    assert "LENGTH_MISMATCH" in _reasons(indirect_length(20))
+
+
+@requires_qpdf
+def test_an_indirect_length_agrees_with_the_readers(tmp_path: Path) -> None:
+    _agree(indirect_length(12), tmp_path)

@@ -10,7 +10,9 @@ input bytes: every anomaly is a Flag.
 
 from __future__ import annotations
 
+from .build import build_inventory
 from .tiling import check_tiling, tile
-from .types import CONTESTED, Contested, Region, Tiling
+from .types import CONTESTED, Contested, Inventory, ObjectStream, Region, Tiling
 
-__all__ = ["CONTESTED", "Contested", "Region", "Tiling", "check_tiling", "tile"]
+__all__ = ["CONTESTED", "Contested", "Inventory", "ObjectStream", "Region", "Tiling",
+           "build_inventory", "check_tiling", "tile"]
