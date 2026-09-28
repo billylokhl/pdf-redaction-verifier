@@ -29,8 +29,10 @@ inspect.get_annotations, which evaluate string annotations;
 dataclasses._create_fn), or a module reached as an attribute of an
 allowed one (dataclasses.inspect, typing.sys) -- by name, as an
 attribute or as a string -- is banned, not just a direct call, so
-aliasing one (``f = exec``) or reaching it through getattr is caught
-too. This guards against mistakes and unreviewed drift; deliberately
+aliasing one (``f = exec``) or the commonest getattr forms are caught
+too. It is a mistake-catcher, frozen by ADR 0010, not a security
+boundary: plain routes past it exist (issue #38) and are closed by the
+Phase 3b child process, which never receives secrets; deliberately
 obfuscated code in a pull request is left to the mandatory review, as in
 eval/README.md's threat model.
 """

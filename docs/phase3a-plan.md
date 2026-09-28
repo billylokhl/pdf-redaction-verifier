@@ -22,6 +22,19 @@ REVISED 2026-09-28 by ADR 0010 (owner decisions, all recommendations adopted):
   disagreement; grows to value level (object set, stream extents, string and name values)
   and becomes the 3a-6 gate below. Plus a file-wide work budget (bytes lexed incl. rescans,
   tokens; cap = k x file size -> BUDGET_EXHAUSTED) and n-vs-8n timing tests.
+  Done (#39): stream framing and values (strings, names, numbers, nesting -- each reader's
+  re-serialization parsed back and compared) with no unflagged disagreement in 20,000+
+  examples each; the written leniency allowlist ACCEPTED_LENIENCIES, one reader-agreement
+  test per entry; newly flagged because readers disagree: a lone CR after `stream`
+  (STREAM_EOL) and '#00' in a name (INVALID_NAME_ESCAPE); TextString.lossless for decodes
+  that replaced bytes; Limits.work_per_byte (64) / work_floor and Budget.charge_work, charged
+  for every byte the parser or a scan passes over, rescans included, and refusing up front
+  once spent (parse_indirect_at then returns None; parse_value_at a None value). Linearity
+  is tested both ways: work counts (8n costs 8x n) and wall clock on adversarial offsets
+  (duplicate offsets, offsets inside unterminated strings) -- work counting alone cannot see
+  uncharged work. One ObjectParser per file (its endstream index is charged once). Deferred to
+  3a-4/5: a header found after skipped whitespace is judged by the caller (an xref entry
+  must land exactly on `N G obj`). Differential numbers so far cover unencrypted files.
 - 3a-4 is canonical: a closed set of chain shapes; every entry on a matching `N G obj`; each
   revision's object map equals MuPDF's and qpdf's with no repair warnings; else the whole
   file flags. No repair emulation (the legacy _earlier_revisions differential stays a check).

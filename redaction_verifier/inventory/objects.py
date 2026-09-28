@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, TypeAlias
 
-from ..budget import Limits
+from ..budget import Budget, Counter, Limits
 from ..ledger import Flag, FlagReason, Span
 from .lexer import Lexer, Token, TokenKind
 from .strings import hex_bytes, literal_bytes, name_bytes
@@ -202,13 +202,19 @@ class ObjectParser:
     """Parses values and indirect objects out of *data*. *resolve_length*
     answers an indirect /Length (``N G R``) with an integer or None (one
     that raises counts as None); the inventory supplies it once it knows
-    the xref (3a-4/5)."""
+    the xref (3a-4/5). *budget*, shared by every parse of the file (use
+    one parser per file: the endstream index is charged once per parser),
+    is charged for parsing work -- each byte the lexer or a scan passes
+    over, rescans included -- and refuses up front once spent, so a superlinear path exhausts it and is flagged
+    BUDGET_EXHAUSTED instead of hanging (ADR 0010)."""
 
     def __init__(self, data: bytes, limits: Limits | None = None,
-                 resolve_length: LengthResolver | None = None) -> None:
+                 resolve_length: LengthResolver | None = None,
+                 budget: Budget | None = None) -> None:
         self.data = data
         self.limits = limits if limits is not None else Limits()
         self.resolve_length = resolve_length
+        self.budget = budget
         self._endstreams: list[int] | None = None
 
     def parse_value_at(self, pos: int, end: int | None = None) -> ParsedValue:
@@ -222,7 +228,9 @@ class ObjectParser:
     def parse_indirect_at(self, offset: int, end: int | None = None) -> IndirectObject | None:
         """The indirect object whose header starts at the first token at
         or after *offset* (clamped to the data), or None when that is not
-        ``N G obj`` (the caller flags a bad xref offset).
+        ``N G obj`` (the caller flags a bad xref offset) -- or when the
+        file's work budget is already spent (the budget's own
+        BUDGET_EXHAUSTED flag says so; nothing after it is certified).
 
         A caller parsing many objects must bound *end* by the next known
         object's offset: an unterminated string otherwise runs to the end
@@ -253,7 +261,13 @@ class ObjectParser:
         occurrence is found once per parser, so repeated scans (many
         streams without one) stay linear."""
         if self._endstreams is None:
-            self._endstreams = [m.start() for m in _ENDSTREAM.finditer(self.data)]
+            # One pass over the file; unaffordable, and no endstream is found
+            # (every stream then fails closed as unterminated).
+            affordable = self.budget is None or (
+                not self.budget.exhausted(Counter.WORK)
+                and self.budget.charge_work(len(self.data)))
+            self._endstreams = ([m.start() for m in _ENDSTREAM.finditer(self.data)]
+                                if affordable else [])
         i = bisect_left(self._endstreams, pos)
         if i < len(self._endstreams) and self._endstreams[i] < end:
             found = self._endstreams[i]
@@ -322,7 +336,16 @@ class _Run:
         while len(self.buffer) < n:
             if self.flags.stopped:
                 return False
+            budget = self.parser.budget
+            if budget is not None and budget.exhausted(Counter.WORK):
+                # Spent: refuse before lexing anything, so work past the
+                # cap is at most one token over the whole file.
+                self.charge(1)
+                return False
+            before = self.lexer.pos
             token = self.lexer.next_token()
+            if not self.charge((token.end if token else self.end) - before + 1):
+                return False
             if token is None:
                 return False
             self.tokens += 1
@@ -335,6 +358,17 @@ class _Run:
             if token.kind is not TokenKind.COMMENT:
                 self.buffer.append(token)
         return True
+
+    def charge(self, work: int) -> bool:
+        """Charge the file's work budget; past it, stop and flag once."""
+        budget = self.parser.budget
+        if budget is None or budget.charge_work(work):
+            return True
+        if not self.flags.stopped:
+            self.flags.add(FlagReason.BUDGET_EXHAUSTED, self.last_end, self.last_end,
+                           (("counter", int(Counter.WORK)),))
+            self.flags.stopped = True
+        return False
 
     def peek(self, i: int = 0) -> Token | None:
         return self.buffer[i] if self._fill(i + 1) else None
@@ -508,8 +542,13 @@ class _Run:
                 first[key.raw] = value
                 continue
             if key.raw not in first_tokens:
-                first_tokens[key.raw] = self._tokens(first[key.raw])
-            same = first_tokens[key.raw] == self._tokens(value)
+                if not self.charge(len(Span(first[key.raw].start, first[key.raw].end))):
+                    first_tokens[key.raw] = ()
+                else:
+                    first_tokens[key.raw] = self._tokens(first[key.raw])
+            # Unaffordable comparisons count as different: fail closed.
+            same = (not self.flags.stopped and self.charge(value.end - value.start)
+                    and first_tokens[key.raw] == self._tokens(value))
             self.flags.add(FlagReason.DUPLICATE_KEY, key.start, value.end,
                            (("identical", int(same)),))
             if not same:
@@ -545,8 +584,13 @@ class _Run:
         start = keyword.end
         if data.startswith(b"\r\n", start):
             start += 2
-        elif data[start:start + 1] in (b"\n", b"\r"):
+        elif data[start:start + 1] == b"\n":
             start += 1
+        elif data[start:start + 1] == b"\r":
+            # §7.3.8.1 allows CRLF or LF only. MuPDF skips a lone CR; qpdf
+            # warns. Skipped, and flagged.
+            start += 1
+            self.flags.add(FlagReason.STREAM_EOL, keyword.start, keyword.end + 1)
         else:
             self.flags.add(FlagReason.STREAM_EOL, keyword.start, keyword.end)
         start = min(start, end)
@@ -559,6 +603,8 @@ class _Run:
             after = start + declared
             ws = _WS_RUN.match(data, after, end)
             gap_end = ws.end() if ws else after
+            if not self.charge(gap_end - after + 1):
+                gap_end = after  # unaffordable: no clean ending found, so scanned
             inside = found(start, end)
             if data.startswith(b"endstream", gap_end) and found(gap_end, end) == gap_end:
                 stop, data_end = gap_end, after

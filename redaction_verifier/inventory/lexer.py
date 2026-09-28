@@ -36,8 +36,10 @@ _REGULAR_RUN: Final = re.compile(rb"[^\x00\t\n\x0c\r ()<>\[\]{}/%]*")
 _EOL: Final = re.compile(rb"[\r\n]")
 _PAREN_OR_BACKSLASH: Final = re.compile(rb"[()\\]")
 _NOT_HEX_OR_WS: Final = re.compile(rb"[^0-9A-Fa-f\x00\t\n\x0c\r ]")
-# A '#' in a name not followed by two hexadecimal digits (§7.3.5).
-_BAD_NAME_ESCAPE: Final = re.compile(rb"#(?![0-9A-Fa-f]{2})")
+# A '#' in a name not followed by two hexadecimal digits (§7.3.5), or
+# '#00': PDF 2.0 forbids NUL in a name, and readers disagree (MuPDF keeps
+# '#00' literally, qpdf rejects the name).
+_BAD_NAME_ESCAPE: Final = re.compile(rb"#(?![0-9A-Fa-f]{2})|#00")
 # §7.3.3: an integer, or a real with a '.' and at least one digit.
 _INTEGER: Final = re.compile(rb"[+-]?[0-9]+")
 _REAL: Final = re.compile(rb"[+-]?(?:[0-9]+\.[0-9]*|\.[0-9]+)")
