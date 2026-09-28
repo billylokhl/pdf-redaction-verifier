@@ -104,9 +104,19 @@ def test_span_rejects_malformed_bounds(start: Any, end: Any) -> None:
         Span(start, end)
 
 
+class _Str(str):
+    pass
+
+
+class _Int(int):
+    pass
+
+
 @pytest.mark.parametrize("params", [
     (("n", True),), (("n", b"secret"),), (("n", "1"),), ((1, 1),), (("n", 1, 2),), ("n",),
     [("n", 1)], (("a b", 1),), (("é", 1),), (("", 1),), (("n\n", 1),),
+    # Subclasses of str or int (a custom repr could carry document bytes).
+    ((_Str("n"), 1),), (("n", _Int(1)),),
 ])
 def test_flag_params_carry_only_named_integers(params: Any) -> None:
     with pytest.raises(TypeError):
@@ -143,9 +153,9 @@ def test_units_and_bytes_exhaust_exactly_at_the_limit_and_stay_exhausted() -> No
     assert budget.units == 3 and budget.inflated_bytes == 10
     assert budget.flags() == (
         Flag(FlagReason.BUDGET_EXHAUSTED, None,
-             (("counter", Counter.UNITS), ("limit", 3), ("used", 3), ("requested", 1))),
+             (("counter", int(Counter.UNITS)), ("limit", 3), ("used", 3), ("requested", 1))),
         Flag(FlagReason.BUDGET_EXHAUSTED, None,
-             (("counter", Counter.INFLATED_BYTES), ("limit", 10), ("used", 10), ("requested", 1))),
+             (("counter", int(Counter.INFLATED_BYTES)), ("limit", 10), ("used", 10), ("requested", 1))),
     )
 
 
@@ -199,3 +209,14 @@ def test_budget_never_raises_and_never_exceeds_a_limit(
     assert budget.ocr_pixels <= limits.ocr_run_pixels(budget.page_count)
     assert all(n <= limits.max_ocr_pixels_per_page for n in budget.ocr_pixels_by_page.values())
     assert len(budget.flags()) == len({_counter(f) for f in budget.flags()})
+
+
+def test_int_subclasses_never_reach_a_flag() -> None:
+    # Spans take plain ints only; a Budget turns a caller's int subclass
+    # into a plain int in its flag instead of raising.
+    with pytest.raises(ValueError):
+        Span(_Int(0), 1)
+    budget = Budget(Limits(max_units=_Int(1)))
+    assert not budget.charge_units(_Int(2))
+    (flag,) = budget.flags()
+    assert all(type(value) is int for _name, value in flag.params)

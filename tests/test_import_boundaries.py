@@ -20,8 +20,13 @@ shipped CLI never loads the shadow-mode inventory (or pikepdf), and the
 child-side code (the inventory, budget, ledger) never imports the parts
 that hold secrets (rules, matching, report, views) or verify -- checked
 both statically and by importing it in a fresh interpreter -- and never
-imports dynamically at all: importlib, runpy, __import__, exec, eval and
-compile are banned outright there, so the static check cannot be dodged.
+imports dynamically at all: the importlib, runpy, pkgutil and builtins
+modules are banned there, and so is any mention of __import__, exec,
+eval, compile, __builtins__ or __loader__ -- by name, as an attribute or
+as a string -- not just a direct call, so aliasing one (``f = exec``) or
+reaching it through getattr is caught too. This guards against mistakes
+and unreviewed drift; deliberately obfuscated code in a pull request is
+left to the mandatory review, as in eval/README.md's threat model.
 """
 
 from __future__ import annotations
@@ -120,8 +125,11 @@ CHILD_SIDE = sorted((REPO_ROOT / "redaction_verifier" / "inventory").rglob("*.py
 SECRET_HOLDERS = tuple(f"redaction_verifier.{name}" for name in (
     "rules", "matching", "report", "views")) + ("verify",)
 # Modules and builtins that import or run code by name.
-BANNED_MODULES = SECRET_HOLDERS + ("importlib", "runpy")
-BANNED_CALLS = frozenset({"import_module", "__import__", "exec", "eval", "compile"})
+BANNED_MODULES = SECRET_HOLDERS + ("importlib", "runpy", "pkgutil", "builtins")
+BANNED_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__",
+                          "__loader__", "import_module"})
+# ...as attributes: all but compile, which re.compile shares.
+BANNED_ATTRS = BANNED_NAMES - {"compile"}
 
 
 def _module_name(path: Path) -> str:
@@ -131,8 +139,9 @@ def _module_name(path: Path) -> str:
 
 def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple[int, str]]:
     """Every import in *source* (resolving relative ones against *module*)
-    that reaches a secret holder, importlib or runpy, plus any call that
-    imports or runs code by name."""
+    that reaches a secret holder or a banned module, plus any mention of
+    a builtin that imports or runs code by name: a name, an attribute
+    (other than ``.compile``) or a string constant equal to one."""
     package = module if is_package else module.rpartition(".")[0]
     hits = []
     for node in ast.walk(ast.parse(source)):
@@ -144,16 +153,13 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             base = base[:len(base) - node.level + 1] if node.level else []
             root = ".".join(base + ([node.module] if node.module else []))
             targets = [root] + [f"{root}.{alias.name}" for alias in node.names]
-        elif isinstance(node, ast.Call):
-            func = node.func
-            # A bare builtin (exec(...)), or import_module however reached;
-            # an attribute that shares a builtin's name (re.compile) is fine.
-            if isinstance(func, ast.Attribute):
-                name = func.attr if func.attr == "import_module" else ""
-            else:
-                name = getattr(func, "id", "")
-            if name in BANNED_CALLS:
-                hits.append((node.lineno, f"dynamic code via {name}"))
+        elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
+            hits.append((node.lineno, f"dynamic code via {node.id}"))
+        elif isinstance(node, ast.Attribute) and node.attr in BANNED_ATTRS:
+            hits.append((node.lineno, f"dynamic code via .{node.attr}"))
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.value in BANNED_NAMES):
+            hits.append((node.lineno, f"dynamic code via {node.value!r}"))
         for target in targets:
             if any(target == h or target.startswith(h + ".") for h in BANNED_MODULES):
                 hits.append((getattr(node, "lineno", 0), target))
@@ -181,11 +187,11 @@ class TestProcessBoundary:
         assert "redaction_verifier.inventory" in self._loaded_after(
             "verify, redaction_verifier.inventory", *watched)
 
-    def test_child_side_code_loads_no_secret_holder_or_fitz(self) -> None:
+    def test_child_side_code_loads_no_secret_holder_or_pymupdf(self) -> None:
         watched = (*SECRET_HOLDERS, "fitz", "pymupdf")
         assert self._loaded_after(
             "redaction_verifier.inventory, redaction_verifier.budget", *watched) == []
-        assert "fitz" in self._loaded_after("verify", *watched)  # the probe works
+        assert "pymupdf" in self._loaded_after("verify", *watched)  # the probe works
 
     def test_child_side_code_never_imports_a_secret_holder(self) -> None:
         assert len(CHILD_SIDE) >= 4, "sanity: the inventory package must exist"
@@ -204,6 +210,12 @@ class TestProcessBoundary:
         "import importlib; importlib.import_module('x')", "__import__('verify')",
         "import importlib.util", "from importlib import import_module", "import runpy",
         "exec('import verify')", "eval('1')", "compile('x', 'f', 'exec')",
+        "import builtins; builtins.__import__('verify')",
+        "from builtins import __import__ as imp", "builtins.exec('x')",
+        "getattr(__builtins__, '__import__')('verify')", "__builtins__['exec']('x')",
+        "f = exec", "import pkgutil; pkgutil.resolve_name('verify:main')",
+        "getattr(object, '__import__')", "__loader__.load_module('verify')",
+        "sys.modules['importlib'].import_module('verify')",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
@@ -211,6 +223,7 @@ class TestProcessBoundary:
     @pytest.mark.parametrize("source", [
         "from ..ledger import Span", "from . import types", "from .types import Region",
         "import re", "from redaction_verifier.budget import Budget", "re.compile('x')",
+        "_WS = re.compile(rb'x')", "x = 'executable'",
     ])
     def test_check_allows_child_side_imports(self, source: str) -> None:
         assert not _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)

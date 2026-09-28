@@ -4,6 +4,7 @@ tests compare ``tile`` against a per-byte oracle."""
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 
 import pytest
@@ -17,13 +18,14 @@ from redaction_verifier.model import Flag, FlagReason, Span, UnitKind, UnitRef
 
 REF_A = UnitRef(UnitKind.OBJECT, 10, obj=1, gen=0)
 REF_B = UnitRef(UnitKind.OBJECT, 20, obj=2, gen=0)
-GAP_KINDS = (UnitKind.WHITESPACE, UnitKind.UNINDEXED)
+UNCLAIMABLE = (UnitKind.WHITESPACE, UnitKind.UNINDEXED, UnitKind.OBJSTM_MEMBER,
+               UnitKind.STREAM_SLACK)
 
 Claims = list[tuple[UnitRef, Span]]
 
 _refs = st.builds(
     UnitRef,
-    kind=st.sampled_from(UnitKind),  # gap kinds included: tile must refuse them
+    kind=st.sampled_from(UnitKind),  # unclaimable kinds included: tile must refuse them
     start=st.integers(0, 4),  # a small pool, so claimants coincide
     within=st.none() | st.none() | st.builds(UnitRef, kind=st.just(UnitKind.OBJECT),
                                              start=st.integers(0, 2)),
@@ -46,7 +48,7 @@ def _case(draw: st.DrawFn) -> tuple[bytes, Claims, int]:
 
 
 def _valid(ref: UnitRef) -> bool:
-    return ref.within is None and ref.kind not in GAP_KINDS
+    return ref.within is None and ref.kind not in UNCLAIMABLE
 
 
 def _clipped(size: int, claims: Claims) -> Claims:
@@ -235,8 +237,10 @@ def test_claim_past_the_end_is_clipped_and_flagged() -> None:
 @pytest.mark.parametrize("ref", [
     UnitRef(UnitKind.UNINDEXED, 0), UnitRef(UnitKind.WHITESPACE, 0),
     UnitRef(UnitKind.OBJSTM_MEMBER, 0, within=UnitRef(UnitKind.OBJECT, 0)),
+    # Nested-only kinds claimed at top level, without a parent.
+    UnitRef(UnitKind.OBJSTM_MEMBER, 0), UnitRef(UnitKind.STREAM_SLACK, 0),
 ])
-def test_gap_kind_and_nested_claims_are_refused_and_flagged(ref: UnitRef) -> None:
+def test_unclaimable_and_nested_claims_are_refused_and_flagged(ref: UnitRef) -> None:
     tiling, flags = tile(b"SECRET", [(ref, Span(0, 6))])
     assert tiling.regions == (Region(Span(0, 6), UnitKind.UNINDEXED, (), 0),)
     assert sorted(f.reason.name for f in flags) == [
@@ -264,6 +268,26 @@ def test_nested_claims_stay_linear() -> None:
     shared_end = [(UnitRef(UnitKind.OBJECT, 8 * i), Span(8 * i, 8 * n)) for i in range(n)]
     tiling, flags = tile(b" " * (8 * n), shared_end)
     assert len(tiling.regions) == 2 and len(flags) == 1
+
+
+@pytest.mark.parametrize("shape", ["single_owner_after", "pairs_after"])
+def test_a_crowd_of_claimants_does_not_slow_the_rest_of_the_sweep(shape: str) -> None:
+    # n claimants active at once, then 10^5 more pieces: a set that kept
+    # its peak-sized table made each later piece O(n), the sweep
+    # quadratic (~70 s here); linear takes a few seconds.
+    n = 200_000
+    claims = [(UnitRef(UnitKind.OBJECT, i), Span(0, 1)) for i in range(n)]
+    if shape == "single_owner_after":
+        claims += [(UnitRef(UnitKind.OBJECT, n + j), Span(1 + j, 2 + j)) for j in range(n)]
+    else:
+        for j in range(n // 2):
+            a = 2 + 3 * j
+            claims += [(UnitRef(UnitKind.OBJECT, n + 2 * j), Span(a, a + 2)),
+                       (UnitRef(UnitKind.OBJECT, n + 2 * j + 1), Span(a + 1, a + 3))]
+    started = time.process_time()
+    tiling, _flags = tile(b"x" * (3 * n + 5), claims)
+    assert time.process_time() - started < 30
+    assert check_tiling(3 * n + 5, [r.span for r in tiling.regions])
 
 
 def test_many_claims_stay_iterative() -> None:

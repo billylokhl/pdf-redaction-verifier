@@ -416,7 +416,7 @@ resolving or installing differently against the same lock file):
 uv sync --extra test --group dev          # Install test + lint/type-check tools
 uv run pytest                             # Run the test suite
 uv run ruff check .                       # Lint code
-uv run mypy                               # Type check (redaction_verifier -- strict on inventory/budget -- eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
+uv run mypy                               # Type check (redaction_verifier -- strict on inventory/budget/ledger -- eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
 uv run pytest tests/ --cov=verify --cov=caselib --cov=redaction_verifier  # Run tests with coverage report
 ```
 

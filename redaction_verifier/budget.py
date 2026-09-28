@@ -101,9 +101,11 @@ class Budget:
 
     def _refuse(self, counter: Counter, limit: int, used: int, requested: object) -> bool:
         if counter not in self._exhausted:
-            params = [("counter", int(counter)), ("limit", limit), ("used", used)]
+            # int(): a Flag takes plain ints only, and a caller's count
+            # may be an int subclass that _is_count accepts.
+            params = [("counter", int(counter)), ("limit", int(limit)), ("used", int(used))]
             if isinstance(requested, int) and _is_count(requested):
-                params.append(("requested", requested))
+                params.append(("requested", int(requested)))
             self._exhausted[counter] = Flag(FlagReason.BUDGET_EXHAUSTED, None, tuple(params))
         return False
 

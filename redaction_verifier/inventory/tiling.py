@@ -24,8 +24,11 @@ from .types import CONTESTED, Contested, Region, Tiling
 WHITESPACE: Final = b"\0\t\n\f\r "
 _NON_WHITESPACE: Final = re.compile(rb"[^\x00\t\n\x0c\r ]")
 _REASON_ORDER: Final = {reason: i for i, reason in enumerate(FlagReason)}
-# The tiling's own gap kinds: no unit may claim bytes as one of these.
-_GAP_KINDS: Final = (UnitKind.WHITESPACE, UnitKind.UNINDEXED)
+# Kinds no top-level claim may have: the tiling's own gap kinds, and the
+# kinds that only ever sit inside another unit (their spans are in its
+# coordinates, not the file's).
+_UNCLAIMABLE: Final = (UnitKind.WHITESPACE, UnitKind.UNINDEXED,
+                       UnitKind.OBJSTM_MEMBER, UnitKind.STREAM_SLACK)
 
 
 def _assert_never(value: NoReturn) -> NoReturn:
@@ -40,8 +43,9 @@ def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
     A claim is a top-level unit and one span of the file it covers.
     Refused and flagged CLAIM_INVALID, before the ref is ever hashed or
     compared: a nested ref (``within`` set; its span is in its parent's
-    coordinates, not the file's) and a claim of a gap kind (WHITESPACE,
-    UNINDEXED). A claim past the end of the file is clipped to it and
+    coordinates, not the file's), a claim of a gap kind (WHITESPACE,
+    UNINDEXED) and a top-level claim of a kind that only sits inside
+    another unit (OBJSTM_MEMBER, STREAM_SLACK). A claim past the end of the file is clipped to it and
     flagged CLAIM_OUT_OF_RANGE. One unit's claims are merged: an exact
     duplicate span is dropped quietly, a partial overlap is flagged
     SELF_OVERLAP. Where two or more units claim a byte, the run of such
@@ -62,7 +66,7 @@ def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
     label: dict[UnitRef, UnitRef] = {}
     for ref, span in claims:
         start, end = span.start, span.end
-        if ref.within is not None or ref.kind in _GAP_KINDS:  # before any hashing
+        if ref.within is not None or ref.kind in _UNCLAIMABLE:  # before any hashing
             flags.append(Flag(FlagReason.CLAIM_INVALID, Span(min(start, size), min(end, size)), (
                 ("claim_start", start), ("claim_end", end),
                 ("nested", int(ref.within is not None)))))
@@ -114,6 +118,7 @@ def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
             else:
                 sweep.active.discard(~code)
             k += 1
+        sweep.compact()
     if pos < size:
         sweep.piece(pos, size, started)
 
@@ -131,9 +136,22 @@ class _Sweep:
     def __init__(self, raw: bytes, owners: list[UnitRef], cap: int) -> None:
         self.raw, self.owners, self.cap = raw, owners, max(cap, 0)
         self.active: set[int] = set()
+        self.peak = 0  # the most claimants active since the last compact()
         self.regions: list[Region] = []
         self.members: set[int] = set()
         self.listed: list[UnitRef] = []
+
+    def compact(self) -> None:
+        """Rebuild ``active`` once it falls below a quarter of its peak.
+        A Python set never shrinks its table on removal, and iterating
+        it costs the table's size, not its length: without this, n
+        claims all active at once make every later iteration O(n), and
+        the sweep quadratic. The rebuild costs the peak, paid for by the
+        removals since it, so the sweep stays linear in events."""
+        self.peak = max(self.peak, len(self.active))
+        if len(self.active) * 4 < self.peak:
+            self.active = set(self.active)
+            self.peak = len(self.active)
 
     def piece(self, start: int, end: int, started: list[int]) -> None:
         last = self.regions[-1] if self.regions else None

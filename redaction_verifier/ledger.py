@@ -76,7 +76,9 @@ _KIND_ORDER: dict[UnitKind, int] = {kind: i for i, kind in enumerate(UnitKind)}
 
 
 def _is_count(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    # Exactly int (no bool, IntEnum or other subclass), so every number a
+    # Flag takes from a Span or UnitRef is a plain int too.
+    return type(value) is int and value >= 0
 
 
 @dataclass(frozen=True)
@@ -139,8 +141,10 @@ def _is_param(pair: object) -> bool:
     if not (isinstance(pair, tuple) and len(pair) == 2):
         return False
     name, value = pair
-    return (isinstance(name, str) and name.isascii() and name.isidentifier()
-            and isinstance(value, int) and not isinstance(value, bool))
+    # Exact types, not subclasses: a str or int subclass could carry
+    # document bytes across the process boundary in a custom repr.
+    return (type(name) is str and name.isascii() and name.isidentifier()
+            and type(value) is int)
 
 
 @dataclass(frozen=True)
