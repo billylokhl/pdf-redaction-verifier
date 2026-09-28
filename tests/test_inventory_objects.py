@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from redaction_verifier.budget import Budget, Limits
+from redaction_verifier.budget import Budget, Counter, Limits
 from redaction_verifier.inventory.objects import (
     IndirectObject,
     ObjectParser,
@@ -519,3 +519,35 @@ def test_a_resolver_answer_that_is_not_a_plain_count_is_unresolved(answer: Any) 
     parsed = _obj(b"1 0 obj <</Length 2 0 R>> stream\nab\nendstream endobj",
                   resolve_length=lambda num, gen: answer)
     assert [dict(f.params) for f in parsed.flags] == [{"declared": -1, "found": 2}]
+
+
+# Wall-clock checks on adversarial offsets (ADR 0010 item 3). Work counting
+# cannot see work that is never charged; these would take minutes if any
+# path went quadratic again.
+def test_many_parses_at_unterminated_strings_stay_linear_in_time() -> None:
+    # Offsets at each "(": every parse lexes an unterminated string to the
+    # end of the file. Charged, the budget runs out and later parses are
+    # refused before lexing anything.
+    data, _ = _objects(20_000, b"(unterminated")
+    offsets = [i for i, byte in enumerate(data) if byte == ord("(")]
+    budget = Budget(file_size=len(data))
+    parser = ObjectParser(data, budget=budget)
+    started = time.process_time()
+    for offset in offsets:
+        parser.parse_indirect_at(offset)
+    assert time.process_time() - started < 15
+    assert budget.exhausted(Counter.WORK)
+
+
+def test_repeated_parses_over_a_long_whitespace_gap_stay_linear_in_time() -> None:
+    # One stream with a huge whitespace gap after /Length 0, parsed again
+    # and again at the same offset (as duplicate xref entries would).
+    width = 1_000_000
+    data = b"1 0 obj <</Length 0>> stream\n" + b" " * width + b"x"
+    budget = Budget(file_size=len(data))
+    parser = ObjectParser(data, budget=budget)
+    started = time.process_time()
+    for _ in range(width // 20):
+        parser.parse_indirect_at(0)
+    assert time.process_time() - started < 15
+    assert budget.exhausted(Counter.WORK)

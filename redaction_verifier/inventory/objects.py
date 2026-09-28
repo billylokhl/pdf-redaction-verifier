@@ -202,9 +202,10 @@ class ObjectParser:
     """Parses values and indirect objects out of *data*. *resolve_length*
     answers an indirect /Length (``N G R``) with an integer or None (one
     that raises counts as None); the inventory supplies it once it knows
-    the xref (3a-4/5). *budget*, shared by every parse of the file, is
-    charged for all parsing work -- each byte the lexer passes over,
-    rescans included -- so a superlinear path exhausts it and is flagged
+    the xref (3a-4/5). *budget*, shared by every parse of the file (use
+    one parser per file: the endstream index is charged once per parser),
+    is charged for parsing work -- each byte the lexer or a scan passes
+    over, rescans included -- and refuses up front once spent, so a superlinear path exhausts it and is flagged
     BUDGET_EXHAUSTED instead of hanging (ADR 0010)."""
 
     def __init__(self, data: bytes, limits: Limits | None = None,
@@ -262,7 +263,9 @@ class ObjectParser:
         if self._endstreams is None:
             # One pass over the file; unaffordable, and no endstream is found
             # (every stream then fails closed as unterminated).
-            affordable = self.budget is None or self.budget.charge_work(len(self.data))
+            affordable = self.budget is None or (
+                not self.budget.exhausted(Counter.WORK)
+                and self.budget.charge_work(len(self.data)))
             self._endstreams = ([m.start() for m in _ENDSTREAM.finditer(self.data)]
                                 if affordable else [])
         i = bisect_left(self._endstreams, pos)
@@ -332,6 +335,12 @@ class _Run:
         counted; lexer flags are collected as tokens are read."""
         while len(self.buffer) < n:
             if self.flags.stopped:
+                return False
+            budget = self.parser.budget
+            if budget is not None and budget.exhausted(Counter.WORK):
+                # Spent: refuse before lexing anything, so work past the
+                # cap is at most one token over the whole file.
+                self.charge(1)
                 return False
             before = self.lexer.pos
             token = self.lexer.next_token()
@@ -594,6 +603,8 @@ class _Run:
             after = start + declared
             ws = _WS_RUN.match(data, after, end)
             gap_end = ws.end() if ws else after
+            if not self.charge(gap_end - after + 1):
+                gap_end = after  # unaffordable: no clean ending found, so scanned
             inside = found(start, end)
             if data.startswith(b"endstream", gap_end) and found(gap_end, end) == gap_end:
                 stop, data_end = gap_end, after
