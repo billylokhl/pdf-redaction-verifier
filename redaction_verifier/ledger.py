@@ -65,6 +65,7 @@ class FlagReason(Enum):
     EXTRA_TOKENS = "extra_tokens"              # tokens after an object's value
     MISSING_ENDOBJ = "missing_endobj"
     STREAM_EOL = "stream_eol"                  # no end-of-line after `stream`
+    ENDSTREAM_JOINED = "endstream_joined"      # `endstreamendobj`: readers disagree
     LENGTH_MISMATCH = "length_mismatch"        # /Length disagrees with endstream
     STREAM_SLACK = "stream_slack"              # bytes past /Length before endstream
     FLAGS_TRUNCATED = "flags_truncated"        # an object's flags past the cap

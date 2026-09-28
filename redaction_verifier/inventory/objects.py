@@ -175,7 +175,11 @@ class IndirectObject:
 # unterminated. `N G obj` (a following object's header) does too.
 _STOP: Final = frozenset({b"endobj", b"stream", b"endstream", b"xref", b"trailer", b"startxref"})
 # `endstream` as a keyword: followed by a delimiter, whitespace or the end
-# -- or directly by `endobj`, which MuPDF and qpdf both accept.
+# -- or directly by `endobj`. Readers disagree there (MuPDF ends the
+# stream; qpdf lexes `endstreamendobj` as one word, warns, and recovers a
+# length that includes the keyword), so that case is found but flagged
+# ENDSTREAM_JOINED. Nothing can hide in the difference: it is only the
+# end-of-line and the keyword itself.
 _ENDSTREAM: Final = re.compile(
     rb"endstream(?:(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])|(?=endobj))")
 # Python's int() refuses longer digit strings (sys.int_info's default).
@@ -567,6 +571,8 @@ class _Run:
             self.flags.add(FlagReason.LENGTH_MISMATCH, start, stop, (
                 ("declared", -1 if declared is None else declared),
                 ("found", data_end - start)))
+        if data.startswith(b"endobj", stop + len(b"endstream")):
+            self.flags.add(FlagReason.ENDSTREAM_JOINED, stop, stop + len(b"endstreamendobj"))
         self.buffer.clear()
         self.lexer.seek(stop + len(b"endstream"))
         self.last_end = stop + len(b"endstream")

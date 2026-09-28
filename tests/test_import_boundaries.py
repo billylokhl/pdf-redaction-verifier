@@ -156,7 +156,10 @@ BANNED_ATTRS = (BANNED_NAMES - {"compile"}) | {
     # Modules an allowlisted module exposes as attributes
     # (dataclasses.inspect, typing.sys, re.enum.sys): reaching one is an
     # import the allowlist never saw.
-    "inspect", "sys", "os", "builtins", "importlib", "subprocess"}
+    "inspect", "sys", "_sys", "os", "builtins", "bltns", "importlib", "subprocess"}
+# Those module attributes are banned as strings too (getattr(m, "inspect")).
+MODULE_ATTRS = frozenset({"inspect", "sys", "_sys", "os", "builtins", "bltns",
+                          "importlib", "subprocess"})
 
 
 def _names_banned_module(name: str) -> bool:
@@ -203,7 +206,7 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = (node.value.decode("latin-1") if isinstance(node.value, bytes)
                     else node.value)
-            if text in BANNED_NAMES or _names_banned_module(text):
+            if text in BANNED_NAMES | MODULE_ATTRS or _names_banned_module(text):
                 hits.append((node.lineno, f"dynamic code via {text!r}"))
         for target in targets:
             if not _allowed_import(target):
@@ -278,6 +281,7 @@ class TestProcessBoundary:
         "dataclasses._create_fn('f', [], ['import verify'])",
         "dataclasses.inspect.get_annotations(C, eval_str=True)", "typing.sys.modules",
         "re.enum.sys", "dataclasses.inspect", "x.os.system('true')",
+        "getattr(dataclasses, 'inspect')", "typing.collections._sys", "re.enum.bltns",
         # Imports anywhere in the tree, not only at the top.
         "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",

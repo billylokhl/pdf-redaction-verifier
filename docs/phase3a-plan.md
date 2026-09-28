@@ -39,8 +39,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   values; numbers past Limits.max_number_digits (64) are flagged, not converted; tokens
   (max_tokens_per_object), nesting (max_container_depth) and flags (max_flags_per_object, 64,
   then one FLAGS_TRUNCATED) are capped per object. New flags: UNEXPECTED_TOKEN,
-  MISSING_VALUE, NUMBER_OUT_OF_RANGE, TOKEN_LIMIT, STREAM_EOL, FLAGS_TRUNCATED beside the
-  planned ones. An indirect /Length is resolved through a callback 3a-5 supplies. Every
+  MISSING_VALUE, NUMBER_OUT_OF_RANGE, TOKEN_LIMIT, STREAM_EOL, ENDSTREAM_JOINED (MuPDF ends a
+  stream at `endstreamendobj`, qpdf reads one word and a longer stream), FLAGS_TRUNCATED
+  beside the planned ones. An indirect /Length is resolved through a callback 3a-5 supplies. Every
   `endstream` is indexed once per parser, so streams without one stay linear. For 3a-5:
   parse each distinct offset once (xref entries can share one), and bound flags per file.
   Measured: 8,946 objects in the 402 case-library files parse with no flag, and every stream

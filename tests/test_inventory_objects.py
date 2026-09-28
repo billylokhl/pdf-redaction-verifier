@@ -340,10 +340,16 @@ def test_a_length_past_endstream_never_reaches_into_the_next_object() -> None:
     assert _reasons(parsed) == ["LENGTH_MISMATCH"]
 
 
-def test_endstream_directly_followed_by_endobj_is_accepted() -> None:
+def test_endstream_directly_followed_by_endobj_ends_the_stream_but_is_flagged() -> None:
+    # MuPDF ends the stream there; qpdf reads `endstreamendobj` as one word
+    # and recovers a longer stream. Found either way, flagged either way.
     data = b"1 0 obj <</Length 2>> stream\nab\nendstreamendobj"
     parsed = _obj(data)
-    assert parsed.flags == () and parsed.complete and parsed.span == Span(0, len(data))
+    assert parsed.complete and parsed.span == Span(0, len(data))
+    assert parsed.stream is not None
+    assert data[parsed.stream.data.start:parsed.stream.data.end] == b"ab"
+    assert [(f.reason.name, f.span) for f in parsed.flags] == [
+        ("ENDSTREAM_JOINED", Span(len(data) - 15, len(data)))]
 
 
 def test_a_lone_cr_ends_the_stream_keyword_line() -> None:

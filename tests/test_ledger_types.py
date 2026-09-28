@@ -67,6 +67,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.EXTRA_TOKENS: lambda: _parsed(b"1 0 obj 1 2 endobj"),
     FlagReason.MISSING_ENDOBJ: lambda: _parsed(b"1 0 obj 1"),
     FlagReason.STREAM_EOL: lambda: _parsed(b"1 0 obj <<>> stream x\nendstream endobj"),
+    FlagReason.ENDSTREAM_JOINED: lambda: _parsed(
+        b"1 0 obj << /Length 1 >> stream\nx\nendstreamendobj"),
     FlagReason.LENGTH_MISMATCH: lambda: _parsed(b"1 0 obj <<>> stream\nx\nendstream endobj"),
     FlagReason.STREAM_SLACK: lambda: _parsed(
         b"1 0 obj << /Length 1 >> stream\nx y\nendstream endobj"),
