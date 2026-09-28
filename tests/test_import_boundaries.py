@@ -23,11 +23,14 @@ both statically and by importing it in a fresh interpreter -- and never
 imports dynamically at all: child-side code may import only an
 allowlist (a few standard-library modules and the child-side package
 itself), and any mention of __import__, exec, eval, compile,
-__builtins__, __loader__ or the sys import machinery -- by name, as an
+__builtins__, __loader__, the sys import machinery or the standard
+library's own evaluators (typing.get_type_hints and ForwardRef, which
+evaluate string annotations; dataclasses._create_fn) -- by name, as an
 attribute or as a string -- is banned, not just a direct call, so
-aliasing one (``f = exec``) or reaching it through getattr is caught too. This guards against mistakes
-and unreviewed drift; deliberately obfuscated code in a pull request is
-left to the mandatory review, as in eval/README.md's threat model.
+aliasing one (``f = exec``) or reaching it through getattr is caught
+too. This guards against mistakes and unreviewed drift; deliberately
+obfuscated code in a pull request is left to the mandatory review, as in
+eval/README.md's threat model.
 """
 
 from __future__ import annotations
@@ -140,6 +143,7 @@ BANNED_MODULES = SECRET_HOLDERS + (
     "importlib", "runpy", "pkgutil", "builtins", "imp", "zipimport", "_imp",
     "_frozen_importlib", "_frozen_importlib_external")
 BANNED_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__",
+                          "get_type_hints", "ForwardRef", "_eval_type", "_create_fn",
                           "__loader__", "import_module"})
 # ...as attributes: all but compile, which re.compile shares, plus the
 # import machinery reached through sys (sys.modules, sys.meta_path, ...).
@@ -182,6 +186,9 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             # `from X import y` imports X; `from .. import y` imports each
             # submodule it names, so check those instead of the package.
             targets = [root] if node.module else [f"{root}.{a.name}" for a in node.names]
+            # ...and never a banned name out of an allowed module.
+            hits.extend((node.lineno, f"dynamic code via {a.name}") for a in node.names
+                        if a.name in BANNED_NAMES | BANNED_ATTRS)
         elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
             hits.append((node.lineno, f"dynamic code via {node.id}"))
         elif isinstance(node, ast.Attribute) and node.attr in BANNED_ATTRS:
@@ -224,7 +231,7 @@ class TestProcessBoundary:
             "redaction_verifier.inventory, redaction_verifier.budget", *watched) == []
         assert "pymupdf" in self._loaded_after("verify", *watched)  # the probe works
 
-    def test_child_side_code_never_imports_a_secret_holder(self) -> None:
+    def test_child_side_code_passes_the_import_guard(self) -> None:
         assert len(CHILD_SIDE) >= 4, "sanity: the inventory package must exist"
         problems = [
             f"{path.relative_to(REPO_ROOT)}:{lineno}: {target}"
@@ -258,6 +265,13 @@ class TestProcessBoundary:
         "import pdb", "import doctest", "import pickle", "import ctypes", "import os",
         "import subprocess", "import sys", "from sys import modules", "from os import system",
         "x = b'verify:main'", "from .. import rules", "from ..matching import values",
+        # String annotations evaluated by the standard library.
+        "typing.get_type_hints(C)", "from typing import get_type_hints",
+        "typing.ForwardRef('x')", "typing._eval_type(t, g, l)",
+        "dataclasses._create_fn('f', [], ['import verify'])",
+        # Imports anywhere in the tree, not only at the top.
+        "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)

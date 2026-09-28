@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 from redaction_verifier.budget import GIB, Budget, Counter, Limits
 from redaction_verifier.inventory import tile
 from redaction_verifier.inventory.lexer import Lexer
+from redaction_verifier.inventory.objects import ObjectParser
 from redaction_verifier.model import (
     Flag,
     FlagReason,
@@ -57,7 +58,27 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.INVALID_HEX_DIGIT: lambda: _lexed(b"<4g>"),
     FlagReason.INVALID_NAME_ESCAPE: lambda: _lexed(b"/A#4"),
     FlagReason.STRAY_DELIMITER: lambda: _lexed(b")"),
+    FlagReason.UNEXPECTED_TOKEN: lambda: _parsed(b"1 0 obj [foo] endobj"),
+    FlagReason.MISSING_VALUE: lambda: _parsed(b"1 0 obj endobj"),
+    FlagReason.DUPLICATE_KEY: lambda: _parsed(b"1 0 obj << /A 1 /A 2 >> endobj"),
+    FlagReason.NUMBER_OUT_OF_RANGE: lambda: _parsed(b"1 0 obj " + b"9" * 99 + b" endobj"),
+    FlagReason.NESTING_LIMIT: lambda: _parsed(b"1 0 obj " + b"[" * 999),
+    FlagReason.TOKEN_LIMIT: lambda: _parsed(b"1 0 obj " + b"1 " * 9, Limits(max_tokens_per_object=5)),
+    FlagReason.EXTRA_TOKENS: lambda: _parsed(b"1 0 obj 1 2 endobj"),
+    FlagReason.MISSING_ENDOBJ: lambda: _parsed(b"1 0 obj 1"),
+    FlagReason.STREAM_EOL: lambda: _parsed(b"1 0 obj <<>> stream x\nendstream endobj"),
+    FlagReason.LENGTH_MISMATCH: lambda: _parsed(b"1 0 obj <<>> stream\nx\nendstream endobj"),
+    FlagReason.STREAM_SLACK: lambda: _parsed(
+        b"1 0 obj << /Length 1 >> stream\nx y\nendstream endobj"),
+    FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
+        b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
 }
+
+
+def _parsed(data: bytes, limits: Limits | None = None) -> tuple[Flag, ...]:
+    parsed = ObjectParser(data, limits).parse_indirect_at(0)
+    assert parsed is not None
+    return parsed.flags
 
 
 def _lexed(data: bytes) -> tuple[Flag, ...]:
