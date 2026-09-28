@@ -49,6 +49,12 @@ class FlagReason(Enum):
     CLAIM_INVALID = "claim_invalid"
     SELF_OVERLAP = "self_overlap"
     BUDGET_EXHAUSTED = "budget_exhausted"
+    # The lexer's (3a-2): a string without its closing delimiter, bad
+    # bytes in a hex string or a name's #xx escape, a lone ')' or '>'.
+    UNTERMINATED = "unterminated"
+    INVALID_HEX_DIGIT = "invalid_hex_digit"
+    INVALID_NAME_ESCAPE = "invalid_name_escape"
+    STRAY_DELIMITER = "stray_delimiter"
 
 
 Reason: TypeAlias = NAReason | FlagReason

@@ -19,10 +19,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   tiling.tile() elementary-interval sweep + check_tiling(); Hypothesis infra; guard. ~550.
 - 3a-2 Lexer (ISO 32000 §7.2–7.3, spans, never raises) + strings.py (literal_bytes fixes the
   two _decode_pdf_string line-ending bugs; text_string = UTF-16BE/UTF-8 BOM else
-  PDFDocEncoding, keep raw bytes). Don't touch legacy. ~650.
+  PDFDocEncoding, keep raw bytes). Don't touch legacy. ~650. Done: the lexer is where a
+  string first goes unterminated, so UNTERMINATED lands here (3a-3 reuses it for objects),
+  with INVALID_HEX_DIGIT, INVALID_NAME_ESCAPE and STRAY_DELIMITER; each flag rides on its
+  token, at most two per token.
 - 3a-3 Object parser (value types incl. duplicate dict keys; parse_indirect_at; flags
   DUPLICATE_KEY w/ full-value compare, LENGTH_MISMATCH, STREAM_SLACK, EXTRA_TOKENS,
-  UNTERMINATED, NESTING_LIMIT, MISSING_ENDOBJ). ~700.
+  UNTERMINATED, NESTING_LIMIT, MISSING_ENDOBJ). ~700. Converting an INTEGER token must cap
+  its digits first: Python's int() raises ValueError past 4,300 digits, and the lexer
+  accepts a run of any length.
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy
