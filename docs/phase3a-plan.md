@@ -12,6 +12,33 @@ linear-time, Budget-charged parsing. Hypothesis pinned in the test extra; determ
 `ci` profile. Isolation guard (3a-1): the CLI never imports redaction_verifier.inventory or
 pikepdf; inventory never imports rules/matching/report/views/verify (secret-free child).
 
+REVISED 2026-09-28 by ADR 0010 (owner decisions, all recommendations adopted):
+- Readers are the authority. Every lenient parser branch flags, or is on a written allowlist
+  with a test showing MuPDF and qpdf agree. 3a-3b audits the existing leniencies: a lone CR
+  after `stream`, unknown escapes, octal overflow, '#00' in names, a
+  header found after skipped whitespace/comments, text_string's replacement characters.
+- 3a-3b (new, before 3a-4): tests/test_inventory_differential.py, a Hypothesis fuzzer that
+  reads generated objects with our parser, MuPDF and qpdf and fails on any unflagged
+  disagreement; grows to value level (object set, stream extents, string and name values)
+  and becomes the 3a-6 gate below. Plus a file-wide work budget (bytes lexed incl. rescans,
+  tokens; cap = k x file size -> BUDGET_EXHAUSTED) and n-vs-8n timing tests.
+- 3a-4 is canonical: a closed set of chain shapes; every entry on a matching `N G obj`; each
+  revision's object map equals MuPDF's and qpdf's with no repair warnings; else the whole
+  file flags. No repair emulation (the legacy _earlier_revisions differential stays a check).
+- 3a-6 gate (replaces decision 3's "tiling on 100%" as the correctness measure): zero
+  unflagged disagreements with MuPDF and qpdf on the 2,031-file corpus, the case library and
+  fuzz output; flagged disagreements reported by reason; 0 crashes, 0 timeouts (>60 s).
+- 3b gains the minimal child process (moved from 3d); 3d keeps the OS sandbox.
+- ADR notes with canonical-form rules before 3a-7 (reference graph), 3a-8/9 (decryption) and
+  the Phase 4 decoders.
+- Review triage: a finding blocks only if it could let a leak exit 0, hides or misattributes
+  bytes without a flag, shows a plan flaw, or is a major implementation problem (crash on
+  input, superlinear on plausible input). Everything else becomes a GitHub issue. Each
+  finding names the automated check that would have caught it, and that check is added.
+- The static import guard is frozen as a mistake-catcher; routes past it are the child's job.
+- Measure before enforcing: the flag rate under these rules goes to the owner before any gate
+  or default depends on it.
+
 Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1), 9 (after 5+8).
 
 - 3a-1 Core types (Status, NAReason[exactly ADR 0003's 4], FlagReason, UnitKind, UnitRef,
