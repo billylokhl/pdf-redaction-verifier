@@ -47,6 +47,15 @@ def _cells() -> dict[str, Cell]:
             gap, "font-coded text drawn starting at the same point as other text"),
         "live.pixels": Cell(read, "text as pixels on a page (OCR)"),
         "live.pixels.under-box": Cell(gap, "pixels under a box drawn over an image"),
+        "live.pixels.hidden-samples": Cell(
+            read, "a value hidden in a drawn image's raw sample or codec bytes, not rendered as "
+                  "glyphs (Binary layer, raw byte sweep)", tier="review"),
+        "live.pixels.hidden-samples.pattern-rules": Cell(
+            gap, "a pattern rule over a drawn image's hidden raw sample or codec bytes"),
+        "live.pixels.extra-rows": Cell(
+            gap, "pixel rows beyond a drawn image's declared height, never drawn or OCR'd"),
+        "live.pixels.exif-thumbnail": Cell(
+            gap, "a JPEG's EXIF/APP1 thumbnail, beyond the main decoded picture"),
         # off-page — outside the visible crop/media box
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),

@@ -41,7 +41,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-9 crypt.py: per-revision decrypt via pikepdf, value-level cross-check vs MuPDF,
   DECRYPTION_MISMATCH / DECRYPTION_UNVERIFIED, /Perms mismatch → flag.
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
-  — PR #30 (in review).
+  — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
