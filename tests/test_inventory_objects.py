@@ -317,3 +317,80 @@ def test_many_streams_without_endstream_scan_linearly() -> None:
         assert parsed is not None and parsed.num == i
         offset += len(one % i)
     assert time.process_time() - started < 30
+
+
+def test_a_large_first_value_repeated_many_times_stays_linear() -> None:
+    # Each key's first value is tokenized once, not once per repeat
+    # (quadratic, this n took about a minute; linear, well under a second).
+    n = 6_000
+    data = (b"1 0 obj << /K [" + b"1 " * n + b"] " + b"/K 1 " * n + b">> endobj")
+    started = time.process_time()
+    parsed = _obj(data)
+    assert time.process_time() - started < 30
+    assert _reasons(parsed) == ["DUPLICATE_KEY"] * 64 + ["FLAGS_TRUNCATED"]
+
+
+def test_a_length_past_endstream_never_reaches_into_the_next_object() -> None:
+    first = b"1 0 obj <</Length 40>> stream\nab\nendstream endobj\n"
+    data = first + b"2 0 obj <</Length 2>> stream\ncd\nendstream endobj"
+    parsed = _obj(data)
+    assert parsed.span == Span(0, len(first) - 1) and parsed.complete
+    assert parsed.stream is not None and parsed.stream.slack is None
+    assert data[parsed.stream.data.start:parsed.stream.data.end] == b"ab"
+    assert _reasons(parsed) == ["LENGTH_MISMATCH"]
+
+
+def test_endstream_directly_followed_by_endobj_is_accepted() -> None:
+    data = b"1 0 obj <</Length 2>> stream\nab\nendstreamendobj"
+    parsed = _obj(data)
+    assert parsed.flags == () and parsed.complete and parsed.span == Span(0, len(data))
+
+
+def test_a_lone_cr_ends_the_stream_keyword_line() -> None:
+    data = b"1 0 obj <</Length 2>> stream\rab\rendstream endobj"
+    parsed = _obj(data)
+    assert parsed.flags == () and parsed.stream is not None
+    assert data[parsed.stream.data.start:parsed.stream.data.end] == b"ab"
+
+
+def test_endstream_must_be_a_whole_keyword() -> None:
+    data = b"1 0 obj <<>> stream\na endstreamx b\nendstream endobj"
+    parsed = _obj(data)
+    assert parsed.stream is not None and parsed.complete
+    assert data[parsed.stream.data.start:parsed.stream.data.end] == b"a endstreamx b"
+
+
+def test_an_endstream_cut_by_the_range_end_does_not_count() -> None:
+    data = b"1 0 obj <</Length 2>> stream\nab\nendstream endobj"
+    parsed = ObjectParser(data).parse_indirect_at(0, len(data) - 12)
+    assert parsed is not None and parsed.stream is not None
+    assert not parsed.stream.terminated and "UNTERMINATED" in _reasons(parsed)
+
+
+def test_a_raising_length_resolver_counts_as_unresolved() -> None:
+    def boom(num: int, gen: int) -> int | None:
+        raise RuntimeError("resolver failed")
+
+    parsed = _obj(b"1 0 obj <</Length 2 0 R>> stream\nab\nendstream endobj",
+                  resolve_length=boom)
+    assert [dict(f.params) for f in parsed.flags] == [{"declared": -1, "found": 2}]
+
+
+def test_the_digit_limit_never_exceeds_what_int_accepts() -> None:
+    parsed = _obj(b"1 0 obj " + b"7" * 5000 + b" endobj",
+                  limits=Limits(max_number_digits=10_000))
+    assert _plain(parsed.value) is None and _reasons(parsed) == ["NUMBER_OUT_OF_RANGE"]
+
+
+@given(_noise | st.binary(max_size=80), st.integers(-5, 90), st.integers(-5, 90),
+       st.sampled_from([None, 0, -1, 3, 10**30, "x", 2.5, True]))
+def test_never_raises_at_any_offset_bound_or_resolver_answer(
+        body: bytes, offset: int, end: int, answer: Any) -> None:
+    data = b"1 0 obj " + body
+    parser = ObjectParser(data, Limits(max_tokens_per_object=30, max_container_depth=3),
+                          resolve_length=lambda num, gen: answer)
+    for parsed in (parser.parse_indirect_at(offset, end), parser.parse_indirect_at(offset)):
+        if parsed is not None:
+            assert 0 <= parsed.span.start <= parsed.span.end <= len(data)
+    value = parser.parse_value_at(offset, end)
+    assert 0 <= value.span.start <= value.span.end <= len(data)

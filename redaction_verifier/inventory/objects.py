@@ -142,6 +142,11 @@ class StreamInfo:
     /Length agrees with ``endstream`` (or leaves only whitespace before
     it), else what the scan for ``endstream`` found. ``slack`` holds
     non-whitespace bytes past /Length before ``endstream`` (flagged).
+    Whitespace there is neither data nor slack: MuPDF counts it as data
+    unless it is one end-of-line, qpdf does not, and whitespace can hold
+    nothing either way. A /Length that runs past an ``endstream`` is a
+    LENGTH_MISMATCH and the scan decides, never slack reaching into a
+    later object.
     ``terminated`` is False when no ``endstream`` was found at all."""
 
     data: Span
@@ -169,7 +174,12 @@ class IndirectObject:
 # Keywords that end an object's value: an open container ends there
 # unterminated. `N G obj` (a following object's header) does too.
 _STOP: Final = frozenset({b"endobj", b"stream", b"endstream", b"xref", b"trailer", b"startxref"})
-_ENDSTREAM: Final = re.compile(rb"endstream(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])")
+# `endstream` as a keyword: followed by a delimiter, whitespace or the end
+# -- or directly by `endobj`, which MuPDF and qpdf both accept.
+_ENDSTREAM: Final = re.compile(
+    rb"endstream(?:(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])|(?=endobj))")
+# Python's int() refuses longer digit strings (sys.int_info's default).
+_INT_DIGITS_CEILING: Final = 4300
 _WS_RUN: Final = re.compile(rb"[\x00\t\n\x0c\r ]*")
 _OPENERS: Final = (TokenKind.ARRAY_OPEN, TokenKind.DICT_OPEN)
 _SCALARS: Final = frozenset({TokenKind.INTEGER, TokenKind.REAL, TokenKind.NAME,
@@ -183,8 +193,9 @@ LengthResolver: TypeAlias = Callable[[int, int], int | None]
 
 class ObjectParser:
     """Parses values and indirect objects out of *data*. *resolve_length*
-    answers an indirect /Length (``N G R``) with an integer or None; the
-    inventory supplies it once it knows the xref (3a-4/5)."""
+    answers an indirect /Length (``N G R``) with an integer or None (one
+    that raises counts as None); the inventory supplies it once it knows
+    the xref (3a-4/5)."""
 
     def __init__(self, data: bytes, limits: Limits | None = None,
                  resolve_length: LengthResolver | None = None) -> None:
@@ -334,7 +345,7 @@ class _Run:
     def _unsigned(self, token: Token | None) -> bool:
         return (token is not None and token.kind is TokenKind.INTEGER
                 and self.text(token).isdigit()
-                and len(token.span) <= self.limits.max_number_digits)
+                and len(token.span) <= self._max_digits())
 
     def at_stop(self) -> bool:
         """Is the next token one that ends a value: a stop keyword or the
@@ -440,11 +451,14 @@ class _Run:
     def _fits(self, token: Token) -> bool:
         """Is a number token short enough to convert? (int() refuses
         past 4,300 digits; no real PDF number comes close to the cap.)"""
-        if len(token.span) > self.limits.max_number_digits:
+        if len(token.span) > self._max_digits():
             self.flags.add(FlagReason.NUMBER_OUT_OF_RANGE, token.start, token.end,
                            (("digits", len(token.span)),))
             return False
         return True
+
+    def _max_digits(self) -> int:
+        return min(self.limits.max_number_digits, _INT_DIGITS_CEILING)
 
     def _stray(self, value: PdfValue) -> None:
         self.flags.add(FlagReason.UNEXPECTED_TOKEN, value.start, value.end)
@@ -472,13 +486,18 @@ class _Run:
 
     def _dict(self, start: int, end: int,
               entries: list[tuple[PdfName, PdfValue]]) -> PdfDict:
+        # Each key's first value is tokenized at most once, however often
+        # the key repeats: linear in the dictionary's size.
         first: dict[bytes, PdfValue] = {}
+        first_tokens: dict[bytes, tuple[tuple[TokenKind, bytes], ...]] = {}
         ambiguous: set[bytes] = set()
         for key, value in entries:
             if key.raw not in first:
                 first[key.raw] = value
                 continue
-            same = self._tokens(first[key.raw]) == self._tokens(value)
+            if key.raw not in first_tokens:
+                first_tokens[key.raw] = self._tokens(first[key.raw])
+            same = first_tokens[key.raw] == self._tokens(value)
             self.flags.add(FlagReason.DUPLICATE_KEY, key.start, value.end,
                            (("identical", int(same)),))
             if not same:
@@ -528,8 +547,11 @@ class _Run:
             after = start + declared
             ws = _WS_RUN.match(data, after, end)
             gap_end = ws.end() if ws else after
+            inside = found(start, end)
             if data.startswith(b"endstream", gap_end) and found(gap_end, end) == gap_end:
                 stop, data_end = gap_end, after
+            elif inside is not None and inside < after:
+                pass  # /Length runs past an endstream: the scan below decides
             elif (later := found(after, end)) is not None:
                 stop, data_end = later, after
                 slack = Span(after, later)
@@ -556,7 +578,10 @@ class _Run:
         if isinstance(value, PdfInt):
             length = value.value
         elif isinstance(value, PdfRef) and self.parser.resolve_length is not None:
-            length = self.parser.resolve_length(value.num, value.gen)
+            try:
+                length = self.parser.resolve_length(value.num, value.gen)
+            except Exception:  # never raise on input: unresolved, so scanned
+                length = None
         if isinstance(length, bool) or not isinstance(length, int) or length < 0:
             return None
         return length

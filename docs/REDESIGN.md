@@ -807,7 +807,11 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   `"__loader__"`, `"import_module"`, `"get_type_hints"` and their kin,
   and the attributes `.eval`, `.exec`, `.modules`, `.meta_path`,
   `.find_spec`, `.load_module`, `.exec_module` and their kin; harmless
-  code using those words will trip it. Loosen it
+  code using those words will trip it. It also bans the modules an
+  allowed module exposes as attributes (`.inspect`, `.sys`, `.os`,
+  `.builtins`, `.importlib`, `.subprocess`); a longer attribute chain to
+  some other module, like any deliberately obscured route, is left to
+  review. Loosen it
   case by case, never by dropping a check. Starting another process
   (`os`, `subprocess`) is off the import allowlist; containing it for
   real is the 3d sandbox's job.

@@ -44,7 +44,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   `endstream` is indexed once per parser, so streams without one stay linear. For 3a-5:
   parse each distinct offset once (xref entries can share one), and bound flags per file.
   Measured: 8,946 objects in the 402 case-library files parse with no flag, and every stream
-  read at an xref offset matches MuPDF's xref_stream_raw byte for byte.
+  read at an xref offset matches MuPDF's xref_stream_raw byte for byte on that corpus. Known
+  difference: whitespace other than one end-of-line between a stream's /Length and
+  `endstream` is data to MuPDF, not to us or qpdf; whitespace holds nothing either way.
+  References are not range-checked here (a huge or dangling number is 3a-7's to flag), and
+  comments inside an object are skipped, so 3b must match the whole object span's bytes.
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy

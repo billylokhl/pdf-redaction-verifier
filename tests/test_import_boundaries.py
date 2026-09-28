@@ -24,8 +24,10 @@ imports dynamically at all: child-side code may import only an
 allowlist (a few standard-library modules and the child-side package
 itself), and any mention of __import__, exec, eval, compile,
 __builtins__, __loader__, the sys import machinery or the standard
-library's own evaluators (typing.get_type_hints and ForwardRef, which
-evaluate string annotations; dataclasses._create_fn) -- by name, as an
+library's own evaluators (typing.get_type_hints and ForwardRef and
+inspect.get_annotations, which evaluate string annotations;
+dataclasses._create_fn), or a module reached as an attribute of an
+allowed one (dataclasses.inspect, typing.sys) -- by name, as an
 attribute or as a string -- is banned, not just a direct call, so
 aliasing one (``f = exec``) or reaching it through getattr is caught
 too. This guards against mistakes and unreviewed drift; deliberately
@@ -144,12 +146,17 @@ BANNED_MODULES = SECRET_HOLDERS + (
     "_frozen_importlib", "_frozen_importlib_external")
 BANNED_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__",
                           "get_type_hints", "ForwardRef", "_eval_type", "_create_fn",
+                          "get_annotations",
                           "__loader__", "import_module"})
 # ...as attributes: all but compile, which re.compile shares, plus the
 # import machinery reached through sys (sys.modules, sys.meta_path, ...).
 BANNED_ATTRS = (BANNED_NAMES - {"compile"}) | {
     "modules", "meta_path", "path_hooks", "path_importer_cache",
-    "load_module", "exec_module", "find_spec"}
+    "load_module", "exec_module", "find_spec",
+    # Modules an allowlisted module exposes as attributes
+    # (dataclasses.inspect, typing.sys, re.enum.sys): reaching one is an
+    # import the allowlist never saw.
+    "inspect", "sys", "os", "builtins", "importlib", "subprocess"}
 
 
 def _names_banned_module(name: str) -> bool:
@@ -269,6 +276,8 @@ class TestProcessBoundary:
         "typing.get_type_hints(C)", "from typing import get_type_hints",
         "typing.ForwardRef('x')", "typing._eval_type(t, g, l)",
         "dataclasses._create_fn('f', [], ['import verify'])",
+        "dataclasses.inspect.get_annotations(C, eval_str=True)", "typing.sys.modules",
+        "re.enum.sys", "dataclasses.inspect", "x.os.system('true')",
         # Imports anywhere in the tree, not only at the top.
         "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",
