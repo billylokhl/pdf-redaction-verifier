@@ -14,18 +14,16 @@ import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from scorecard.inventory import PAGE_TREE_SEMANTICS, chain_of, qpdf_map
 
-from redaction_verifier.budget import Budget
 from redaction_verifier.inventory.objects import ObjectParser, PdfInt
-from redaction_verifier.inventory.xref import (COMPRESSED, FREE, IN_USE, Chain, Entry,
-                                                read_chain)
+from redaction_verifier.inventory.xref import COMPRESSED, FREE, IN_USE, Entry
 
 from .conftest import requires_qpdf
 
-def chain_of(data: bytes) -> Chain:
-    """read_chain with a fresh budget for *data* (the budget is required)."""
-    return read_chain(data, budget=Budget(file_size=len(data)))
-
+# The shared oracle's helpers (scorecard.inventory): qpdf's object map, the
+# page-tree warnings qpdf --check may give, read_chain with a fresh budget.
+_qpdf_map, _PAGE_TREE_SEMANTICS = qpdf_map, PAGE_TREE_SEMANTICS
 
 BODIES = {
     1: b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -182,31 +180,6 @@ def test_never_raises(tail: bytes) -> None:
 
 
 # ── Differential: every unflagged revision matches qpdf and MuPDF ─────────
-_LINE = re.compile(rb"^(\d+)/(\d+): (?:uncompressed; offset = (\d+)|"
-                   rb"compressed; stream = (\d+), index = (\d+))", re.M)
-
-
-def _qpdf_map(path: Path) -> tuple[dict[int, tuple[str, int, int]], int]:
-    result = subprocess.run(["qpdf", "--show-xref", str(path)], capture_output=True,
-                            timeout=60)
-    found: dict[int, tuple[str, int, int]] = {}
-    for m in _LINE.finditer(result.stdout):
-        num, gen = int(m.group(1)), int(m.group(2))
-        found[num] = (("u", int(m.group(3)), gen) if m.group(3)
-                      else ("c", int(m.group(4)), int(m.group(5))))
-    return found, result.returncode
-
-
-# qpdf --check warnings about what a page-tree node means, not how the
-# file parses: the reference graph (3a-7) owns these, not the xref chain.
-# Includes a reference to a free (null) object used as a dictionary: the
-# object maps agree; flagging the dangling reference is 3a-7's job.
-_PAGE_TREE_SEMANTICS = (b"/Type key should be", b"attempted key retrieval",
-                        b"Pages tree includes non-dictionary", b"/Kids",
-                        b"operation for dictionary attempted on object of type null",
-                        b"MediaBox is undefined")
-
-
 def _ours(entries: dict[int, Entry]) -> dict[int, tuple[str, int, int]]:
     return {n: ("u" if e.kind == IN_USE else "c", e.a, e.b)
             for n, e in entries.items() if e.kind != FREE and n != 0}

@@ -22,29 +22,25 @@ import subprocess
 import sys
 import time
 import zlib
-from bisect import bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from scorecard.inventory import compare
+from scorecard.pdfgen import (JUNK, MARKER, MUTATION_BYTES, MUTATION_SITES, UPDATE_XREF_KINDS,
+                              XREF_KINDS, Spec, Update, Writer, build_pdf, mutated)
 
 from redaction_verifier.budget import Budget, Counter, Limits
 from redaction_verifier.inventory import Inventory, build_inventory, check_tiling
-from redaction_verifier.inventory.flate import flate_decode
-from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfDict, PdfName,
-                                                   PdfNull, PdfRef, PdfValue)
-from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
+from redaction_verifier.ledger import FlagReason, UnitKind
 
 from .conftest import REPO_ROOT, requires_qpdf
-from .test_inventory_differential import _plain
-from .test_inventory_xref import BODIES, _PAGE_TREE_SEMANTICS, _objects, _qpdf_map, chain_of
+from .test_inventory_xref import BODIES, _objects, chain_of
 
 EXAMPLES = int(os.environ.get("DIFF_FUZZ_EXAMPLES", "30"))
-MARKER = b"%\xe2\xe3\xcf\xd3"
 
 
 def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
@@ -55,194 +51,16 @@ def reasons(data: bytes) -> list[str]:
     return [flag.reason.name for flag in inventory(data).flags]
 
 
-# ── A small PDF writer: every offset right by construction ────────────────
-class Writer:
-    def __init__(self, comment: bool = False) -> None:
-        self.out = bytearray(b"%PDF-1.7\n" + MARKER + b"\n")
-        self.comment = comment
-        if comment:
-            self.out += b"% Written by a test\n"
-
-    def at(self) -> int:
-        return len(self.out)
-
-    def obj(self, num: int, body: bytes) -> int:
-        at = self.at()
-        self.out += b"%d 0 obj\n" % num + body + b"\nendobj\n"
-        return at
-
-    def stream(self, num: int, extra: bytes, data: bytes) -> int:
-        return self.obj(num, b"<< /Length %d%s >>\nstream\n" % (len(data), extra)
-                        + data + b"\nendstream")
-
-    def objstm(self, num: int, members: list[tuple[int, bytes]],
-               mutate: Callable[[bytes], bytes] | None = None, header: bytes | None = None,
-               filters: bytes = b" /Filter /FlateDecode", count: int | None = None) -> int:
-        offsets, payload = [], b""
-        for number, body in members:
-            offsets.append(b"%d %d" % (number, len(payload)))
-            payload += body + b"\n"
-        table = header if header is not None else b" ".join(offsets)
-        packed = table + b"\n" + payload
-        if mutate is not None:
-            packed = mutate(packed)
-        data = zlib.compress(packed) if filters else packed
-        return self.stream(num, b" /Type /ObjStm /N %d /First %d%s" % (
-            len(members) if count is None else count, len(table) + 1, filters), data)
-
-    def table(self, entries: dict[int, tuple[int, int, int]], trailer: bytes) -> int:
-        at = self.at()
-        self.out += b"xref\n"
-        numbers = sorted(entries)
-        runs: list[list[int]] = []
-        for n in numbers:
-            if runs and runs[-1][-1] + 1 == n:
-                runs[-1].append(n)
-            else:
-                runs.append([n])
-        for run in runs:
-            self.out += b"%d %d\n" % (run[0], len(run))
-            for n in run:
-                kind, a, b = entries[n]
-                self.out += b"%010d %05d %s \n" % (a, b, b"n" if kind == 1 else b"f")
-        self.out += b"trailer\n<< " + trailer + b" >>\n"
-        return at
-
-    def xref_stream(self, num: int, entries: dict[int, tuple[int, int, int]],
-                    trailer: bytes, predictor: bool = False) -> int:
-        at = self.at()
-        entries = entries | {num: (1, at, 0)}
-        rows = [bytes([k]) + a.to_bytes(4, "big") + b.to_bytes(2, "big")
-                for _, (k, a, b) in sorted(entries.items())]
-        parms = b""
-        if predictor:
-            rows = [b"\x00" + r for r in rows]
-            parms = b" /DecodeParms << /Predictor 12 /Columns 7 >>"
-        index = b" ".join(b"%d 1" % n for n in sorted(entries))
-        self.stream(num, b" /Type /XRef /W [1 4 2] /Index [%s] /Filter /FlateDecode%s %s" % (
-            index, parms, trailer), zlib.compress(b"".join(rows)))
-        return at
-
-    def epilogue(self, section: int) -> None:
-        self.out += b"startxref\n%d\n%%%%EOF\n" % section
-
-
-@dataclass(frozen=True)
-class Update:
-    xref: str = "table"          # "table" or "stream"
-    objstm: bool = False         # the new page dictionary in a new object stream
-    dead: bool = False           # a dead body among the update's objects
-
-
-@dataclass(frozen=True)
-class Spec:
-    pages: int = 1
-    xref: str = "table"          # "table", "stream" or "hybrid"
-    objstm: bool = False         # page tree (and, but for hybrids, the catalog) compressed
-    predictor: bool = False
-    updates: tuple[Update, ...] = ()
-    dead: bool = False
-    comment: bool = False        # "% Written by ..." after the header and each %%EOF
-    junk: bytes = b""            # bytes between two objects: flagged unless whitespace
-    probe: bool = False          # PROBE as object 50 in the object stream, and object 51
-    mutate: Callable[[bytes], bytes] | None = field(default=None, compare=False)
-
-
-PROBE = b"<< /Probe (SSN 123-45-6789) /L [1 2.5 /N <41>] /D << /K true >> >>"
-# Nothing refers to the probes: mutating them cannot wake qpdf's page-tree
-# repair (3a-7's), only what this PR owns.
-PROBE_STREAM = (b"<< /Probe (SSN 123-45-6789) /L [1 2.5 /N <41>] /Length 11 >>\n"
-                b"stream\nhello world\nendstream")
-
-
-def build_pdf(spec: Spec) -> bytes:
-    w = Writer(spec.comment)
-    pages = [3 + i for i in range(spec.pages)]
-    contents = [3 + spec.pages + i for i in range(spec.pages)]
-    kids = b" ".join(b"%d 0 R" % p for p in pages)
-    dicts = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
-             2: b"<< /Type /Pages /Kids [%s] /Count %d >>" % (kids, spec.pages)}
-    for page, content in zip(pages, contents):
-        dicts[page] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
-                       b" /Resources << >> /Contents %d 0 R >>" % content)
-    entries: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
-    for i, content in enumerate(contents):
-        entries[content] = (1, w.stream(content, b"", b"BT (page %d) Tj ET" % i), 0)
-        if i == 0 and spec.junk:
-            w.out += spec.junk
-    if spec.dead:
-        w.obj(90, b"<< /Dead (SSN 123-45-6789) >>")
-    if spec.probe:
-        entries[51] = (1, w.obj(51, PROBE_STREAM), 0)
-    next_num = max(3 + 2 * spec.pages, 52 if spec.probe else 0)
-    compressed = [n for n in dicts if spec.objstm and (spec.xref == "stream" or n != 1)]
-    for n, body in dicts.items():
-        if n not in compressed:
-            entries[n] = (1, w.obj(n, body), 0)
-    if compressed:
-        stm = next_num
-        next_num += 1
-        members = [(n, dicts[n]) for n in compressed] + ([(50, PROBE)] if spec.probe else [])
-        entries[stm] = (1, w.objstm(stm, members, spec.mutate), 0)
-        for i, (n, _) in enumerate(members):
-            entries[n] = (2, stm, i)
-    xref_num = next_num
-    next_num += 1
-    size = next_num
-    if spec.xref == "table":
-        section = w.table(entries, b"/Size %d /Root 1 0 R" % (max(entries) + 1))
-    elif spec.xref == "stream":
-        section = w.xref_stream(xref_num, entries, b"/Size %d /Root 1 0 R" % size,
-                                spec.predictor)
-    else:
-        streamed = {n: e for n, e in entries.items() if e[0] == 2}
-        stm_at = w.xref_stream(xref_num, streamed, b"/Size %d" % size, spec.predictor)
-        table = {n: e for n, e in entries.items() if e[0] != 2}
-        section = w.table(table, b"/Size %d /Root 1 0 R /XRefStm %d" % (size, stm_at))
-    w.epilogue(section)
-    for k, update in enumerate(spec.updates):
-        if spec.comment:  # as MuPDF begins each update
-            w.out += b"\n% Written by a test\n\n"
-        changed: dict[int, tuple[int, int, int]] = {}
-        content = next_num
-        next_num += 1
-        changed[content] = (1, w.stream(content, b"", b"BT (update %d) Tj ET" % k), 0)
-        if update.dead:
-            w.obj(91 + k, b"<< /Dead (update %d) >>" % k)
-        page = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300]"
-                b" /Resources << >> /Contents %d 0 R >>" % content)
-        if update.objstm and update.xref == "stream":
-            stm = next_num
-            next_num += 1
-            changed[stm] = (1, w.objstm(stm, [(pages[0], page)]), 0)
-            changed[pages[0]] = (2, stm, 0)
-        else:
-            changed[pages[0]] = (1, w.obj(pages[0], page), 0)
-        if update.xref == "stream":
-            xref_num = next_num
-            next_num += 1
-            size = next_num
-            section_at = w.xref_stream(xref_num, changed, b"/Size %d /Root 1 0 R /Prev %d" % (
-                size, section))
-        else:
-            size = max(size, next_num)
-            section_at = w.table(changed, b"/Size %d /Root 1 0 R /Prev %d" % (size, section))
-        section = section_at
-        w.epilogue(section)
-    return bytes(w.out)
-
-
-_UPDATES = st.builds(Update, xref=st.sampled_from(["table", "stream"]), objstm=st.booleans(),
+_UPDATES = st.builds(Update, xref=st.sampled_from(UPDATE_XREF_KINDS), objstm=st.booleans(),
                      dead=st.booleans())
-_JUNK = st.sampled_from([b"", b"", b" \n", b"% a comment\n", b"junk", b"(", b"<<",
-                         b"12 0 obj (x) endobj\n", b"1 0 obj", b"endstream", b"\xff\x00"])
+_JUNK = st.sampled_from(JUNK)
 
 
 @st.composite
 def pdf_files(draw: st.DrawFn, junk: bool = True) -> tuple[Spec, bytes]:
     """Structurally varied files. With *junk*, some gap holds junk (then
     the file is flagged, unless it is whitespace or a dead body)."""
-    xref = draw(st.sampled_from(["table", "stream", "hybrid"]))
+    xref = draw(st.sampled_from(XREF_KINDS))
     spec = Spec(pages=draw(st.integers(1, 3)), xref=xref,
                 objstm=draw(st.booleans()) if xref != "table" else False,
                 predictor=draw(st.booleans()), updates=tuple(draw(st.lists(_UPDATES, max_size=3))),
@@ -560,154 +378,13 @@ def test_flags_are_capped_per_file() -> None:
 
 
 # ── Differential: every unflagged inventory agrees with the readers ───────
-# qpdf --check warnings the inventory does not own: page-tree semantics
-# (3a-7's) and a page content stream's own syntax, which --check tokenizes
-# ("... stream 5 0 (content, offset 10): unexpected )") -- the content
-# decoder's (Phase 4). The stream's raw bytes are still compared below.
-_NOT_STRUCTURE = _PAGE_TREE_SEMANTICS + (b"(content, offset ",)
-
-
-def _catalog_retyped(line: bytes, lines: list[bytes], path: Path) -> bool:
-    """qpdf's "catalog /Type entry missing or invalid" when it comes only
-    from qpdf's own page-tree repair: the page tree reaches the catalog, qpdf
-    overrides its /Type to /Page (a page-tree warning, 3a-7's) -- while
-    qpdf's own read of the catalog is a /Type /Catalog dictionary."""
-    if b"catalog /Type entry missing or invalid" not in line:
-        return False
-    trailer = chain_of(path.read_bytes()).sections[0].trailer
-    root = trailer.get(b"Root") if trailer is not None else None
-    if not isinstance(root, PdfRef):
-        return False
-    retyped = re.compile(rb"object %d %d at offset \d+: /Type key should be /Page but is not"
-                         % (root.num, root.gen))
-    shown = subprocess.run(["qpdf", f"--show-object={root.num}", str(path)],
-                           capture_output=True, timeout=60)
-    value = ObjectParser(shown.stdout).parse_value_at(0).value
-    return (any(retyped.search(other) for other in lines) and isinstance(value, PdfDict)
-            and isinstance(value.get(b"Type"), PdfName)
-            and getattr(value.get(b"Type"), "raw", None) == b"Catalog")
-
-
-def _without_dangling(value: PdfValue | None, live: dict[int, int]) -> PdfValue | None:
-    """A reference to an object with no body in the revision reads as null
-    (§7.3.10): qpdf shows null, we keep the reference. Flagging dangling
-    references is the reference graph's (3a-7)."""
-    if isinstance(value, PdfRef) and live.get(value.num) != value.gen:
-        return PdfNull(value.start, value.end)
-    if isinstance(value, PdfArray):
-        return replace(value, items=tuple(_without_dangling(item, live) or item
-                                          for item in value.items))
-    if isinstance(value, PdfDict):
-        return replace(value, entries=tuple((key, _without_dangling(item, live) or item)
-                                            for key, item in value.entries))
-    return value
-
-
-def _value_of(text: bytes, live: dict[int, int], start: int = 0,
-              end: int | None = None) -> object:
-    return _plain(_without_dangling(ObjectParser(text).parse_value_at(start, end).value, live))
-
-
-def _units_by_ref(inv: Inventory) -> dict[UnitRef, Unit]:
-    return {u.ref: u for u in inv.units}  # refs nest one level deep at most
-
-
-def _member_value(inv: Inventory, ref: UnitRef, decoded: bytes, live: dict[int, int]) -> object:
-    span = _units_by_ref(inv)[ref].spans[0]
-    return _value_of(decoded, live, span.start, span.end)
-
-
-def _revision_blob(data: bytes, revision: int) -> bytes:
-    chain = chain_of(data)
-    return data if revision == 0 else (
-        data[:chain.revision_end(revision)]
-        + b"\nstartxref\n%d\n%%%%EOF\n" % chain.revision_start(revision))
-
-
+# The oracle is scorecard.inventory.compare, shared with the 3a-6 gate.
 def inventory_agrees(data: bytes, tmp: Path, members_per_revision: int = 8) -> bool:
     """False when flagged (readers may disagree then: we said so), else
     assert agreement with qpdf and MuPDF and return True."""
-    inv = inventory(data)
-    assert inv.tiles
-    if inv.flags:
-        return False
-    pymupdf.TOOLS.mupdf_warnings()
-    listed: set[int] = set()
-    chain = chain_of(data)
-    for revision in range(inv.revisions):
-        # Readers decrypt what they read; the inventory does not until 3a-8/9,
-        # so an encrypted revision's bytes and values are not compared.
-        trailer = chain.sections[chain.revisions[revision][0]].trailer
-        encrypted = trailer is not None and trailer.get(b"Encrypt") is not None
-        blob = _revision_blob(data, revision)
-        path = tmp / f"r{revision}.pdf"
-        path.write_bytes(blob)
-        qmap, code = _qpdf_map(path)
-        assert code == 0, revision
-        bodies = inv.bodies_by_number(revision)
-        assert set(bodies) == set(qmap), (revision, set(bodies) ^ set(qmap))
-        check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True, timeout=60)
-        lines = (check.stdout + check.stderr).splitlines()
-        structural = [line for line in lines if line.startswith(b"WARNING")
-                      and not any(pattern in line for pattern in _NOT_STRUCTURE)
-                      and not _catalog_retyped(line, lines, path)]
-        assert structural == [], (revision, structural[:3])
-        doc = pymupdf.open(stream=blob, filetype="pdf")
-        assert not doc.is_repaired, revision
-        checked = 0
-        live = {n: (0 if kind == "c" else gen) for n, (kind, _, gen) in qmap.items()}
-        for number, (kind, a, b) in sorted(qmap.items()):
-            body = bodies[number]
-            if kind == "u":
-                listed.add(a)
-                assert (body.kind, body.start) == (UnitKind.OBJECT, a), number
-                span = inv.stream_data.get(body.start)
-                if span is not None:
-                    assert encrypted or (
-                        doc.xref_stream_raw(number) == blob[span.start:span.end]), number
-                else:
-                    assert not doc.xref_is_stream(number), number
-                continue
-            home = qmap[a]
-            stream = inv.object_streams[home[1]]
-            assert body.kind is UnitKind.OBJSTM_MEMBER and body.within is stream.ref
-            assert stream.members[b] is body, number
-            if checked >= members_per_revision or encrypted:
-                continue
-            checked += 1
-            decoded = doc.xref_stream(a)
-            raw_span = inv.stream_data[stream.ref.start]
-            ours = flate_decode(blob[raw_span.start:raw_span.end])
-            assert ours.data == decoded or not ours.complete, a  # unfiltered: not Flate
-            mine = _member_value(inv, body, decoded, live)
-            mu_text = doc.xref_object(number, compressed=True).encode("latin-1")
-            assert _value_of(mu_text, live) == mine, number
-            shown = subprocess.run(["qpdf", f"--show-object={number}", str(path)],
-                                   capture_output=True, timeout=60)
-            assert (_value_of(shown.stdout, live), shown.returncode) == (mine, 0), number
-    # Dead bodies: exactly the N G obj headers no reader lists, outside
-    # every other unit.
-    spans = sorted((s.start, s.end) for u in inv.units
-                   if u.ref.within is None and u.ref.kind is not UnitKind.DEAD_BODY
-                   for s in u.spans)
-    starts = [s for s, _ in spans]
-
-    def inside(pos: int) -> bool:
-        i = bisect_right(starts, pos) - 1
-        return i >= 0 and spans[i][1] > pos
-    dead = sorted((u.spans[0] for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY),
-                  key=lambda span: span.start)
-    expected = []
-    for m in re.finditer(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])\d+[\x00\t\n\x0c\r ]+\d+"
-                         rb"[\x00\t\n\x0c\r ]+obj(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])", data):
-        if m.start() in listed or inside(m.start()):
-            continue
-        if any(d.start < m.start() < d.end for d in dead):
-            continue
-        expected.append(m.start())
-    assert expected == [d.start for d in dead]
-    assert pymupdf.TOOLS.mupdf_warnings() == ""
-    return True
+    found = compare(data, tmp, qpdf_members=members_per_revision)
+    assert not found.disagrees, found
+    return found.agrees
 
 
 @requires_qpdf
@@ -736,50 +413,20 @@ def test_generated_files_are_flagged_or_agree_with_the_readers(
     assert agreed or spec.junk.strip(), spec
 
 
-def _flip(positions: list[int], values: list[int]) -> Callable[[bytes], bytes]:
-    """Overwrite bytes of an object stream's payload, only in its header
-    table and its PROBE member: mutating the page tree's members makes
-    qpdf's page-tree repair speak (3a-7's), not the object stream's."""
-    def mutate(packed: bytes) -> bytes:
-        out = bytearray(packed)
-        probe = packed.index(PROBE)
-        pool = list(range(packed.index(b"\n") + 1)) + list(range(probe, len(packed)))
-        for pos, value in zip(positions, values):
-            out[pool[pos % len(pool)]] = value
-        return bytes(out)
-    return mutate
-
-
-_BYTES = st.sampled_from(list(b"0123456789 \n\r()<>[]/%Rnobjstreamdxulf\x00\xff"))
+_BYTES = st.sampled_from(MUTATION_BYTES)
 
 
 @requires_qpdf
 @settings(max_examples=EXAMPLES * 2, suppress_health_check=[
     HealthCheck.too_slow, HealthCheck.function_scoped_fixture])
-@given(pdf_files(junk=False), st.sampled_from(["object", "objstm", "gap"]), st.data())
+@given(pdf_files(junk=False), st.sampled_from(MUTATION_SITES), st.data())
 def test_mutated_files_are_flagged_or_agree_with_the_readers(
         tmp_path: Path, case: tuple[Spec, bytes], where: str, draw: st.DataObject) -> None:
     """Bytes overwritten in objects (content streams and the probe object),
     an object stream's header table and probe member, or the gaps."""
-    spec = replace(case[0], probe=True)
-    data = build_pdf(spec)
     positions = draw.draw(st.lists(st.integers(0, 10_000), min_size=1, max_size=3))
     values = draw.draw(st.lists(_BYTES, min_size=len(positions), max_size=len(positions)))
-    if where == "objstm":
-        spec = replace(spec, xref="stream", objstm=True, probe=True,
-                       mutate=_flip(positions, values))
-        data = build_pdf(spec)
-    else:
-        inv = inventory(data)
-        targets = {51} | set(range(3 + spec.pages, 3 + 2 * spec.pages))  # probe, contents
-        wanted = UnitKind.OBJECT if where == "object" else UnitKind.WHITESPACE
-        pool = [p for r in inv.tiling.regions if r.kind is wanted
-                and (where == "gap" or r.owners[0].obj in targets)
-                for p in range(r.span.start, r.span.end)]
-        out = bytearray(data)
-        for pos, value in zip(positions, values):
-            out[pool[pos % len(pool)]] = value
-        data = bytes(out)
+    data = mutated(case[0], where, positions, values)
     inventory_agrees(data, tmp_path)
 
 

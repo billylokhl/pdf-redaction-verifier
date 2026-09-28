@@ -5,6 +5,9 @@
     PYTHONPATH=eval:. python -m scorecard corpus build --root DIR
     PYTHONPATH=eval:. python -m scorecard corpus check --root DIR
     PYTHONPATH=eval:. python -m scorecard corpus run --root DIR --secrets FILE
+    PYTHONPATH=eval:. python -m scorecard inventory run --root DIR [--json OUT]
+    PYTHONPATH=eval:. python -m scorecard inventory caselib [--json OUT]
+    PYTHONPATH=eval:. python -m scorecard inventory fuzz [--count N] [--seed S] [--json OUT]
 
 See eval/README.md.
 """
@@ -15,6 +18,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import corpus as corpus_mod
 from . import report
@@ -118,6 +122,129 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
+                    config: dict[str, object]) -> int:
+    """Run the 3a-6 gate over *jobs*: the aggregate to stdout (and --json),
+    per-file detail only to the local-only --detail file."""
+    from . import inventory_gate as gate
+
+    source = str(config["source"])
+    detail = corpus_mod.ensure_local_only(
+        args.detail or corpus_mod.REAL_CORPUS_DIR / f"inventory-gate-{source}.jsonl",
+        allow_outside=args.allow_outside)
+
+    def progress(done: int, total: int) -> None:
+        if done % 50 == 0 or done == total:
+            print(f"inventory gate: {done}/{total}", file=sys.stderr, flush=True)
+    results = gate.run_gate(
+        jobs, workdir=workdir, workers=args.workers, progress=progress,
+        build_timeout=args.timeout, oracle_timeout=args.oracle_timeout,
+        qpdf_members=args.qpdf_members)
+    config = config | gate.provenance(args.started) | {"build_timeout": args.timeout, "oracle_timeout": args.oracle_timeout,
+                       "qpdf_members": args.qpdf_members, "workers": args.workers}
+    agg = gate.aggregate(results, config)
+    gate.write_detail(results, detail)
+    print(gate.render(agg))
+    if args.json:
+        args.json.write_text(report.dump_json(agg) + "\n")
+    return 0 if agg["gate"]["passed"] else 1
+
+
+def _inventory_preflight(args: argparse.Namespace) -> int | None:
+    """Before any gate run: note the start, remove a stale --json (a failed
+    run must never leave an old aggregate that passes for a fresh one),
+    and refuse without qpdf. Returns an exit status to stop with, or None."""
+    import shutil
+    from datetime import datetime, timezone
+
+    args.started = datetime.now(timezone.utc)
+    if args.json is not None:
+        args.json.unlink(missing_ok=True)
+    if shutil.which("qpdf") is None:
+        print("ERROR: qpdf is not on PATH -- the gate compares against qpdf and MuPDF. "
+              "Install qpdf and run again.", file=sys.stderr)
+        return 2
+    return None
+
+
+def _cmd_inventory_run(args: argparse.Namespace) -> int:
+    import tempfile
+
+    from .inventory_gate import Job
+
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
+    args.root = args.root.resolve()  # the children run from the repository root
+    manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
+    entries = corpus_mod.load_manifest(manifest)
+    if not entries:
+        print("ERROR: the manifest is empty or missing -- build it with `corpus build`. "
+              "Refusing to report 0 files as a pass.", file=sys.stderr)
+        return 2
+    check = corpus_mod.check_manifest(entries, args.root)
+    if not check.ok:
+        # Counts only: `corpus check` lists the files, on this machine.
+        print(f"ERROR: the corpus drifted from its SHA-pinned manifest: {len(check.missing)} "
+              f"missing, {len(check.changed)} changed. Run `corpus check` to list them, then "
+              "restore the files or rebuild the manifest. Refusing to run.", file=sys.stderr)
+        return 2
+    jobs = [Job(e.sha256, args.root / e.path) for e in entries]
+    with tempfile.TemporaryDirectory(prefix="inventory-gate-") as work:
+        return _inventory_gate(args, jobs, Path(work), {"source": "corpus"})
+
+
+def _cmd_inventory_caselib(args: argparse.Namespace) -> int:
+    import hashlib
+    import tempfile
+
+    from caselib import load
+    from caselib.run import available, build
+
+    from .inventory_gate import Job
+
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
+    have = available()
+    cases = sorted(load().items())
+    skipped = sum(1 for _, case in cases if case.requires - have)
+    with tempfile.TemporaryDirectory(prefix="inventory-gate-") as work:
+        root = Path(work) / "files"
+        root.mkdir()
+        jobs: list[Job] = []
+        for case_id, case in cases:
+            if case.requires - have:
+                continue
+            path = build(case, root / f"{len(jobs):04d}.pdf")
+            key = hashlib.sha256(path.read_bytes()).hexdigest()
+            jobs.append(Job(key, path, case_id, case_id.split(".", 1)[0]))
+        return _inventory_gate(args, jobs, Path(work),
+                               {"source": "caselib", "skipped_needing_tools": skipped})
+
+
+def _cmd_inventory_fuzz(args: argparse.Namespace) -> int:
+    import hashlib
+    import random
+    import tempfile
+
+    from .inventory_gate import Job
+    from .pdfgen import random_case
+
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
+    rng = random.Random(args.seed)
+    with tempfile.TemporaryDirectory(prefix="inventory-gate-") as work:
+        root = Path(work) / "files"
+        root.mkdir()
+        jobs: list[Job] = []
+        for i in range(args.count):
+            kind, data = random_case(rng)
+            path = root / f"{i:05d}.pdf"
+            path.write_bytes(data)
+            jobs.append(Job(hashlib.sha256(data).hexdigest(), path, f"fuzz-{args.seed}-{i}", kind))
+        return _inventory_gate(args, jobs, Path(work),
+                               {"source": "fuzz", "seed": args.seed, "count": args.count})
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scorecard", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +305,43 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--json", type=Path, default=None)
     add_allow_outside(run_p)
     run_p.set_defaults(func=_cmd_corpus_run)
+
+    inv_p = sub.add_parser("inventory", help="the 3a-6 inventory agreement gate")
+    inv_sub = inv_p.add_subparsers(dest="inventory_command", required=True)
+
+    def add_gate(p: argparse.ArgumentParser) -> None:
+        from .inventory_gate import BUILD_TIMEOUT, ORACLE_TIMEOUT
+        p.add_argument("--json", type=Path, default=None,
+                       help="also write the aggregate (counts only: shareable) as JSON here")
+        p.add_argument("--detail", type=Path, default=None,
+                       help="per-file detail keyed by SHA-256 (local only, never share); "
+                       "default eval/scorecard/real_corpus/inventory-gate-SOURCE.jsonl, "
+                       "SOURCE being corpus, caselib or fuzz")
+        p.add_argument("--timeout", type=float, default=BUILD_TIMEOUT,
+                       help="build_inventory's per-file timeout (s); past it is a failure")
+        p.add_argument("--oracle-timeout", type=float, default=ORACLE_TIMEOUT,
+                       help="the reader differential's per-file timeout (s)")
+        p.add_argument("--qpdf-members", type=int, default=8,
+                       help="object-stream members per revision also compared with qpdf "
+                       "(every member is compared with MuPDF)")
+        p.add_argument("--workers", type=int, default=1, help="files in parallel")
+        add_allow_outside(p)
+
+    inv_run = inv_sub.add_parser("run", help="the gate over the SHA-pinned local corpus")
+    inv_run.add_argument("--root", type=Path, required=True)
+    inv_run.add_argument("--manifest", type=Path, default=corpus_mod.DEFAULT_MANIFEST)
+    add_gate(inv_run)
+    inv_run.set_defaults(func=_cmd_inventory_run)
+
+    inv_cases = inv_sub.add_parser("caselib", help="the gate over the case library")
+    add_gate(inv_cases)
+    inv_cases.set_defaults(func=_cmd_inventory_caselib)
+
+    inv_fuzz = inv_sub.add_parser("fuzz", help="the gate over generated and mutated files")
+    inv_fuzz.add_argument("--count", type=int, default=1000)
+    inv_fuzz.add_argument("--seed", type=int, default=0)
+    add_gate(inv_fuzz)
+    inv_fuzz.set_defaults(func=_cmd_inventory_fuzz)
 
     return parser
 

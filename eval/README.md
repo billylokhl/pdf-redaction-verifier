@@ -468,6 +468,9 @@ or pasted anywhere. Only the coarse producer *family* (e.g. `"acrobat"`,
 and discarded on the spot, since real producer apps sometimes embed a
 username, hostname, or email address in it.
 
+`corpus build` picks up only files named `*.pdf` in lower case: rename or
+link any `.PDF` files first, or they are silently left out.
+
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
 PYTHONPATH=eval:. python -m scorecard corpus build --root ~/corpus
@@ -486,6 +489,96 @@ CLI itself reads), so whatever values `--secrets` names live there too,
 not just in the file you pointed at. `--out` defaults under
 `eval/scorecard/real_corpus/scan-workdir` (gitignored, guarded the same
 way as `--manifest`) for exactly this reason.
+
+### The inventory agreement gate (Phase 3a-6)
+
+ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in
+shadow mode): on every file, `build_inventory` runs in a child process
+with a 60 s timeout, then the reader differential
+(`eval/scorecard/inventory.py`, the same oracle the tests use) compares
+the inventory against MuPDF and qpdf in a second child with its own
+timeout (default 900 s, reported separately; each qpdf call inside it
+may use the whole budget, so a huge but valid file is not cut short). **The gate passes only
+with zero unflagged disagreements** (a file that does not tile counts as
+one), zero crashes, zero timeouts, and every unflagged file actually
+verified: an oracle that crashes or times out on an unflagged file, or
+two children that flag the same file differently, fail it too. Flagged
+files, UNINDEXED/CONTESTED regions and flag rates are reported, never
+gated (ADR 0010: measure before enforcing). Exit status: 0 pass, 1 fail,
+2 refused (a drifted or empty manifest, or no qpdf on PATH). A `--json`
+file left from an earlier run is deleted first, so a stale aggregate
+never passes for a fresh one.
+
+```bash
+# The real corpus: the manifest is verified first -- any file missing or
+# changed since `corpus build` and the run is refused (exit 2, counts only;
+# `corpus check` lists the files). Hours on 2,031 files: --workers N helps,
+# but keep N below your core count or the 60 s timeout measures contention.
+PYTHONPATH=eval:. python -m scorecard inventory run --root ~/corpus \
+    --json /tmp/inventory-gate.json
+
+# The same gate over the case library (every case this machine can build)
+# and over generated and mutated files (seeded, reproducible):
+PYTHONPATH=eval:. python -m scorecard inventory caselib --json /tmp/caselib-gate.json
+PYTHONPATH=eval:. python -m scorecard inventory fuzz --count 2000 --seed 0 \
+    --json /tmp/fuzz-gate.json
+```
+
+What each part of the output means:
+
+- `gate`: `passed`, and the gating counts: `unflagged_disagree` (by
+  failed check in `unflagged_disagree_by_check`: `object_set`,
+  `stream_data`, `member_value`, `dead_bodies`, `qpdf_check`,
+  `mupdf_warning`, `needs_password`, `encryption`, `oracle_error`,
+  `tiling`),
+  `crashes`, `timeouts`, `unverified`, `inconsistent`.
+- `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
+  whose object sets agree but whose bytes and values are not compared
+  until 3a-8/9. A revision is exempted only when our trailer, MuPDF and
+  qpdf all read it encrypted; any split (an `/Encrypt null` both readers
+  ignore, say) is an `encryption` disagreement. `encrypted_files` counts
+  files MuPDF reads encrypted, `encrypt_entry_files` those whose
+  trailers carry an `/Encrypt` entry.
+- `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
+  printed an `ERROR` line (exit 2) -- so far page-tree semantics, the
+  reference graph's (3a-7); counted, not gated.
+- `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
+  reasons, and files with exactly one reason. A flagged file is never
+  compared with the readers: the inventory said the readers may disagree,
+  and a flagged file can never exit 0 once the inventory is wired in.
+- `regions`: files, regions and bytes left UNINDEXED or CONTESTED in the
+  file's own tiling (object streams' decoded tilings are not included).
+- `timing`: percentiles of the build child's wall clock (interpreter
+  start included), the oracle's, and the work units charged per byte.
+- `pending_decisions`: counts for the owner's open decisions --
+  incremental updates to linearized files (#44 item 1: a linearized file
+  with more than one revision; `/L` off the file's length is reported
+  apart, since trailing bytes alone do that), comment lines
+  claimed after the header or an intermediate `%%EOF` (#46 item 1: files,
+  lines, the longest line in bytes, lines with non-printable bytes or an
+  `N G obj`), streams whose indirect `/Length` lives in an object stream,
+  `REVISION_AMBIGUOUS` flags whose value is equal in every revision, and
+  dead object streams (#46 item 4).
+- `config`: provenance -- the git commit and whether the tree had local
+  changes, the qpdf, PyMuPDF, MuPDF and Python versions, the platform
+  (OS, release, architecture), the start time (UTC) and the run's
+  options.
+- `compared`: how many streams and object-stream members were compared;
+  every member is compared with MuPDF, the first `--qpdf-members` (8) per
+  revision also with qpdf, one qpdf process each.
+
+**What to share: the `--json` aggregate only.** It holds counts, rates
+and timings -- no file name, path, SHA-256, document bytes or reader
+message -- and so does stdout. Per-file detail goes to `--detail`
+(default `eval/scorecard/real_corpus/inventory-gate-SOURCE.jsonl`, SOURCE
+being `corpus`, `caselib` or `fuzz`, so one run never overwrites
+another's; gitignored and guarded like `--manifest`): one line per file keyed by
+SHA-256, with its verdict, flag reasons, the failed check and where
+(revision, object number), timings, the measurements, and reader
+messages only as scrubbed templates (numbers, names, strings and quoted
+text replaced; a child's failure only by its exception class). It is as sensitive as
+the manifest -- never commit or paste it; use it to find a file on your
+own machine (`sha256sum`) when a number needs explaining.
 
 ### Where each gate runs
 

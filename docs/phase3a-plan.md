@@ -205,6 +205,37 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-6 `python -m scorecard inventory` corpus gate harness (aggregates only, per-file
   subprocess + timeout); RESULTS.md section. THE 3a GATE: tiling on 100% of corpus files, 0
   crashes, 0 timeouts.
+  Done: one oracle -- eval/scorecard/inventory.py `compare()`, which the tests' `inventory_agrees`
+  now wraps -- returns an Agreement: AGREES, FLAGGED with its reasons, or DISAGREES naming
+  the failed check (tiling, object set, stream data, member value, dead bodies, qpdf --check,
+  MuPDF warning or repair, a reader needing a password, ENCRYPTION -- a revision is exempted
+  as encrypted only when our trailer, MuPDF and qpdf all read it so (PR #47 review: `/Encrypt
+  null` had skipped every byte comparison) -- or ORACLE_ERROR: anything that stops
+  the comparison, a reader timeout included, never agrees). Every object-stream member is
+  compared with MuPDF (qpdf still for the first 8 per revision), each home decoded once; the
+  generator moved to eval/scorecard/pdfgen.py. `python -m scorecard inventory run --root DIR`
+  refuses a corpus that drifted from its SHA-pinned manifest (counts only), then per file runs
+  the dev CLI (`build_inventory`) in a child with a 60 s timeout and the oracle in a second
+  child (900 s, reported separately); `inventory caselib` and `inventory fuzz` run the same
+  gate. It fails on an unflagged disagreement (or no tiling), a crash, a timeout, an unflagged
+  file the oracle could not finish (UNVERIFIED), or the two children flagging differently;
+  flag rates never fail it. stdout and --json: counts only; per-file detail keyed by SHA-256
+  to a local-only file under real_corpus/ (one per source), reader messages as scrubbed
+  templates, a child's failure only as its exception class. The aggregate's config records
+  provenance: commit and dirty tree, qpdf/PyMuPDF/MuPDF/Python versions, platform, UTC start.
+  Refused (exit 2) without qpdf; a stale --json is deleted first. qpdf --check ERROR lines
+  (exit 2, page-tree semantics so far) are counted, not gated. Also
+  measured: the pending decisions from #44 item 1 and #46 items 1 and 4 (below).
+  The fuzz gate found one oracle bug, fixed: MuPDF's tight printer writes an empty name and
+  the next token without a separator (`/ 2.5` prints `/2.5`) though MuPDF, qpdf and we all
+  read two tokens; the member comparison now parses MuPDF's pretty print.
+  Measured (eval/spikes/RESULTS.md, "Phase 3a-6"): case library (398 of 402 cases buildable on
+  Linux) passes: 394 agree, 4 flagged (the after-%%EOF cases), 0 unflagged disagreements, 0
+  crashes, 0 timeouts; 9,773 streams and 92 members compared. Fuzz (3,000, seed 0) passes: 740
+  agree, 2,260 flagged, 0 unflagged disagreements. Pending decisions on the case library: no
+  updated linearized file, no /Length in an object stream, no REVISION_AMBIGUOUS, no dead
+  object stream; comment lines in 322 files (533 lines, the longest 25 bytes, none
+  non-printable or `N G obj`-like). The 2,031-file corpus run is the owner's (local only).
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
