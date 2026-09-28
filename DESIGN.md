@@ -386,13 +386,17 @@ the gap is stated rather than implied away.
   two-tier model).
 - **Remaining silent misses** are the ✗ cells in COVERAGE.md: pixels the
   tool does not OCR (under a drawn box, off the page, thumbnails, other
-  embedded files); font-coded text or images in switched-off layers,
-  hidden annotations and never-drawn resources; unindexed bytes; leftover
-  text in fonts that map ordinary-looking codes to other glyphs;
-  text-encoded containers; pattern rules on non-attachment embedded files
-  and on scripts stored as streams on actions; and the matching limits —
-  page-break splits with something between the halves, multi-column
-  wraps, dash-less pattern wraps, extreme coordinates.
+  embedded files, an image's undeclared extra rows, one render split into
+  strips a page never shows joined); font-coded text or images in
+  switched-off layers, hidden annotations and never-drawn resources;
+  unindexed bytes; leftover text in fonts that map ordinary-looking codes
+  to other glyphs; text-encoded containers; a JPEG's own EXIF/other
+  thumbnail, a second decoded picture the tool never looks at; pattern
+  rules on non-attachment embedded files, on scripts stored as streams on
+  actions, and on an image's own raw sample or codec bytes (a known value
+  there is still found, via the Binary layer's raw byte sweep); and the
+  matching limits — page-break splits with something between the halves,
+  multi-column wraps, dash-less pattern wraps, extreme coordinates.
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`

@@ -285,9 +285,15 @@ secret can still be **not detected** (exit `0`). In short:
 - **Leftover text in a font that maps ordinary-looking codes to other
   glyphs**, and **containers encoded as text** (a base64 email part, an
   HTML `data:` URI).
-- **Pattern rules** on embedded files other than attachments and on
-  scripts stored as streams on links, fields or pages (known values are
-  still found there, as manual review).
+- **Pattern rules** on embedded files other than attachments, on scripts
+  stored as streams on links, fields or pages, and on an image's own raw
+  sample or codec bytes (known values are still found there, as manual
+  review — a known value hidden in an image's raw samples, or in a JPEG
+  comment segment, is a Binary-layer manual-review warning today, but the
+  same secret found only by a pattern rule is not).
+- **Image data beyond the main picture:** a JPEG's own EXIF (or other)
+  thumbnail can hold a second, fully decodable image the tool never
+  looks at — only the main picture is ever drawn or OCR'd.
 - **Split values:** a page-break split with a header, footer or page
   number between its halves, or where a page's last line is not its
   reading-order last line; a value wrapped inside one column of a

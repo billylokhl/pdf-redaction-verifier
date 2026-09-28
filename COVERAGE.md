@@ -26,7 +26,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR · ✗ under a box drawn over an image | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, or an EXIF/other thumbnail beyond the main decoded picture | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise, or running across the page edge | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
@@ -80,18 +80,26 @@ when a larger one was cut.
 ⁹ Data inside a compressed stream's declared length but after its end
 marker: both parsers stop at the marker, so it is never read.
 
+¹⁰ A value's literal bytes in a drawn image's own raw samples (never
+rendered as glyphs) or in a byte range a codec consumes but never
+decodes to pixels (a JPEG comment segment): the Binary (qpdf) layer's
+raw byte sweep sees them because it reads the file's stream bytes
+directly, not through the image decoder. A pattern rule (rather than a
+known value) over the same hidden bytes is not — the Binary layer's
+sweep is value secrets only, the same limit as `embedded-other.plain`.
+
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
 case library; `docs/REDESIGN.md` §8).
 
-Two image gaps have no case yet (`docs/REDESIGN.md` §8, below the
-K-table; Phase 3a adds them). **Image data beyond the declared size**:
-rows past an image's declared `/Height` are never drawn, so a secret
-rendered there is never OCR'd, and MuPDF gives no warning. **One render
-cut into strips**, each too thin to read alone: the page's OCR reads
-them only when they are drawn next to each other and nothing covers
-them; under a drawn box, drawn apart, or listed as a resource but never
-drawn, they are not detected.
+Two image gaps used to have no case (`docs/REDESIGN.md` §8, below the
+K-table); Phase 3a added both, now K37 and K38. **Image data beyond the
+declared size**: rows past an image's declared `/Height` are never
+drawn, so a secret rendered there is never OCR'd, and MuPDF gives no
+warning. **One render cut into strips**, each too thin to read alone:
+the page's OCR reads them only when they are drawn next to each other
+and nothing covers them; under a drawn box, drawn apart, or listed as a
+resource but never drawn, they are not detected.
 
 ## Matching limits
 
