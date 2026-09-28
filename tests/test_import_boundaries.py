@@ -76,7 +76,7 @@ class TestTestsDoNotReachMovedNamesThroughVerify:
         assert moved, "sanity: verify.py's re-export block must still exist"
 
         problems: list[str] = []
-        for path in sorted(TESTS_DIR.glob("*.py")):
+        for path in sorted(TESTS_DIR.rglob("*.py")):
             for lineno, attr in _verify_dot_moved_refs(path, moved):
                 problems.append(
                     f"{path.relative_to(REPO_ROOT)}:{lineno}: verify.{attr} — "

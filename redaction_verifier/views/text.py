@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 # Floor for the visual-line clustering tolerance; the effective tolerance
 # scales with the median glyph size on the page so large form-box digits

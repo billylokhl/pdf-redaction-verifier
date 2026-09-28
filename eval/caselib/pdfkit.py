@@ -21,7 +21,7 @@ import zlib
 from pathlib import Path
 from typing import Callable
 
-import fitz
+import pymupdf as fitz
 
 FILLER = (
     "Quarterly operations summary for the regional office.",
@@ -129,8 +129,12 @@ def save(doc: fitz.Document, path: Path, **kw) -> None:
     doc.close()
 
 
-def update(path: Path, edit: Callable[[fitz.Document], None]) -> None:
-    """Apply *edit* and append it as an incremental update."""
+def update(path: Path, edit: Callable[[fitz.Document], object]) -> None:
+    """Apply *edit* and append it as an incremental update. *edit*'s
+    return value, if any, is ignored -- the parameter type is `object`,
+    not `None`, only so a one-line lambda whose last (and therefore
+    implicitly returned) expression happens to produce a value, such as
+    PyMuPDF's own `add_text_annot`'s `Annot`, is not a type error."""
     doc = fitz.open(str(path))
     edit(doc)
     doc.save(str(path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP,

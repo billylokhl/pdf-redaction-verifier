@@ -5,7 +5,7 @@ Each test pins a previously confirmed detection-gap bug.
 
 from __future__ import annotations
 
-import fitz
+import pymupdf as fitz
 
 import verify
 

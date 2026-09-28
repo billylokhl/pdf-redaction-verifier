@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 import verify
@@ -33,6 +33,7 @@ from redaction_verifier.model import (
 )
 from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
 from redaction_verifier.rules import RuleSet
+from redaction_verifier.views import OCR_DPI, _OCR_IMPORTS_OK
 
 from .conftest import REPO_ROOT, SSN, run_verify
 
@@ -297,6 +298,27 @@ class TestVersion:
         assert 'version = {attr = "verify.__version__"}' in pyproject
 
 
+class TestEnvironmentField:
+    def test_ocr_available_matches_the_running_process(self, tmp_path) -> None:
+        # main() threads its own `_OCR_IMPORTS_OK` into build_json_report
+        # as `ocr_available` (the same value that gates the OCR layer,
+        # docs/28) rather than the report re-deriving it — pin that the
+        # field is present, boolean, and matches this interpreter's own
+        # OCR availability.
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        _, data = _run(pdf, rules, tmp_path)
+        assert data["environment"]["ocr_available"] is _OCR_IMPORTS_OK
+        assert isinstance(data["environment"]["ocr_available"], bool)
+
+    def test_ocr_dpi_is_pinned(self) -> None:
+        # OCR_DPI drives the OCR view's rendering resolution and is baked
+        # into the scorecard's expectations; pin its value so a change is
+        # a deliberate, reviewed edit rather than a silent drift the suite
+        # would not otherwise catch.
+        assert OCR_DPI == 300
+
+
 class TestStructuredFields:
     def test_live_page_finding(self, tmp_path) -> None:
         pdf = _pdf(tmp_path / "live.pdf", f"SSN {SSN}")
@@ -422,7 +444,8 @@ class TestToolReturnCodeField:
         report = ScanReport()
         verify._collect_qpdf(proc, SecretMatcher([]), report)
         data = build_json_report(
-            report, 2, target=Path("t.pdf"), tool_version=verify.__version__
+            report, 2, target=Path("t.pdf"), tool_version=verify.__version__,
+            ocr_available=_OCR_IMPORTS_OK,
         )
         (warning,) = [w for w in data["warnings"] if w["code"] == "TOOL_EXIT_NONZERO"]
         assert warning["returncode"] == 3

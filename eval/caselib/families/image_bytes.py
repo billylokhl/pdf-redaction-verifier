@@ -19,7 +19,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from ..model import SSN, KnownGap, case, expect
 from ..rawpdf import build, one_page, page, stream, text

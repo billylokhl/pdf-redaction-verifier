@@ -334,15 +334,29 @@ images (recorded in full in docs/adr/0004).
   1. It is drawn by the *current* revision of the document, not only by
      an earlier, superseded revision.
   2. It is drawn by content that actually runs when a page is shown: the
-     page's own content streams, and the forms, annotation appearances
-     and patterns those draw. Not used: drawn only inside a switched-off
-     optional-content layer, only in a hidden annotation's appearance,
-     only in an annotation appearance for a non-current state (for
-     example the `/AS` "off" look of a checked box), or only inside a
-     form XObject nothing draws.
+     page's own content streams; the form XObjects, patterns, Type3
+     glyph procedures and ExtGState soft-mask groups that content (or
+     each other) invokes; and inline images (`BI`/`ID`/`EI`) drawn
+     directly inside any of it, as K17 and K19 do. A visible
+     annotation's own appearance stream counts too -- it is *not* drawn
+     by the page's content stream (the viewer runs it independently,
+     alongside the page), but it still runs when the page is shown. Not
+     used: drawn only inside a switched-off optional-content layer, only
+     in a hidden annotation's appearance, only in an annotation
+     appearance for a non-current state (for example the `/AS` "off"
+     look of a checked box), or only inside a form XObject nothing
+     draws.
   3. Some of it lands on the page after the crop box and clipping: it is
      not drawn entirely off-page, clipped to nothing, at zero size, or
      fully transparent.
+
+  An image drawn only from a Type3 font's glyph procedures is used the
+  same as one drawn from the page's own content -- but the fail-closed
+  default this rule implies costs the most on a Type3-bitmap
+  ("TeX-style") document, where every glyph is its own tiny image behind
+  its own glyph procedure: a gap in tracing that path flags the whole
+  page. Phase 3a should measure that cost specifically, not fold it into
+  the general false-positive rate.
 
   Drawn by *any* page of the document counts: a resource dictionary
   shared across pages does not make an image unused on the pages that
@@ -358,7 +372,10 @@ images (recorded in full in docs/adr/0004).
   before Phase 4b; "fully covered" is not folded into "unused".
   An image's `/SMask` or `/Mask` is used exactly when its image is used
   (owner decision, 2026-09-27; see docs/adr/0004), and is still OCR'd as
-  its own unit.
+  its own unit. A mask shared by more than one image is used only if
+  *all* of its owning images are used -- any single unused owner makes
+  it unused (owner decision, 2026-09-27; see docs/adr/0004's "Shared
+  masks").
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
 recall bound is a scheduling gate (it cannot actually be reached until

@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 import verify
 

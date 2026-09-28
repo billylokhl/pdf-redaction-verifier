@@ -115,3 +115,25 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = "verify"
 ignore_errors = true
+
+# PyMuPDF 1.28's `pymupdf` package ships py.typed, unlike the deprecated
+# `fitz` alias it replaces (#19): mypy now actually follows it instead of
+# treating it as untyped the way `ignore_missing_imports` above did for
+# `fitz`. Its bundled stubs are auto-generated and incomplete in ways
+# that only show up as attr-defined errors in the handful of modules
+# below: a module-level constant set outside the stub's static view
+# (`PDF_WIDGET_TYPE_TEXT`, `PDF_ENCRYPT_KEEP`, `PDF_ENCRYPT_AES_256`,
+# `PDF_PERM_PRINT`) or `Document.__iter__` (real and used elsewhere in
+# this codebase too, e.g. `for page in doc:` in `verify.py`, which is
+# exempted from mypy entirely by the override above). Disabling only
+# `attr-defined`, only on these modules, keeps every other check (and
+# every other module's attr-defined check) intact.
+[[tool.mypy.overrides]]
+module = [
+    "caselib.pdfkit",
+    "caselib.families.carriers",
+    "caselib.families.clean",
+    "caselib.families.live",
+    "scorecard.corpus",
+]
+disable_error_code = ["attr-defined"]
