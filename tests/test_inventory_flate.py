@@ -74,14 +74,15 @@ def test_large_streams_cross_every_step_boundary() -> None:
 
 @given(st.data())
 def test_png_predictors_round_trip(draw: st.DataObject) -> None:
-    colors = draw.draw(st.integers(1, 4))
-    bits = draw.draw(st.sampled_from([8, 16]))
+    colors = draw.draw(st.integers(1, 5))
+    bits = draw.draw(st.sampled_from([1, 2, 4, 8, 16]))
     columns = draw.draw(st.integers(1, 12))
     row = (colors * bits * columns + 7) // 8
     raw = draw.draw(st.binary(min_size=row, max_size=row * 6).map(
         lambda b: b[:len(b) - len(b) % row]))
     kinds = draw.draw(st.lists(st.integers(0, 4), min_size=1, max_size=6))
-    packed = zlib.compress(_png_encode(raw, row, max(1, colors * bits // 8), kinds))
+    bpp = -(-colors * bits // 8)  # whole bytes per pixel, rounded up (PNG spec)
+    packed = zlib.compress(_png_encode(raw, row, bpp, kinds))
     decoded = flate_decode(packed, Predictor(draw.draw(st.integers(10, 15)), colors, bits,
                                              columns))
     assert decoded.data == raw and decoded.complete
@@ -102,6 +103,7 @@ def test_a_truncated_stream_keeps_its_output_and_is_flagged() -> None:
     packed = zlib.compress(raw)
     decoded = flate_decode(packed[:len(packed) // 2])
     assert raw.startswith(decoded.data) and not decoded.complete
+    assert decoded.consumed == len(packed) // 2
     assert _reasons(decoded) == ["FLATE_TRUNCATED"]
 
 
@@ -110,6 +112,7 @@ def test_bytes_after_the_end_marker_are_flagged(extra: bytes, non_ws: int) -> No
     packed = zlib.compress(b"hello")
     decoded = flate_decode(packed + extra)
     assert decoded.data == b"hello" and decoded.consumed == len(packed)
+    assert not decoded.complete
     assert [(f.reason.name, dict(f.params)) for f in decoded.flags] == [
         ("AFTER_STREAM_END", {"consumed": len(packed), "extra": len(extra),
                               "non_whitespace": non_ws})]
@@ -140,6 +143,32 @@ def test_a_predictor_we_cannot_undo_is_flagged(parms: Predictor) -> None:
     assert _reasons(decoded) == ["BAD_DECODE_PARMS"] and decoded.data == b"\x00abc"
 
 
+def test_a_tiff_partial_row_is_flagged() -> None:
+    # qpdf pads the last row, MuPDF does not: readers disagree.
+    decoded = flate_decode(zlib.compress(bytes(17)), Predictor(2, 1, 8, 5))
+    assert [(f.reason.name, dict(f.params)) for f in decoded.flags] == [
+        ("PREDICTOR_ERROR", {"partial_row_bytes": 2})]
+
+
+def test_a_huge_row_never_allocates_more_than_the_data() -> None:
+    import tracemalloc
+    tracemalloc.start()
+    flate_decode(zlib.compress(b"\x02"), Predictor(12, 32, 16, 1 << 24))
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < 10_000_000
+
+
+def test_paeth_ties_prefer_left_then_up() -> None:
+    # a=b=c: pa=pb=pc=0, so the left neighbour wins; row 2 predicts from row 1.
+    raw = bytes([10, 10, 10, 10])
+    packed = zlib.compress(_png_encode(raw, 2, 1, [4]))
+    assert flate_decode(packed, Predictor(12, 1, 8, 2)).data == raw
+    tie = bytes([4, 5, 3, 0])   # a=3 b=5 c=4 after decoding: pa=1 pb=1 pc=0 -> c
+    assert flate_decode(zlib.compress(_png_encode(tie, 2, 1, [4])),
+                        Predictor(12, 1, 8, 2)).data == tie
+
+
 def test_bad_row_types_and_partial_rows_are_flagged() -> None:
     decoded = flate_decode(zlib.compress(b"\x07abc\x00de"), Predictor(12, columns=3))
     assert [(f.reason.name, dict(f.params)) for f in decoded.flags] == [
@@ -164,14 +193,25 @@ def _flate_cases(draw: st.DrawFn) -> tuple[bytes, bytes]:
     raw = draw(st.binary(max_size=200) | st.sampled_from([b"BT /F1 12 Tf (x) Tj ET", b""]))
     parms = b""
     body = raw
-    if draw(st.booleans()):
+    mode = draw(st.sampled_from(["none", "png", "png", "tiff"]))
+    if mode != "none":
         columns = draw(st.integers(1, 8))
-        body = raw[:len(raw) - len(raw) % columns] or bytes(columns)
-        raw = body
-        kinds = draw(st.lists(st.integers(0, 4), min_size=1, max_size=4))
-        p = draw(st.integers(10, 15))
-        body = _png_encode(raw, columns, 1, kinds)
-        parms = b" /DecodeParms << /Predictor %d /Columns %d >>" % (p, columns)
+        colors = draw(st.integers(1, 5))
+        bits = 8 if mode == "tiff" else draw(st.sampled_from([1, 2, 4, 8, 16]))
+        row = (colors * bits * columns + 7) // 8
+        whole = raw[:len(raw) - len(raw) % row] or bytes(row)
+        # Sometimes a partial last row: readers disagree on it, so it must flag.
+        body = raw = whole + (raw[:draw(st.integers(0, row - 1))] if draw(st.booleans())
+                              else b"")
+        if mode == "tiff":
+            body = _tiff_encode(raw, row, colors)
+            p = 2
+        else:
+            kinds = draw(st.lists(st.integers(0, 4), min_size=1, max_size=4))
+            body = _png_encode(raw, row, -(-colors * bits // 8), kinds)
+            p = draw(st.integers(10, 15))
+        parms = (b" /DecodeParms << /Predictor %d /Colors %d /BitsPerComponent %d"
+                 b" /Columns %d >>" % (p, colors, bits, columns))
     packed = zlib.compress(body, draw(st.integers(0, 9)))
     packed = draw(st.sampled_from([
         packed, packed, packed, packed[:-1], packed[:-4], packed + b"\n", packed + b"xx",
@@ -209,7 +249,7 @@ def test_a_canonical_decode_matches_every_reader(
     predictor = None
     if parms:
         fields = parms.split()
-        predictor = Predictor(int(fields[3]), 1, 8, int(fields[5]))
+        predictor = Predictor(int(fields[3]), int(fields[5]), int(fields[7]), int(fields[9]))
     ours = flate_decode(packed, predictor)
     if not ours.complete:
         return
