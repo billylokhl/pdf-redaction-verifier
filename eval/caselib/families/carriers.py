@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-import fitz
+import pymupdf as fitz
 
 from ..model import SSN, case, expect
 from ..pdfkit import save

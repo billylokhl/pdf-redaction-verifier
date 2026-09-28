@@ -334,15 +334,29 @@ this ADR is its home.
   1. It is drawn by the *current* revision of the document, not only by
      an earlier, superseded revision.
   2. It is drawn by content that actually runs when a page is shown: the
-     page's own content streams, and the forms, annotation appearances
-     and patterns those draw. Not used: drawn only inside a switched-off
-     optional-content layer, only in a hidden annotation's appearance,
-     only in an annotation appearance for a non-current state (for
-     example the `/AS` "off" look of a checked box), or only inside a
-     form XObject nothing draws.
+     page's own content streams; the form XObjects, patterns, Type3
+     glyph procedures and ExtGState soft-mask groups that content (or
+     each other) invokes; and inline images (`BI`/`ID`/`EI`) drawn
+     directly inside any of it, as K17 and K19 do. A visible
+     annotation's own appearance stream counts too -- it is *not* drawn
+     by the page's content stream (the viewer runs it independently,
+     alongside the page), but it still runs when the page is shown. Not
+     used: drawn only inside a switched-off optional-content layer, only
+     in a hidden annotation's appearance, only in an annotation
+     appearance for a non-current state (for example the `/AS` "off"
+     look of a checked box), or only inside a form XObject nothing
+     draws.
   3. Some of it lands on the page after the crop box and clipping: it is
      not drawn entirely off-page, clipped to nothing, at zero size, or
      fully transparent.
+
+  An image drawn only from a Type3 font's glyph procedures is used the
+  same as one drawn from the page's own content -- but the fail-closed
+  default this rule implies costs the most on a Type3-bitmap
+  ("TeX-style") document, where every glyph is its own tiny image behind
+  its own glyph procedure: a gap in tracing that path flags the whole
+  page. Phase 3a should measure that cost specifically, not fold it into
+  the general false-positive rate.
 
   Drawn by *any* page of the document counts: a resource dictionary
   shared across pages does not make an image unused on the pages that
@@ -359,6 +373,19 @@ this ADR is its home.
 
   **Masks (owner decision, 2026-09-27).** An image's `/SMask` or `/Mask`
   is used exactly when the image it belongs to is used; it is drawn only
-  as part of that image. It is still decoded and OCR'd as its own unit
-  (REDESIGN §4's image row), so text hidden in a mask is still read. The
-  mask of an unused image is unused and `FLAGGED` with it.
+  as part of that image.
+
+  **Shared masks (owner decision, 2026-09-27).** When the same mask xref
+  is shared by more than one image, it is used only if *all* of its
+  owning images are used -- if even one owner is unused, the mask is
+  unused and `FLAGGED` with it, regardless of whether another owner is
+  used. This is the fail-closed direction, not the permissive one:
+  treating the mask as used because *any* single owner is used would let
+  it escape decision D's unconditional `FLAGGED` (whatever OCR finds)
+  merely by attaching it to one harmless, visibly-used image alongside
+  an unused one -- exactly the way to hide content in a mask while
+  keeping a plausible, innocent-looking owner. It is still decoded and
+  OCR'd as its own unit (REDESIGN §4's image row) whether used or
+  unused, so text hidden in a mask is read either way; being unused only
+  changes whether a clean OCR/decode result can certify it, per decision
+  D.

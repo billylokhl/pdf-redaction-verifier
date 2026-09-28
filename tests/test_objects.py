@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 import verify
@@ -399,8 +399,7 @@ class TestOrphanLabel:
         doc.pdf_trailer = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope"))
         report = ScanReport()
         verify.scan_pdf_objects(
-            doc, SecretMatcher([Secret("Target SSN",
-                                                     normalize_string(SSN))]),
+            doc, SecretMatcher([Secret("Target SSN", normalize_string(SSN))]),
             (), report)
         doc.close()
         assert report.findings

@@ -111,6 +111,18 @@ def _fatal_import(what: str, exc: BaseException) -> NoReturn:
     not turn this handler into a second, worse traceback in place of the
     first. Every step here is wrapped accordingly, down to the write
     itself.
+
+    Exits via `os._exit(2)`, not `sys.exit(2)`: a dependency whose module
+    body already ran far enough to replace `sys.exit` (accidentally or
+    adversarially) before raising would make `sys.exit(2)` a no-op here,
+    falling through into the rest of verify.py's module body with none of
+    its own guards run yet. `os._exit` is a direct syscall a module-level
+    monkeypatch cannot intercept, so this guard's exit code no longer
+    depends on `run_cli`'s own `except BaseException: os._exit(...)`
+    backstop to still exit 2. It skips buffer flushing like any os._exit
+    call (see run_cli's own docstring), so stderr is flushed explicitly
+    first — best-effort, since a broken stream must not turn this into an
+    unguarded crash either.
     """
     try:
         detail = f"{type(exc).__name__}: {exc}"
@@ -124,13 +136,14 @@ def _fatal_import(what: str, exc: BaseException) -> NoReturn:
             f"[ERROR] cannot import {what} ({detail}); install it or run "
             "verify.py from the repository\n"
         )
+        sys.stderr.flush()
     except BaseException:
         pass
-    sys.exit(2)
+    os._exit(2)
 
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF
 except BaseException as exc:  # pragma: no cover
     _fatal_import("PyMuPDF", exc)
 
@@ -2583,6 +2596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if json_path is not None:
             data = build_json_report(
                 report, code, error, target=pdf_path, tool_version=__version__,
+                ocr_available=_OCR_IMPORTS_OK,
                 private_paths=(pdf_path, args.secrets),
             )
             if not write_json_report(json_path, data) and code == 0:

@@ -52,6 +52,18 @@ does not defend against deliberately malicious code in the change under
 review (edits to this script's logic, runtime code mutating what the
 tests read); those are visible in the diff and left to the mandatory
 review. See eval/README.md.
+
+Two more things this trusts, unvalidated, within that same threat model:
+``CHECKER_PATH`` below is a hard-coded literal naming this script's own
+repo-root-relative path, not derived or verified against ``__file__`` —
+a future rename of this script needs a matching hand-edit here, and
+nothing checks that they still agree. And an explicit ``--base`` is used
+exactly as given: this script does not check that it resolves to a real
+ref, or that it names an actual ancestor of the tree under test, before
+comparing against it — a bad or adversarial ``--base`` only makes the
+comparison meaningless (or fails the ordinary way when git cannot
+resolve it), never unsafe, since a malicious ``--base`` value is itself
+a change under review the same as any other.
 """
 
 from __future__ import annotations

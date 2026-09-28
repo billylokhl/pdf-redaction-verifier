@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from ..model import SSN, KnownGap, case, expect
 from ..pdfkit import body, embedded_font, save
