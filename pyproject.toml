@@ -30,7 +30,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest==9.1.1", "pytest-cov==7.1.0"]
+# Hypothesis drives the inventory's property tests (docs/REDESIGN.md
+# Phase 3a); tests/conftest.py registers its deterministic `ci` profile.
+test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.2"]
 
 [dependency-groups]
 # Lint tools, pinned exact like everything else here: CI's lint job
@@ -115,3 +117,22 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = "verify"
 ignore_errors = true
+
+# The new path is on the exit-0 audit surface (docs/REDESIGN.md
+# Principle 2): strict from its first line. These are --strict's flags
+# spelled out: `strict = true` in an override section applies to every
+# module, not just this one. warn_redundant_casts is global-only.
+[[tool.mypy.overrides]]
+module = ["redaction_verifier.inventory", "redaction_verifier.inventory.*", "redaction_verifier.budget"]
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true

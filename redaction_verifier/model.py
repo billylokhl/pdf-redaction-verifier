@@ -6,12 +6,17 @@ and the Warn/WarnList machinery that keeps every warning tied to a
 registered code. Behaviour is byte-identical to the code this replaced;
 verify.py re-exports every name here so existing imports, `verify.X`
 references and the CLI keep working unchanged.
+
+The "Ledger types" section at the end is new (Phase 3a): the frozen
+types of docs/REDESIGN.md §4 that the inventory and, later, the ledger
+build on. Nothing legacy uses them yet (shadow mode, §6).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, TypeAlias
 
 
 class VerifyError(Exception):
@@ -251,3 +256,140 @@ class ScanReport:
     @property
     def degraded(self) -> bool:
         return bool(self.warnings)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ledger types (REDESIGN §4)
+# ──────────────────────────────────────────────────────────────────────────
+# Closed enums and frozen records for the new path. A Flag carries only
+# a closed reason, an optional byte span and named integers -- never
+# document bytes -- so it can cross the child→parent boundary (§4,
+# "Process boundary") and appear in any log or report as is.
+class Status(Enum):
+    """An obligation's state (Principle 1). Every obligation starts
+    UNEXAMINED; only DECODED and NOT_APPLICABLE (with an NAReason) can
+    ever discharge one."""
+
+    UNEXAMINED = "unexamined"
+    DECODED = "decoded"
+    NOT_APPLICABLE = "not_applicable"
+    FLAGGED = "flagged"
+    UNREADABLE = "unreadable"
+    FAILED = "failed"
+
+
+class NAReason(Enum):
+    """Exactly the four reasons of docs/adr/0003 -- extended only by ADR.
+    None of them exempts a unit's bytes from the raw matcher (ADR 0003's
+    governing rule)."""
+
+    XREF_STREAM_FIELD_DATA = "xref_stream_field_data"
+    OBJSTM_HEADER_TABLE = "objstm_header_table"
+    FONT_PROGRAM_SPANNED = "font_program_spanned"
+    IMAGE_DATA_CONSUMED = "image_data_consumed"
+
+
+class FlagReason(Enum):
+    """Why something was flagged. Closed: a member is added by the PR
+    that first emits it, and tests pin that every member is emitted."""
+
+    UNINDEXED_NON_WHITESPACE = "unindexed_non_whitespace"
+    CONTESTED_SPAN = "contested_span"
+    CLAIM_OUT_OF_RANGE = "claim_out_of_range"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+Reason: TypeAlias = NAReason | FlagReason
+
+
+class UnitKind(Enum):
+    """What a unit of the file is. Top-level kinds partition the file's
+    bytes (the tiling); OBJSTM_MEMBER and STREAM_SLACK sit inside another
+    unit (``UnitRef.within``)."""
+
+    HEADER = "header"                  # %PDF-x.y and the binary-marker comment
+    XREF_TABLE = "xref_table"          # classic xref section + trailer
+    XREF_EPILOGUE = "xref_epilogue"    # startxref, its offset, %%EOF
+    WHITESPACE = "whitespace"          # an unclaimed run of PDF whitespace
+    UNINDEXED = "unindexed"            # an unclaimed run with other bytes
+    OBJECT = "object"                  # N G obj ... endobj reached via xref
+    DEAD_BODY = "dead_body"            # N G obj ... endobj no xref reaches
+    OBJSTM_HEADER = "objstm_header"    # an /ObjStm's N G offset pairs
+    OBJSTM_MEMBER = "objstm_member"    # an object inside an /ObjStm
+    STREAM_SLACK = "stream_slack"      # bytes between /Length and endstream
+
+
+_KIND_ORDER: dict[UnitKind, int] = {kind: i for i, kind in enumerate(UnitKind)}
+
+
+@dataclass(frozen=True)
+class UnitRef:
+    """A unit's identity: its kind and start offset, within its parent
+    unit's coordinates when nested. ``obj``/``gen`` are informational
+    (a label for humans) and not part of identity."""
+
+    kind: UnitKind
+    start: int
+    within: UnitRef | None = None
+    obj: int | None = field(default=None, compare=False)
+    gen: int | None = field(default=None, compare=False)
+
+    def sort_key(self) -> tuple[tuple[int, int], ...]:
+        """A total order consistent with ``==``: (start, kind) from the
+        outermost unit inward. Iterative, so a deep chain cannot
+        overflow the stack."""
+        path: list[tuple[int, int]] = []
+        ref: UnitRef | None = self
+        while ref is not None:
+            path.append((ref.start, _KIND_ORDER[ref.kind]))
+            ref = ref.within
+        path.reverse()
+        return tuple(path)
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class Span:
+    """A half-open byte range ``[start, end)``; empty when start == end."""
+
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        if not (_is_int(self.start) and _is_int(self.end) and 0 <= self.start <= self.end):
+            raise ValueError("Span needs integers with 0 <= start <= end")
+
+    def __len__(self) -> int:
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
+class Flag:
+    """An anomaly: a closed reason, where (if anywhere), and named
+    integers. Never document bytes."""
+
+    reason: FlagReason
+    span: Span | None = None
+    params: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, FlagReason):
+            raise TypeError("Flag.reason must be a FlagReason")
+        if not all(
+            isinstance(p, tuple) and len(p) == 2 and isinstance(p[0], str) and _is_int(p[1])
+            for p in self.params
+        ):
+            raise TypeError("Flag.params must be (name, int) pairs")
+
+
+@dataclass(frozen=True)
+class Unit:
+    """A unit of the file: its identity, the byte spans it covers (in
+    its parent's coordinates) and anything flagged while finding it."""
+
+    ref: UnitRef
+    spans: tuple[Span, ...]
+    flags: tuple[Flag, ...] = ()
