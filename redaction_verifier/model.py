@@ -6,6 +6,11 @@ and the Warn/WarnList machinery that keeps every warning tied to a
 registered code. Behaviour is byte-identical to the code this replaced;
 verify.py re-exports every name here so existing imports, `verify.X`
 references and the CLI keep working unchanged.
+
+The "Ledger types" section at the end is new (Phase 3a): it re-exports
+redaction_verifier.ledger, the frozen types of docs/REDESIGN.md §4 that
+the inventory and, later, the ledger build on. Nothing legacy uses
+them yet (shadow mode, §6).
 """
 
 from __future__ import annotations
@@ -251,3 +256,21 @@ class ScanReport:
     @property
     def degraded(self) -> bool:
         return bool(self.warnings)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ledger types (REDESIGN §4)
+# ──────────────────────────────────────────────────────────────────────────
+# Defined in redaction_verifier.ledger (checked by mypy in strict mode)
+# and re-exported here, the model's single import point.
+from .ledger import (  # noqa: E402
+    Flag as Flag,
+    FlagReason as FlagReason,
+    NAReason as NAReason,
+    Reason as Reason,
+    Span as Span,
+    Status as Status,
+    Unit as Unit,
+    UnitKind as UnitKind,
+    UnitRef as UnitRef,
+)

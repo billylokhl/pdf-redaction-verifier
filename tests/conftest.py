@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from hypothesis import settings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -50,6 +51,16 @@ if os.environ.get("REQUIRE_FULL_ENV") == "1" and not FULL_ENV:
         f"REQUIRE_FULL_ENV=1 but the full environment is unavailable: "
         f"missing {', '.join(_missing)}"
     )
+
+# Hypothesis profiles. `ci` (the default whenever CI is set, as on GitHub
+# Actions) is reproducible: derandomized, no example database, no
+# deadline on shared runners. `dev` (the local default) explores freshly
+# each run and remembers failures in .hypothesis/. HYPOTHESIS_PROFILE
+# overrides either.
+settings.register_profile("ci", derandomize=True, deadline=None, database=None)
+settings.register_profile("dev", deadline=None, max_examples=300)
+settings.load_profile(
+    os.environ.get("HYPOTHESIS_PROFILE") or ("ci" if os.environ.get("CI") else "dev"))
 
 requires_full_env = pytest.mark.skipif(
     not FULL_ENV,

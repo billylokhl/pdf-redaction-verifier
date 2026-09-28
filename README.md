@@ -416,7 +416,7 @@ resolving or installing differently against the same lock file):
 uv sync --extra test --group dev          # Install test + lint/type-check tools
 uv run pytest                             # Run the test suite
 uv run ruff check .                       # Lint code
-uv run mypy                               # Type check (redaction_verifier, eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
+uv run mypy                               # Type check (redaction_verifier -- strict on inventory/budget/ledger -- eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
 uv run pytest tests/ --cov=verify --cov=caselib --cov=redaction_verifier  # Run tests with coverage report
 ```
 
@@ -433,7 +433,10 @@ ruff (correctness) and mypy (types, on `redaction_verifier` and the
 evaluation harness — `eval/caselib`, `eval/scorecard`, `eval/gallery`,
 `eval/check_ratchets.py`; `verify.py` itself is excluded), and reports
 coverage on the Linux Python 3.12 job; the commands above run the same
-checks locally. Two suites go further and test robustness directly:
+checks locally. Property tests use Hypothesis: with `CI` set (as on
+GitHub Actions) they run the derandomized `ci` profile, locally the `dev`
+profile explores fresh examples each run; `HYPOTHESIS_PROFILE=ci`
+reproduces CI exactly. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
