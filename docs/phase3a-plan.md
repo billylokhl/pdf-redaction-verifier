@@ -164,7 +164,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   skip them; test in test_inventory_build.py); a comment anywhere else stays UNINDEXED.
   New flags: XREF_EPILOGUE_MISMATCH, REVISION_AMBIGUOUS, OBJSTM_MALFORMED (/N, /First, a
   header not exactly 2N unsigned integers, a repeated number, offsets not increasing),
-  OBJSTM_MEMBER_INVALID (no value, a stream, an object or xref stream), OBJSTM_ENTRY_MISMATCH.
+  OBJSTM_MEMBER_INVALID (no value, a stream, an object or xref stream; a bare `null` -- MuPDF
+  takes it for a missing object and repairs the whole file -- or a lone `N G R`, which both
+  readers read as the integer N; a token running across /First or a member's bound, which
+  the readers read whole), OBJSTM_ENTRY_MISMATCH. A dead object stream (a DEAD_BODY) is
+  not decoded: its compressed bytes are 3b/Phase 4's to scan as raw bytes.
   Flags are distinct and capped per file (Limits.max_flags_per_file, 10,000, then one
   FLAGS_TRUNCATED with the limit). The import guard's one exemption: the dev entry point
   `inventory/__main__.py` may import json and sys, nothing may import it, and every other check

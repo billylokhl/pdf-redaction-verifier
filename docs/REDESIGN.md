@@ -286,8 +286,9 @@ are never enumerated via `xref_length()`.
   files), linearized first-page sections (`startxref 0`, forward
   `/Prev`). An unknown form is a flag.
 - **Byte tiling**: every byte belongs to exactly one of header (incl.
-  the binary-marker comment), object, xref section/stream + trailer,
-  `%%EOF`, or PDF whitespace. Anything else is an `UNINDEXED` unit — any
+  the binary-marker comment and any comment lines right after it),
+  object, xref section/stream + trailer, `%%EOF` (incl. comment lines
+  right after an intermediate one), or PDF whitespace. Anything else is an `UNINDEXED` unit — any
   non-whitespace byte is flagged; a range that parses as `obj…endobj`
   goes through the object decoders. Overlapping spans are a flag.
 - **Ambiguity detection** (the *readers* are the authority, not our

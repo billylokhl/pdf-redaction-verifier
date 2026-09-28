@@ -33,8 +33,8 @@ from typing import Final
 from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
-from .lexer import Lexer, TokenKind
-from .objects import IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfRef
+from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
+from .objects import IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull, PdfRef
 from .tiling import check_tiling, tile
 from .types import Inventory, ObjectStream, Region
 from .xref import COMPRESSED, IN_USE, Chain, Entry, _int, _name, _predictor, read_chain
@@ -396,7 +396,7 @@ class _Builder:
                 return malformed(len(numbers) // 2)
             numbers.append(int(text))
             table_start, table_end = min(table_start, token.start), token.end
-        if len(numbers) != 2 * count:
+        if len(numbers) != 2 * count or _glued(raw, first):
             return malformed(len(numbers) // 2)
         if numbers:
             claims.append((UnitRef(UnitKind.OBJSTM_HEADER, table_start, within=ref),
@@ -419,7 +419,14 @@ class _Builder:
             # Bytes after the value, up to the next member, are left
             # unclaimed: the decoded tiling flags any but whitespace.
             value = parsed.value
-            invalid = (value is None or _STREAM_KEYWORD.match(raw, parsed.span.end, end) is not None
+            # A member is canonical only as a value both readers read as
+            # we do: MuPDF takes a null member for a missing object (and
+            # repairs the whole file), both read a lone `N G R` as the
+            # integer N, and a token running across the bound is read
+            # whole by the readers but cut here.
+            invalid = (value is None or isinstance(value, (PdfNull, PdfRef))
+                       or _glued(raw, first + at) or _glued(raw, end)
+                       or _STREAM_KEYWORD.match(raw, parsed.span.end, end) is not None
                        or (isinstance(value, PdfDict)
                            and _name(value.get(b"Type")) in (b"ObjStm", b"XRef")))
             if invalid:
@@ -532,3 +539,15 @@ def _nested(flag: Flag, where: Span, stream: int) -> Flag:
     return Flag(flag.reason, where, flag.params + (
         ("stream", stream), ("decoded_start", span.start), ("decoded_end", span.end)))
 
+
+_SEPARATORS: Final = frozenset(WHITESPACE + DELIMITERS)
+_OPENERS: Final = frozenset(b"/")
+
+
+def _glued(raw: bytes, bound: int) -> bool:
+    """Does a token run across *bound* (an object stream's /First or a
+    member's offset)? We lex up to the bound; the readers lex the token
+    whole (`12|3`, `/Foo|true`, `/|Foo`). A string, hex string, array or
+    dictionary cut there is already flagged unterminated."""
+    return (0 < bound < len(raw) and raw[bound] not in _SEPARATORS
+            and (raw[bound - 1] not in _SEPARATORS or raw[bound - 1] in _OPENERS))

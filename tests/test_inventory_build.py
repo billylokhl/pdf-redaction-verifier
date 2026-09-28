@@ -743,14 +743,14 @@ def _flip(positions: list[int], values: list[int]) -> Callable[[bytes], bytes]:
     def mutate(packed: bytes) -> bytes:
         out = bytearray(packed)
         probe = packed.index(PROBE)
-        pool = list(range(packed.index(b"\n"))) + list(range(probe, len(packed)))
+        pool = list(range(packed.index(b"\n") + 1)) + list(range(probe, len(packed)))
         for pos, value in zip(positions, values):
             out[pool[pos % len(pool)]] = value
         return bytes(out)
     return mutate
 
 
-_BYTES = st.sampled_from(list(b"0123456789 \n\r()<>[]/%Rnobjstreamdx\x00\xff"))
+_BYTES = st.sampled_from(list(b"0123456789 \n\r()<>[]/%Rnobjstreamdxulf\x00\xff"))
 
 
 @requires_qpdf
@@ -781,6 +781,69 @@ def test_mutated_files_are_flagged_or_agree_with_the_readers(
             out[pool[pos % len(pool)]] = value
         data = bytes(out)
     inventory_agrees(data, tmp_path)
+
+
+# ── Member values and bounds (PR #45 review) ──────────────────────────────
+_MEMBER_VALUES = [b"null", b"true", b"false", b"3 0 R", b"123", b"-4", b"1.5", b"/Foo",
+                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 >>", b"[1 2]"]
+
+
+def _members_at(values: list[bytes], seps: list[bytes], head_sep: bytes,
+                shifts: list[int], first_shift: int) -> bytes:
+    """Object stream 4 holds members 6 and 7 (*values*) then the catalog,
+    with the header's offsets and /First shifted off the true bounds."""
+    payload, offsets = b"", []
+    for value, sep in zip(values + [CATALOG], seps + [b"\n"]):
+        offsets.append(len(payload))
+        payload += value + sep
+    shifted = [max(0, o + d) for o, d in zip(offsets, shifts + [0])]
+    header = b"6 %d 7 %d 1 %d" % tuple(shifted)
+    packed = header + head_sep + payload
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] "
+                            b"/Resources << >> /Annots [6 0 R] >>"), 0)
+    table[4] = (1, w.stream(4, b" /Type /ObjStm /N 3 /First %d /Filter /FlateDecode" % max(
+        0, len(header) + len(head_sep) + first_shift), zlib.compress(packed)), 0)
+    table |= {6: (2, 4, 0), 7: (2, 4, 1), 1: (2, 4, 2)}
+    section = w.xref_stream(8, table, b"/Size 9 /Root 1 0 R")
+    w.epilogue(section)
+    return bytes(w.out)
+
+
+@pytest.mark.parametrize(("values", "seps", "head_sep", "shifts", "first_shift"), [
+    ([b"null", b"1"], [b"\n", b"\n"], b"\n", [0, 0], 0),         # MuPDF: missing, repairs
+    ([b"3 0 R", b"1"], [b"\n", b"\n"], b"\n", [0, 0], 0),        # readers: the integer 3
+    ([b"123", b"1"], [b"\n", b"\n"], b"", [0, 0], -1),           # /First inside the header
+    ([b"123", b"1"], [b"", b"\n"], b"\n", [0, -1], 0),           # `12|3`
+    ([b"/Footrue", b"1"], [b"", b"\n"], b"\n", [0, -4], 0),      # `/Foo|true`
+])
+def test_members_readers_read_otherwise_are_flagged(
+        values: list[bytes], seps: list[bytes], head_sep: bytes, shifts: list[int],
+        first_shift: int) -> None:
+    found = reasons(_members_at(values, seps, head_sep, shifts, first_shift))
+    assert {"OBJSTM_MEMBER_INVALID", "OBJSTM_MALFORMED"} & set(found), found
+
+
+def test_clean_members_at_their_bounds_have_no_flag() -> None:
+    assert reasons(_members_at([b"(x)", b"/Foo"], [b"\n", b" "], b"\n", [0, 0], 0)) == []
+
+
+@requires_qpdf
+@settings(max_examples=max(EXAMPLES, 60), suppress_health_check=[
+    HealthCheck.too_slow, HealthCheck.function_scoped_fixture])
+@given(st.lists(st.sampled_from(_MEMBER_VALUES), min_size=2, max_size=2),
+       st.lists(st.sampled_from([b"", b" ", b"\n"]), min_size=2, max_size=2),
+       st.sampled_from([b"", b"\n"]), st.lists(st.integers(-3, 3), min_size=2, max_size=2),
+       st.integers(-2, 2))
+def test_members_at_any_bound_are_flagged_or_agree_with_the_readers(
+        tmp_path: Path, values: list[bytes], seps: list[bytes], head_sep: bytes,
+        shifts: list[int], first_shift: int) -> None:
+    """Top-level scalars (null, a lone `N G R`) and /First or member
+    offsets anywhere, mid-token included: flagged, or read as the readers
+    read them."""
+    inventory_agrees(_members_at(values, seps, head_sep, shifts, first_shift), tmp_path)
 
 
 # ── Allowlisted leniency: comment lines after the header and %%EOF ────────
@@ -817,7 +880,7 @@ def _case_pdf(case_id: str, tmp: Path) -> bytes:
 @pytest.mark.parametrize("case_id", CASE_SUBSET)
 def test_case_library_files_inventory_and_agree(case_id: str, tmp_path: Path) -> None:
     data = _case_pdf(case_id, tmp_path)
-    agreed = inventory_agrees(data, tmp_path, members_per_revision=4)
+    agreed = inventory_agrees(data, tmp_path)
     # Only the after-%%EOF leak case is flagged (XREF_TAIL; its tail unclaimed).
     assert agreed != case_id.startswith("file.after-final-eof"), case_id
 
@@ -834,7 +897,7 @@ def test_every_case_library_file_inventories_and_agrees(tmp_path: Path) -> None:
         if case.requires - have:
             continue
         data = build(case, tmp_path / "case.pdf").read_bytes()
-        if not inventory_agrees(data, tmp_path, members_per_revision=4):
+        if not inventory_agrees(data, tmp_path):
             flagged.append(case_id)
     assert all(c.startswith("file.after-final-eof") for c in flagged), flagged
 
