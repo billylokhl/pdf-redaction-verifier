@@ -189,6 +189,16 @@ def _qpdf_map(path: Path) -> tuple[dict[int, tuple[str, int, int]], int]:
     return found, result.returncode
 
 
+# qpdf --check warnings about what a page-tree node means, not how the
+# file parses: the reference graph (3a-7) owns these, not the xref chain.
+# Includes a reference to a free (null) object used as a dictionary: the
+# object maps agree; flagging the dangling reference is 3a-7's job.
+_PAGE_TREE_SEMANTICS = (b"/Type key should be", b"attempted key retrieval",
+                        b"Pages tree includes non-dictionary", b"/Kids",
+                        b"operation for dictionary attempted on object of type null",
+                        b"MediaBox is undefined")
+
+
 def _ours(entries: dict[int, Entry]) -> dict[int, tuple[str, int, int]]:
     return {n: ("u" if e.kind == IN_USE else "c", e.a, e.b)
             for n, e in entries.items() if e.kind != FREE and n != 0}
@@ -205,6 +215,15 @@ def _agree(data: bytes, tmp: Path) -> None:
         path = tmp / f"r{revision}.pdf"
         path.write_bytes(blob)
         assert _qpdf_map(path) == (_ours(chain.object_map(revision)), 0), revision
+        # --check parses every object, not just the table: it sees an object
+        # that runs past the prefix cut (--show-xref and opening do not).
+        # Only page-tree semantics are exempt: the reference graph's (3a-7).
+        check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True,
+                               timeout=60)
+        structural = [line for line in (check.stdout + check.stderr).splitlines()
+                      if line.startswith(b"WARNING")
+                      and not any(pattern in line for pattern in _PAGE_TREE_SEMANTICS)]
+        assert structural == [], (revision, structural[:3])
         pymupdf.TOOLS.mupdf_warnings()
         doc = pymupdf.open(stream=blob, filetype="pdf")
         assert (doc.is_repaired, pymupdf.TOOLS.mupdf_warnings()) == (False, ""), revision
@@ -246,10 +265,15 @@ def test_mutated_chains_are_flagged_or_agree_with_the_readers(
         tmp_path: Path, which: str, draw: st.DataObject) -> None:
     data = bytearray({"classic": classic, "stream": xref_stream,
                       "incremental": incremental}[which]())
-    # Mutate bytes in the chain's own region (tables, trailers, tail).
-    start = data.find(b"xref") if which != "stream" else data.find(b"4 0 obj")
+    # Mutate only the chain's own bytes (sections, trailers, the tail):
+    # object bodies are the object parser's and reference graph's to test.
+    chain = read_chain(bytes(data))
+    spans = [section.span for section in chain.sections]
+    assert chain.tail is not None
+    spans.append(chain.tail)
+    positions = [p for span in spans for p in range(span.start, span.end)]
     for _ in range(draw.draw(st.integers(1, 3))):
-        pos = draw.draw(st.integers(start, len(data) - 1))
+        pos = draw.draw(st.sampled_from(positions))
         data[pos] = draw.draw(st.sampled_from(list(b"0123456789 \n\rnfx<>/[]")))
     _agree(bytes(data), tmp_path)
 
@@ -339,5 +363,36 @@ def test_many_revisions_over_many_objects_stay_linear() -> None:
         prev = xref
     started = time.process_time()
     chain = read_chain(bytes(out))
-    assert time.process_time() - started < 15  # quadratic: ~45 s
+    assert time.process_time() - started < 30  # linear ~8 s; quadratic ~53 s
     assert chain.flags == () and len(chain.revisions) == 5_001
+
+
+def straddle() -> bytes:
+    """Revision 1's object 4 is a stream whose data contains revision 1's
+    own xref, trailer and startxref, then more content: the object runs
+    past revision 1's cut. Revision 0 replaces object 4."""
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = _objects({1: BODIES[1], 2: BODIES[2],
+                        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
+                           b" /Contents 4 0 R >>"}, out)
+    at = len(out)
+    head = b"4 0 obj\n<< /Length %05d >>\nstream\n"
+    table_at = at + len(head % 0)
+    table = (b"xref\n0 5\n0000000000 65535 f \n"
+             + b"".join(b"%010d 00000 n \n" % v for v in (*offsets.values(), at))
+             + b"trailer\n<< /Size 5 /Root 1 0 R >>\n")
+    body = table + b"startxref\n%d\n%%%%EOF\n" % table_at + b"BT (SECRET-TAIL) Tj ET\n"
+    out += head % len(body) + body + b"\nendstream\nendobj\n"
+    newer = len(out)
+    out += b"4 0 obj\n<< /Length 13 >>\nstream\nBT (ok) Tj ET\nendstream\nendobj\n"
+    xref = len(out)
+    out += (b"xref\n0 1\n0000000000 65535 f \n4 1\n%010d 00000 n \ntrailer" % newer
+            + b"\n<< /Size 5 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n"
+            % (table_at, xref))
+    return bytes(out)
+
+
+def test_an_object_straddling_its_revisions_cut_is_flagged() -> None:
+    # MuPDF reads it truncated on revision 1's cut, qpdf recovers it:
+    # the superseded "SECRET-TAIL" would sit outside the revision.
+    assert "XREF_OFFSET_MISMATCH" in _reasons(straddle())

@@ -163,9 +163,12 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
     """Per revision, oldest first, with the object map built up as it
     goes (linear in entries, however many revisions):
 
-    - every in-use entry lands exactly on its own ``N G obj``, and that
-      header lies within the revision's own bytes (before its prefix
-      cut); so does a hybrid section's /XRefStm;
+    - every in-use entry lands exactly on its own ``N G obj``, and the
+      whole object -- through ``endobj`` -- lies within the revision's
+      own bytes (before its prefix cut): an object that straddles the
+      cut (a stream swallowing the revision's own xref) reads truncated
+      in one reader and recovered in another; so does a hybrid
+      section's /XRefStm;
     - every compressed entry names an object stream in use in the
       revision; object 0 is never in use (MuPDF warns);
     - the revision's newest trailer names a /Type /Catalog via /Root
@@ -176,6 +179,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
     merged: dict[int, Entry] = {}
     highest = 0
     catalogs: dict[int, bool] = {}
+    whole: dict[int, int | None] = {}  # offset -> where its object ends (None: never)
     for revision in reversed(range(len(chain.revisions))):
         group = chain.revisions[revision]
         end = chain.revision_end(revision)
@@ -197,7 +201,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
                 if entry.kind == IN_USE:
                     header = _header_at(data, entry.a)
                     if (number == 0 or header is None or header[:2] != (number, entry.b)
-                            or header[2] > end):
+                            or not _ends_within(parser, entry.a, end, whole, flags)):
                         flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
                             ("object", number), ("offset", entry.a))))
                 elif entry.kind == COMPRESSED:
@@ -371,6 +375,24 @@ def _prev(trailer: PdfDict, span: Span, flags: list[Flag]) -> int | None:
     if value is not None and prev is None:
         flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, span, (("object", -1),)))
     return prev
+
+
+def _ends_within(parser: ObjectParser, offset: int, end: int,
+                 whole: dict[int, int | None], flags: list[Flag]) -> bool:
+    """Does the object at *offset* parse complete, ``endobj`` included,
+    before *end*? Each offset is parsed once per distinct outcome: the
+    first (oldest, smallest) end it is checked against, and again only
+    if that failed -- a failure is never loosened by reuse. The object's
+    own parser flags join the chain's: an entry pointing at an object
+    readers parse differently is not a clean entry. Budget-charged."""
+    stop = whole.get(offset)
+    if offset not in whole or stop is None:
+        obj = parser.parse_indirect_at(offset, end)
+        stop = obj.span.end if obj is not None and obj.complete else None
+        if obj is not None and offset not in whole:
+            flags.extend(obj.flags)
+        whole[offset] = stop
+    return stop is not None and stop <= end
 
 
 def _header_at(data: bytes, offset: int) -> tuple[int, int, int] | None:

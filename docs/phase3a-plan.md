@@ -111,7 +111,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   late header); hybrid /XRefStm merged, any object both define flagged (readers disagree);
   /Prev followed without cycles; a forward
   /Prev only as a linearized file's first-page section, whose pair is one revision; every
-  in-use entry on its own `N G obj` inside its own revision's bytes, every compressed entry
+  in-use entry on its own `N G obj` and the whole object (through `endobj`, parsed once,
+  its parser flags reported) inside its own revision's bytes, every compressed entry
   on an object stream in use in that revision, object 0 never in use, no empty subsection;
   checked in one pass oldest to newest (linear however many revisions);
   each revision's newest trailer names a /Type /Catalog via /Root and has /Size = 1 +
@@ -138,6 +139,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-6 `python -m scorecard inventory` corpus gate harness (aggregates only, per-file
   subprocess + timeout); RESULTS.md section. THE 3a GATE: tiling on 100% of corpus files, 0
   crashes, 0 timeouts.
+- 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
+  chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
+  own the page-tree semantics the xref differential exempts.
 - 3a-7 Reference graph per revision (iterative, cycles flagged, page-tree inheritance,
   ResourceScope for pages/forms/annots/patterns/Type3; edges by use-kind; reachable/orphaned).
 - 3a-8 Pin pikepdf (runtime dep per ADR 0001), encrypted fixtures incl. earlier revision
