@@ -103,7 +103,23 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   xref_stream and qpdf's --filtered-stream-data (3,000 fuzz examples over PNG and TIFF
   predictors, Colors 1-5, BitsPerComponent 1-16, whole and partial rows).
   zlib joins the child-side import allowlist. UNSUPPORTED_FILTER waits for 3a-4b, where a
-  filter chain is first read. 3a-4b: the rest of this item --
+  filter chain is first read. 3a-4b (#43) done: inventory/xref.py, the canonical chain --
+  the file ends `startxref N %%EOF`; each offset lands exactly on an `xref` table (exact
+  subsection headers and 20-byte entries, whitespace allowed only before `trailer`) or an
+  /XRef stream (valid /Type, /W, /Index, /Size, decoded length exact, FlateDecode only via
+  3a-4a); hybrid /XRefStm merged (a conflict flags); /Prev followed without cycles; a forward
+  /Prev only as a linearized file's first-page section, whose pair is one revision; every
+  in-use entry on its own `N G obj`, every compressed entry on an object stream in use;
+  each revision's newest trailer names a /Type /Catalog via /Root and has /Size = 1 +
+  its highest object number. New flags: XREF_TAIL, XREF_NOT_FOUND, XREF_TABLE_MALFORMED,
+  XREF_STREAM_MALFORMED, UNSUPPORTED_FILTER, XREF_CONFLICT, XREF_OFFSET_MISMATCH,
+  PREV_CYCLE, MISSING_ROOT, XREF_SIZE_MISMATCH. Differential: every revision of 398 case-library
+  files (672 revisions) equals qpdf's --show-xref object map without warnings and MuPDF
+  opens it unrepaired; the other 4 files are the after-%%EOF leak cases, flagged
+  XREF_TAIL. An exhaustive single-byte mutation sweep of canonical classic, stream and
+  incremental files finds no unflagged disagreement (it found the /Root and /Size rules).
+  The legacy _earlier_revisions agrees on every file but the linearized one, where it counts
+  the main section as an extra revision; qpdf cannot open that prefix cut. The rest of this item --
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy

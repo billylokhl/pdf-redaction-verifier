@@ -29,7 +29,7 @@ from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span
 from .flate import Predictor, flate_decode
 from .lexer import Lexer, TokenKind
-from .objects import ObjectParser, PdfArray, PdfDict, PdfInt, PdfName, PdfValue
+from .objects import ObjectParser, PdfArray, PdfDict, PdfInt, PdfName, PdfRef, PdfValue
 
 FREE, IN_USE, COMPRESSED = 0, 1, 2
 
@@ -151,7 +151,43 @@ def read_chain(data: bytes, limits: Limits | None = None,
     chain = Chain(tuple(sections), start, Span(tail.start(), len(data)), tuple(flags),
                   tuple(revisions))
     return Chain(chain.sections, chain.startxref, chain.tail,
-                 chain.flags + tuple(_check_offsets(data, chain, limits)), chain.revisions)
+                 chain.flags + tuple(_check_offsets(data, chain, limits))
+                 + tuple(_check_roots(data, chain, parser)), chain.revisions)
+
+
+def _check_roots(data: bytes, chain: Chain, parser: ObjectParser) -> list[Flag]:
+    """Each revision's newest trailer must name its catalog, and say how
+    many objects it has:
+
+    - /Root, a reference to a /Type /Catalog dictionary in use in that
+      revision (qpdf: "unable to find /Root dictionary"). A catalog in an
+      object stream is checked by 3a-5, which reads object streams.
+    - /Size, exactly one more than the highest object number (§7.5.5;
+      qpdf warns otherwise, and MuPDF may repair)."""
+    flags: list[Flag] = []
+    for revision, group in enumerate(chain.revisions):
+        section = chain.sections[group[0]]
+        trailer = section.trailer
+        objects = chain.object_map(revision)
+        root = trailer.get(b"Root") if trailer is not None else None
+        entry = objects.get(root.num) if isinstance(root, PdfRef) else None
+        catalog = False
+        if isinstance(root, PdfRef) and entry is not None and entry.kind == IN_USE:
+            obj = parser.parse_indirect_at(entry.a)
+            catalog = (obj is not None and entry.b == root.gen and not obj.flags
+                       and isinstance(obj.value, PdfDict)
+                       and _name(obj.value.get(b"Type")) == b"Catalog")
+        elif isinstance(root, PdfRef) and entry is not None and entry.kind == COMPRESSED:
+            catalog = True
+        if not catalog:
+            flags.append(Flag(FlagReason.MISSING_ROOT, section.span, (("revision", revision),)))
+        size = _int(trailer.get(b"Size")) if trailer is not None else None
+        highest = max(objects, default=0)
+        if size != highest + 1:
+            flags.append(Flag(FlagReason.XREF_SIZE_MISMATCH, section.span, (
+                ("revision", revision), ("size", -1 if size is None else size),
+                ("highest", highest))))
+    return flags
 
 
 def _section(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None,
@@ -198,6 +234,9 @@ def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None
         flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, parsed.span, (("object", -1),)))
         return None
     trailer = parsed.value
+    if _int(trailer.get(b"Size")) is None:  # qpdf: "trailer dictionary lacks /Size key"
+        flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, parsed.span, (("object", -1),)))
+        return None
     xref_stm: Section | None = None
     stm = _int(trailer.get(b"XRefStm"))
     if stm is not None:

@@ -143,12 +143,11 @@ def test_an_entry_off_its_object_is_flagged() -> None:
 
 def test_a_prev_cycle_is_flagged() -> None:
     data = incremental()
-    last = int(re.findall(rb"startxref\n(\d+)", data)[-1])
-    first = int(re.findall(rb"startxref\n(\d+)", data)[0])
-    # Point the first section's trailer back at the newest section.
-    cyc = data.replace(b"<< /Size 4 /Root 1 0 R >>",
-                       b"<< /Size 4 /Root 1 0 R /Prev %d >>" % last, 1)
-    assert first != last and "PREV_CYCLE" in _reasons(cyc)
+    first, last = (int(n) for n in re.findall(rb"startxref\n(\d+)", data))
+    assert len(str(first)) == len(str(last))  # same-length edit: offsets stay put
+    # The newest trailer's /Prev points back at the newest section itself.
+    cyc = data.replace(b"/Prev %d" % first, b"/Prev %d" % last, 1)
+    assert "PREV_CYCLE" in _reasons(cyc)
 
 
 def test_a_compressed_entry_needs_an_object_stream_in_use() -> None:
@@ -234,3 +233,19 @@ def test_pymupdf_written_files_agree_with_the_readers(
     assert chain.flags == (), [f.reason.name for f in chain.flags]
     assert len(chain.revisions) >= 1 + updates
     _agree(path.read_bytes(), tmp_path)
+
+
+@requires_qpdf
+@settings(max_examples=int(os.environ.get("DIFF_FUZZ_EXAMPLES", "60")),
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture])
+@given(st.sampled_from(["classic", "stream", "incremental"]), st.data())
+def test_mutated_chains_are_flagged_or_agree_with_the_readers(
+        tmp_path: Path, which: str, draw: st.DataObject) -> None:
+    data = bytearray({"classic": classic, "stream": xref_stream,
+                      "incremental": incremental}[which]())
+    # Mutate bytes in the chain's own region (tables, trailers, tail).
+    start = data.find(b"xref") if which != "stream" else data.find(b"4 0 obj")
+    for _ in range(draw.draw(st.integers(1, 3))):
+        pos = draw.draw(st.integers(start, len(data) - 1))
+        data[pos] = draw.draw(st.sampled_from(list(b"0123456789 \n\rnfx<>/[]")))
+    _agree(bytes(data), tmp_path)

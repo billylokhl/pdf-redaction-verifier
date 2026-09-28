@@ -84,6 +84,8 @@ class FlagReason(Enum):
     XREF_CONFLICT = "xref_conflict"            # one object defined twice in a section
     XREF_OFFSET_MISMATCH = "xref_offset_mismatch"  # an entry not on its own N G obj
     PREV_CYCLE = "prev_cycle"                  # /Prev revisits a section, or too many
+    MISSING_ROOT = "missing_root"              # a revision's trailer names no catalog
+    XREF_SIZE_MISMATCH = "xref_size_mismatch"  # /Size is not 1 + the highest object
 
 
 Reason: TypeAlias = NAReason | FlagReason
