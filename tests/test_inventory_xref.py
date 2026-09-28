@@ -15,10 +15,17 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from redaction_verifier.budget import Budget
 from redaction_verifier.inventory.objects import ObjectParser
-from redaction_verifier.inventory.xref import COMPRESSED, FREE, IN_USE, Entry, read_chain
+from redaction_verifier.inventory.xref import (COMPRESSED, FREE, IN_USE, Chain, Entry,
+                                                read_chain)
 
 from .conftest import requires_qpdf
+
+def chain_of(data: bytes) -> Chain:
+    """read_chain with a fresh budget for *data* (the budget is required)."""
+    return read_chain(data, budget=Budget(file_size=len(data)))
+
 
 BODIES = {
     1: b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -92,7 +99,7 @@ def incremental() -> bytes:
 @pytest.mark.parametrize("build", [classic, xref_stream, lambda: xref_stream(True),
                                    incremental])
 def test_canonical_chains_read_without_a_flag(build) -> None:  # type: ignore[no-untyped-def]
-    chain = read_chain(build())
+    chain = chain_of(build())
     assert chain.flags == ()
     objects = chain.object_map()
     assert {n for n, e in objects.items() if e.kind == IN_USE} >= {1, 2, 3}
@@ -100,7 +107,7 @@ def test_canonical_chains_read_without_a_flag(build) -> None:  # type: ignore[no
 
 def test_an_incremental_update_is_two_revisions_newest_winning() -> None:
     data = incremental()
-    chain = read_chain(data)
+    chain = chain_of(data)
     assert len(chain.revisions) == 2
     assert chain.object_map(0)[3] != chain.object_map(1)[3]
     assert data[chain.object_map(1)[3].a:].startswith(b"3 0 obj")
@@ -109,7 +116,7 @@ def test_an_incremental_update_is_two_revisions_newest_winning() -> None:
 
 # ── Everything else is flagged ────────────────────────────────────────────
 def _reasons(data: bytes) -> list[str]:
-    return [f.reason.name for f in read_chain(data).flags]
+    return [f.reason.name for f in chain_of(data).flags]
 
 
 def _mutate(data: bytes, old: bytes, new: bytes) -> bytes:
@@ -159,19 +166,19 @@ def test_a_compressed_entry_needs_an_object_stream_in_use() -> None:
     entries[4] = (COMPRESSED, 9, 0)  # object stream 9 does not exist
     entries[5] = (1, xref, 0)        # the xref stream itself, object 5
     out += _stream_xref(entries, 6, xref) + b"startxref\n%d\n%%%%EOF\n" % xref
-    reasons = [(f.reason.name, dict(f.params)) for f in read_chain(bytes(out)).flags]
+    reasons = [(f.reason.name, dict(f.params)) for f in chain_of(bytes(out)).flags]
     assert reasons == [("XREF_OFFSET_MISMATCH", {"object": 4, "stream": 9})]
 
 
 def test_entries_keep_their_kinds() -> None:
-    chain = read_chain(xref_stream())
+    chain = chain_of(xref_stream())
     assert chain.object_map()[0] == Entry(FREE, 0, 0xFFFF)
 
 
 @given(st.binary(max_size=300))
 def test_never_raises(tail: bytes) -> None:
     for data in (tail, classic()[:len(tail)] + tail, xref_stream() + tail):
-        read_chain(data)
+        chain_of(data)
 
 
 # ── Differential: every unflagged revision matches qpdf and MuPDF ─────────
@@ -206,7 +213,7 @@ def _ours(entries: dict[int, Entry]) -> dict[int, tuple[str, int, int]]:
 
 
 def _agree(data: bytes, tmp: Path) -> None:
-    chain = read_chain(data)
+    chain = chain_of(data)
     if chain.flags:
         return
     # Our own invariants first -- revision 0 is otherwise only ever checked
@@ -267,7 +274,7 @@ def test_pymupdf_written_files_agree_with_the_readers(
         doc = pymupdf.open(path)
         doc[0].insert_text((50, 80 + 20 * n), f"update {n}")
         doc.save(path, incremental=True, encryption=pymupdf.PDF_ENCRYPT_KEEP)
-    chain = read_chain(path.read_bytes())
+    chain = chain_of(path.read_bytes())
     assert chain.flags == (), [f.reason.name for f in chain.flags]
     assert len(chain.revisions) >= 1 + updates
     _agree(path.read_bytes(), tmp_path)
@@ -283,7 +290,7 @@ def test_mutated_chains_are_flagged_or_agree_with_the_readers(
                       "incremental": incremental}[which]())
     # Mutate only the chain's own bytes (sections, trailers, the tail):
     # object bodies are the object parser's and reference graph's to test.
-    chain = read_chain(bytes(data))
+    chain = chain_of(bytes(data))
     spans = [section.span for section in chain.sections]
     assert chain.tail is not None
     spans.append(chain.tail)
@@ -332,7 +339,7 @@ def test_a_hybrid_overlap_is_flagged() -> None:
 @requires_qpdf
 def test_a_hybrid_without_overlap_agrees_with_the_readers(tmp_path: Path) -> None:
     data = hybrid(overlap=False)
-    chain = read_chain(data)
+    chain = chain_of(data)
     assert chain.flags == ()
     assert chain.object_map()[5] == Entry(COMPRESSED, 4, 0)
     _agree(data, tmp_path)
@@ -378,7 +385,7 @@ def test_many_revisions_over_many_objects_stay_linear() -> None:
                 % (at, prev) + b"startxref\n%d\n%%%%EOF\n" % xref)
         prev = xref
     started = time.process_time()
-    chain = read_chain(bytes(out))
+    chain = chain_of(bytes(out))
     assert time.process_time() - started < 30  # linear ~8 s; quadratic ~53 s
     assert chain.flags == () and len(chain.revisions) == 5_001
 
@@ -450,7 +457,7 @@ def forward(linearized: bool, main_prev: bool) -> bytes:
 
 
 def test_the_linearized_forward_pair_is_one_revision() -> None:
-    chain = read_chain(forward(linearized=True, main_prev=False))
+    chain = chain_of(forward(linearized=True, main_prev=False))
     assert (chain.flags, chain.revisions) == ((), ((0, 1),))
 
 
@@ -471,7 +478,7 @@ def test_qpdf_linearized_files_read_as_one_revision(tmp_path: Path, objstms: str
     subprocess.run(["qpdf", "--linearize", f"--object-streams={objstms}",
                     str(tmp_path / "in.pdf"), str(tmp_path / "lin.pdf")], check=True)
     data = (tmp_path / "lin.pdf").read_bytes()
-    chain = read_chain(data)
+    chain = chain_of(data)
     assert chain.flags == (), [f.reason.name for f in chain.flags]
     assert chain.revisions == ((0, 1),)
     _agree(data, tmp_path)
@@ -498,5 +505,5 @@ def freed_object_stream() -> bytes:
 
 
 def test_freeing_an_object_stream_its_members_still_live_in_is_flagged() -> None:
-    flags = [(f.reason.name, dict(f.params)) for f in read_chain(freed_object_stream()).flags]
+    flags = [(f.reason.name, dict(f.params)) for f in chain_of(freed_object_stream()).flags]
     assert flags == [("XREF_OFFSET_MISMATCH", {"stream": 4, "members": 2, "revision": 0})]

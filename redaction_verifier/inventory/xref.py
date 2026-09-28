@@ -108,8 +108,10 @@ class Chain:
         return merged
 
 
-def read_chain(data: bytes, limits: Limits | None = None,
-               budget: Budget | None = None) -> Chain:
+def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> Chain:
+    """The file's chain. *budget* is required (issue #44): every object
+    parse the checks below make is bounded only by its revision's end, so
+    uncharged they could run quadratic on a hostile file."""
     limits = limits if limits is not None else Limits()
     flags: list[Flag] = []
     if not data.startswith(b"%PDF-"):
@@ -264,7 +266,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
     return flags
 
 
-def _section(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None,
+def _section(data: bytes, offset: int, parser: ObjectParser, budget: Budget,
              flags: list[Flag], allow_table: bool) -> Section | None:
     if not 0 <= offset < len(data):
         flags.append(Flag(FlagReason.XREF_NOT_FOUND, None, (("offset", offset),)))
@@ -274,7 +276,7 @@ def _section(data: bytes, offset: int, parser: ObjectParser, budget: Budget | No
     return _stream(data, offset, parser, budget, flags)
 
 
-def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None,
+def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget,
            flags: list[Flag]) -> Section | None:
     head = _TABLE_HEAD.match(data, offset)
     assert head is not None
@@ -287,7 +289,7 @@ def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None
             flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, Span(sub.start(), pos),
                               (("object", first),)))
             return None
-        if budget is not None and not budget.charge_work(20 * count + 1):
+        if not budget.charge_work(20 * count + 1):
             flags.append(Flag(FlagReason.BUDGET_EXHAUSTED, Span(offset, pos)))
             return None
         for number in range(first, first + count):
@@ -334,7 +336,7 @@ def _table(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None
                    _prev(trailer, parsed.span, flags), xref_stm)
 
 
-def _stream(data: bytes, offset: int, parser: ObjectParser, budget: Budget | None,
+def _stream(data: bytes, offset: int, parser: ObjectParser, budget: Budget,
             flags: list[Flag]) -> Section | None:
     obj = parser.parse_indirect_at(offset)
     if obj is None or obj.span.start != offset:

@@ -247,6 +247,25 @@ def test_unclaimable_and_nested_claims_are_refused_and_flagged(ref: UnitRef) -> 
         "CLAIM_INVALID", "UNINDEXED_NON_WHITESPACE"]
 
 
+def test_an_object_streams_decoded_bytes_tile_within_it() -> None:
+    stream = UnitRef(UnitKind.OBJECT, 40, obj=4, gen=0)
+    header = UnitRef(UnitKind.OBJSTM_HEADER, 0, within=stream)
+    member = UnitRef(UnitKind.OBJSTM_MEMBER, 4, within=stream, obj=5, gen=0)
+    decoded = b"5 0 (SECRET) x"
+    tiling, flags = tile(decoded, [(header, Span(0, 3)), (member, Span(4, 12))], within=stream)
+    assert [(r.span, r.kind) for r in tiling.regions] == [
+        (Span(0, 3), UnitKind.OBJSTM_HEADER), (Span(3, 4), UnitKind.WHITESPACE),
+        (Span(4, 12), UnitKind.OBJSTM_MEMBER), (Span(12, 14), UnitKind.UNINDEXED)]
+    assert [f.reason.name for f in flags] == ["UNINDEXED_NON_WHITESPACE"]
+    # Refused: a top-level claim, a member of another stream (equal but not
+    # the same object: identity, never hashing), any other nested kind.
+    other = UnitRef(UnitKind.OBJECT, 40, obj=4, gen=0)
+    for ref in (UnitRef(UnitKind.OBJECT, 0), UnitRef(UnitKind.OBJSTM_MEMBER, 0, within=other),
+                UnitRef(UnitKind.STREAM_SLACK, 0, within=stream)):
+        _, refused = tile(decoded, [(ref, Span(0, 14))], within=stream)
+        assert "CLAIM_INVALID" in [f.reason.name for f in refused], ref
+
+
 def test_a_deep_within_chain_is_refused_without_hashing_it() -> None:
     ref = UnitRef(UnitKind.OBJECT, 0)
     for _ in range(100_000):  # == or hash on this would overflow the stack

@@ -29,6 +29,8 @@ _REASON_ORDER: Final = {reason: i for i, reason in enumerate(FlagReason)}
 # coordinates, not the file's).
 _UNCLAIMABLE: Final = (UnitKind.WHITESPACE, UnitKind.UNINDEXED,
                        UnitKind.OBJSTM_MEMBER, UnitKind.STREAM_SLACK)
+# The kinds that tile an object stream's decoded bytes (``within``).
+_IN_OBJECT_STREAM: Final = (UnitKind.OBJSTM_HEADER, UnitKind.OBJSTM_MEMBER)
 
 
 def _assert_never(value: NoReturn) -> NoReturn:
@@ -37,8 +39,15 @@ def _assert_never(value: NoReturn) -> NoReturn:
 
 
 def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
-         limits: Limits | None = None) -> tuple[Tiling, tuple[Flag, ...]]:
+         limits: Limits | None = None,
+         within: UnitRef | None = None) -> tuple[Tiling, tuple[Flag, ...]]:
     """Partition *raw* into regions by an elementary-interval sweep.
+
+    With *within* (an object stream's unit), *raw* is that stream's
+    decoded bytes instead of the file, and every claim must be an
+    OBJSTM_HEADER or OBJSTM_MEMBER nested directly in it -- the same
+    object, checked by identity so no nested ref is ever hashed before
+    it is accepted; anything else is refused as below.
 
     A claim is a top-level unit and one span of the file it covers.
     Refused and flagged CLAIM_INVALID, before the ref is ever hashed or
@@ -67,7 +76,9 @@ def tile(raw: bytes, claims: Iterable[tuple[UnitRef, Span]],
     label: dict[UnitRef, UnitRef] = {}
     for ref, span in claims:
         start, end = span.start, span.end
-        if ref.within is not None or ref.kind in _UNCLAIMABLE:  # before any hashing
+        refused = (ref.kind in _UNCLAIMABLE if within is None
+                   else ref.kind not in _IN_OBJECT_STREAM)
+        if ref.within is not within or refused:  # before any hashing
             flags.append(Flag(FlagReason.CLAIM_INVALID, Span(min(start, size), min(end, size)), (
                 ("claim_start", start), ("claim_end", end),
                 ("nested", int(ref.within is not None)))))

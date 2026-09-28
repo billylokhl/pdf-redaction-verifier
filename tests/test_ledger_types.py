@@ -18,9 +18,8 @@ from redaction_verifier.inventory import tile
 from redaction_verifier.inventory.lexer import Lexer
 from redaction_verifier.inventory.flate import Predictor, flate_decode
 from redaction_verifier.inventory.objects import ObjectParser
-from redaction_verifier.inventory.xref import read_chain
 
-from .test_inventory_xref import classic, incremental, xref_stream
+from .test_inventory_xref import chain_of, classic, incremental, xref_stream
 from redaction_verifier.model import (
     Flag,
     FlagReason,
@@ -83,22 +82,22 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.AFTER_STREAM_END: lambda: flate_decode(zlib.compress(b"x") + b"!").flags,
     FlagReason.BAD_DECODE_PARMS: lambda: flate_decode(zlib.compress(b"x"), Predictor(3)).flags,
     FlagReason.PREDICTOR_ERROR: lambda: flate_decode(zlib.compress(b"\x09a"), Predictor(12)).flags,
-    FlagReason.XREF_TAIL: lambda: read_chain(classic() + b"x").flags,
-    FlagReason.XREF_NOT_FOUND: lambda: read_chain(
+    FlagReason.XREF_TAIL: lambda: chain_of(classic() + b"x").flags,
+    FlagReason.XREF_NOT_FOUND: lambda: chain_of(
         classic().replace(b"startxref\n", b"startxref\n9", 1)).flags,
-    FlagReason.XREF_TABLE_MALFORMED: lambda: read_chain(
+    FlagReason.XREF_TABLE_MALFORMED: lambda: chain_of(
         classic().replace(b"trailer", b"trailor", 1)).flags,
-    FlagReason.XREF_STREAM_MALFORMED: lambda: read_chain(
+    FlagReason.XREF_STREAM_MALFORMED: lambda: chain_of(
         xref_stream().replace(b"/W [1 4 2]", b"/W [1 4 9]", 1)).flags,
-    FlagReason.UNSUPPORTED_FILTER: lambda: read_chain(
+    FlagReason.UNSUPPORTED_FILTER: lambda: chain_of(
         xref_stream().replace(b"/Filter /FlateDecode", b"/Filter /LZWDecode   ", 1)).flags,
-    FlagReason.XREF_CONFLICT: lambda: read_chain(_duplicated_subsection()).flags,
+    FlagReason.XREF_CONFLICT: lambda: chain_of(_duplicated_subsection()).flags,
     FlagReason.XREF_OFFSET_MISMATCH: lambda: _offset_mismatch(),
-    FlagReason.PREV_CYCLE: lambda: read_chain(_cycle()).flags,
-    FlagReason.HEADER_OFFSET: lambda: read_chain(b"x" + classic()).flags,
-    FlagReason.XREF_SIZE_MISMATCH: lambda: read_chain(
+    FlagReason.PREV_CYCLE: lambda: chain_of(_cycle()).flags,
+    FlagReason.HEADER_OFFSET: lambda: chain_of(b"x" + classic()).flags,
+    FlagReason.XREF_SIZE_MISMATCH: lambda: chain_of(
         classic().replace(b"/Size 4", b"/Size 5", 1)).flags,
-    FlagReason.MISSING_ROOT: lambda: read_chain(
+    FlagReason.MISSING_ROOT: lambda: chain_of(
         classic().replace(b"/Root 1 0 R", b"/Rook 1 0 R", 1)).flags,
     FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
         b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
@@ -117,7 +116,7 @@ def _offset_mismatch() -> tuple[Flag, ...]:
     data = classic()
     one = re.search(rb"1 1\n(\d{10})", data)
     assert one is not None
-    return read_chain(data.replace(one.group(0), b"1 1\n%010d" % (int(one.group(1)) + 1),
+    return chain_of(data.replace(one.group(0), b"1 1\n%010d" % (int(one.group(1)) + 1),
                                    1)).flags
 
 
