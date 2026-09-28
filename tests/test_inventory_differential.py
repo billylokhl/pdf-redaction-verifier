@@ -25,6 +25,7 @@ import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from scorecard.inventory import plain as _plain
 
 from redaction_verifier.inventory.objects import IndirectObject, ObjectParser, PdfInt
 
@@ -177,32 +178,6 @@ def _dict_bodies(draw: st.DrawFn) -> bytes:
                                       _VALUE_PIECES), max_size=5, unique_by=lambda e: e[0]))
     sep = draw(st.sampled_from([b" ", b"\n", b"", b"%c\n"]))
     return b"<<" + b"".join(k + b" " + v + sep for k, v in entries) + b">>"
-
-
-def _plain(value: object) -> object:
-    """A parsed value as plain data (spans dropped); numbers as floats."""
-    from redaction_verifier.inventory import objects as o
-    match value:
-        case o.PdfNull() | None:
-            return None
-        case o.PdfBool(value=v):
-            return ("bool", v)
-        case o.PdfInt(value=v) | o.PdfReal(value=v):
-            return ("num", None if v is None else float(v))
-        case o.PdfName(raw=raw):
-            return ("name", raw)
-        case o.PdfString(raw=raw):
-            return ("str", raw)
-        case o.PdfRef(num=num, gen=gen):
-            return ("ref", num, gen)
-        case o.PdfArray(items=items):
-            return [_plain(item) for item in items]
-        case o.PdfDict(entries=entries):
-            # §7.3.7: an entry whose value is null is the same as no entry
-            # (qpdf drops it, MuPDF keeps it): equivalent, not a disagreement.
-            return sorted((k.raw, repr(_plain(v))) for k, v in entries
-                          if not isinstance(v, o.PdfNull))
-    return ("other", repr(value))
 
 
 def _value_pdf(body: bytes) -> tuple[bytes, int]:
