@@ -373,10 +373,19 @@ this ADR is its home.
 
   **Masks (owner decision, 2026-09-27).** An image's `/SMask` or `/Mask`
   is used exactly when the image it belongs to is used; it is drawn only
-  as part of that image. When the same mask xref is shared by more than
-  one image, it is used when *any* of its owning images is used -- never
-  only when all of them are, the same fail-closed direction as "when use
-  cannot be established, the image is unused" above. It is still decoded
-  and OCR'd as its own unit (REDESIGN §4's image row), so text hidden in
-  a mask is still read. The mask of an image with no used owner is
-  unused and `FLAGGED` with it.
+  as part of that image.
+
+  **Shared masks (owner decision, 2026-09-27).** When the same mask xref
+  is shared by more than one image, it is used only if *all* of its
+  owning images are used -- if even one owner is unused, the mask is
+  unused and `FLAGGED` with it, regardless of whether another owner is
+  used. This is the fail-closed direction, not the permissive one:
+  treating the mask as used because *any* single owner is used would let
+  it escape decision D's unconditional `FLAGGED` (whatever OCR finds)
+  merely by attaching it to one harmless, visibly-used image alongside
+  an unused one -- exactly the way to hide content in a mask while
+  keeping a plausible, innocent-looking owner. It is still decoded and
+  OCR'd as its own unit (REDESIGN §4's image row) whether used or
+  unused, so text hidden in a mask is read either way; being unused only
+  changes whether a clean OCR/decode result can certify it, per decision
+  D.

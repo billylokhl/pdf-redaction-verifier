@@ -201,13 +201,24 @@ class TestExitCodeContract:
         # guard into a no-op. A stub top-level redaction_verifier.py that
         # patches sys.exit (a plain module attribute, shared with
         # verify.py's own `import sys`) to a no-op and then raises
-        # reproduces exactly that: with sys.exit(2), the exception handler
-        # would return instead of exiting, and execution would fall
-        # through into the rest of verify.py's module body with none of
-        # its redaction_verifier imports bound — a NameError with a
-        # traceback, not a clean "operational failure exits 2". os._exit
-        # is a direct syscall this stub cannot intercept, so the guard
-        # still terminates the process immediately, unconditionally.
+        # reproduces exactly that.
+        #
+        # The exit code alone does NOT discriminate the fix from the bug
+        # it guards against, so this does not just assert returncode == 2
+        # (reproduced: it still does, for the wrong reason, with the fix
+        # reverted to `sys.exit(2)`). With sys.exit neutered, the
+        # `_fatal_import` call returns instead of exiting, and execution
+        # falls through into the rest of verify.py's module body with
+        # none of its redaction_verifier imports bound. The first such
+        # name it then tries to use raises a bare NameError — but that is
+        # itself caught by main()'s own `crash()` handler (an "internal
+        # error", not a confirmed leak), which exits 2 anyway and prints
+        # its own second "[ERROR] internal error: ..." line — no
+        # traceback either. So what actually differs is that stderr then
+        # carries a SECOND "[ERROR]" line that should never have been
+        # reached: the fixed guard terminates the process immediately via
+        # `os._exit`, a direct syscall this stub cannot intercept, before
+        # any fallthrough code can run.
         shutil.copy(REPO_ROOT / "verify.py", tmp_path / "verify.py")
         (tmp_path / "redaction_verifier.py").write_text(
             "import sys\n"
@@ -221,8 +232,11 @@ class TestExitCodeContract:
         )
         assert result.returncode == 2, (result.stdout, result.stderr)
         assert "Traceback" not in result.stderr
-        assert "[ERROR] cannot import redaction_verifier" in result.stderr
-        assert "sys.exit neutralized" in result.stderr, result.stderr
+        error_lines = [ln for ln in result.stderr.splitlines() if ln.startswith("[ERROR]")]
+        assert len(error_lines) == 1, result.stderr
+        assert "cannot import redaction_verifier" in error_lines[0], result.stderr
+        assert "sys.exit neutralized" in error_lines[0], result.stderr
+        assert "internal error" not in result.stderr, result.stderr
 
     @pytest.mark.parametrize(
         "exc_id, stub_code, expect_substr",

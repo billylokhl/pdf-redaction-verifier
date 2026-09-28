@@ -118,14 +118,22 @@ ignore_errors = true
 
 # PyMuPDF 1.28's `pymupdf` package ships py.typed, unlike the deprecated
 # `fitz` alias it replaces (#19): mypy now actually follows it instead of
-# treating it as untyped (which `ignore_missing_imports` above did for
-# `fitz`), and its bundled stubs are auto-generated and incomplete —
-# several module-level constants set outside the stub's static view
-# (PDF_WIDGET_TYPE_TEXT, PDF_ENCRYPT_KEEP, ...) and a few methods
-# (Document.__iter__, MuPDF-backed callback signatures) are missing or
-# too narrow, producing spurious errors unrelated to this migration.
-# Skip following it, restoring the same "trust the runtime, not the
-# stub" treatment `fitz` silently had before.
+# treating it as untyped the way `ignore_missing_imports` above did for
+# `fitz`. Its bundled stubs are auto-generated and incomplete in ways
+# that only show up as attr-defined errors in the handful of modules
+# below: a module-level constant set outside the stub's static view
+# (`PDF_WIDGET_TYPE_TEXT`, `PDF_ENCRYPT_KEEP`, `PDF_ENCRYPT_AES_256`,
+# `PDF_PERM_PRINT`) or `Document.__iter__` (real and used elsewhere in
+# this codebase too, e.g. `for page in doc:` in `verify.py`, which is
+# exempted from mypy entirely by the override above). Disabling only
+# `attr-defined`, only on these modules, keeps every other check (and
+# every other module's attr-defined check) intact.
 [[tool.mypy.overrides]]
-module = "pymupdf"
-follow_imports = "skip"
+module = [
+    "caselib.pdfkit",
+    "caselib.families.carriers",
+    "caselib.families.clean",
+    "caselib.families.live",
+    "scorecard.corpus",
+]
+disable_error_code = ["attr-defined"]

@@ -372,7 +372,10 @@ images (recorded in full in docs/adr/0004).
   before Phase 4b; "fully covered" is not folded into "unused".
   An image's `/SMask` or `/Mask` is used exactly when its image is used
   (owner decision, 2026-09-27; see docs/adr/0004), and is still OCR'd as
-  its own unit.
+  its own unit. A mask shared by more than one image is used only if
+  *all* of its owning images are used -- any single unused owner makes
+  it unused (owner decision, 2026-09-27; see docs/adr/0004's "Shared
+  masks").
 
 With docs/adr/0004 now also accepted, reason 4's dependency on 0004's
 recall bound is a scheduling gate (it cannot actually be reached until

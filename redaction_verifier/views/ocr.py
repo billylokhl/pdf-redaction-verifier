@@ -114,6 +114,6 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
     png_bytes: bytes = pix.tobytes("png")
-    pix = None  # release the raster before Vision runs
+    del pix  # release the raster before Vision runs
     text_on, text_off = _vision_recognize_batch(png_bytes)
     return [text_on, text_off]
