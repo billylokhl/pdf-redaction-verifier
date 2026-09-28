@@ -208,7 +208,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   Done: one oracle -- eval/scorecard/inventory.py `compare()`, which the tests' `inventory_agrees`
   now wraps -- returns an Agreement: AGREES, FLAGGED with its reasons, or DISAGREES naming
   the failed check (tiling, object set, stream data, member value, dead bodies, qpdf --check,
-  MuPDF warning or repair, a reader needing a password, or ORACLE_ERROR: anything that stops
+  MuPDF warning or repair, a reader needing a password, ENCRYPTION -- a revision is exempted
+  as encrypted only when our trailer, MuPDF and qpdf all read it so (PR #47 review: `/Encrypt
+  null` had skipped every byte comparison) -- or ORACLE_ERROR: anything that stops
   the comparison, a reader timeout included, never agrees). Every object-stream member is
   compared with MuPDF (qpdf still for the first 8 per revision), each home decoded once; the
   generator moved to eval/scorecard/pdfgen.py. `python -m scorecard inventory run --root DIR`
@@ -218,7 +220,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   gate. It fails on an unflagged disagreement (or no tiling), a crash, a timeout, an unflagged
   file the oracle could not finish (UNVERIFIED), or the two children flagging differently;
   flag rates never fail it. stdout and --json: counts only; per-file detail keyed by SHA-256
-  to a local-only file under real_corpus/, reader messages as scrubbed templates. Also
+  to a local-only file under real_corpus/ (one per source), reader messages as scrubbed
+  templates, a child's failure only as its exception class. The aggregate's config records
+  provenance: commit and dirty tree, qpdf/PyMuPDF/MuPDF/Python versions, platform, UTC start.
+  Refused (exit 2) without qpdf; a stale --json is deleted first. qpdf --check ERROR lines
+  (exit 2, page-tree semantics so far) are counted, not gated. Also
   measured: the pending decisions from #44 item 1 and #46 items 1 and 4 (below).
   The fuzz gate found one oracle bug, fixed: MuPDF's tight printer writes an empty name and
   the next token without a separator (`/ 2.5` prints `/2.5`) though MuPDF, qpdf and we all

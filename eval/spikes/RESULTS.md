@@ -386,7 +386,13 @@ and qpdf. **Gate:** zero unflagged disagreements, 0 crashes, 0 timeouts,
 and every unflagged file verified. Flag rates are reported and never gated.
 
 Run 2026-09-28 on Linux with qpdf 11.9.0 and PyMuPDF 1.28.2. Both runs
-reproduce with the command shown in each subsection.
+reproduce with the command shown in each subsection. Both were re-run
+after the PR #47 review, which added the ENCRYPTION check (a revision is
+exempted as encrypted only when our trailer, MuPDF and qpdf all read it
+so), qpdf `--check` ERROR counts and provenance in the aggregate's
+`config`: every number below held (the case library's one encrypted
+file is encrypted in all three views; no agreeing file has a qpdf
+`--check` ERROR).
 
 ### Case library
 
@@ -502,6 +508,9 @@ here.
 | Quantity | Value |
 | --- | --- |
 | Gate | _pending_ |
+| `config`: commit (dirty), qpdf, PyMuPDF/MuPDF, Python, platform | _pending_ |
+| Encrypted files (an `/Encrypt` entry) | _pending_ |
+| qpdf `--check` ERROR on agreeing files (not gated) | _pending_ |
 | Unflagged, agree (encrypted) | _pending_ |
 | Unflagged, disagree, by check | _pending_ |
 | Crashes / timeouts / unverified | _pending_ |
@@ -509,7 +518,7 @@ here.
 | UNINDEXED / CONTESTED files, bytes | _pending_ |
 | Build seconds p50 / p99 / max | _pending_ |
 | Work units per byte p50 / max | _pending_ |
-| Linearized files updated (flagged) | _pending_ |
+| Linearized files updated, by revisions (flagged); `/L` mismatch | _pending_ |
 | Comment lines: files, longest, non-printable, `N G obj` | _pending_ |
 | `/Length` in an object stream: files, streams | _pending_ |
 | REVISION_AMBIGUOUS: equal / differ | _pending_ |
