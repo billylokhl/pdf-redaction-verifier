@@ -128,7 +128,10 @@ def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
     per-file detail only to the local-only --detail file."""
     from . import inventory_gate as gate
 
-    detail = corpus_mod.ensure_local_only(args.detail, allow_outside=args.allow_outside)
+    source = str(config["source"])
+    detail = corpus_mod.ensure_local_only(
+        args.detail or corpus_mod.REAL_CORPUS_DIR / f"inventory-gate-{source}.jsonl",
+        allow_outside=args.allow_outside)
 
     def progress(done: int, total: int) -> None:
         if done % 50 == 0 or done == total:
@@ -137,7 +140,7 @@ def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
         jobs, workdir=workdir, workers=args.workers, progress=progress,
         build_timeout=args.timeout, oracle_timeout=args.oracle_timeout,
         qpdf_members=args.qpdf_members)
-    config = config | {"build_timeout": args.timeout, "oracle_timeout": args.oracle_timeout,
+    config = config | gate.provenance(args.started) | {"build_timeout": args.timeout, "oracle_timeout": args.oracle_timeout,
                        "qpdf_members": args.qpdf_members, "workers": args.workers}
     agg = gate.aggregate(results, config)
     gate.write_detail(results, detail)
@@ -147,11 +150,31 @@ def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
     return 0 if agg["gate"]["passed"] else 1
 
 
+def _inventory_preflight(args: argparse.Namespace) -> int | None:
+    """Before any gate run: note the start, remove a stale --json (a failed
+    run must never leave an old aggregate that passes for a fresh one),
+    and refuse without qpdf. Returns an exit status to stop with, or None."""
+    import shutil
+    from datetime import datetime, timezone
+
+    args.started = datetime.now(timezone.utc)
+    if args.json is not None:
+        args.json.unlink(missing_ok=True)
+    if shutil.which("qpdf") is None:
+        print("ERROR: qpdf is not on PATH -- the gate compares against qpdf and MuPDF. "
+              "Install qpdf and run again.", file=sys.stderr)
+        return 2
+    return None
+
+
 def _cmd_inventory_run(args: argparse.Namespace) -> int:
     import tempfile
 
     from .inventory_gate import Job
 
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
+    args.root = args.root.resolve()  # the children run from the repository root
     manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
     entries = corpus_mod.load_manifest(manifest)
     if not entries:
@@ -179,6 +202,8 @@ def _cmd_inventory_caselib(args: argparse.Namespace) -> int:
 
     from .inventory_gate import Job
 
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
     have = available()
     cases = sorted(load().items())
     skipped = sum(1 for _, case in cases if case.requires - have)
@@ -204,6 +229,8 @@ def _cmd_inventory_fuzz(args: argparse.Namespace) -> int:
     from .inventory_gate import Job
     from .pdfgen import random_case
 
+    if (stop := _inventory_preflight(args)) is not None:
+        return stop
     rng = random.Random(args.seed)
     with tempfile.TemporaryDirectory(prefix="inventory-gate-") as work:
         root = Path(work) / "files"
@@ -286,9 +313,10 @@ def build_parser() -> argparse.ArgumentParser:
         from .inventory_gate import BUILD_TIMEOUT, ORACLE_TIMEOUT
         p.add_argument("--json", type=Path, default=None,
                        help="also write the aggregate (counts only: shareable) as JSON here")
-        p.add_argument("--detail", type=Path,
-                       default=corpus_mod.REAL_CORPUS_DIR / "inventory-gate-detail.jsonl",
-                       help="per-file detail keyed by SHA-256 (local only, never share)")
+        p.add_argument("--detail", type=Path, default=None,
+                       help="per-file detail keyed by SHA-256 (local only, never share); "
+                       "default eval/scorecard/real_corpus/inventory-gate-SOURCE.jsonl, "
+                       "SOURCE being corpus, caselib or fuzz")
         p.add_argument("--timeout", type=float, default=BUILD_TIMEOUT,
                        help="build_inventory's per-file timeout (s); past it is a failure")
         p.add_argument("--oracle-timeout", type=float, default=ORACLE_TIMEOUT,

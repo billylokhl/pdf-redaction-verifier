@@ -19,6 +19,10 @@ and the 3a-6 gate harness (`scorecard.inventory_gate`).
   readers may disagree then -- the inventory said so.
 - AGREES otherwise. An encrypted revision's bytes and values are not
   compared (the inventory decrypts nothing until 3a-8/9): `encrypted`.
+  A revision counts as encrypted only when our trailer (an /Encrypt
+  entry), MuPDF and qpdf all say so; any split between them -- say
+  `/Encrypt null`, which both readers read in plain -- is a
+  disagreement (ENCRYPTION), never an exemption.
 
 This runs outside the child boundary (it imports pymupdf and runs qpdf);
 nothing in redaction_verifier may import it. Reader messages can quote a
@@ -55,7 +59,11 @@ from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfDic
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
 
-QPDF_TIMEOUT = 60.0
+# Per qpdf call. A huge but valid file must not become ORACLE_ERROR on a
+# short per-call limit: the oracle child sets this from its own budget
+# (--qpdf-timeout, the harness's oracle timeout); the harness's whole-child
+# timeout still bounds the file.
+QPDF_TIMEOUT = 600.0
 
 
 def chain_of(data: bytes) -> Chain:
@@ -133,6 +141,22 @@ def qpdf_warnings(path: Path) -> list[bytes]:
     check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True,
                            timeout=QPDF_TIMEOUT)
     return (check.stdout + check.stderr).splitlines()
+
+
+def qpdf_encrypted(path: Path) -> bool:
+    """qpdf's own view: is *path* encrypted (--is-encrypted: exit 0 yes, 2 no)?"""
+    result = subprocess.run(["qpdf", "--is-encrypted", str(path)], capture_output=True,
+                            timeout=QPDF_TIMEOUT)
+    if result.returncode not in (0, 2):
+        raise RuntimeError("qpdf --is-encrypted failed")
+    return result.returncode == 0
+
+
+def mupdf_encrypted(doc: pymupdf.Document) -> bool:
+    """MuPDF's own view. ``is_encrypted`` turns False once MuPDF has
+    authenticated an empty user password (an owner-password-only file):
+    the metadata's "encryption" names the handler either way."""
+    return bool(doc.needs_pass or (doc.metadata or {}).get("encryption"))
 
 
 def _catalog_retyped(line: bytes, lines: list[bytes], path: Path) -> bool:
@@ -221,6 +245,7 @@ class Check(Enum):
     QPDF_CHECK = "qpdf_check"          # a qpdf --check structural warning
     MUPDF_WARNING = "mupdf_warning"    # a MuPDF warning, or MuPDF repaired the file
     NEEDS_PASSWORD = "needs_password"  # a reader cannot open it without a password
+    ENCRYPTION = "encryption"          # our trailer, MuPDF and qpdf differ on encryption
     ORACLE_ERROR = "oracle_error"      # the comparison itself failed: nothing verified
 
 
@@ -239,6 +264,7 @@ class Agreement:
     encrypted: bool = False
     streams_compared: int = 0
     members_compared: int = 0
+    qpdf_check_errors: int = 0     # revisions where qpdf --check printed ERROR (not gated)
 
     @property
     def agrees(self) -> bool:
@@ -257,14 +283,15 @@ class Agreement:
                 "check": self.check.value if self.check else None, "revision": self.revision,
                 "obj": self.obj, "templates": list(self.templates),
                 "encrypted": self.encrypted, "streams_compared": self.streams_compared,
-                "members_compared": self.members_compared}
+                "members_compared": self.members_compared,
+                "qpdf_check_errors": self.qpdf_check_errors}
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> Agreement:
         return cls(Status(raw["status"]), tuple(FlagReason(r) for r in raw["reasons"]),
                    Check(raw["check"]) if raw["check"] else None, raw["revision"], raw["obj"],
                    tuple(raw["templates"]), raw["encrypted"], raw["streams_compared"],
-                   raw["members_compared"])
+                   raw["members_compared"], raw["qpdf_check_errors"])
 
 
 class _Disagreement(Exception):
@@ -287,45 +314,49 @@ def compare(data: bytes, workdir: Path, qpdf_members: int = 8,
         return Agreement(Status.DISAGREES, check=Check.TILING)
     if inv.flags:
         return Agreement(Status.FLAGGED, reasons=tuple(dict.fromkeys(f.reason for f in inv.flags)))
-    counts = [0, 0]
-    encrypted = [False]
+    stats = _Stats()
     try:
-        _compare(data, workdir, qpdf_members, inv, counts, encrypted)
+        _compare(data, workdir, qpdf_members, inv, stats)
     except _Disagreement as found:
         return Agreement(Status.DISAGREES, check=found.check, revision=found.revision,
-                         obj=found.obj, templates=found.templates, encrypted=encrypted[0],
-                         streams_compared=counts[0], members_compared=counts[1])
+                         obj=found.obj, templates=found.templates, **stats.fields())
     except Exception as error:  # fail closed: an unfinished comparison never agrees
         return Agreement(Status.DISAGREES, check=Check.ORACLE_ERROR,
-                         templates=(type(error).__name__,), encrypted=encrypted[0],
-                         streams_compared=counts[0], members_compared=counts[1])
-    return Agreement(Status.AGREES, encrypted=encrypted[0], streams_compared=counts[0],
-                     members_compared=counts[1])
+                         templates=(type(error).__name__,), **stats.fields())
+    return Agreement(Status.AGREES, **stats.fields())
+
+
+@dataclass
+class _Stats:
+    encrypted: bool = False
+    streams: int = 0
+    members: int = 0
+    qpdf_errors: int = 0
+
+    def fields(self) -> dict[str, Any]:
+        return {"encrypted": self.encrypted, "streams_compared": self.streams,
+                "members_compared": self.members, "qpdf_check_errors": self.qpdf_errors}
 
 
 def _compare(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
-             counts: list[int], encrypted_seen: list[bool]) -> None:
+             stats: _Stats) -> None:
     opened: list[pymupdf.Document] = []
     try:
-        _compare_revisions(data, workdir, qpdf_members, inv, counts, encrypted_seen, opened)
+        _compare_revisions(data, workdir, qpdf_members, inv, stats, opened)
     finally:
         for doc in opened:
             doc.close()
 
 
 def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inventory,
-                       counts: list[int], encrypted_seen: list[bool],
-                       opened: list[pymupdf.Document]) -> None:
+                       stats: _Stats, opened: list[pymupdf.Document]) -> None:
     pymupdf.TOOLS.mupdf_warnings()
     listed: set[int] = set()
     chain = chain_of(data)
     units: dict[UnitRef, Unit] = {u.ref: u for u in inv.units}  # refs nest one level at most
     for revision in range(inv.revisions):
-        # Readers decrypt what they read; the inventory does not until 3a-8/9,
-        # so an encrypted revision's bytes and values are not compared.
         trailer = chain.sections[chain.revisions[revision][0]].trailer
-        encrypted = trailer is not None and trailer.get(b"Encrypt") is not None
-        encrypted_seen[0] = encrypted_seen[0] or encrypted
+        ours_encrypted = trailer is not None and trailer.get(b"Encrypt") is not None
         blob = revision_blob(chain, data, revision)
         path = workdir / f"r{revision}.pdf"
         path.write_bytes(blob)
@@ -335,6 +366,13 @@ def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inven
         opened[:] = [doc]
         if doc.needs_pass:
             raise _Disagreement(Check.NEEDS_PASSWORD, revision)
+        # Readers decrypt what they read; the inventory does not until 3a-8/9,
+        # so an encrypted revision's bytes and values are not compared -- but
+        # only when the readers themselves read it encrypted, as we do.
+        if not ours_encrypted == mupdf_encrypted(doc) == qpdf_encrypted(path):
+            raise _Disagreement(Check.ENCRYPTION, revision)
+        encrypted = ours_encrypted
+        stats.encrypted = stats.encrypted or encrypted
         qmap, code = qpdf_map(path)
         if code != 0:
             raise _Disagreement(Check.OBJECT_SET, revision, templates=(f"qpdf exit {code}",))
@@ -343,6 +381,9 @@ def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inven
             raise _Disagreement(Check.OBJECT_SET, revision,
                                 min(set(bodies) ^ set(qmap)))
         lines = qpdf_warnings(path)
+        # qpdf --check's ERROR lines (exit 2) so far come from page-tree
+        # semantics (3a-7's): counted, not gated.
+        stats.qpdf_errors += any(line.startswith(b"ERROR") for line in lines)
         structural = [line for line in lines if line.startswith(b"WARNING")
                       and not any(pattern in line for pattern in NOT_STRUCTURE)
                       and not _catalog_retyped(line, lines, path)]
@@ -364,7 +405,7 @@ def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inven
                 span = inv.stream_data.get(body.start)
                 if span is not None:
                     if not encrypted:
-                        counts[0] += 1
+                        stats.streams += 1
                         if doc.xref_stream_raw(number) != blob[span.start:span.end]:
                             raise _Disagreement(Check.STREAM_DATA, revision, number)
                 elif doc.xref_is_stream(number):
@@ -386,7 +427,7 @@ def _compare_revisions(data: bytes, workdir: Path, qpdf_members: int, inv: Inven
                     raise _Disagreement(Check.STREAM_DATA, revision, a)
                 decoded_homes[a] = decoded
             decoded = decoded_homes[a]
-            counts[1] += 1
+            stats.members += 1
             span = units[body].spans[0]
             mine = _value_of(decoded, live, span.start, span.end)
             # MuPDF's tight printer (compressed=True) writes no separator after
@@ -456,17 +497,24 @@ def _int_value(value: object) -> int | None:
 
 def measure(data: bytes, inv: Inventory) -> dict[str, int]:
     """Counts for decisions the owner has pending (issues #44 and #46),
-    all integers: linearized files updated incrementally; comment lines
+    all integers: linearized files with more than one revision (updated
+    incrementally) and with /L not the file's length; comment lines
     after the header (beyond the binary marker) or an intermediate %%EOF;
     streams whose indirect /Length lives in an object stream;
     REVISION_AMBIGUOUS flags whose target is in fact equal in every
     revision; dead object streams; and whether the file is encrypted."""
     out: dict[str, int] = {}
     parser = ObjectParser(data)
-    # Encrypted: bytes and values not compared until 3a-8/9.
-    out["encrypted"] = int(any(section.trailer is not None
-                               and section.trailer.get(b"Encrypt") is not None
-                               for section in chain_of(data).sections))
+    # Encrypted as MuPDF reads it (bytes and values not compared until
+    # 3a-8/9), and whether our trailers carry an /Encrypt entry at all.
+    out["encrypt_entry"] = int(any(section.trailer is not None
+                                   and section.trailer.get(b"Encrypt") is not None
+                                   for section in chain_of(data).sections))
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            out["encrypted"] = int(mupdf_encrypted(doc))
+    except Exception:
+        out["encrypted"], out["mupdf_unopenable"] = 0, 1
     ends = {u.ref.start: u.spans[0].end for u in inv.units
             if u.ref.within is None and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)}
 
@@ -475,15 +523,18 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         obj = parser.parse_indirect_at(offset, end if end is not None else len(data))
         return obj.value if obj is not None else None
 
-    # Linearized (§F: the first object a /Linearized dictionary) and updated:
-    # its /L (the file's length when linearized) is not the file's length.
+    # Linearized (§F: the first object a /Linearized dictionary). Updated:
+    # more than one revision (the first-page pair is one). Separately, /L
+    # (the file's length when linearized) not the file's length -- also
+    # true of mere trailing bytes, so not the signal on its own.
     head = _LINEARIZED_HEAD.search(data, 0, 1024)
     first = parser.parse_indirect_at(head.start(), min(len(data), head.start() + 4096)) \
         if head else None
     lin = first.value if first is not None and isinstance(first.value, PdfDict) else None
     out["linearized"] = int(lin is not None and lin.get(b"Linearized") is not None)
     length = _int_value(lin.get(b"L")) if lin is not None else None
-    out["linearized_updated"] = int(bool(out["linearized"]) and length != len(data))
+    out["linearized_updated"] = int(bool(out["linearized"]) and inv.revisions > 1)
+    out["linearized_length_mismatch"] = int(bool(out["linearized"]) and length != len(data))
 
     # Comment lines claimed after the header (beyond a binary marker) or an
     # intermediate %%EOF (issue #46 item 1).
@@ -570,11 +621,16 @@ def regions(inv: Inventory) -> dict[str, dict[str, int]]:
 
 def main(argv: list[str] | None = None) -> int:
     """The gate's oracle child: FILE's Agreement and measurements as JSON."""
+    global QPDF_TIMEOUT
     parser = argparse.ArgumentParser(prog="python -m scorecard.inventory")
     parser.add_argument("file", type=Path)
     parser.add_argument("workdir", type=Path)
     parser.add_argument("--qpdf-members", type=int, default=8)
+    parser.add_argument("--qpdf-timeout", type=float, default=QPDF_TIMEOUT)
     args = parser.parse_args(argv)
+    QPDF_TIMEOUT = args.qpdf_timeout
+    # MuPDF prints some messages itself; stdout carries only the JSON.
+    pymupdf.set_messages(fd=2)
     data = args.file.read_bytes()
     inv = inventory(data)
     agreement = compare(data, args.workdir, args.qpdf_members, inv=inv)
@@ -583,9 +639,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as error:  # a measurement never hides the verdict above
         measures = {"measure_error": 1}
         print(type(error).__name__, file=sys.stderr)
-    print(json.dumps({"agreement": agreement.to_json(), "measures": measures,
-                      "regions": regions(inv), "flags": [f.reason.value for f in inv.flags]},
-                     sort_keys=True))
+    # One line, the last on stdout (the harness reads the last line).
+    print("\n" + json.dumps({"agreement": agreement.to_json(), "measures": measures,
+                             "regions": regions(inv),
+                             "flags": [f.reason.value for f in inv.flags]}, sort_keys=True))
     return 0
 
 

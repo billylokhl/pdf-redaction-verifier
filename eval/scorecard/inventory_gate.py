@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -32,6 +33,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,14 +98,20 @@ def _child_env() -> dict[str, str]:
 
 
 def _error_kind(stderr: bytes, returncode: int) -> str:
-    """The exception type a child died of (the traceback's last line up to
-    its colon), else its exit status. Never the message: it could quote
-    the document."""
-    for line in reversed(stderr.decode("latin-1").splitlines()):
-        name = line.split(":", 1)[0].strip()
-        if name and all(part.isidentifier() for part in name.split(".")):
-            return name[:80]
-        break
+    """The exception class a child died of, else its exit status. Only the
+    class name, taken from the first unindented line after the last
+    Python traceback's frames -- never a line of the message, which can
+    run over several lines and quote the document."""
+    lines = stderr.decode("latin-1").splitlines()
+    starts = [i for i, line in enumerate(lines) if line == "Traceback (most recent call last):"]
+    if starts:
+        for line in lines[starts[-1] + 1:]:
+            if line[:1].isspace():
+                continue  # a frame, its source line, or a caret line
+            name = line.split(":", 1)[0]
+            if name and all(part.isidentifier() for part in name.split(".")):
+                return name.rsplit(".", 1)[-1][:80]
+            break
     return f"exit {returncode}"
 
 
@@ -127,8 +135,9 @@ def run_child(argv: Sequence[str], timeout: float) -> ChildRun:
     if proc.returncode != 0:
         return ChildRun("crash", elapsed, None, _error_kind(err, proc.returncode))
     try:
-        payload = json.loads(out)
-    except ValueError:
+        # The last non-empty line: anything a library printed first is ignored.
+        payload = json.loads(next(line for line in reversed(out.splitlines()) if line.strip()))
+    except (ValueError, StopIteration):
         return ChildRun("crash", elapsed, None, "unreadable output")
     if not isinstance(payload, dict):
         return ChildRun("crash", elapsed, None, "unreadable output")
@@ -158,7 +167,8 @@ def _run_file(job: Job, workdir: Path, build_timeout: float, oracle_timeout: flo
     scratch = Path(tempfile.mkdtemp(prefix="oracle-", dir=workdir))
     try:
         oracle = run_child([*oracle_command, str(job.path), str(scratch),
-                            "--qpdf-members", str(qpdf_members)], oracle_timeout)
+                            "--qpdf-members", str(qpdf_members),
+                            "--qpdf-timeout", str(oracle_timeout)], oracle_timeout)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return judge(job, size, build, oracle)
@@ -267,6 +277,7 @@ def _pending(results: Sequence[FileResult]) -> dict[str, Any]:
     def total(key: str) -> int:
         return sum(r.measures.get(key, 0) for r in measured)
     updated = [r for r in measured if r.measures.get("linearized_updated")]
+    length_off = [r for r in measured if r.measures.get("linearized_length_mismatch")]
     length = [r for r in measured if r.measures.get("length_in_objstm")]
     ambiguous = [r for r in measured if "revision_ambiguous" in r.reasons]
     dead_objstm = [r for r in measured if r.measures.get("dead_objstms")]
@@ -276,7 +287,12 @@ def _pending(results: Sequence[FileResult]) -> dict[str, Any]:
         "files_measured": len(measured),
         "linearized_updates": {  # #44 item 1: flagged today
             "linearized_files": files("linearized"),
+            # More than one revision: the signal. /L off the file's length
+            # (reported apart: trailing bytes alone do that too).
             "updated_files": len(updated),
+            "length_mismatch_files": len(length_off),
+            "length_mismatch_single_revision": sum(
+                1 for r in length_off if not r.measures.get("linearized_updated")),
             "updated_flagged": sum(1 for r in updated if r.verdict == FLAGGED),
             "updated_reasons": dict(sorted(Counter(
                 reason for r in updated for reason in r.reasons).items())),
@@ -363,6 +379,11 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
         "flags": _flag_counts(results),
         "regions": region_totals,
         "encrypted_files": sum(1 for r in results if r.measures.get("encrypted")),
+        "encrypt_entry_files": sum(1 for r in results if r.measures.get("encrypt_entry")),
+        # qpdf --check ERROR lines (exit 2) on files that otherwise agree:
+        # page-tree semantics so far, 3a-7's -- counted, not gated.
+        "qpdf_check_errors_on_agree": sum(1 for r in agree if r.agreement
+                                          and r.agreement.qpdf_check_errors),
         "compared": {
             "streams": sum(r.agreement.streams_compared for r in agree if r.agreement),
             "object_stream_members": sum(r.agreement.members_compared
@@ -389,6 +410,41 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
     return out
 
 
+def provenance(started: datetime) -> dict[str, Any]:
+    """Where a run's numbers come from: the commit (and whether the tree
+    had local changes), the readers' and Python's versions, the platform
+    and the start time. No path: `git rev-parse` gives a hash, `platform`
+    an OS/architecture string."""
+    import platform
+
+    import pymupdf
+
+    def git(*argv: str) -> str | None:
+        try:
+            done = subprocess.run(["git", *argv], cwd=REPO_ROOT, capture_output=True,
+                                  text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return done.stdout if done.returncode == 0 else None
+    commit = (git("rev-parse", "HEAD") or "").strip()
+    status = git("status", "--porcelain")
+    return {
+        "commit": commit if re.fullmatch(r"[0-9a-f]{40}", commit) else "unknown",
+        "dirty": None if status is None else bool(status.strip()),
+        "qpdf": tool_version("qpdf"),
+        "pymupdf": str(pymupdf.VersionBind),
+        "mupdf": str(pymupdf.VersionFitz),
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "started_utc": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def tool_version(tool: str) -> str:
+    from .differential import _tool_version
+    return _tool_version(tool)
+
+
 def render(agg: dict[str, Any]) -> str:
     """The aggregate as a short text summary (counts only)."""
     gate = agg["gate"]
@@ -403,6 +459,9 @@ def render(agg: dict[str, Any]) -> str:
         f"unverified {gate['unverified']}  inconsistent {gate['inconsistent']}",
         f"  flagged {agg['flagged']} (rate {agg['flag_rate']:.2%})",
     ]
+    lines.append(f"  encrypted {agg['encrypted_files']} (an /Encrypt entry: "
+                 f"{agg['encrypt_entry_files']})  qpdf --check errors on agreeing files "
+                 f"{agg['qpdf_check_errors_on_agree']} (not gated)")
     for reason, count in agg["flags"]["top_reasons"]:
         lines.append(f"    {reason:28} {count}")
     for kind, totals in agg["regions"].items():

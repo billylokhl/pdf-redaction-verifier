@@ -9,6 +9,7 @@ fabricated content only."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -206,11 +207,20 @@ def test_children_that_disagree_on_flags_are_inconsistent() -> None:
     said_flagged = {"agreement": {"status": "flagged", "reasons": ["xref_tail"], "check": None,
                                   "revision": None, "obj": None, "templates": [],
                                   "encrypted": False, "streams_compared": 0,
-                                  "members_compared": 0},
+                                  "members_compared": 0, "qpdf_check_errors": 0},
                     "flags": ["xref_tail"], "measures": {}, "regions": {}}
     job = gate.Job("0" * 64, Path("unused"))
     result = gate.judge(job, 10, build, gate.ChildRun("ok", 0.1, said_flagged))
     assert result.verdict == gate.INCONSISTENT
+    # Both flagged, for different reasons: the same inventory built twice
+    # must flag alike, so this is not a plain FLAGGED either.
+    flagged_build = gate.ChildRun("ok", 0.1, {"flags": {"missing_root": 1}, "tiles": True})
+    other = gate.judge(job, 10, flagged_build, gate.ChildRun("ok", 0.1, said_flagged))
+    assert other.verdict == gate.INCONSISTENT
+    same = gate.judge(job, 10, gate.ChildRun("ok", 0.1, {"flags": {"xref_tail": 2},
+                                                         "tiles": True}),
+                      gate.ChildRun("ok", 0.1, said_flagged))
+    assert same.verdict == gate.FLAGGED
     garbled = gate.judge(job, 10, build, gate.ChildRun("ok", 0.1, {"agreement": 1}))
     assert garbled.verdict == gate.UNVERIFIED
     assert gate.aggregate([result, garbled])["gate"]["passed"] is False
@@ -233,7 +243,7 @@ def test_a_drifted_corpus_is_refused(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert _run(root, empty, tmp_path) == 2
 
 
-def test_the_detail_file_is_local_only(tmp_path: Path) -> None:
+def test_the_gate_files_are_local_only(tmp_path: Path) -> None:
     root, manifest = _corpus(tmp_path, {"a.pdf": build_pdf(Spec())})
     with pytest.raises(SystemExit, match="outside the local-only"):
         cli.main(["inventory", "run", "--root", str(root), "--manifest", str(manifest),
@@ -327,3 +337,138 @@ def test_an_updated_linearized_file_is_measured(tmp_path: Path) -> None:
     updated = (tmp_path / "lin.pdf").read_bytes()
     assert _measured(updated)["linearized_updated"] == 1
     assert oracle.inventory(updated).flags  # flagged today (#44 item 1)
+
+
+# ── Review of #47 ─────────────────────────────────────────────────────────
+def _with_encrypt(entry: bytes) -> bytes:
+    """A clean file whose trailer carries *entry* (e.g. `/Encrypt null`)."""
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> /Contents 4 0 R >>"), 0)
+    table[4] = (1, w.stream(4, b"", b"BT (SSN 123-45-6789) Tj ET"), 0)
+    w.epilogue(w.table(table, b"/Size 5 /Root 1 0 R" + entry))
+    return bytes(w.out)
+
+
+@requires_qpdf
+@pytest.mark.parametrize("entry", [b" /Encrypt null", b" /Encrypt 9 0 R"])
+def test_an_encrypt_entry_the_readers_ignore_is_no_exemption(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: bytes) -> None:
+    data = _with_encrypt(entry)
+    assert oracle.inventory(data).flags == ()  # the inventory does not flag it
+    assert compare(data, tmp_path).check is Check.ENCRYPTION
+    monkeypatch.setattr(pymupdf.Document, "xref_stream_raw", lambda self, n: b"tampered")
+    found = compare(data, tmp_path)
+    assert found.disagrees and found.check in (Check.ENCRYPTION, Check.STREAM_DATA)
+
+
+@requires_qpdf
+@pytest.mark.parametrize("method", ["PDF_ENCRYPT_AES_256", "PDF_ENCRYPT_RC4_128"])
+def test_a_file_the_readers_read_encrypted_is_exempted(tmp_path: Path, method: str) -> None:
+    doc = pymupdf.open()
+    doc.new_page().insert_text((50, 50), f"SSN {SSN}")
+    path = tmp_path / "enc.pdf"
+    doc.save(path, encryption=getattr(pymupdf, method), owner_pw="owner", user_pw="")
+    data = path.read_bytes()
+    found = compare(data, tmp_path)
+    assert (found.status, found.encrypted, found.streams_compared) == (Status.AGREES, True, 0)
+    assert _measured(data)["encrypted"] == 1
+    assert _measured(_with_encrypt(b" /Encrypt null"))["encrypted"] == 0
+
+
+@requires_qpdf
+def test_a_failing_gate_exits_1_and_a_relative_root_works(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    root, manifest = _corpus(tmp_path, {"ok.pdf": build_pdf(Spec()),
+                                        "enc.pdf": _with_encrypt(b" /Encrypt null")})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    relative = Path("..") / root.name
+    assert _run(relative, manifest, tmp_path) == 1
+    agg = json.loads((tmp_path / "aggregate.json").read_text())
+    assert agg["gate"]["crashes"] == 0 and agg["unflagged_agree"] == 1
+    assert agg["unflagged_disagree_by_check"] == {"encryption": 1}
+    assert "FAIL" in capsys.readouterr().out
+
+
+@requires_qpdf
+def test_the_config_records_provenance_and_no_path(tmp_path: Path) -> None:
+    out = tmp_path / "agg.json"
+    assert cli.main(["inventory", "fuzz", "--count", "1", "--json", str(out),
+                     "--detail", str(tmp_path / "d.jsonl"), "--allow-outside"]) == 0
+    config = json.loads(out.read_text())["config"]
+    assert {"commit", "dirty", "qpdf", "pymupdf", "mupdf", "python", "platform",
+            "started_utc"} <= set(config)
+    assert re.fullmatch(r"[0-9a-f]{40}|unknown", config["commit"])
+    assert config["qpdf"].startswith("qpdf version")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", config["started_utc"])
+    assert "/" not in config["platform"] and str(Path.home()) not in json.dumps(config)
+
+
+def test_without_qpdf_the_gate_refuses_and_leaves_no_stale_json(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    import shutil
+    out = tmp_path / "agg.json"
+    out.write_text('{"gate": {"passed": true}}')  # a stale aggregate from an old run
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None if name == "qpdf"
+                        else real_which(name, *a, **k))
+    assert cli.main(["inventory", "fuzz", "--count", "1", "--json", str(out),
+                     "--detail", str(tmp_path / "d.jsonl"), "--allow-outside"]) == 2
+    assert not out.exists()
+    assert "qpdf is not on PATH" in capsys.readouterr().err
+
+
+def test_a_child_error_is_its_exception_class_only(tmp_path: Path) -> None:
+    path = tmp_path / "f.pdf"
+    path.write_bytes(build_pdf(Spec()))
+    job = gate.Job("0" * 64, path)
+    for code, expected in [
+            (f"raise ValueError('bad token\\n{PLANTED}')", "ValueError"),
+            ("import json; json.loads('{')", "JSONDecodeError"),
+            (f"import sys; print('{PLANTED}: oops', file=sys.stderr); sys.exit(1)", "exit 1"),
+            (f"import sys; print('Traceback (most recent call last):\\n  x\\n{PLANTED}: y',"
+             f" file=sys.stderr); sys.exit(4)", "exit 4")]:
+        result = gate.run_file(job, workdir=tmp_path, build_command=(sys.executable, "-c", code))
+        assert (result.verdict, result.build.error) == (gate.CRASH, expected), code
+
+
+def test_the_last_stdout_line_is_the_payload(tmp_path: Path) -> None:
+    noisy = gate.run_child([sys.executable, "-c", "print('warning: x'); print('{\"a\": 1}')"],
+                           10)
+    assert (noisy.outcome, noisy.payload) == ("ok", {"a": 1})
+
+
+@requires_qpdf
+def test_linearized_updates_and_a_length_mismatch_are_apart(tmp_path: Path) -> None:
+    doc = pymupdf.open()
+    for i in range(2):
+        doc.new_page().insert_text((50, 50), f"page {i}")
+    doc.save(tmp_path / "in.pdf")
+    subprocess.run(["qpdf", "--linearize", str(tmp_path / "in.pdf"), str(tmp_path / "lin.pdf")],
+                   check=True)
+    trailing = (tmp_path / "lin.pdf").read_bytes() + b"\r\n"
+    measured = _measured(trailing)
+    assert (measured["linearized"], measured["linearized_updated"],
+            measured["linearized_length_mismatch"]) == (1, 0, 1)
+
+
+@requires_qpdf
+def test_qpdf_check_errors_are_counted_not_gated(tmp_path: Path) -> None:
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages null >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> >>"), 0)
+    w.epilogue(w.table(table, b"/Size 4 /Root 1 0 R"))
+    found = compare(bytes(w.out), tmp_path)
+    assert found.agrees and found.qpdf_check_errors == 1
