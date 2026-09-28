@@ -69,6 +69,12 @@ class FlagReason(Enum):
     LENGTH_MISMATCH = "length_mismatch"        # /Length disagrees with endstream
     STREAM_SLACK = "stream_slack"              # bytes past /Length before endstream
     FLAGS_TRUNCATED = "flags_truncated"        # an object's flags past the cap
+    # Capped Flate and predictors (3a-4a).
+    FLATE_ERROR = "flate_error"                # zlib rejected the data (incl. checksum)
+    FLATE_TRUNCATED = "flate_truncated"        # input ended before zlib's end marker
+    AFTER_STREAM_END = "after_stream_end"      # bytes after zlib's end marker
+    BAD_DECODE_PARMS = "bad_decode_parms"      # a predictor we cannot undo exactly
+    PREDICTOR_ERROR = "predictor_error"        # bad row filter type, partial row
 
 
 Reason: TypeAlias = NAReason | FlagReason
