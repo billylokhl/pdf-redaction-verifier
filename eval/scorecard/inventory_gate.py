@@ -139,6 +139,17 @@ def run_file(job: Job, *, workdir: Path, build_timeout: float = BUILD_TIMEOUT,
              oracle_timeout: float = ORACLE_TIMEOUT, qpdf_members: int = 8,
              build_command: Sequence[str] = BUILD_COMMAND,
              oracle_command: Sequence[str] = ORACLE_COMMAND) -> FileResult:
+    try:
+        return _run_file(job, workdir, build_timeout, oracle_timeout, qpdf_members,
+                         build_command, oracle_command)
+    except Exception as error:  # the harness itself failed: a gate failure, never a pass
+        failed = ChildRun("crash", 0.0, None, f"harness {type(error).__name__}")
+        return FileResult(job, 0, CRASH, failed, None, None)
+
+
+def _run_file(job: Job, workdir: Path, build_timeout: float, oracle_timeout: float,
+              qpdf_members: int, build_command: Sequence[str],
+              oracle_command: Sequence[str]) -> FileResult:
     size = job.path.stat().st_size
     build = run_child([*build_command, str(job.path)], build_timeout)
     if build.outcome != "ok":
@@ -216,7 +227,10 @@ def run_gate(jobs: Sequence[Job], *, workdir: Path, workers: int = 1,
             progress(done, len(jobs))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         list(pool.map(one, range(len(jobs))))
-    return [r for r in results if r is not None]
+    finished = [r for r in results if r is not None]
+    if len(finished) != len(jobs):  # never report a partial run as the whole
+        raise RuntimeError("the gate lost results")
+    return finished
 
 
 # ── The aggregate: counts only ────────────────────────────────────────────

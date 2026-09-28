@@ -248,3 +248,8 @@ def test_the_fuzz_gate_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     agg = json.loads((tmp_path / "agg.json").read_text())
     assert agg["files"] == 6 and agg["gate"]["passed"]
     assert agg["unflagged_agree"] + agg["flagged"] == 6
+
+
+def test_a_harness_failure_is_a_crash_not_a_pass(tmp_path: Path) -> None:
+    missing = gate.run_file(gate.Job("0" * 64, tmp_path / f"{PLANTED}.pdf"), workdir=tmp_path)
+    assert (missing.verdict, missing.build.error) == (gate.CRASH, "harness FileNotFoundError")
