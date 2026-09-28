@@ -41,7 +41,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-9 crypt.py: per-revision decrypt via pikepdf, value-level cross-check vs MuPDF,
   DECRYPTION_MISMATCH / DECRYPTION_UNVERIFIED, /Perms mismatch → flag.
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
-  — added by PR #30.
+  — PR #30 (in review).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
@@ -52,7 +52,7 @@ scorecard adds a shadow_exit metrics column outside the normalised key.
 
 OWNER DECISIONS (2026-09-27), all as recommended:
 1. Unit cap: measure in 3a with generous headroom (ADR 0006 amendment), re-derive at 4c/4d;
-   hitting the cap = exit 2.
+   hitting the cap cannot exit 0 (FLAGGED; a confirmed hard finding still exits 1).
 2. Decision-D cost: documented upper-bound estimate in 3a (unknown use = unused), exact in 4b.
 3. 3a gate: SHA-pinned manifest of the 2,031 files; exact byte partition on every file;
    UNINDEXED/CONTESTED allowed but reported (not gated); >60 s per file = failure.

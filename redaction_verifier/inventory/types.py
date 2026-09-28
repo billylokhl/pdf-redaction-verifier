@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from ..model import Span, UnitKind, UnitRef
+from ..ledger import Span, UnitKind, UnitRef
 
 
 class Contested(Enum):
@@ -20,14 +20,18 @@ CONTESTED: Final = Contested.CONTESTED
 
 @dataclass(frozen=True)
 class Region:
-    """A maximal run of bytes with one claimant set. ``owners`` is empty
-    for an unclaimed gap (kind WHITESPACE or UNINDEXED), the one claimant
-    for an owned region (kind = its kind), and every claimant, in
-    ``UnitRef.sort_key`` order, for a CONTESTED one."""
+    """A maximal run of bytes: unclaimed (kind WHITESPACE or UNINDEXED,
+    no owners), owned by one unit (kind = its kind), or claimed by two or
+    more (CONTESTED). Adjacent contested bytes form one region whatever
+    their claimant sets; ``claimants`` counts every distinct unit
+    claiming any of its bytes, and ``owners`` lists the first
+    ``Limits.max_contested_owners`` of them in ``UnitRef.sort_key``
+    order. For the other kinds ``claimants == len(owners)``."""
 
     span: Span
     kind: UnitKind | Contested
     owners: tuple[UnitRef, ...]
+    claimants: int
 
 
 @dataclass(frozen=True)

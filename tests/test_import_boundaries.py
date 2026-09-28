@@ -15,10 +15,13 @@ still defines on its own (``main``, ``run_cli``, ``scan_pdf_objects``,
 ``__version__``, ...) is never in that set, so referencing it as
 ``verify.<name>`` is unaffected.
 
-Phase 3a adds two guards for the process boundary (docs/REDESIGN.md §4):
-the shipped CLI never loads the shadow-mode inventory (or pikepdf), and
-the inventory -- child-side code -- never imports the parts that hold
-secrets (rules, matching, report, views) or verify.
+Phase 3a adds guards for the process boundary (docs/REDESIGN.md §4): the
+shipped CLI never loads the shadow-mode inventory (or pikepdf), and the
+child-side code (the inventory, budget, ledger) never imports the parts
+that hold secrets (rules, matching, report, views) or verify -- checked
+both statically and by importing it in a fresh interpreter -- and never
+imports dynamically at all: importlib, runpy, __import__, exec, eval and
+compile are banned outright there, so the static check cannot be dodged.
 """
 
 from __future__ import annotations
@@ -113,9 +116,12 @@ class TestTestsDoNotReachMovedNamesThroughVerify:
 
 # ── Phase 3a: the process boundary ────────────────────────────────────────
 CHILD_SIDE = sorted((REPO_ROOT / "redaction_verifier" / "inventory").rglob("*.py")) + [
-    REPO_ROOT / "redaction_verifier" / "budget.py"]
+    REPO_ROOT / "redaction_verifier" / name for name in ("budget.py", "ledger.py")]
 SECRET_HOLDERS = tuple(f"redaction_verifier.{name}" for name in (
     "rules", "matching", "report", "views")) + ("verify",)
+# Modules and builtins that import or run code by name.
+BANNED_MODULES = SECRET_HOLDERS + ("importlib", "runpy")
+BANNED_CALLS = frozenset({"import_module", "__import__", "exec", "eval", "compile"})
 
 
 def _module_name(path: Path) -> str:
@@ -125,7 +131,8 @@ def _module_name(path: Path) -> str:
 
 def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple[int, str]]:
     """Every import in *source* (resolving relative ones against *module*)
-    that reaches a secret holder, plus any dynamic import at all."""
+    that reaches a secret holder, importlib or runpy, plus any call that
+    imports or runs code by name."""
     package = module if is_package else module.rpartition(".")[0]
     hits = []
     for node in ast.walk(ast.parse(source)):
@@ -139,21 +146,28 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             targets = [root] + [f"{root}.{alias.name}" for alias in node.names]
         elif isinstance(node, ast.Call):
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in ("import_module", "__import__"):
-                hits.append((node.lineno, f"dynamic import via {name}"))
+            # A bare builtin (exec(...)), or import_module however reached;
+            # an attribute that shares a builtin's name (re.compile) is fine.
+            if isinstance(func, ast.Attribute):
+                name = func.attr if func.attr == "import_module" else ""
+            else:
+                name = getattr(func, "id", "")
+            if name in BANNED_CALLS:
+                hits.append((node.lineno, f"dynamic code via {name}"))
         for target in targets:
-            if any(target == h or target.startswith(h + ".") for h in SECRET_HOLDERS):
+            if any(target == h or target.startswith(h + ".") for h in BANNED_MODULES):
                 hits.append((getattr(node, "lineno", 0), target))
     return hits
 
 
 class TestProcessBoundary:
     @staticmethod
-    def _loaded_after(imports: str) -> list[str]:
-        probe = (f"import json, sys, {imports}; print(json.dumps(sorted(m for m in sys.modules "
-                 "if m.split('.')[0] == 'pikepdf' "
-                 "or m.startswith('redaction_verifier.inventory'))))")
+    def _loaded_after(imports: str, *watched: str) -> list[str]:
+        """The modules named by *watched* (or under them) that a fresh
+        interpreter has loaded after ``import <imports>``."""
+        probe = (f"import json, sys, {imports}; w = {list(watched)!r}; "
+                 "print(json.dumps(sorted(m for m in sys.modules "
+                 "if any(m == p or m.startswith(p + '.') for p in w))))")
         result = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT,
                                 capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, result.stderr
@@ -161,10 +175,17 @@ class TestProcessBoundary:
         return loaded
 
     def test_cli_never_loads_the_inventory_or_pikepdf(self) -> None:
-        assert self._loaded_after("verify") == []
+        watched = ("redaction_verifier.inventory", "pikepdf")
+        assert self._loaded_after("verify", *watched) == []
         # ...and the probe does see the package when something loads it.
         assert "redaction_verifier.inventory" in self._loaded_after(
-            "verify, redaction_verifier.inventory")
+            "verify, redaction_verifier.inventory", *watched)
+
+    def test_child_side_code_loads_no_secret_holder_or_fitz(self) -> None:
+        watched = (*SECRET_HOLDERS, "fitz", "pymupdf")
+        assert self._loaded_after(
+            "redaction_verifier.inventory, redaction_verifier.budget", *watched) == []
+        assert "fitz" in self._loaded_after("verify", *watched)  # the probe works
 
     def test_child_side_code_never_imports_a_secret_holder(self) -> None:
         assert len(CHILD_SIDE) >= 4, "sanity: the inventory package must exist"
@@ -181,13 +202,15 @@ class TestProcessBoundary:
         "from redaction_verifier.matching.values import SecretMatcher",
         "from .. import report", "from ..views import text", "from ...redaction_verifier import rules",
         "import importlib; importlib.import_module('x')", "__import__('verify')",
+        "import importlib.util", "from importlib import import_module", "import runpy",
+        "exec('import verify')", "eval('1')", "compile('x', 'f', 'exec')",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
 
     @pytest.mark.parametrize("source", [
-        "from ..model import Span", "from . import types", "from .types import Region",
-        "import re", "from redaction_verifier.budget import Budget",
+        "from ..ledger import Span", "from . import types", "from .types import Region",
+        "import re", "from redaction_verifier.budget import Budget", "re.compile('x')",
     ])
     def test_check_allows_child_side_imports(self, source: str) -> None:
         assert not _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)

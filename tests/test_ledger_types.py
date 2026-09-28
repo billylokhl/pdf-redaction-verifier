@@ -49,6 +49,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.CONTESTED_SPAN: lambda: tile(
         b"xy", [(_A, Span(0, 2)), (UnitRef(UnitKind.OBJECT, 1), Span(1, 2))])[1],
     FlagReason.CLAIM_OUT_OF_RANGE: lambda: tile(b"x", [(_A, Span(0, 2))])[1],
+    FlagReason.CLAIM_INVALID: lambda: tile(b"x", [(UnitRef(UnitKind.UNINDEXED, 0), Span(0, 1))])[1],
+    FlagReason.SELF_OVERLAP: lambda: tile(b"xyz", [(_A, Span(0, 2)), (_A, Span(1, 3))])[1],
     FlagReason.BUDGET_EXHAUSTED: lambda: _exhausted_units(),
 }
 
@@ -85,6 +87,17 @@ def test_sort_key_is_a_total_order_consistent_with_equality(pair: list[UnitRef])
     assert (a == b) == (a.sort_key() == b.sort_key())
 
 
+@pytest.mark.parametrize("kind, start, within, error", [
+    ("object", 0, None, TypeError), (UnitKind.OBJECT, -1, None, ValueError),
+    (UnitKind.OBJECT, True, None, ValueError), (UnitKind.OBJECT, 1.0, None, ValueError),
+    (UnitKind.OBJECT, 0, (UnitKind.OBJECT, 0), TypeError),
+])
+def test_unit_ref_rejects_malformed_fields(
+        kind: Any, start: Any, within: Any, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        UnitRef(kind, start, within)
+
+
 @pytest.mark.parametrize("start, end", [(-1, 0), (2, 1), (True, 1), (0, 1.0), ("0", 1)])
 def test_span_rejects_malformed_bounds(start: Any, end: Any) -> None:
     with pytest.raises(ValueError):
@@ -93,12 +106,15 @@ def test_span_rejects_malformed_bounds(start: Any, end: Any) -> None:
 
 @pytest.mark.parametrize("params", [
     (("n", True),), (("n", b"secret"),), (("n", "1"),), ((1, 1),), (("n", 1, 2),), ("n",),
+    [("n", 1)], (("a b", 1),), (("é", 1),), (("", 1),), (("n\n", 1),),
 ])
 def test_flag_params_carry_only_named_integers(params: Any) -> None:
     with pytest.raises(TypeError):
         Flag(FlagReason.CONTESTED_SPAN, None, params)
     with pytest.raises(TypeError):
         Flag("contested_span", None, ())  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        Flag(FlagReason.CONTESTED_SPAN, (0, 1), ())  # type: ignore[arg-type]
     assert Flag(FlagReason.CONTESTED_SPAN, Span(0, 1), (("n", 0),)).params == (("n", 0),)
 
 
@@ -106,8 +122,10 @@ def test_limits_default_to_adr_0006s_placeholders() -> None:
     limits = Limits()
     assert (limits.max_depth, limits.max_units, limits.max_inflated_bytes,
             limits.max_ocr_pixels_per_page) == (25, 200_000, 2 * GIB, 200_000_000)
+    assert (limits.max_ocr_run_pixels, limits.max_contested_owners) == (20_000_000_000, 16)
     assert GIB == 1 << 30
     assert limits.ocr_run_pixels(3) == 600_000_000
+    assert limits.ocr_run_pixels(10_000) == 20_000_000_000  # the flat ceiling
     assert limits.ocr_run_pixels(0) == limits.ocr_run_pixels(-5) == 0
     with pytest.raises(AttributeError):
         limits.max_units = 1  # type: ignore[misc]
@@ -143,14 +161,17 @@ def test_ocr_pixels_per_page_and_derived_run_cap() -> None:
     assert budget.charge_ocr_pixels(0, 10) and not budget.charge_ocr_pixels(0, 1)
     assert not budget.charge_ocr_pixels(0, 0)  # page 0 stays refused
     assert not budget.charge_ocr_pixels(2, 1)  # beyond the anchored page count
+    assert budget.exhausted(Counter.OCR_PAGE_PIXELS)
     assert budget.charge_ocr_pixels(1, 10)     # page 1 has its own allowance
+    assert not budget.charge_ocr_pixels(1, 1)  # the page cap is checked first
+    assert budget.ocr_pixels == 20
     assert [_counter(f) for f in budget.flags()] == [Counter.OCR_PAGE_PIXELS]
-    assert not budget.charge_ocr_pixels(1, 1) and budget.ocr_pixels == 20  # 2 pages x 10
-    assert [_counter(f) for f in budget.flags()] == [
-        Counter.OCR_PAGE_PIXELS, Counter.OCR_RUN_PIXELS]
-    run = Budget(Limits(max_ocr_pixels_per_page=10), page_count=1)
-    assert not run.charge_ocr_pixels(0, 11)
+    run = Budget(Limits(max_ocr_pixels_per_page=10, max_ocr_run_pixels=15), page_count=2)
+    assert run.charge_ocr_pixels(0, 10) and not run.charge_ocr_pixels(1, 6)
     assert [_counter(f) for f in run.flags()] == [Counter.OCR_RUN_PIXELS]
+    malformed = Budget(page_count=1)
+    assert not malformed.charge_ocr_pixels(0, -1)
+    assert [_counter(f) for f in malformed.flags()] == [Counter.OCR_PAGE_PIXELS]
     assert not Budget().charge_ocr_pixels(0, 1)  # no anchored pages, no OCR budget
 
 
@@ -159,7 +180,8 @@ _anything = st.one_of(st.integers(-5, 3 * GIB), st.booleans(), st.none(), st.flo
 
 
 @given(st.builds(Limits, max_depth=st.integers(0, 5), max_units=st.integers(0, 5),
-                 max_inflated_bytes=st.integers(0, 50), max_ocr_pixels_per_page=st.integers(0, 50)),
+                 max_inflated_bytes=st.integers(0, 50), max_ocr_pixels_per_page=st.integers(0, 50),
+                 max_ocr_run_pixels=st.integers(0, 80)),
        _anything,
        st.lists(st.tuples(st.sampled_from(["depth", "units", "bytes", "ocr"]),
                           _anything, _anything), max_size=30))

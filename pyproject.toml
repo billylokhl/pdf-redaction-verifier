@@ -123,7 +123,10 @@ ignore_errors = true
 # spelled out: `strict = true` in an override section applies to every
 # module, not just this one. warn_redundant_casts is global-only.
 [[tool.mypy.overrides]]
-module = ["redaction_verifier.inventory", "redaction_verifier.inventory.*", "redaction_verifier.budget"]
+module = [
+    "redaction_verifier.inventory", "redaction_verifier.inventory.*",
+    "redaction_verifier.budget", "redaction_verifier.ledger",
+]
 disallow_any_generics = true
 disallow_subclassing_any = true
 disallow_untyped_calls = true
