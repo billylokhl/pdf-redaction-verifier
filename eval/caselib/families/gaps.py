@@ -24,6 +24,7 @@ PAGE = stream(b"", text("Quarterly report"))
 LIVE_SSN = expect(1, findings=(("SSN", "live"),))
 ORPHAN_SSN = expect(1, findings=(("SSN", "orphaned"),))
 REVIEW_BINARY_LIVE = expect(2, warnings=(("REVIEW_BINARY", "live"),))
+LEFTOVER_IMAGE_LIVE = expect(2, warnings=(("LEFTOVER_IMAGE", "live"),))
 PATTERN_RULE = ({"name": "Any SSN", "class": "ssn"},)
 HIDDEN_LAYER_CATALOG = (
     b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [7 0 R] "
@@ -247,8 +248,10 @@ def unused_resource_font(path: Path) -> None:
 @leak_raw(
     "page.unused-form-resource-pixels", "unused-resource.pixels",
     "A form XObject in the page's resources, never drawn, showing a scanned "
-    "image of the SSN.",
-    expected=LIVE_SSN,
+    "image of the SSN. Unused under ADR 0004 owner decision D (drawn only by a form "
+    "nothing draws), so the image is always FLAGGED — not a finding, since nothing "
+    "reassembles or reads an unused image.",
+    expected=LEFTOVER_IMAGE_LIVE,
     known_gap=KnownGap("unused-resource.pixels", expect(0)),
     mistake="Leaving an unused resource in the page dictionary instead of removing it.",
     recovery="List the page's resources and OCR each image, even those never drawn.",

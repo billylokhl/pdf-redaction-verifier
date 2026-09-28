@@ -29,7 +29,6 @@ SECRET = f"Employee SSN {SSN}"
 REVIEW_BINARY_LIVE = expect(2, warnings=(("REVIEW_BINARY", "live"),))
 LEFTOVER_IMAGE_ORPHANED = expect(2, warnings=(("LEFTOVER_IMAGE", "orphaned"),))
 LEFTOVER_IMAGE_LIVE = expect(2, warnings=(("LEFTOVER_IMAGE", "live"),))
-LIVE_SSN = expect(1, findings=(("SSN", "live"),))
 LIVE_SSN_OCR = expect(1, findings=(("SSN", "live"),), layers=(("SSN", "OCR"),))
 PATTERN_RULE = ({"name": "Any SSN", "class": "ssn"},)
 
@@ -209,7 +208,7 @@ def jpeg_comment_ssn(path: Path) -> None:
     _write(path, _drawn_image_page(w, h, _jpeg_image_obj(jpeg_com, w, h, n)))
 
 
-# ── live.pixels.exif-thumbnail ────────────────────────────────────────────
+# ── live.pixels.exif-thumbnail (K39) ──────────────────────────────────────
 # ADR 0004 owner decision B: any image data beyond the main decoded
 # picture — an EXIF/APP1 thumbnail among the named examples — means the
 # image is FLAGGED, whatever it shows. Built as a real, standards-shaped
@@ -245,7 +244,7 @@ def _exif_app1_with_thumbnail(thumbnail_jpeg: bytes) -> bytes:
 
 @leak_raw(
     "page.jpeg-exif-thumbnail", "live.pixels.exif-thumbnail",
-    "A small JPEG's own EXIF (APP1) thumbnail is a second, fully decodable picture of the "
+    "K39. A small JPEG's own EXIF (APP1) thumbnail is a second, fully decodable picture of the "
     "SSN that the main image's declared frame never mentions: only the main picture is ever "
     "drawn, so OCR never sees the thumbnail, and unlike a raw sample byte or a JPEG comment, "
     "the thumbnail's SSN render is itself DCT/Huffman-compressed pixel data, not literal "
@@ -412,7 +411,10 @@ def ssn_strips_joined(path: Path) -> None:
     "afterwards: OCR only ever sees the rendered, composited page — the box, not what is "
     "under it — the strips version of K12's known gap (K21's own row calls this "
     "\"K12's strips variant\"; measured: exit 0, no warnings).",
-    expected=LIVE_SSN,
+    # provisional: pending the owner's Phase 4b answer on drawn strips under a box
+    # (docs/adr/0004) — per-image OCR reads nothing from either 90x7 strip alone, so
+    # this is not a finding the tool can actually produce; only FLAGGED is asserted.
+    expected=expect(2),
     known_gap=KnownGap("live.pixels.under-box", expect(0)),
     mistake="Drawing a box over the reassembled strips instead of removing or replacing "
             "the underlying images.",
@@ -428,8 +430,10 @@ def ssn_strips_under_box(path: Path) -> None:
     "page.ssn-strips-unused-resource", "unused-resource.pixels",
     "The same two strips, listed in the page's /Resources /XObject dictionary but never "
     "drawn by any content stream: nothing composites them, so the page's OCR never sees "
-    "them (measured: exit 0, no warnings).",
-    expected=LIVE_SSN,
+    "them (measured: exit 0, no warnings). Unused under ADR 0004 owner decision D (listed "
+    "as a resource but never drawn), so always FLAGGED — not a finding, since nothing "
+    "reassembles or reads an unused image.",
+    expected=LEFTOVER_IMAGE_LIVE,
     known_gap=KnownGap("unused-resource.pixels", expect(0)),
     mistake="Leaving unused strip images listed in the page's resources instead of "
             "removing them.",

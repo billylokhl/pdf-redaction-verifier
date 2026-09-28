@@ -22,6 +22,12 @@ of the other gap that note describes (the note's other example, strips
 listed as a resource but never drawn, shares K21's own cell but has no
 K-number of its own -- K12 and K21 are already claimed by other cases).
 
+K39 was added the same way, from a PR review rather than from §8's own
+"no K-number yet" note (the EXIF-thumbnail case was scheduled by ADR
+0003/0004, not by §8): a small JPEG's own EXIF thumbnail rendering the
+SSN, a second decoded picture the tool never looks at, is a new silent
+miss with no cell-sharing sibling, so it gets its own row and number.
+
 K1-K11's cases (``caselib/families/raw.py``) also write their K-number
 into the story itself ("K7: plain text appended after the file's final
 %%EOF."); that's the source this table was read from for those ids.
@@ -80,6 +86,7 @@ CASE_TO_K: dict[str, int] = {
     "page.overprinted-embedded-font": 36,
     "page.image-extra-rows": 37,
     "page.ssn-strips-under-box": 38,
+    "page.jpeg-exif-thumbnail": 39,
 }
 
 
