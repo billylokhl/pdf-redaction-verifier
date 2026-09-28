@@ -186,16 +186,20 @@ def revision_blob(chain: Chain, data: bytes, revision: int) -> bytes:
 # ── Reader messages: a category, or at most a scrubbed template ───────────
 def scrub(message: bytes | str) -> str:
     """A reader message as a template: its path prefix, parenthesized and
-    quoted text, names, hex strings and numbers removed, and only short
-    plain words kept. Reader messages quote a document's names and
+    quoted text, names, hex strings and numbers replaced by placeholders,
+    and of the rest only short lowercase words kept (the readers' own
+    vocabulary; a document's tokens in a message are mostly quoted, named
+    or capitalized). Reader messages quote a document's names and
     strings; a template keeps the message's shape, not its content."""
     text = message.decode("latin-1") if isinstance(message, bytes) else message
     text = re.sub(r"^WARNING: .*?\.pdf\b", "WARNING:", text)
-    text = re.sub(r"\([^)]*\)?", "(_)", text)
-    text = re.sub(r"'[^']*'?|\"[^\"]*\"?|<[^>]*>?|\[[^\]]*\]?", "_", text)
-    text = re.sub(r"/[^\s/()<>\[\]{}%]*", "/_", text)
-    text = re.sub(r"\d+", "#", text)
-    words = [w for w in text.split() if re.fullmatch(r"[A-Za-z#:,.;()/_=-]{1,24}", w)]
+    text = re.sub(r"\([^)]*\)?", " (_) ", text)
+    text = re.sub(r"'[^']*'?|\"[^\"]*\"?|<[^>]*>?|\[[^\]]*\]?", " _ ", text)
+    text = re.sub(r"/[^\s/()<>\[\]{}%]*", " /_ ", text)
+    text = re.sub(r"\d+", " # ", text)
+    words = [w for w in text.split()
+             if w in ("WARNING:", "(_)", "_", "/_", "#")
+             or re.fullmatch(r"[a-z]{1,16}[:,;.]?", w)]
     return " ".join(words)[:120]
 
 
@@ -438,9 +442,13 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
     after the header (beyond the binary marker) or an intermediate %%EOF;
     streams whose indirect /Length lives in an object stream;
     REVISION_AMBIGUOUS flags whose target is in fact equal in every
-    revision; dead object streams."""
+    revision; dead object streams; and whether the file is encrypted."""
     out: dict[str, int] = {}
     parser = ObjectParser(data)
+    # Encrypted: bytes and values not compared until 3a-8/9.
+    out["encrypted"] = int(any(section.trailer is not None
+                               and section.trailer.get(b"Encrypt") is not None
+                               for section in chain_of(data).sections))
     ends = {u.ref.start: u.spans[0].end for u in inv.units
             if u.ref.within is None and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)}
 
@@ -500,7 +508,7 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
             continue
         params = dict(flag.params)
         stream_ref = inv.objects.get(params.get("offset", -1))  # an xref offset
-        target = params.get("length_object", -1)
+        length_object = params.get("length_object", -1)
         if stream_ref is None or stream_ref.obj is None:
             unresolved += 1
             continue
@@ -508,7 +516,7 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         for revision in range(inv.revisions):
             if inv.entry(stream_ref.obj, revision) != (1, stream_ref.start, stream_ref.gen):
                 continue
-            entry = inv.entry(target, revision)
+            entry = inv.entry(length_object, revision)
             values.add(_int_value(parsed(entry[1])) if entry and entry[0] == 1 else None)
         if None in values or not values:
             unresolved += 1

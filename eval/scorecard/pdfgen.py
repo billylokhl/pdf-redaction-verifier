@@ -175,15 +175,15 @@ def build_pdf(spec: Spec) -> bytes:
         changed[content] = (1, w.stream(content, b"", b"BT (update %d) Tj ET" % k), 0)
         if update.dead:
             w.obj(91 + k, b"<< /Dead (update %d) >>" % k)
-        page = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300]"
-                b" /Resources << >> /Contents %d 0 R >>" % content)
+        new_page = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300]"
+                    b" /Resources << >> /Contents %d 0 R >>" % content)
         if update.objstm and update.xref == "stream":
             stm = next_num
             next_num += 1
-            changed[stm] = (1, w.objstm(stm, [(pages[0], page)]), 0)
+            changed[stm] = (1, w.objstm(stm, [(pages[0], new_page)]), 0)
             changed[pages[0]] = (2, stm, 0)
         else:
-            changed[pages[0]] = (1, w.obj(pages[0], page), 0)
+            changed[pages[0]] = (1, w.obj(pages[0], new_page), 0)
         if update.xref == "stream":
             xref_num = next_num
             next_num += 1
