@@ -13,6 +13,7 @@ from hypothesis import strategies as st
 
 from redaction_verifier.budget import GIB, Budget, Counter, Limits
 from redaction_verifier.inventory import tile
+from redaction_verifier.inventory.lexer import Lexer
 from redaction_verifier.model import (
     Flag,
     FlagReason,
@@ -52,7 +53,15 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.CLAIM_INVALID: lambda: tile(b"x", [(UnitRef(UnitKind.UNINDEXED, 0), Span(0, 1))])[1],
     FlagReason.SELF_OVERLAP: lambda: tile(b"xyz", [(_A, Span(0, 2)), (_A, Span(1, 3))])[1],
     FlagReason.BUDGET_EXHAUSTED: lambda: _exhausted_units(),
+    FlagReason.UNTERMINATED: lambda: _lexed(b"(abc"),
+    FlagReason.INVALID_HEX_DIGIT: lambda: _lexed(b"<4g>"),
+    FlagReason.INVALID_NAME_ESCAPE: lambda: _lexed(b"/A#4"),
+    FlagReason.STRAY_DELIMITER: lambda: _lexed(b")"),
 }
+
+
+def _lexed(data: bytes) -> tuple[Flag, ...]:
+    return tuple(flag for token in Lexer(data) for flag in token.flags)
 
 
 def _exhausted_units() -> tuple[Flag, ...]:
