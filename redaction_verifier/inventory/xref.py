@@ -16,7 +16,11 @@ emulated. Never raises.
 Revisions: section *i* (newest first) and everything older is revision
 *i*; its bytes end where the section ends (the prefix cut a reader of
 that revision sees), and its object map is the sections merged, newer
-entries winning (``Chain.object_map``).
+entries winning (``Chain.object_map``). The one exception: a linearized
+file's first-page section (the newest; the file's first object is the
+/Linearized dictionary) and the main section its /Prev points forward
+to are one revision. Any other forward /Prev is flagged, and so is any
+revision that does not end after every older one.
 """
 
 from __future__ import annotations
@@ -141,8 +145,11 @@ def read_chain(data: bytes, limits: Limits | None = None,
         prev = sections[i].prev
         if prev is not None and prev > sections[i].offset:
             # A forward /Prev: canonical only as a linearized file's
-            # first-page section, the newest, pointing at the main one.
-            if i != 0 or i + 1 >= len(sections):
+            # first-page section -- the newest, the file's first object a
+            # /Linearized dictionary -- pointing at the main section,
+            # which has no /Prev of its own (§F.3.4).
+            if (i != 0 or i + 1 >= len(sections) or sections[1].prev is not None
+                    or not _linearized(data, parser, sections[0].offset)):
                 flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, sections[i].span,
                                   (("object", -1),)))
                 revisions.append((i,))
@@ -155,6 +162,12 @@ def read_chain(data: bytes, limits: Limits | None = None,
             i += 1
     chain = Chain(tuple(sections), start, Span(tail.start(), len(data)), tuple(flags),
                   tuple(revisions))
+    for revision in range(1, len(revisions)):
+        # An update appends: every older revision ends before a newer one.
+        if chain.revision_end(revision) >= chain.revision_end(revision - 1):
+            flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED,
+                              sections[revisions[revision][0]].span, (("object", -1),)))
+    chain = Chain(chain.sections, chain.startxref, chain.tail, tuple(flags), chain.revisions)
     return Chain(chain.sections, chain.startxref, chain.tail,
                  chain.flags + tuple(_check_revisions(data, chain, parser)), chain.revisions)
 
@@ -170,7 +183,11 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
       in one reader and recovered in another; so does a hybrid
       section's /XRefStm;
     - every compressed entry names an object stream in use in the
-      revision; object 0 is never in use (MuPDF warns);
+      revision, inherited entries included: a revision that frees an
+      object stream (or makes it compressed) while older entries still
+      live in it is flagged (MuPDF: "corrupt object stream"). Whether
+      an in-use home is really an object stream holding that index is
+      3a-5's to check; object 0 is never in use (MuPDF warns);
     - the revision's newest trailer names a /Type /Catalog via /Root
       (qpdf: "unable to find /Root dictionary"; a catalog inside an
       object stream is 3a-5's to check) and has /Size exactly one more
@@ -180,6 +197,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
     highest = 0
     catalogs: dict[int, bool] = {}
     whole: dict[int, int | None] = {}  # offset -> where its object ends (None: never)
+    members: dict[int, set[int]] = {}  # object stream -> live compressed entries in it
     for revision in reversed(range(len(chain.revisions))):
         group = chain.revisions[revision]
         end = chain.revision_end(revision)
@@ -192,10 +210,23 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser) -> list[Fl
                     flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, section.xref_stm.span,
                                       (("revision", revision),)))
             parts.append(section)
+        changed: set[int] = set()
         for part in parts:
-            merged.update(part.entries)
+            for number, entry in part.entries.items():
+                before = merged.get(number)
+                if before is not None and before.kind == COMPRESSED:
+                    members.get(before.a, set()).discard(number)
+                if entry.kind == COMPRESSED:
+                    members.setdefault(entry.a, set()).add(number)
+                merged[number] = entry
+                changed.add(number)
             if part.entries:
                 highest = max(highest, max(part.entries))
+        for number in changed:
+            live = members.get(number)
+            if live and merged[number].kind != IN_USE:
+                flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
+                    ("stream", number), ("members", len(live)), ("revision", revision))))
         for part in parts:
             for number, entry in part.entries.items():
                 if entry.kind == IN_USE:
@@ -393,6 +424,22 @@ def _ends_within(parser: ObjectParser, offset: int, end: int,
             flags.extend(obj.flags)
         whole[offset] = stop
     return stop is not None and stop <= end
+
+
+# The header line, then any comment lines (the binary marker), then the
+# linearization dictionary's object (§F.3.1, §F.3.2).
+_PREAMBLE: Final = re.compile(rb"%PDF-[^\r\n]*" + _EOL + rb"(?:%[^\r\n]*" + _EOL + rb")*")
+
+
+def _linearized(data: bytes, parser: ObjectParser, first_section: int) -> bool:
+    """Is the file's first object a /Linearized dictionary, whole before
+    the first-page section?"""
+    preamble = _PREAMBLE.match(data)
+    if preamble is None:
+        return False
+    obj = parser.parse_indirect_at(preamble.end(), first_section)
+    return (obj is not None and not obj.flags and isinstance(obj.value, PdfDict)
+            and obj.value.get(b"Linearized") is not None)
 
 
 def _header_at(data: bytes, offset: int) -> tuple[int, int, int] | None:

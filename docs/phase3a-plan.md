@@ -110,10 +110,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   3a-4a); `%PDF-` at byte 0 (HEADER_OFFSET otherwise: readers read offsets relative to a
   late header); hybrid /XRefStm merged, any object both define flagged (readers disagree);
   /Prev followed without cycles; a forward
-  /Prev only as a linearized file's first-page section, whose pair is one revision; every
+  /Prev only as a linearized file's first-page section (the newest section, the file's
+  first object a /Linearized dictionary, the main section it points to without a /Prev of
+  its own), whose pair is one revision; each revision ends after every older one; every
   in-use entry on its own `N G obj` and the whole object (through `endobj`, parsed once,
-  its parser flags reported) inside its own revision's bytes, every compressed entry
-  on an object stream in use in that revision, object 0 never in use, no empty subsection;
+  its parser flags reported) inside its own revision's bytes, every compressed entry --
+  inherited ones included, so a revision freeing an object stream its older members still
+  live in is flagged -- on an object stream in use in that revision (whether that home
+  really is an object stream holding the index is 3a-5's), object 0 never in use, no empty
+  subsection;
   checked in one pass oldest to newest (linear however many revisions);
   each revision's newest trailer names a /Type /Catalog via /Root and has /Size = 1 +
   its highest object number. New flags: XREF_TAIL, XREF_NOT_FOUND, XREF_TABLE_MALFORMED,

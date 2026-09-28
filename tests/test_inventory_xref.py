@@ -15,6 +15,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from redaction_verifier.inventory.objects import ObjectParser
 from redaction_verifier.inventory.xref import COMPRESSED, FREE, IN_USE, Entry, read_chain
 
 from .conftest import requires_qpdf
@@ -208,6 +209,18 @@ def _agree(data: bytes, tmp: Path) -> None:
     chain = read_chain(data)
     if chain.flags:
         return
+    # Our own invariants first -- revision 0 is otherwise only ever checked
+    # against the whole file, never against its own cut: each revision ends
+    # after every older one, and holds every in-use object whole.
+    ends = [chain.revision_end(r) for r in range(len(chain.revisions))]
+    assert ends == sorted(ends, reverse=True) and len(set(ends)) == len(ends), ends
+    parser = ObjectParser(data)
+    for revision, end in enumerate(ends):
+        for number, entry in chain.object_map(revision).items():
+            if entry.kind == IN_USE:
+                obj = parser.parse_indirect_at(entry.a, end)
+                assert obj is not None and not obj.flags and obj.span.end <= end, (
+                    revision, number)
     for revision in range(len(chain.revisions)):
         blob = data if revision == 0 else (
             data[:chain.revision_end(revision)]
@@ -399,3 +412,91 @@ def test_an_object_straddling_its_revisions_cut_is_flagged() -> None:
     # MuPDF reads it truncated on revision 1's cut, qpdf recovers it:
     # the superseded "SECRET-TAIL" would sit outside the revision.
     assert "XREF_OFFSET_MISMATCH" in _reasons(straddle())
+
+
+# ── Shapes found by the final review: forward /Prev, freed object streams ──
+def forward(linearized: bool, main_prev: bool) -> bytes:
+    """A first-page section A whose /Prev points forward to a main section
+    B -- the linearized shape (§F.3.4). Without the /Linearized dictionary
+    first, it is not that shape (MuPDF: "expected object number"); with
+    B's own /Prev forward to a third section C, revision 0 would end
+    before revision 1."""
+    preamble = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"
+    size = 10 if linearized else 4
+
+    def build(at: tuple[int, ...]) -> tuple[bytes, tuple[int, ...]]:
+        out = bytearray(preamble)
+        if linearized:
+            out += b"9 0 obj\n<< /Linearized 1 /L %010d >>\nendobj\n" % at[-1]
+        first = len(out)
+        out += (b"xref\n3 1\n%010d 00000 n \ntrailer\n<< /Size %d /Root 1 0 R /Prev %010d >>\n"
+                % (at[5], size, at[1]))
+        offsets = _objects(BODIES, out)
+        main = len(out)
+        rows = b"".join(b"%010d 00000 n \n" % at[3 + i] for i in range(2))
+        lin = b"9 1\n%010d 00000 n \n" % len(preamble) if linearized else b""
+        prev = b" /Prev %010d" % at[2] if main_prev else b""
+        out += (b"xref\n0 3\n0000000000 65535 f \n" + rows + lin
+                + b"trailer\n<< /Size %d /Root 1 0 R%s >>\n" % (size, prev))
+        third = len(out)
+        if main_prev:
+            out += b"xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 3 /Root 1 0 R >>\n"
+        out += b"startxref\n%d\n%%%%EOF\n" % first
+        return bytes(out), (first, main, third, offsets[1], offsets[2], offsets[3], len(out))
+    data, at = build((0,) * 7)
+    for _ in range(3):  # offsets are fixed-width: this converges
+        data, at = build(at)
+    return data
+
+
+def test_the_linearized_forward_pair_is_one_revision() -> None:
+    chain = read_chain(forward(linearized=True, main_prev=False))
+    assert (chain.flags, chain.revisions) == ((), ((0, 1),))
+
+
+@pytest.mark.parametrize(("linearized", "main_prev"), [(False, False), (True, True)])
+def test_a_forward_prev_outside_the_linearized_shape_is_flagged(
+        linearized: bool, main_prev: bool) -> None:
+    assert "XREF_TABLE_MALFORMED" in _reasons(forward(linearized, main_prev))
+
+
+
+@requires_qpdf
+@pytest.mark.parametrize("objstms", ["disable", "generate"])
+def test_qpdf_linearized_files_read_as_one_revision(tmp_path: Path, objstms: str) -> None:
+    doc = pymupdf.open()
+    for i in range(3):
+        doc.new_page().insert_text((50, 50), f"page {i}")
+    doc.save(tmp_path / "in.pdf")
+    subprocess.run(["qpdf", "--linearize", f"--object-streams={objstms}",
+                    str(tmp_path / "in.pdf"), str(tmp_path / "lin.pdf")], check=True)
+    data = (tmp_path / "lin.pdf").read_bytes()
+    chain = read_chain(data)
+    assert chain.flags == (), [f.reason.name for f in chain.flags]
+    assert chain.revisions == ((0, 1),)
+    _agree(data, tmp_path)
+
+
+def freed_object_stream() -> bytes:
+    """Revision 1 puts objects 2 and 3 in object stream 4; revision 0 frees
+    4 and nothing else (MuPDF: "corrupt object stream 4", no pages)."""
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = _objects({1: BODIES[1]}, out)
+    header = b"2 0 3 %d " % (len(BODIES[2]) + 1)
+    packed = header + BODIES[2] + b" " + BODIES[3]
+    offsets[4] = len(out)
+    out += (b"4 0 obj\n<< /Type /ObjStm /N 2 /First %d /Length %d >>\nstream\n"
+            % (len(header), len(packed)) + packed + b"\nendstream\nendobj\n")
+    older = len(out)
+    out += _stream_xref({0: (0, 0, 0xFFFF), 1: (1, offsets[1], 0), 2: (2, 4, 0),
+                         3: (2, 4, 1), 4: (1, offsets[4], 0), 5: (1, older, 0)}, 6, older)
+    out += b"startxref\n%d\n%%%%EOF\n" % older
+    newer = len(out)
+    out += (b"xref\n4 1\n0000000000 00001 f \ntrailer\n<< /Size 6 /Root 1 0 R /Prev %d >>\n"
+            % older + b"startxref\n%d\n%%%%EOF\n" % newer)
+    return bytes(out)
+
+
+def test_freeing_an_object_stream_its_members_still_live_in_is_flagged() -> None:
+    flags = [(f.reason.name, dict(f.params)) for f in read_chain(freed_object_stream()).flags]
+    assert flags == [("XREF_OFFSET_MISMATCH", {"stream": 4, "members": 2, "revision": 0})]
