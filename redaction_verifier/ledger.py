@@ -75,6 +75,18 @@ class FlagReason(Enum):
     AFTER_STREAM_END = "after_stream_end"      # bytes after zlib's end marker
     BAD_DECODE_PARMS = "bad_decode_parms"      # a predictor we cannot undo exactly
     PREDICTOR_ERROR = "predictor_error"        # bad row filter type, partial row
+    # The cross-reference chain (3a-4b): canonical shapes only (ADR 0010).
+    XREF_TAIL = "xref_tail"                    # the file does not end startxref N %%EOF
+    XREF_NOT_FOUND = "xref_not_found"          # an offset holds no xref section
+    XREF_TABLE_MALFORMED = "xref_table_malformed"
+    XREF_STREAM_MALFORMED = "xref_stream_malformed"
+    UNSUPPORTED_FILTER = "unsupported_filter"  # a filter the inventory does not decode
+    XREF_CONFLICT = "xref_conflict"            # one object defined twice in a section
+    XREF_OFFSET_MISMATCH = "xref_offset_mismatch"  # an entry not on its own N G obj
+    PREV_CYCLE = "prev_cycle"                  # /Prev revisits a section, or too many
+    MISSING_ROOT = "missing_root"              # a revision's trailer names no catalog
+    XREF_SIZE_MISMATCH = "xref_size_mismatch"  # /Size is not 1 + the highest object
+    HEADER_OFFSET = "header_offset"            # %PDF- is not at the file's first byte
 
 
 Reason: TypeAlias = NAReason | FlagReason

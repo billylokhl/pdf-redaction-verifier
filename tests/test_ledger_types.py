@@ -4,6 +4,7 @@ that exhausts exactly at its limits and never raises."""
 
 from __future__ import annotations
 
+import re
 import zlib
 from collections.abc import Callable
 from typing import Any
@@ -17,6 +18,9 @@ from redaction_verifier.inventory import tile
 from redaction_verifier.inventory.lexer import Lexer
 from redaction_verifier.inventory.flate import Predictor, flate_decode
 from redaction_verifier.inventory.objects import ObjectParser
+from redaction_verifier.inventory.xref import read_chain
+
+from .test_inventory_xref import classic, incremental, xref_stream
 from redaction_verifier.model import (
     Flag,
     FlagReason,
@@ -79,9 +83,48 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.AFTER_STREAM_END: lambda: flate_decode(zlib.compress(b"x") + b"!").flags,
     FlagReason.BAD_DECODE_PARMS: lambda: flate_decode(zlib.compress(b"x"), Predictor(3)).flags,
     FlagReason.PREDICTOR_ERROR: lambda: flate_decode(zlib.compress(b"\x09a"), Predictor(12)).flags,
+    FlagReason.XREF_TAIL: lambda: read_chain(classic() + b"x").flags,
+    FlagReason.XREF_NOT_FOUND: lambda: read_chain(
+        classic().replace(b"startxref\n", b"startxref\n9", 1)).flags,
+    FlagReason.XREF_TABLE_MALFORMED: lambda: read_chain(
+        classic().replace(b"trailer", b"trailor", 1)).flags,
+    FlagReason.XREF_STREAM_MALFORMED: lambda: read_chain(
+        xref_stream().replace(b"/W [1 4 2]", b"/W [1 4 9]", 1)).flags,
+    FlagReason.UNSUPPORTED_FILTER: lambda: read_chain(
+        xref_stream().replace(b"/Filter /FlateDecode", b"/Filter /LZWDecode   ", 1)).flags,
+    FlagReason.XREF_CONFLICT: lambda: read_chain(_duplicated_subsection()).flags,
+    FlagReason.XREF_OFFSET_MISMATCH: lambda: _offset_mismatch(),
+    FlagReason.PREV_CYCLE: lambda: read_chain(_cycle()).flags,
+    FlagReason.HEADER_OFFSET: lambda: read_chain(b"x" + classic()).flags,
+    FlagReason.XREF_SIZE_MISMATCH: lambda: read_chain(
+        classic().replace(b"/Size 4", b"/Size 5", 1)).flags,
+    FlagReason.MISSING_ROOT: lambda: read_chain(
+        classic().replace(b"/Root 1 0 R", b"/Rook 1 0 R", 1)).flags,
     FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
         b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
 }
+
+
+def _duplicated_subsection() -> bytes:
+    data = classic()
+    sub = re.search(rb"1 1\n\d{10} 00000 n \n", data)
+    assert sub is not None
+    # Object 1's subsection twice (the table's own offset does not move).
+    return data.replace(sub.group(0), sub.group(0) * 2, 1)
+
+
+def _offset_mismatch() -> tuple[Flag, ...]:
+    data = classic()
+    one = re.search(rb"1 1\n(\d{10})", data)
+    assert one is not None
+    return read_chain(data.replace(one.group(0), b"1 1\n%010d" % (int(one.group(1)) + 1),
+                                   1)).flags
+
+
+def _cycle() -> bytes:
+    data = incremental()
+    first, last = (int(n) for n in re.findall(rb"startxref\n(\d+)", data))
+    return data.replace(b"/Prev %d" % first, b"/Prev %d" % last, 1)
 
 
 def _parsed(data: bytes, limits: Limits | None = None) -> tuple[Flag, ...]:

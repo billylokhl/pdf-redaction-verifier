@@ -68,6 +68,9 @@ class Limits:
     # hanging (ADR 0010).
     work_per_byte: int = 64
     work_floor: int = 1_000_000
+    # Cross-reference sections followed through /Prev (each incremental
+    # update adds one); past it the chain is flagged, not followed.
+    max_xref_sections: int = 10_000
     # Owners a CONTESTED region lists (tile() records the true claimant
     # count beside them): bounds the tiling at O(n) for n claims however
     # many claims overlap.

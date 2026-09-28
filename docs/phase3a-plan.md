@@ -103,7 +103,37 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   xref_stream and qpdf's --filtered-stream-data (3,000 fuzz examples over PNG and TIFF
   predictors, Colors 1-5, BitsPerComponent 1-16, whole and partial rows).
   zlib joins the child-side import allowlist. UNSUPPORTED_FILTER waits for 3a-4b, where a
-  filter chain is first read. 3a-4b: the rest of this item --
+  filter chain is first read. 3a-4b (#43) done: inventory/xref.py, the canonical chain --
+  the file ends `startxref N %%EOF`; each offset lands exactly on an `xref` table (exact
+  subsection headers and 20-byte entries, whitespace allowed only before `trailer`) or an
+  /XRef stream (valid /Type, /W, /Index, /Size, decoded length exact, FlateDecode only via
+  3a-4a); `%PDF-` at byte 0 (HEADER_OFFSET otherwise: readers read offsets relative to a
+  late header); hybrid /XRefStm merged, any object both define flagged (readers disagree);
+  /Prev followed without cycles; a forward
+  /Prev only as a linearized file's first-page section (the newest section, the file's
+  first object a /Linearized dictionary, the main section it points to without a /Prev of
+  its own), whose pair is one revision; each revision ends after every older one; every
+  in-use entry on its own `N G obj` and the whole object (through `endobj`, parsed once,
+  its parser flags reported) inside its own revision's bytes, every compressed entry --
+  inherited ones included, so a revision freeing an object stream its older members still
+  live in is flagged -- on an object stream in use in that revision (whether that home
+  really is an object stream holding the index is 3a-5's), object 0 never in use, no empty
+  subsection;
+  checked in one pass oldest to newest (linear however many revisions);
+  each revision's newest trailer names a /Type /Catalog via /Root and has /Size = 1 +
+  its highest object number. New flags: XREF_TAIL, XREF_NOT_FOUND, XREF_TABLE_MALFORMED,
+  XREF_STREAM_MALFORMED, UNSUPPORTED_FILTER, XREF_CONFLICT, XREF_OFFSET_MISMATCH,
+  PREV_CYCLE, MISSING_ROOT, XREF_SIZE_MISMATCH. Differential: every revision of 398 case-library
+  files (672 revisions) equals qpdf's --show-xref object map without warnings and MuPDF
+  opens it unrepaired; the other 4 files are the after-%%EOF leak cases, flagged
+  XREF_TAIL. An exhaustive single-byte mutation sweep of canonical classic, stream and
+  incremental files finds no unflagged disagreement (it found the /Root and /Size rules).
+  The legacy _earlier_revisions agrees on every file but the linearized one, where it counts
+  the main section as an extra revision; qpdf cannot open that prefix cut. Every differential
+  also fails on any MuPDF warning. Not done here: an incremental update on a linearized file is
+  flagged (fail closed; common for signed files -- measure the rate in 3a-6); a catalog or
+  object inside an object stream is 3a-5's; unchained sections and slack between sections are
+  3a-5's tiling. The original item, for reference --
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain
   (classic/stream/hybrid/linearized, /Prev cycles, offset mismatch vs slack, unchained
   sections, header offset) + Revisions with prefix-cut ends; differential vs legacy
@@ -114,6 +144,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-6 `python -m scorecard inventory` corpus gate harness (aggregates only, per-file
   subprocess + timeout); RESULTS.md section. THE 3a GATE: tiling on 100% of corpus files, 0
   crashes, 0 timeouts.
+- 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
+  chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
+  own the page-tree semantics the xref differential exempts.
 - 3a-7 Reference graph per revision (iterative, cycles flagged, page-tree inheritance,
   ResourceScope for pages/forms/annots/patterns/Type3; edges by use-kind; reachable/orphaned).
 - 3a-8 Pin pikepdf (runtime dep per ADR 0001), encrypted fixtures incl. earlier revision
