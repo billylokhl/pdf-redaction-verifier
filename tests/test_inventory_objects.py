@@ -400,3 +400,41 @@ def test_never_raises_at_any_offset_bound_or_resolver_answer(
             assert 0 <= parsed.span.start <= parsed.span.end <= len(data)
     value = parser.parse_value_at(offset, end)
     assert 0 <= value.span.start <= value.span.end <= len(data)
+
+
+@pytest.mark.parametrize("gap", [b"", b"\n", b"\r", b"\r\n"])
+def test_one_end_of_line_before_endstream_is_not_slack(gap: bytes) -> None:
+    parsed = _obj(b"1 0 obj <</Length 2>> stream\nab" + gap + b"endstream endobj")
+    assert parsed.flags == () and parsed.stream is not None and parsed.stream.slack is None
+
+
+@pytest.mark.parametrize("gap", [b" \x00" * 50 + b"\n", b"\n\n", b"  \n", b"\x0c\n", b"\t"])
+def test_more_whitespace_before_endstream_is_slack(gap: bytes) -> None:
+    # MuPDF reads these bytes as stream data (spaces and NULs are valid
+    # image samples); qpdf does not. Readers disagree, so it is flagged.
+    data = b"1 0 obj <</Length 2>> stream\nab" + gap + b"endstream endobj"
+    parsed = _obj(data)
+    assert parsed.stream is not None and parsed.stream.slack is not None
+    assert data[parsed.stream.data.start:parsed.stream.data.end] == b"ab"
+    assert data[parsed.stream.slack.start:parsed.stream.slack.end] == gap
+    assert _reasons(parsed) == ["STREAM_SLACK"]
+
+
+def test_a_comment_between_length_and_endstream_is_slack() -> None:
+    parsed = _obj(b"1 0 obj <</Length 2>> stream\nab\n%x\nendstream endobj")
+    assert _reasons(parsed) == ["STREAM_SLACK"]
+
+
+def test_the_digit_cap_is_inclusive() -> None:
+    at_cap = _obj(b"1 0 obj " + b"7" * 64 + b" endobj")
+    assert at_cap.flags == () and _plain(at_cap.value) == int("7" * 64)
+    past = _obj(b"1 0 obj " + b"7" * 65 + b" endobj")
+    assert _reasons(past) == ["NUMBER_OUT_OF_RANGE"]
+
+
+@pytest.mark.parametrize("text", [b"-1 0 R", b"1 -0 R", b"+1 0 R", b"1 0.0 R"])
+def test_signed_or_real_numbers_are_not_references(text: bytes) -> None:
+    parsed = _obj(b"1 0 obj [" + text + b"] endobj")
+    assert all(not isinstance(item, PdfRef) for item in
+               (parsed.value.items if isinstance(parsed.value, PdfArray) else ()))
+    assert "UNEXPECTED_TOKEN" in _reasons(parsed)  # the lone R

@@ -43,11 +43,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   stream at `endstreamendobj`, qpdf reads one word and a longer stream), FLAGS_TRUNCATED
   beside the planned ones. An indirect /Length is resolved through a callback 3a-5 supplies. Every
   `endstream` is indexed once per parser, so streams without one stay linear. For 3a-5:
-  parse each distinct offset once (xref entries can share one), and bound flags per file.
+  parse each distinct offset once (xref entries can share one), bound each parse's `end` by
+  the next known object offset (an unterminated string otherwise runs to the end of the file
+  from every offset: quadratic), treat a clamped out-of-range offset or a `None` value as an
+  anomaly, and bound flags per file.
   Measured: 8,946 objects in the 402 case-library files parse with no flag, and every stream
-  read at an xref offset matches MuPDF's xref_stream_raw byte for byte on that corpus. Known
-  difference: whitespace other than one end-of-line between a stream's /Length and
-  `endstream` is data to MuPDF, not to us or qpdf; whitespace holds nothing either way.
+  read at an xref offset matches MuPDF's xref_stream_raw byte for byte on that corpus.
+  Anything but one end-of-line between a stream's /Length and `endstream` -- whitespace
+  included -- is STREAM_SLACK: MuPDF reads it as data (spaces and NULs are valid image
+  samples, and an image can draw text with them), qpdf does not.
   References are not range-checked here (a huge or dangling number is 3a-7's to flag), and
   comments inside an object are skipped, so 3b must match the whole object span's bytes.
 - 3a-4 Capped Flate (+predictors, AFTER_STREAM_END, UNSUPPORTED_FILTER) + xref chain

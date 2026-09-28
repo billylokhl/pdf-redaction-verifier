@@ -38,9 +38,11 @@ eval/README.md's threat model.
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -157,9 +159,41 @@ BANNED_ATTRS = (BANNED_NAMES - {"compile"}) | {
     # (dataclasses.inspect, typing.sys, re.enum.sys): reaching one is an
     # import the allowlist never saw.
     "inspect", "sys", "_sys", "os", "builtins", "bltns", "importlib", "subprocess"}
-# Those module attributes are banned as strings too (getattr(m, "inspect")).
-MODULE_ATTRS = frozenset({"inspect", "sys", "_sys", "os", "builtins", "bltns",
-                          "importlib", "subprocess"})
+
+
+def _module_attributes() -> frozenset[str]:
+    """Every name under which a non-allowlisted module is an attribute
+    of an allowlisted one, on the running Python (dataclasses.functools,
+    typing.contextlib, re.enum.bltns, ...). Only allowlisted modules are
+    walked further (typing.collections is collections): any other route
+    must pass one of these names first, so banning them closes it.
+    Computed rather than listed: it differs between Python versions."""
+    names: set[str] = set()
+    seen: set[str] = set()
+    todo = [importlib.import_module(name) for name in sorted(ALLOWED_STDLIB)]
+    while todo:
+        module = todo.pop()
+        if module.__name__ in seen:
+            continue
+        seen.add(module.__name__)
+        for name, value in vars(module).items():
+            if isinstance(value, types.ModuleType):
+                if value.__name__ in ALLOWED_STDLIB:
+                    todo.append(value)
+                else:
+                    names.add(name)
+    return frozenset(names)
+
+
+# Module attributes are banned as attributes and as strings
+# (getattr(dataclasses, "inspect")); the fixed names keep the ban on
+# versions where one is not reachable.
+MODULE_ATTRS = _module_attributes() | {
+    "inspect", "sys", "_sys", "os", "builtins", "bltns", "importlib", "subprocess"}
+BANNED_ATTRS |= MODULE_ATTRS | {"_evaluate", "__forward_code__"}
+# ...and as strings, except "keyword": the lexer's TokenKind.KEYWORD value,
+# and the keyword module (kwlist, iskeyword) cannot import or run code.
+MODULE_ATTR_STRINGS = MODULE_ATTRS - {"keyword"}
 
 
 def _names_banned_module(name: str) -> bool:
@@ -196,9 +230,11 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             # `from X import y` imports X; `from .. import y` imports each
             # submodule it names, so check those instead of the package.
             targets = [root] if node.module else [f"{root}.{a.name}" for a in node.names]
-            # ...and never a banned name out of an allowed module.
-            hits.extend((node.lineno, f"dynamic code via {a.name}") for a in node.names
-                        if a.name in BANNED_NAMES | BANNED_ATTRS)
+            # ...and never a banned name out of an allowed standard-library
+            # module (a relative import names the package's own modules).
+            if not node.level:
+                hits.extend((node.lineno, f"dynamic code via {a.name}") for a in node.names
+                            if a.name in BANNED_NAMES | BANNED_ATTRS)
         elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
             hits.append((node.lineno, f"dynamic code via {node.id}"))
         elif isinstance(node, ast.Attribute) and node.attr in BANNED_ATTRS:
@@ -206,7 +242,7 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = (node.value.decode("latin-1") if isinstance(node.value, bytes)
                     else node.value)
-            if text in BANNED_NAMES | MODULE_ATTRS or _names_banned_module(text):
+            if text in BANNED_NAMES | MODULE_ATTR_STRINGS or _names_banned_module(text):
                 hits.append((node.lineno, f"dynamic code via {text!r}"))
         for target in targets:
             if not _allowed_import(target):
@@ -282,6 +318,9 @@ class TestProcessBoundary:
         "dataclasses.inspect.get_annotations(C, eval_str=True)", "typing.sys.modules",
         "re.enum.sys", "dataclasses.inspect", "x.os.system('true')",
         "getattr(dataclasses, 'inspect')", "typing.collections._sys", "re.enum.bltns",
+        "typing.List['x'].__args__[0]._evaluate(g, None, frozenset())",
+        "dataclasses.functools.singledispatch", "typing.contextlib", "re.copyreg",
+        "getattr(typing, 'functools')",
         # Imports anywhere in the tree, not only at the top.
         "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",

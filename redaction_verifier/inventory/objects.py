@@ -139,15 +139,16 @@ class ParsedValue:
 @dataclass(frozen=True)
 class StreamInfo:
     """Where a stream's bytes are. ``data`` is what /Length delimits when
-    /Length agrees with ``endstream`` (or leaves only whitespace before
-    it), else what the scan for ``endstream`` found. ``slack`` holds
-    non-whitespace bytes past /Length before ``endstream`` (flagged).
-    Whitespace there is neither data nor slack: MuPDF counts it as data
-    unless it is one end-of-line, qpdf does not, and whitespace can hold
-    nothing either way. A /Length that runs past an ``endstream`` is a
-    LENGTH_MISMATCH and the scan decides, never slack reaching into a
-    later object.
-    ``terminated`` is False when no ``endstream`` was found at all."""
+    an ``endstream`` keyword follows it (perhaps after slack), else what
+    the scan for ``endstream`` found. ``slack`` holds
+    any bytes past /Length before ``endstream`` other than one end-of-line
+    (flagged STREAM_SLACK): readers disagree there -- MuPDF reads such
+    bytes, even spaces and NULs, as data, and an image can draw text with
+    them; qpdf does not. Slack runs to the first ``endstream`` keyword
+    after /Length, which may lie in a later object (flagged either way).
+    A /Length that runs past an ``endstream`` keyword is a
+    LENGTH_MISMATCH and the scan decides.
+    """
 
     data: Span
     slack: Span | None
@@ -185,6 +186,8 @@ _ENDSTREAM: Final = re.compile(
 # Python's int() refuses longer digit strings (sys.int_info's default).
 _INT_DIGITS_CEILING: Final = 4300
 _WS_RUN: Final = re.compile(rb"[\x00\t\n\x0c\r ]*")
+# What may sit between a stream's /Length and `endstream` unflagged.
+_ONE_EOL: Final = (b"", b"\n", b"\r", b"\r\n")
 _OPENERS: Final = (TokenKind.ARRAY_OPEN, TokenKind.DICT_OPEN)
 _SCALARS: Final = frozenset({TokenKind.INTEGER, TokenKind.REAL, TokenKind.NAME,
                              TokenKind.LITERAL_STRING, TokenKind.HEX_STRING,
@@ -218,8 +221,13 @@ class ObjectParser:
 
     def parse_indirect_at(self, offset: int, end: int | None = None) -> IndirectObject | None:
         """The indirect object whose header starts at the first token at
-        or after *offset*, or None when that is not ``N G obj`` (the
-        caller flags a bad xref offset)."""
+        or after *offset* (clamped to the data), or None when that is not
+        ``N G obj`` (the caller flags a bad xref offset).
+
+        A caller parsing many objects must bound *end* by the next known
+        object's offset: an unterminated string otherwise runs to the end
+        of the data from every offset, which makes a whole-file parse
+        quadratic."""
         run = _Run(self, offset, end)
         header = run.header()
         if header is None:
@@ -554,6 +562,12 @@ class _Run:
             inside = found(start, end)
             if data.startswith(b"endstream", gap_end) and found(gap_end, end) == gap_end:
                 stop, data_end = gap_end, after
+                if data[after:gap_end] not in _ONE_EOL:
+                    # More than one end-of-line: MuPDF reads these bytes as
+                    # data (NULs and spaces are valid samples; an image can
+                    # draw text with them), qpdf does not. Flag, never guess.
+                    slack = Span(after, gap_end)
+                    self.flags.add(FlagReason.STREAM_SLACK, after, gap_end)
             elif inside is not None and inside < after:
                 pass  # /Length runs past an endstream: the scan below decides
             elif (later := found(after, end)) is not None:
