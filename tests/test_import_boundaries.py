@@ -144,6 +144,13 @@ ALLOWED_STDLIB = frozenset({"__future__", "bisect", "collections", "collections.
                             "zlib"})
 ALLOWED_INTERNAL = ("redaction_verifier.inventory", "redaction_verifier.budget",
                     "redaction_verifier.ledger")
+# Dev entry points (`python -m` targets for a human at a terminal), each
+# with the few more standard-library modules it alone may import. 3a-5:
+# the inventory's JSON summary needs sys (argv, stdout) and json. Nothing
+# child-side may import an entry point (checked below), and every other
+# check -- banned names, attributes and strings -- still applies to it;
+# their module attributes (json.codecs, sys.monitoring) are banned too.
+ENTRY_POINTS = {"redaction_verifier.inventory.__main__": frozenset({"json", "sys"})}
 # Kept beside the allowlist for strings, which can name a module to a
 # loader: modules that import or run code by name (imp exists on the 3.10
 # floor; the underscored ones are the import system's internals).
@@ -174,7 +181,8 @@ def _module_attributes() -> frozenset[str]:
     Computed rather than listed: it differs between Python versions."""
     names: set[str] = set()
     seen: set[str] = set()
-    todo = [importlib.import_module(name) for name in sorted(ALLOWED_STDLIB)]
+    extra = frozenset().union(*ENTRY_POINTS.values())
+    todo = [importlib.import_module(name) for name in sorted(ALLOWED_STDLIB | extra)]
     while todo:
         module = todo.pop()
         if module.__name__ in seen:
@@ -204,8 +212,10 @@ def _names_banned_module(name: str) -> bool:
     return any(name == h or name.startswith((h + ".", h + ":")) for h in BANNED_MODULES)
 
 
-def _allowed_import(module: str) -> bool:
-    return module in ALLOWED_STDLIB or any(
+def _allowed_import(module: str, extra: frozenset[str] = frozenset()) -> bool:
+    if module in ENTRY_POINTS:
+        return False  # never imported, only run
+    return module in ALLOWED_STDLIB | extra or any(
         module == a or module.startswith(a + ".") for a in ALLOWED_INTERNAL)
 
 
@@ -214,7 +224,8 @@ def _module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple[int, str]]:
+def _forbidden_imports(source: str, module: str, is_package: bool,
+                       extra: frozenset[str] = frozenset()) -> list[tuple[int, str]]:
     """Every import in *source* (resolving relative ones against *module*)
     of a module not on the allowlist, plus any mention of a builtin that
     imports or runs code by name: a name, an attribute (other than
@@ -249,7 +260,7 @@ def _forbidden_imports(source: str, module: str, is_package: bool) -> list[tuple
             if text in BANNED_NAMES | MODULE_ATTR_STRINGS or _names_banned_module(text):
                 hits.append((node.lineno, f"dynamic code via {text!r}"))
         for target in targets:
-            if not _allowed_import(target):
+            if not _allowed_import(target, extra):
                 hits.append((getattr(node, "lineno", 0), target))
     return hits
 
@@ -287,7 +298,8 @@ class TestProcessBoundary:
             f"{path.relative_to(REPO_ROOT)}:{lineno}: {target}"
             for path in CHILD_SIDE
             for lineno, target in _forbidden_imports(
-                path.read_text(), _module_name(path), path.name == "__init__.py")
+                path.read_text(), _module_name(path), path.name == "__init__.py",
+                ENTRY_POINTS.get(_module_name(path), frozenset()))
         ]
         assert not problems, "\n" + "\n".join(problems)
 
@@ -331,6 +343,23 @@ class TestProcessBoundary:
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
+
+    def test_entry_points_exist_and_are_exempt_only_for_their_own_modules(self) -> None:
+        for module, extra in ENTRY_POINTS.items():
+            assert (REPO_ROOT / (module.replace(".", "/") + ".py")).is_file(), module
+            main = "redaction_verifier.inventory.__main__"
+            assert not _forbidden_imports("import json, sys\nsys.exit(0)", main, False, extra)
+        # Still banned in an entry point: everything else the guard catches.
+        extra = ENTRY_POINTS["redaction_verifier.inventory.__main__"]
+        for source in ("import os", "sys.modules", "from sys import modules", "json.codecs",
+                       "x = 'codecs'", "exec('x')", "import verify"):
+            assert _forbidden_imports(source, "redaction_verifier.inventory.__main__", False,
+                                      extra), source
+        # ...and nothing may import an entry point, which would lend it
+        # json and sys.
+        for source in ("from . import __main__", "import redaction_verifier.inventory.__main__",
+                       "from .__main__ import main"):
+            assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False), source
 
     @pytest.mark.parametrize("source", [
         "from ..ledger import Span", "from . import types", "from .types import Region",

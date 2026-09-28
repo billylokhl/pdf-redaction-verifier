@@ -61,6 +61,9 @@ class Limits:
     # Flags one object keeps; the rest are counted in a FLAGS_TRUNCATED
     # flag, so a hostile object cannot grow the report without bound.
     max_flags_per_object: int = 64
+    # Flags one file's inventory keeps (distinct ones; the rest are
+    # counted in one FLAGS_TRUNCATED flag carrying this limit).
+    max_flags_per_file: int = 10_000
     # Parsing work over the whole file (bytes the lexer passes over,
     # rescans included, plus tokens): at most this many units per byte of
     # the file, plus a floor for tiny files. Linear parsing stays far

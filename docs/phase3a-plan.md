@@ -141,6 +141,67 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-5 build_inventory (claims: header, xref, epilogues, indexed objects; dead-body scan of
   gaps only; ObjStm tiling; bodies_by_number) + `python -m redaction_verifier.inventory FILE`
   secret-free JSON summary; Hypothesis pdf_files() strategy; every case tiles. ~650.
+  Done: inventory/build.py, `build_inventory(data, limits, *, budget)` -> `Inventory` (types.py:
+  the tiling and `tiles`, units, flags, per-number entry histories, `body(n, revision)` and
+  `bodies_by_number(revision)` resolved on demand -- nothing materialized per revision -- raw
+  stream-data spans, and each object stream's `ObjectStream`: its decoded tiling and members by
+  index). Claims: HEADER (the `%PDF-x.y` line and the comment lines after it -- the binary
+  marker, MuPDF's "% Written by"), XREF_TABLE per classic section, XREF_EPILOGUE per revision
+  (plus the comment lines MuPDF writes after an intermediate `%%EOF`; a linearized first-page
+  section's `startxref 0` is claimed too), OBJECT per distinct in-use offset of every revision
+  and per xref stream, parsed once and bounded by the next known start (objects, sections,
+  epilogues); STREAM_SLACK nested in its object; DEAD_BODY for `N G obj` bodies found in the
+  unclaimed gaps only (one linear pass per gap, resuming after each body; a header is looked
+  for in a 64-byte window before each `obj` keyword, so digit runs are never rescanned); every
+  in-use /Type /ObjStm decoded (Flate only, 3a-4a; else UNSUPPORTED_FILTER), its header table
+  (OBJSTM_HEADER) and members (OBJSTM_MEMBER, bounded by the next member) tiled in decoded
+  coordinates by `tile(..., within=)`. An indirect /Length resolves in every revision its
+  object lives in; a target that changes while it lives is REVISION_AMBIGUOUS (fail closed,
+  even for an equal value: comparing each would cost streams x revisions); a /Length inside an
+  object stream is not resolved (the stream then flags LENGTH_MISMATCH). xref.py's own object
+  checks now resolve an indirect /Length too (every such stream was flagged before). Comment
+  lines after the header or an intermediate `%%EOF` are an allowlisted leniency (both readers
+  skip them; test in test_inventory_build.py); a comment anywhere else stays UNINDEXED.
+  New flags: XREF_EPILOGUE_MISMATCH, REVISION_AMBIGUOUS, OBJSTM_MALFORMED (/N, /First, a
+  header not exactly 2N unsigned integers, a repeated number, offsets not increasing),
+  OBJSTM_MEMBER_INVALID (no value, a stream, an object or xref stream; a bare `null` -- MuPDF
+  takes it for a missing object and repairs the whole file -- or a lone `N G R`, which both
+  readers read as the integer N; a token running across /First or a member's bound, which
+  the readers read whole), OBJSTM_ENTRY_MISMATCH. A dead object stream (a DEAD_BODY) is
+  not decoded: its compressed bytes are 3b/Phase 4's to scan as raw bytes.
+  Flags are distinct and capped per file (Limits.max_flags_per_file, 10,000, then one
+  FLAGS_TRUNCATED with the limit). The import guard's one exemption: the dev entry point
+  `inventory/__main__.py` may import json and sys, nothing may import it, and every other check
+  applies to it (tests/test_import_boundaries.py ENTRY_POINTS).
+  Measured: all 402 case-library files inventory and tile, 0 crashes; 398 unflagged, the other
+  4 the after-%%EOF leak cases (XREF_TAIL, their tail UNINDEXED). Differential
+  (inventory_agrees): every revision of the 398 (672 revisions) agrees with qpdf and MuPDF --
+  object set, each object's stream data vs MuPDF's xref_stream_raw (4,266 stream objects),
+  each of the 85 object-stream members' values vs qpdf --show-object and MuPDF xref_object,
+  dead bodies exactly the unlisted `N G obj` bodies, no qpdf --check structural warning, no
+  MuPDF warning; the one encrypted file's bytes and values are not compared until 3a-8/9.
+  pdf_files(): 1,000 junk-free generated files all agree (603 with object streams, 881 with
+  updates, 785 with dead bodies, 345 hybrid); of 1,000 with junk in a gap, 512 agree and 488
+  are flagged; mutation fuzzing (content streams, a probe object, an object stream's
+  header table and probe member, gaps): 3,000 examples, 406 agree, 2,594 flagged, no unflagged
+  disagreement. Linear: work at 8n within 1.1x of 8 x work at n; wall clock n/8 vs n on shared
+  offsets, offsets inside an unterminated string, 20,000 fake headers in a gap (three shapes), an
+  ObjStm with /N 10^9 over 50,000 pairs, 20,000 members, deeply nested members: ratios 3.3-9.2
+  (12 on a 7 ms run), at most 31 work units per byte (limit 64).
+  From issue #44, closed here: the budget is required on this path (`read_chain(...,
+  *, budget)`, `build_inventory(..., *, budget)`; comment 1 item 1, and item 3); every compressed
+  entry of every revision must find its member in an in-use /Type /ObjStm listing it at that
+  index, rechecked whenever a revision replaces the home -- a non-stream home included
+  (comment 1 item 4, comment 2 item 1); a compressed /Root must be a clean /Type /Catalog;
+  a section inside an object's stream data is flagged (the object's parse ends at the section:
+  comment 1 item 2) and a newer section inside an older trailer is CONTESTED (comment 2 item 2,
+  the tiling half). Still open in #44: linearized-file updates (item 1, measure in 3a-6), the
+  surviving xref mutants (item 2), PREV_CYCLE's reuse (item 4), local mypy on the test file
+  (item 5), the `_PAGE_TREE_SEMANTICS` exemptions (comment 1 item 3; the inventory's
+  differential adds two narrowly: a content stream's own syntax, and qpdf's catalog warning
+  only when it retyped the root in its page-tree repair and still reads a catalog), the
+  newer-section-offset invariant in xref.py (comment 2 item 2's cheap fix), `/Linearized`'s
+  value (comment 2 item 3) and 3a-7's qpdf message (comment 2 item 4).
 - 3a-6 `python -m scorecard inventory` corpus gate harness (aggregates only, per-file
   subprocess + timeout); RESULTS.md section. THE 3a GATE: tiling on 100% of corpus files, 0
   crashes, 0 timeouts.
