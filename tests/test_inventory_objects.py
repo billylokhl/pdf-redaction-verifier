@@ -63,7 +63,8 @@ def _plain(value: PdfValue | None) -> Any:
 
 
 # ── Round trips: serialize a random value, parse it back ──────────────────
-_names = st.binary(min_size=1, max_size=6)
+# No NUL in a name: '#00' is flagged (readers disagree on it).
+_names = st.binary(min_size=1, max_size=6).filter(lambda raw: b"\x00" not in raw)
 _scalars = st.one_of(
     st.none().map(lambda _: (b"null", None)),
     st.booleans().map(lambda b: (b"true" if b else b"false", b)),
@@ -511,3 +512,10 @@ def test_an_exhausted_budget_never_certifies_a_duplicate_as_identical() -> None:
     assert parsed is not None and isinstance(parsed.value, PdfDict)
     assert "BUDGET_EXHAUSTED" in _reasons(parsed)
     assert parsed.value.ambiguous == {b"A"}  # unaffordable to compare: never "identical"
+
+
+@pytest.mark.parametrize("answer", [True, False, 2.0, "2", -1, None])
+def test_a_resolver_answer_that_is_not_a_plain_count_is_unresolved(answer: Any) -> None:
+    parsed = _obj(b"1 0 obj <</Length 2 0 R>> stream\nab\nendstream endobj",
+                  resolve_length=lambda num, gen: answer)
+    assert [dict(f.params) for f in parsed.flags] == [{"declared": -1, "found": 2}]
