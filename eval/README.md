@@ -588,11 +588,13 @@ What each part of the output means:
   32 bits); a reference to an object number with no body reads as null.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
-The written allowlist of qpdf messages (`eval/scorecard/inventory.py`;
-each matches one whole line on the exact path, each has a
-reader-agreement test in `tests/test_inventory_values.py`): page-tree
+The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
+applied to `--check` lines and to libqpdf's warnings alike: page-tree
 semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
-3a-6; since 3a-6b, linearization hint-table lint on a linearized file
+3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
+them); and since 3a-6b, three entries that each match one whole line on
+the exact path, each with a reader-agreement test in
+`tests/test_inventory_values.py`: linearization hint-table lint on a linearized file
 (`LINEARIZATION_LINT`, 15 messages of qpdf's linearization checker:
 readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
