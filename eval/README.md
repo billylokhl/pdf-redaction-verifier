@@ -574,7 +574,10 @@ What each part of the output means:
   lines, the longest line in bytes, lines with non-printable bytes or an
   `N G obj`), streams whose indirect `/Length` lives in an object stream,
   `REVISION_AMBIGUOUS` flags whose value is equal in every revision, and
-  dead object streams (#46 item 4).
+  dead object streams (#46 item 4). Decided 2026-10-03 (owner decision 7,
+  docs/phase3a-plan.md): updated linearized files are canonical, odd
+  comment lines are flagged `COMMENT_LINE`, the rest stay flagged; the
+  counts are still reported, to watch them.
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform
@@ -592,7 +595,7 @@ The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
 applied to `--check` lines and to libqpdf's warnings alike: page-tree
 semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
 3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
-them); and since 3a-6b, three entries that each match one whole line on
+them); and since 3a-6b, entries that each match one whole line on
 the exact path, each with a reader-agreement test in
 `tests/test_inventory_values.py`: linearization hint-table lint
 (`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
@@ -601,7 +604,10 @@ readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
 stream's data start; content decoding is Phase 4's), and a reference to
 object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
-until 3a-7 flags dangling references).
+until 3a-7 flags dangling references); since 3a-6c, qpdf's warning on an
+in-use entry at offset 0 (`OFFSET_ZERO`), which the inventory reads as no
+object -- the oracle drops such an entry from qpdf's map only after MuPDF
+and libqpdf have both read it as null.
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader
