@@ -562,10 +562,10 @@ difference fails the gate.
   different OS; (b) each page's OCR *view* obligation should be discharged
   only when both Vision completion handlers ran without error — today a
   `performRequests` that succeeds without calling them leaves both
-  readings empty and the page passes as read; (c) (b) does not cover
-  Vision returning less text with no error, which OCR tests run on the
-  new OS can catch, so (a)'s versions should gate whether a result
-  counts.
+  readings empty and the page passes as read; (c) because (b) does not
+  cover Vision returning less text with no error (only OCR tests run on
+  the new OS can catch that), (a)'s versions should gate whether a
+  result counts.
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
