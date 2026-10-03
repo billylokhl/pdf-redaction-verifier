@@ -590,6 +590,10 @@ own machine (`sha256sum`) when a number needs explaining.
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
   (`.github/workflows/scorecard-weekly.yml`).
+- Both macOS jobs run on `macos-latest`, so a newer macOS is covered only
+  by local runs. Run the case library locally after an OS upgrade: on
+  macOS 27 that is how an OCR failure on every page was found (fixed;
+  see the CHANGELOG).
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

@@ -4,7 +4,9 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged.
+`verify.X` references and the CLI keep working unchanged. One change
+since the move: the image handler's options are a native NSDictionary,
+not a Python {} (see _vision_recognize_batch; macOS 27 compatibility).
 
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
@@ -37,7 +39,7 @@ OCR_DPI: int = 300
 
 try:
     import Vision
-    from Foundation import NSData
+    from Foundation import NSData, NSDictionary
 
     _OCR_IMPORTS_OK = True
 except Exception:  # pragma: no cover
@@ -86,8 +88,15 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     request_off.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
     request_off.setUsesLanguageCorrection_(False)
 
+    # A native, empty NSDictionary — never a Python {} literal. PyObjC
+    # hands a Python dict to Objective-C as an OC_PythonDictionary proxy,
+    # whose removeObjectForKey: raises NSInvalidArgumentException ("key
+    # does not exist") for an absent key, where NSMutableDictionary's is a
+    # no-op. From macOS 27, Vision mutable-copies the handler's options and
+    # removes the keys it consumes (VNImageOptionProperties), so a Python
+    # {} made every page fail there (PAGE_FAILED, exit 2).
     image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
-        ns_data, {}
+        ns_data, NSDictionary.dictionary()
     )
     success, perform_error = image_handler.performRequests_error_(
         [request_on, request_off], None
