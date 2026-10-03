@@ -260,7 +260,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   xref.read_chain accepts the linearized pair as the base revision under incremental
   updates; xref.no_object reads an in-use entry at offset 0 as no object (the oracle drops it
   from qpdf's map only after MuPDF and libqpdf both read null; qpdf's warning is an anchored
-  allowlist entry, OFFSET_ZERO); build flags COMMENT_LINE. Re-run: {RERUN}
+  allowlist entry, OFFSET_ZERO); build flags COMMENT_LINE. Re-run, all passing (eval/spikes/
+  RESULTS.md): corpus 1,939 agree, 134 flagged (6.46%, from 16.55%), 0 unflagged
+  disagreements -- all 80 updated linearized files and the 129 offset-0 files agree; case
+  library 396/4/0; fuzz 740/2,260/0.
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
