@@ -394,7 +394,7 @@ class TestVisionBridge:
         # From macOS 27, VNImageRequestHandler's init mutable-copies its
         # options and removes the keys it consumes from the copy. A Python
         # {} bridges as a proxy that raises on removing an absent key, so
-        # every OCR page failed (PAGE_FAILED, exit 2). The isinstance check
+        # every OCR page failed (PAGE_FAILED, never exit 0). The isinstance check
         # is the guard on any macOS version (a Python dict is never an
         # NSDictionary); the replay documents what macOS 27 does.
         import Vision

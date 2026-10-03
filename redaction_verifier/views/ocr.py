@@ -95,7 +95,7 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     # no-op. From macOS 27, Vision mutable-copies the handler's options and
     # removes the keys it consumes (VNImageOptionProperties, then
     # VNImageOptionCameraIntrinsics), so a Python {} made every page fail
-    # there (PAGE_FAILED, exit 2).
+    # there (PAGE_FAILED: the run never exits 0).
     image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
         ns_data, NSDictionary.dictionary()
     )
