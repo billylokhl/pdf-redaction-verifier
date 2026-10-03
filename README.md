@@ -235,9 +235,11 @@ flattened to images, text converted to vector outlines.
   called through PyObjC) recognizes the text twice — with language
   correction on and off, because autocorrect can silently change digits.
   Both readings are matched. macOS only; elsewhere this layer reports
-  itself unavailable and the run exits `2`. A page Vision cannot read is
-  a `PAGE_FAILED` warning, so the run exits `2`, never `0`. (Before the
-  fix in the CHANGELOG, this happened to every page on macOS 27.)
+  itself unavailable and the run exits `2`. A page where Vision raises an
+  error is a `PAGE_FAILED` warning, so the run exits `2`, never `0`.
+  (Before the fix in the CHANGELOG, this happened to every page on
+  macOS 27.) A page Vision reads without error but with text missing is
+  not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*

@@ -93,8 +93,9 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     # whose removeObjectForKey: raises NSInvalidArgumentException ("key
     # does not exist") for an absent key, where NSMutableDictionary's is a
     # no-op. From macOS 27, Vision mutable-copies the handler's options and
-    # removes the keys it consumes (VNImageOptionProperties), so a Python
-    # {} made every page fail there (PAGE_FAILED, exit 2).
+    # removes the keys it consumes (VNImageOptionProperties, then
+    # VNImageOptionCameraIntrinsics), so a Python {} made every page fail
+    # there (PAGE_FAILED, exit 2).
     image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
         ns_data, NSDictionary.dictionary()
     )

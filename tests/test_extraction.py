@@ -392,11 +392,11 @@ class TestVisionBridge:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # From macOS 27, VNImageRequestHandler's init mutable-copies its
-        # options and removes VNImageOptionProperties from the copy. A
-        # Python {} bridges as a proxy that raises on removing an absent
-        # key, so every OCR page failed (PAGE_FAILED, exit 2). Replay that
-        # operation on the options the bridge really passes, so the check
-        # holds on any macOS version, not only on 27.
+        # options and removes the keys it consumes from the copy. A Python
+        # {} bridges as a proxy that raises on removing an absent key, so
+        # every OCR page failed (PAGE_FAILED, exit 2). The isinstance check
+        # is the guard on any macOS version (a Python dict is never an
+        # NSDictionary); the replay documents what macOS 27 does.
         import Vision
         from Foundation import NSDictionary
 
@@ -429,5 +429,7 @@ class TestVisionBridge:
 
         (options,) = seen
         assert isinstance(options, NSDictionary)  # native, not a Python dict
-        options.mutableCopy().removeObjectForKey_(Vision.VNImageOptionProperties)
+        copied = options.mutableCopy()
+        copied.removeObjectForKey_(Vision.VNImageOptionProperties)
+        copied.removeObjectForKey_(Vision.VNImageOptionCameraIntrinsics)
         assert all(normalize_string(SSN) in normalize_string(text) for text in readings)
