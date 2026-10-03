@@ -258,7 +258,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   agree, 343 flagged, 0 unflagged disagreements; case library 396/4/0; fuzz 740/2,260/0.
 - 3a-6c The owner's pending decisions (owner decision 7 below). Done (this PR):
   xref.read_chain accepts the linearized pair as the base revision under incremental
-  updates; xref.no_object reads an in-use entry at offset 0 as no object (the oracle drops it
+  updates (flagged if its /L names the updated file's whole length: a reader trusting
+  linearization would read the stale first page); xref.no_object reads an in-use entry at offset 0 as no object (the oracle drops it
   from qpdf's map only after MuPDF and libqpdf both read null; qpdf's warning is an anchored
   allowlist entry, OFFSET_ZERO); build flags COMMENT_LINE. Re-run, all passing (eval/spikes/
   RESULTS.md): corpus 1,939 agree, 134 flagged (6.46%, from 16.55%), 0 unflagged

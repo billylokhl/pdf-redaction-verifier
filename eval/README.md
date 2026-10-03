@@ -575,7 +575,8 @@ What each part of the output means:
   `N G obj`), streams whose indirect `/Length` lives in an object stream,
   `REVISION_AMBIGUOUS` flags whose value is equal in every revision, and
   dead object streams (#46 item 4). Decided 2026-10-03 (owner decision 7,
-  docs/phase3a-plan.md): updated linearized files are canonical, odd
+  docs/phase3a-plan.md): updated linearized files are canonical (unless
+  their `/L` names the updated file's whole length), odd
   comment lines are flagged `COMMENT_LINE`, the rest stay flagged; the
   counts are still reported, to watch them.
 - `config`: provenance -- the git commit and whether the tree had local
