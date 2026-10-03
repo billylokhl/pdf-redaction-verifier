@@ -382,13 +382,14 @@ the gap is stated rather than implied away.
 - **CI tests one macOS version** (`macos-latest`, currently macOS 26).
   Vision's behaviour can change with an OS release CI does not run yet.
   A change that makes Vision *raise* fails closed: the page is
-  `PAGE_FAILED` and the run exits `2`. macOS 27 did this to every page
-  (Vision began removing keys from a copy of the request options, which
-  a PyObjC-bridged Python dict rejects) until the bridge switched to a
-  native `NSDictionary`; see the CHANGELOG. A change that makes Vision
+  `PAGE_FAILED` and the run never exits `0`. macOS 27 did this to every
+  page (Vision began removing keys from a copy of the image handler's
+  options, which a PyObjC-bridged Python dict rejects) until the bridge
+  switched to a native `NSDictionary`; see the CHANGELOG. A change that makes Vision
   *read less* — fewer or empty results, no error — does not fail closed:
   nothing checks Vision's output, so a secret only OCR can see would
-  pass as clean. Only running the case library on that OS catches it.
+  pass as clean. Only running OCR tests (the case library, the OCR unit
+  tests) on that OS catches it.
 - **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted
   with only an owner password opens without one and is scanned normally.
 - **Pattern rules cannot span pages as hard findings** — they surface as

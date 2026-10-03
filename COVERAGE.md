@@ -19,7 +19,7 @@ clean.
 A cell that relies on OCR assumes the OCR layer ran. When it cannot run —
 off macOS, without the Vision bridge, or on a page where Vision raises an
 error (every page on macOS 27 until the fix in the CHANGELOG) — the run
-exits `2`, never `0`. If Vision reads a page without error but misses
+never exits `0` (`2`, or `1` if another layer found a leak). If Vision reads a page without error but misses
 text, nothing flags it: the OCR cells' ✓ assumes Vision's reading.
 
 Each cell has a stable id, `<row id>.<column>` (columns `plain`, `font`,

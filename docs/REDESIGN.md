@@ -553,16 +553,18 @@ difference fails the gate.
   only; OS and Vision versions recorded in the baseline. Today both
   macOS workflows use the unpinned `macos-latest` (macOS 26 as of this
   writing), and neither a pinned nor a latest image tests a newer OS: on
-  macOS 27, Vision began removing keys from a copy of the request
-  options, which the OCR bridge's Python `{}` (a PyObjC proxy) rejected,
+  macOS 27, Vision began removing keys from a copy of the image
+  handler's options, which the OCR bridge's Python `{}` (a PyObjC proxy) rejected,
   so every page was `PAGE_FAILED`. It failed closed (exit `2`) and was
   found only by a local run. The OCR-engine obligation should therefore
   record the OS and Vision versions it ran under, so a result is never
-  carried over to a different OS. Open follow-up: the OCR obligation
-  should also be discharged only when Vision demonstrably ran both
-  requests (each completion handler fired), since an OS change that
-  makes Vision return less, with no error, would today let a page pass
-  as read.
+  carried over to a different OS. Open follow-ups: (a) discharge the
+  OCR obligation only when each Vision completion handler fired — today
+  a `performRequests` that succeeds without calling them leaves both
+  readings empty and the page passes as read; (b) that check does not
+  cover Vision returning less text with no error, which only OCR tests
+  run on the new OS catch, so the OS and Vision versions above should
+  gate whether a result counts.
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
