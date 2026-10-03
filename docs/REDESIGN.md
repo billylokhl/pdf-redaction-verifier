@@ -550,7 +550,22 @@ difference fails the gate.
 
 - **Linux CI, every PR**: the non-OCR catalogue and the differential.
 - **macOS CI (pinned image, e.g. `macos-15`)**: `requires: ocr` cases
-  only; OS and Vision versions recorded in the baseline.
+  only; OS and Vision versions recorded in the baseline. Today both
+  macOS workflows use the unpinned `macos-latest` (macOS 26 as of this
+  writing), and neither a pinned nor a latest image tests a newer OS: on
+  macOS 27, Vision began removing keys from a copy of the image
+  handler's options, which the OCR bridge's Python `{}` (a PyObjC
+  proxy) rejected, so every page was `PAGE_FAILED`. It failed closed
+  (never exit `0`) and was found only by a local run. Open follow-ups:
+  (a) the OCR engine's *tool* obligation should record the OS and Vision
+  versions it ran under, so a result is never carried over to a
+  different OS; (b) each page's OCR *view* obligation should be discharged
+  only when both Vision completion handlers ran without error — today a
+  `performRequests` that succeeds without calling them leaves both
+  readings empty and the page passes as read; (c) because (b) does not
+  cover Vision returning less text with no error (only OCR tests run on
+  the new OS can catch that), (a)'s versions should gate whether a
+  result counts.
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.

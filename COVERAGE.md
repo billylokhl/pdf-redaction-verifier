@@ -16,6 +16,13 @@ clean.
 - ✗ **Not covered** — a secret here can pass as clean (exit `0`).
 - — Not applicable.
 
+A cell that relies on OCR assumes the OCR layer ran. When it cannot run —
+off macOS, without the Vision bridge, or on a page where Vision raises an
+error (every page on macOS 27 until the fix in the CHANGELOG) — the run
+never exits `0` (`2`, or `1` if another layer found a leak). If Vision
+reads a page without error but misses text, nothing flags it: the OCR
+cells' ✓ assumes Vision's reading.
+
 Each cell has a stable id, `<row id>.<column>` (columns `plain`, `font`,
 `pixels`, `container`), used by the case library in `eval/caselib` —
 every ✓ and ⚑ cell has at least one case planting a secret there
