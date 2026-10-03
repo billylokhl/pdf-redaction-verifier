@@ -551,7 +551,8 @@ A first fuzz re-run had found 2 ORACLE_ERRORs (a dictionary key that is
 not UTF-8, which pikepdf will not look up by its string): fixed, with a
 test and the keys added to the value fuzzer.
 
-**Re-run after the owner's decisions (3a-6c, commit 30f2a27, clean
+**Re-run after the owner's decisions (3a-6c, commit 30f2a27, and
+unchanged after the #53 review fixes at commit 3c714f9; clean
 tree): the gate passed.** Updated linearized files are canonical, an
 in-use xref entry at offset 0 is no object, odd comment lines are
 flagged (owner decision 7).
