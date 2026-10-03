@@ -594,8 +594,9 @@ semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
 3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
 them); and since 3a-6b, three entries that each match one whole line on
 the exact path, each with a reader-agreement test in
-`tests/test_inventory_values.py`: linearization hint-table lint on a linearized file
-(`LINEARIZATION_LINT`, 15 messages of qpdf's linearization checker:
+`tests/test_inventory_values.py`: linearization hint-table lint
+(`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
+linearized; 15 messages of qpdf's linearization checker:
 readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
 stream's data start; content decoding is Phase 4's), and a reference to
