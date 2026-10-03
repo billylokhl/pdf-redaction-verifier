@@ -500,26 +500,53 @@ after an empty name, so its text re-parses as a single name (`/2.5`).
 The oracle now parses MuPDF's pretty print instead. The table above is
 the re-run.
 
-### The 2,031-file corpus (owner's run, pending)
+### The corpus (owner's local runs, 2026-10-03)
 
-Command: `inventory run --root <corpus>`. Paste the `--json` aggregate
-here.
+The corpus is the macOS system and application PDFs `corpus.py` finds
+(2,073 files that day, 127.7 MB; the 2,031 above was 2026-09-27's
+count -- it drifts with OS and app updates), staged as hashed symlinks
+(eval/README.md). Command: `inventory run --root <links> --workers 8`.
+Aggregates only. Both runs: macOS 27 (Darwin 27.0.0, arm64), qpdf 12.4.1,
+PyMuPDF/MuPDF 1.28.2, Python 3.12.13; 0 encrypted files, 0 crashes, 0
+timeouts, 0 unverified.
+
+**First run (3a-6, commit 2218102): the gate failed.** 1,526 agree, 342
+flagged (16.5%), **205 unflagged disagreements, all qpdf `--check`
+warnings**, root-caused in 3a-6b (docs/phase3a-plan.md): 175 files only
+linearization hint-table lint, 22 Flate data cut short in content, form
+or image streams (1 more with lint), 6 a reference to object 0 (all with
+lint), 1 a reference number past 2^63 that qpdf reads as nulling its
+whole object.
+
+**Re-run (3a-6b, commit ac545d9, clean tree, libqpdf 12.4.2 via
+pikepdf 10.16.0): the gate passed.**
 
 | Quantity | Value |
 | --- | --- |
-| Gate | _pending_ |
-| `config`: commit (dirty), qpdf, PyMuPDF/MuPDF, Python, platform | _pending_ |
-| Encrypted files (an `/Encrypt` entry) | _pending_ |
-| qpdf `--check` ERROR on agreeing files (not gated) | _pending_ |
-| Unflagged, agree (encrypted) | _pending_ |
-| Unflagged, disagree, by check | _pending_ |
-| Crashes / timeouts / unverified | _pending_ |
-| Flagged (rate), top reasons | _pending_ |
-| UNINDEXED / CONTESTED files, bytes | _pending_ |
-| Build seconds p50 / p99 / max | _pending_ |
-| Work units per byte p50 / max | _pending_ |
-| Linearized files updated, by revisions (flagged); `/L` mismatch | _pending_ |
-| Comment lines: files, longest, non-printable, `N G obj` | _pending_ |
-| `/Length` in an object stream: files, streams | _pending_ |
-| REVISION_AMBIGUOUS: equal / differ | _pending_ |
-| Dead object streams: files | _pending_ |
+| Gate | **PASS**: 0 unflagged disagreements, 0 crashes, 0 timeouts, 0 unverified, 0 inconsistent |
+| Unflagged, agree | 1,730 (0 encrypted) |
+| Flagged (rate) | 343 (16.55%) |
+| Top flag reasons (files) | xref_offset_mismatch 231, xref_table_malformed 178, unindexed_non_whitespace 111, length_mismatch 96, missing_root 85, xref_epilogue_mismatch 80, missing_endobj 26, duplicate_key 21, xref_stream_malformed 5, number_out_of_range 3 |
+| Files with one reason only | xref_offset_mismatch 130, unindexed_non_whitespace 7, number_out_of_range 1 |
+| qpdf `--check` ERROR on agreeing files (allowlisted) | 0 |
+| Compared | 20,390 streams, 3,747 object-stream members, 83,034 values (objects, members and trailers, per revision) |
+| UNINDEXED / CONTESTED | 111 files, 219 regions, 196,860 bytes / none |
+| Build seconds p50 / p99 / max | 0.11 / 0.24 / 12.1 |
+| Oracle seconds p50 / p99 / max | 0.40 / 0.82 / 37.8 |
+| Work units per byte p50 / max | 2.27 / 4.76 (limit 64) |
+| Linearized files; updated (all flagged); `/L` off the length | 479; 80 (80); 101, 21 of them single-revision |
+| Comment lines: files, longest, non-printable, `N G obj` | 6 files (6 lines, all after an intermediate `%%EOF`), 20 bytes, 0, 0 |
+| `/Length` in an object stream: files, streams | 0, 0 |
+| REVISION_AMBIGUOUS: equal / differ | 0 / 0 |
+| Dead object streams: files (unflagged) | 7 (0); 8,167 dead bodies in 105 files |
+
+The 204 files of the first run's 205 now agree; the one with the
+oversized reference number is flagged NUMBER_OUT_OF_RANGE, as are 2
+already-flagged updated linearized files. The re-run's case library
+(macOS, 400 of 402 cases buildable) also passes: 396 agree (1
+encrypted), 4 flagged, 0 unflagged disagreements, 9,785 streams, 92
+members and 25,563 values compared; fuzz (3,000, seed 0) passes: 740
+agree, 2,260 flagged, 0 unflagged disagreements, 19,144 values compared.
+A first fuzz re-run had found 2 ORACLE_ERRORs (a dictionary key that is
+not UTF-8, which pikepdf will not look up by its string): fixed, with a
+test and the keys added to the value fuzzer.

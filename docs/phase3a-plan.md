@@ -235,7 +235,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   agree, 2,260 flagged, 0 unflagged disagreements. Pending decisions on the case library: no
   updated linearized file, no /Length in an object stream, no REVISION_AMBIGUOUS, no dead
   object stream; comment lines in 322 files (533 lines, the longest 25 bytes, none
-  non-printable or `N G obj`-like). The 2,031-file corpus run is the owner's (local only).
+  non-printable or `N G obj`-like). The corpus run is the owner's (local only): first run in 3a-6b.
 - 3a-6b Corpus gate fixes (owner's first local corpus run, 2026-10-03: 2,073 macOS system
   and application PDFs; FAIL -- 205 unflagged disagreements, all qpdf --check warnings).
   Root-caused, with two adversarial review rounds of the analysis and a fresh third:
@@ -254,7 +254,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   each with a reader-agreement test. The value fuzzer gained the boundary numbers and the
   gate's comparison. Known gap, the reference graph's: a generation mismatch (`1 5 R`;
   MuPDF resolves it by number, libqpdf reads null) is not flagged yet; the gate reports it
-  as a disagreement. Re-run: see eval/spikes/RESULTS.md, "Phase 3a-6b".
+  as a disagreement. Re-run, all passing (eval/spikes/RESULTS.md, "The corpus"): corpus 1,730
+  agree, 343 flagged, 0 unflagged disagreements; case library 396/4/0; fuzz 740/2,260/0.
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
