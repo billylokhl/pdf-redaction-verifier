@@ -557,10 +557,10 @@ difference fails the gate.
   handler's options, which the OCR bridge's Python `{}` (a PyObjC
   proxy) rejected, so every page was `PAGE_FAILED`. It failed closed
   (never exit `0`) and was found only by a local run. Open follow-ups:
-  (a) the OCR engine's *tool* obligation records the OS and Vision
+  (a) the OCR engine's *tool* obligation should record the OS and Vision
   versions it ran under, so a result is never carried over to a
-  different OS; (b) each page's OCR *view* obligation is discharged
-  only when both Vision completion handlers fired — today a
+  different OS; (b) each page's OCR *view* obligation should be discharged
+  only when both Vision completion handlers ran without error — today a
   `performRequests` that succeeds without calling them leaves both
   readings empty and the page passes as read; (c) (b) does not cover
   Vision returning less text with no error, which OCR tests run on the

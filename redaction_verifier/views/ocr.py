@@ -11,7 +11,7 @@ not a Python {} (see _vision_recognize_batch; macOS 27 compatibility).
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
 _OCR_IMPORTS_OK = False so OCR degrades to an OCR_UNAVAILABLE warning
-later (fail-closed: exit 2, never a silent clean verdict) instead of
+later (fail-closed: never a silent clean verdict, exit 0) instead of
 crashing. `except Exception` is deliberately narrower than BaseException
 here: SystemExit, KeyboardInterrupt and other BaseExceptions are NOT
 caught, so they propagate up through `redaction_verifier.views` and
@@ -47,7 +47,7 @@ except Exception:  # pragma: no cover
     # ORDINARY failure importing the OCR bridge (missing package, or a
     # corrupt pyobjc install) means OCR is simply unavailable on this
     # machine. That already surfaces later as an OCR_UNAVAILABLE warning
-    # (fail-closed: exit 2, never a silent clean verdict) rather than a
+    # (fail-closed: never a silent clean verdict, exit 0) rather than a
     # crash, so it is not itself an operational failure worth a stderr
     # message here. A SystemExit/KeyboardInterrupt/other BaseException is
     # NOT caught by this clause (Exception, not BaseException) and
