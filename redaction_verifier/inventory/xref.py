@@ -47,8 +47,9 @@ def no_object(number: int, entry: Entry) -> bool:
     repair; qpdf null, "object has offset 0 - a common error handled
     correctly"), so it is no body, not a flag -- a written leniency (owner
     decision 7, 2026-10-03: 129 corpus files from one writer list unused
-    numbers so). Anything that names it as a home, a catalog or a /Length
-    still finds no object there and is flagged as before."""
+    numbers so). A catalog or an object-stream home it names is no object,
+    so flagged (MISSING_ROOT, XREF_OFFSET_MISMATCH); a /Length it names
+    resolves to nothing, so the stream is scanned and flagged if off."""
     return entry.kind == IN_USE and entry.a == 0 and number != 0
 
 # The file's end: startxref, its offset, %%EOF, at most one end-of-line.
@@ -176,6 +177,12 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
                 revisions.append((i,))
                 i += 1
                 continue
+            if i > 0 and _linearized_length(data, parser, sections[i].offset) == len(data):
+                # Updated, yet its /L names the whole file: a reader that
+                # trusts linearization reads the stale first-page section
+                # (qpdf --check then calls the file linearized and errs).
+                flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, sections[i].span, (
+                    ("object", -1), ("linearized_length", len(data)))))
             revisions.append((i, i + 1))
             i += 2
         else:
@@ -317,10 +324,14 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
         root = trailer.get(b"Root") if trailer is not None else None
         home = merged.get(root.num) if isinstance(root, PdfRef) else None
         catalog = False
-        if isinstance(root, PdfRef) and home is not None and home.kind == IN_USE:
+        if (isinstance(root, PdfRef) and home is not None and home.kind == IN_USE
+                and not no_object(root.num, home)):
             if home.a not in catalogs:
+                # parse_indirect_at reads the first object at or after the
+                # offset: the catalog must start there and be that object.
                 obj = parser.parse_indirect_at(home.a, end)
                 catalogs[home.a] = (obj is not None and not obj.flags
+                                    and obj.span.start == home.a and obj.num == root.num
                                     and isinstance(obj.value, PdfDict)
                                     and _name(obj.value.get(b"Type")) == b"Catalog")
             catalog = catalogs[home.a] and home.b == root.gen
@@ -506,15 +517,27 @@ def _ends_within(parser: ObjectParser, offset: int, end: int,
 _PREAMBLE: Final = re.compile(rb"%PDF-[^\r\n]*" + _EOL + rb"(?:%[^\r\n]*" + _EOL + rb")*")
 
 
-def _linearized(data: bytes, parser: ObjectParser, first_section: int) -> bool:
-    """Is the file's first object a /Linearized dictionary, whole before
-    the first-page section?"""
+def _linearization(data: bytes, parser: ObjectParser, first_section: int) -> PdfDict | None:
+    """The file's first object when it is a /Linearized dictionary, whole
+    before the first-page section."""
     preamble = _PREAMBLE.match(data)
     if preamble is None:
-        return False
+        return None
     obj = parser.parse_indirect_at(preamble.end(), first_section)
-    return (obj is not None and not obj.flags and isinstance(obj.value, PdfDict)
-            and obj.value.get(b"Linearized") is not None)
+    if (obj is not None and not obj.flags and isinstance(obj.value, PdfDict)
+            and obj.value.get(b"Linearized") is not None):
+        return obj.value
+    return None
+
+
+def _linearized(data: bytes, parser: ObjectParser, first_section: int) -> bool:
+    return _linearization(data, parser, first_section) is not None
+
+
+def _linearized_length(data: bytes, parser: ObjectParser, first_section: int) -> int | None:
+    """The linearization dictionary's /L: the file's length when written."""
+    found = _linearization(data, parser, first_section)
+    return _int(found.get(b"L")) if found is not None else None
 
 
 def _header_at(data: bytes, offset: int) -> tuple[int, int, int] | None:

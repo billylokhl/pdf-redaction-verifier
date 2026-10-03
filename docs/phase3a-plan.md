@@ -300,6 +300,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    revision (#44 item 1; 80 corpus files). An in-use xref entry at offset 0 is no object, a
    written leniency (129 corpus files from one writer; both readers read null). A claimed
    comment line with a control byte, a high byte past the binary marker or an `N G obj` is
-   flagged (#46 item 1; 0 corpus files); comment bytes stay claimed, so Phase 4's raw-byte
+   flagged (#46 item 1; no corpus file not already flagged); comment bytes stay claimed, so Phase 4's raw-byte
    search must cover them. /Length in an object stream, REVISION_AMBIGUOUS and dead object
    streams stay flagged (#46 item 4; 0, 0 and 7 already-flagged files).

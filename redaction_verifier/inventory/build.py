@@ -52,10 +52,12 @@ _HEADER: Final = re.compile(rb"%PDF-[0-9]\.[0-9](?=\r\n|\r|\n)")
 # byte (other than tab) or DEL -- or, past the header's first comment (the
 # binary marker, §7.5.2), a byte of 128 or more -- or text shaped like an
 # object header, which a reader repairing the file could take for one
-# (owner decision 7, 2026-10-03; 0 of 2,073 corpus files).
+# (owner decision 7, 2026-10-03; flags no corpus file not already flagged).
 _COMMENT_ODD: Final = re.compile(rb"[\x00-\x08\x0a-\x1f\x7f]")
 _COMMENT_HIGH: Final = re.compile(rb"[\x80-\xff]")
-_COMMENT_OBJ: Final = re.compile(rb"\d+" + _WS + rb"+\d+" + _WS + rb"+obj")
+# The lookbehind starts a match only at a digit run's first digit: without
+# it, a long run of digits is backtracked from every position (quadratic).
+_COMMENT_OBJ: Final = re.compile(rb"(?<![0-9])\d+" + _WS + rb"+\d+" + _WS + rb"+obj")
 _PREAMBLE_COMMENT: Final = re.compile(_WS + rb"+(%[^\r\n]*)(?=\r\n|\r|\n)")
 # A revision's epilogue (§7.5.5), directly after its last section.
 _EPILOGUE: Final = re.compile(_WS + rb"*(startxref" + _EOL + rb"(\d{1,20})" + _EOL + rb"%%EOF)")

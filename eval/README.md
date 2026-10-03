@@ -605,7 +605,8 @@ in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
 stream's data start; content decoding is Phase 4's), and a reference to
 object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
 until 3a-7 flags dangling references); since 3a-6c, qpdf's warning on an
-in-use entry at offset 0 (`OFFSET_ZERO`), which the inventory reads as no
+in-use entry at offset 0 (`OFFSET_ZERO`, tested in
+`tests/test_inventory_decisions.py`), which the inventory reads as no
 object -- the oracle drops such an entry from qpdf's map only after MuPDF
 and libqpdf have both read it as null.
 
