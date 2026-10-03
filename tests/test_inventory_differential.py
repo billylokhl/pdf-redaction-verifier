@@ -21,11 +21,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import pikepdf
 import pymupdf
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
-from scorecard.inventory import plain as _plain
+from scorecard.inventory import libqpdf_form, same_as_mupdf, structural, text_form, value_form
 
 from redaction_verifier.inventory.objects import IndirectObject, ObjectParser, PdfInt
 
@@ -159,22 +160,36 @@ def test_an_unflagged_stream_reads_the_same_in_every_reader(
 
 
 # ── Values: dictionaries of strings, names, numbers and nesting ───────────
-# MuPDF and qpdf each re-serialize an object in their own canonical syntax;
-# parsing that back with our parser compares values without needing any
-# reader's decoding API.
+# The gate's own comparison (scorecard.inventory, 3a-6b): MuPDF's pretty
+# print parsed back (a real within one 32-bit float step), and libqpdf's
+# own values through pikepdf (exact bytes, numbers, references).
 _VALUE_PIECES = st.sampled_from([
     b"(abc)", b"(a\\q)", b"(\\400)", b"(\\0053)", b"(a\\\r\nb)", b"(a\\\nb)", b"(a\rb)",
     b"(a\r\nb)", b"(()())", b"(\\()", b"<41 42>", b"<414>", b"<>", b"< 4 1 >", b"<4g>",
     b"/N", b"/A#20B", b"/A#00B", b"/A#4", b"/#41", b"/", b"4.", b"-.5", b"+3", b"0",
     b"-0", b"00012", b"1.50", b"true", b"false", b"null", b"1 0 R", b"[1 (x) /y]", b"[]",
     b"<< /K 1 >>", b"<<>>", b"(\xfe\xff\x00A)", b"(\xff\xfeA\x00)", b"(\x80\x9f\xad)",
+    # 3a-6b: magnitudes the readers read differently (flagged: NumberRule),
+    # the values on either side of each bound, references by number and
+    # generation, and names qpdf's JSON could not print.
+    b"2147483647", b"-2147483648", b"2147483648", b"-2147483649", b"9223372036854775808",
+    b"18446744073386459286", b"16777215.5", b"16777216.0", b"2147483584.0", b"2147483648.5",
+    b"0.0000000000000000000000000000000000001", b"0.00000000000000000000000000000000000001",
+    b"0.00000000000000000000000000000000000000000000001", b"66.089836", b"100000004.5",
+    b"000012345.5", b"0016777217.5", b"0.123456789012345678", b"+.5", b"-007.5",
+    # (Not `1 65534 R`: a generation mismatch, the 3a-7 gap pinned below.)
+    b"0 0 R", b"99 0 R", b"8388607 0 R", b"8388608 0 R", b"1 65535 R",
+    b"/A#FF", b"/#E9", b"<FEFF0041>", b"<EFBBBF41>",
 ])
 
 
 @st.composite
 def _dict_bodies(draw: st.DrawFn) -> bytes:
     # Unique keys: a repeated key is flagged, so it would never reach the readers.
-    entries = draw(st.lists(st.tuples(st.sampled_from([b"/K", b"/L", b"/M", b"/N#41", b"/O"]),
+    # /A#FF, /#E9: keys that are not UTF-8 (pikepdf returns them
+    # surrogate-escaped; the 3a-6b fuzz gate found the oracle failing on one).
+    entries = draw(st.lists(st.tuples(st.sampled_from([b"/K", b"/L", b"/M", b"/N#41", b"/O",
+                                                       b"/A#FF", b"/#E9"]),
                                       _VALUE_PIECES), max_size=5, unique_by=lambda e: e[0]))
     sep = draw(st.sampled_from([b" ", b"\n", b"", b"%c\n"]))
     return b"<<" + b"".join(k + b" " + v + sep for k, v in entries) + b">>"
@@ -199,9 +214,29 @@ def _value_pdf(body: bytes) -> tuple[bytes, int]:
     return bytes(out), offsets[4]
 
 
-def _reparse(serialized: bytes) -> object:
-    parsed = ObjectParser(serialized).parse_value_at(0)
-    return _plain(parsed.value)
+_LIVE = (1, 2, 3, 4)  # the objects _value_pdf writes
+
+
+def _readers_agree(data: bytes, offset: int, path: Path) -> tuple[bool, object]:
+    """Does object 4 read in MuPDF and libqpdf as we read it, the way the
+    gate compares (value_form, same_as_mupdf, libqpdf_form), with no
+    warning or repair from either? (agreed, what differed)"""
+    ours = ObjectParser(data).parse_indirect_at(offset, len(data))
+    assert ours is not None
+    mine = value_form(ours.value, data, _LIVE)
+    pymupdf.TOOLS.mupdf_warnings()
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    mu = text_form(doc.xref_object(4, compressed=False).encode("latin-1"), _LIVE)
+    mu_warnings, repaired = pymupdf.TOOLS.mupdf_warnings(), doc.is_repaired
+    path.write_bytes(data)
+    with pikepdf.explicit_conversion(), pikepdf.Pdf.open(
+            path, attempt_recovery=False, inherit_page_attributes=False) as pdf:
+        theirs = libqpdf_form(pdf.get_object((4, 0)), top=True)
+        warnings = structural([b"WARNING: " + w.encode("utf-8", "surrogateescape")
+                               for w in pdf.get_warnings()], path)
+    agreed = (same_as_mupdf(mine, mu) and not mu_warnings and not repaired
+              and theirs == mine and not warnings)
+    return agreed, (mine, mu, mu_warnings, theirs, warnings)
 
 
 @requires_qpdf
@@ -214,19 +249,9 @@ def test_an_unflagged_value_reads_the_same_in_every_reader(
     assert ours is not None
     if ours.flags or not ours.complete:
         return
-    mine = _plain(ours.value)
-    pymupdf.TOOLS.mupdf_warnings()
-    doc = pymupdf.open(stream=data, filetype="pdf")
-    mu_text = doc.xref_object(4, compressed=True).encode("latin-1")
-    mu_warnings = pymupdf.TOOLS.mupdf_warnings()
-    assert (_reparse(mu_text), mu_warnings, doc.is_repaired) == (mine, "", False), (
-        body, mu_text)
-    path = tmp_path_factory.mktemp("val") / "case.pdf"
-    path.write_bytes(data)
-    result = subprocess.run(["qpdf", "--show-object=4", str(path)], capture_output=True,
-                            timeout=30)
-    assert (_reparse(result.stdout), result.returncode) == (mine, 0), (
-        body, result.stdout, result.stderr)
+    event("reached the readers")  # not vacuous: --hypothesis-show-statistics
+    agreed, seen = _readers_agree(data, offset, tmp_path_factory.mktemp("val") / "case.pdf")
+    assert agreed, (body, seen)
 
 
 # ── The written allowlist of leniencies (ADR 0010) ────────────────────────
@@ -263,13 +288,19 @@ def test_every_accepted_leniency_reads_the_same_in_every_reader(
     data, offset = _value_pdf(b"<< /K " + value + b" >>")
     ours = ObjectParser(data).parse_indirect_at(offset, len(data))
     assert ours is not None and ours.flags == () and ours.complete
-    mine = _plain(ours.value)
-    pymupdf.TOOLS.mupdf_warnings()
-    doc = pymupdf.open(stream=data, filetype="pdf")
-    mu_text = doc.xref_object(4, compressed=True).encode("latin-1")
-    assert (_reparse(mu_text), pymupdf.TOOLS.mupdf_warnings()) == (mine, "")
-    path = tmp_path / "case.pdf"
-    path.write_bytes(data)
-    result = subprocess.run(["qpdf", "--show-object=4", str(path)], capture_output=True,
-                            timeout=30)
-    assert (_reparse(result.stdout), result.returncode) == (mine, 0), result.stderr
+    agreed, seen = _readers_agree(data, offset, tmp_path / "case.pdf")
+    assert agreed, seen
+
+
+@requires_qpdf
+def test_a_generation_mismatch_is_unflagged_until_the_reference_graph(tmp_path: Path) -> None:
+    """Known gap, owned by 3a-7 (the reference graph flags it): MuPDF
+    resolves `3 5 R` by its number, libqpdf reads null, and the inventory
+    does not flag it yet. The gate compares values, so it reports such a
+    file as a disagreement (fail closed). When 3a-7 flags it, this test
+    flips: assert the flag instead, and add `3 5 R` to _VALUE_PIECES."""
+    data, offset = _value_pdf(b"<< /K 3 5 R >>")
+    ours = ObjectParser(data).parse_indirect_at(offset, len(data))
+    assert ours is not None and ours.flags == ()
+    agreed, _ = _readers_agree(data, offset, tmp_path / "case.pdf")
+    assert not agreed

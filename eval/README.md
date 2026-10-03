@@ -490,13 +490,15 @@ not just in the file you pointed at. `--out` defaults under
 `eval/scorecard/real_corpus/scan-workdir` (gitignored, guarded the same
 way as `--manifest`) for exactly this reason.
 
-### The inventory agreement gate (Phase 3a-6)
+### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in
 shadow mode): on every file, `build_inventory` runs in a child process
 with a 60 s timeout, then the reader differential
 (`eval/scorecard/inventory.py`, the same oracle the tests use) compares
-the inventory against MuPDF and qpdf in a second child with its own
+the inventory against MuPDF and qpdf -- the qpdf CLI for the object map
+and `--check`, and libqpdf in-process through pikepdf for every value
+(ADR 0010's amendment) -- in a second child with its own
 timeout (default 900 s, reported separately; each qpdf call inside it
 may use the whole budget, so a huge but valid file is not cut short). **The gate passes only
 with zero unflagged disagreements** (a file that does not tile counts as
@@ -505,17 +507,29 @@ verified: an oracle that crashes or times out on an unflagged file, or
 two children that flag the same file differently, fail it too. Flagged
 files, UNINDEXED/CONTESTED regions and flag rates are reported, never
 gated (ADR 0010: measure before enforcing). Exit status: 0 pass, 1 fail,
-2 refused (a drifted or empty manifest, or no qpdf on PATH). A `--json`
+2 refused (a drifted or empty manifest, no qpdf on PATH, or a qpdf CLI
+whose major.minor version is not pikepdf's libqpdf's: their messages and
+limits differ across releases, so the allowlists hold for one). A `--json`
 file left from an earlier run is deleted first, so a stale aggregate
 never passes for a fresh one.
 
 ```bash
 # The real corpus: the manifest is verified first -- any file missing or
 # changed since `corpus build` and the run is refused (exit 2, counts only;
-# `corpus check` lists the files). Hours on 2,031 files: --workers N helps,
-# but keep N below your core count or the 60 s timeout measures contention.
-PYTHONPATH=eval:. python -m scorecard inventory run --root ~/corpus \
-    --json /tmp/inventory-gate.json
+# `corpus check` lists the files). Minutes on ~2,000 files with --workers 8
+# (keep N below your core count, or the 60 s timeout measures contention).
+# The corpus is the macOS system and application PDFs eval/spikes/corpus.py
+# finds (never your home folder); `corpus build` wants one root, so stage
+# hashed symlinks inside the gitignored real_corpus/ first -- names are
+# hashed so no system path or file name reaches the manifest:
+PYTHONPATH=eval:. python -c 'import hashlib, os, pathlib; from spikes import corpus
+d = pathlib.Path("eval/scorecard/real_corpus/links"); d.mkdir(parents=True, exist_ok=True)
+for p in corpus.discover():
+    t = d / (hashlib.sha256(str(p).encode()).hexdigest()[:16] + ".pdf")
+    if os.access(p, os.R_OK) and not t.exists(): os.symlink(p, t)'
+PYTHONPATH=eval:. python -m scorecard corpus build --root eval/scorecard/real_corpus/links
+PYTHONPATH=eval:. python -m scorecard inventory run --root eval/scorecard/real_corpus/links \
+    --json /tmp/inventory-gate.json --workers 8
 
 # The same gate over the case library (every case this machine can build)
 # and over generated and mutated files (seeded, reproducible):
@@ -528,9 +542,10 @@ What each part of the output means:
 
 - `gate`: `passed`, and the gating counts: `unflagged_disagree` (by
   failed check in `unflagged_disagree_by_check`: `object_set`,
-  `stream_data`, `member_value`, `dead_bodies`, `qpdf_check`,
-  `mupdf_warning`, `needs_password`, `encryption`, `oracle_error`,
-  `tiling`),
+  `stream_data`, `object_value`, `member_value`, `trailer_value`,
+  `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
+  line outside the written allowlist below), `mupdf_warning`,
+  `needs_password`, `encryption`, `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
@@ -540,8 +555,9 @@ What each part of the output means:
   files MuPDF reads encrypted, `encrypt_entry_files` those whose
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
-  printed an `ERROR` line (exit 2) -- so far page-tree semantics, the
-  reference graph's (3a-7); counted, not gated.
+  printed an `ERROR` line (exit 2) the allowlists cover (page-tree
+  semantics, the reference graph's, 3a-7). ERROR lines are gated like
+  WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
   compared with the readers: the inventory said the readers may disagree,
@@ -560,12 +576,32 @@ What each part of the output means:
   `REVISION_AMBIGUOUS` flags whose value is equal in every revision, and
   dead object streams (#46 item 4).
 - `config`: provenance -- the git commit and whether the tree had local
-  changes, the qpdf, PyMuPDF, MuPDF and Python versions, the platform
+  changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
+  versions, the platform
   (OS, release, architecture), the start time (UTC) and the run's
   options.
-- `compared`: how many streams and object-stream members were compared;
-  every member is compared with MuPDF, the first `--qpdf-members` (8) per
-  revision also with qpdf, one qpdf process each.
+- `compared`: how many streams, object-stream members and values (every
+  live object, member and trailer, per revision) were compared. A value
+  is compared with libqpdf exactly (kinds, string bytes, integers and
+  reals as written, references by number and generation) and with MuPDF
+  allowing a real one 32-bit float step from ours (MuPDF holds reals in
+  32 bits); a reference to an object number with no body reads as null.
+  Any libqpdf warning while reading is a disagreement unless allowlisted.
+
+The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
+applied to `--check` lines and to libqpdf's warnings alike: page-tree
+semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
+3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
+them); and since 3a-6b, three entries that each match one whole line on
+the exact path, each with a reader-agreement test in
+`tests/test_inventory_values.py`: linearization hint-table lint
+(`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
+linearized; 15 messages of qpdf's linearization checker:
+readers do not read objects through hint tables), Flate data cut short
+in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
+stream's data start; content decoding is Phase 4's), and a reference to
+object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
+until 3a-7 flags dangling references).
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader

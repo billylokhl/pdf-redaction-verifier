@@ -33,7 +33,19 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install CLI tools
-        run: brew install exiftool qpdf
+        run: brew install exiftool
+      - name: Install qpdf (pinned to pikepdf's libqpdf, 12.4.2)
+        # The inventory gate needs the qpdf CLI and pikepdf's libqpdf at one
+        # major.minor version (eval/scorecard/inventory.py refuses otherwise):
+        # the official release binary, checksum from qpdf's own .sha256.
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/qpdf.zip" \
+            https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip
+          echo "62e46987a30ea167cbc530ccb22690aec3d8c812ed09979a941bcee92e504b79  $RUNNER_TEMP/qpdf.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/qpdf.zip" -d "$RUNNER_TEMP/qpdf"
+          bin="$(find "$RUNNER_TEMP/qpdf" -type f -name qpdf -perm -u+x | head -1)"
+          "$bin" --version
+          dirname "$bin" >> "$GITHUB_PATH"
       - name: Install Python dependencies
         # --locked fails the build if uv.lock is out of date with pyproject.toml.
         run: uv sync --locked --extra test
@@ -52,7 +64,15 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        # qpdf: the release matching each Python's pikepdf pin's libqpdf
+        # (pyproject.toml); the inventory gate needs one major.minor version.
+        include:
+          - python-version: "3.10"
+            qpdf: "12.3.2"
+            qpdf-sha256: "44f2c53bf784c0143128d80d2b9946e9793962c5bb403b75c0024cb4d8e346b9"
+          - python-version: "3.12"
+            qpdf: "12.4.2"
+            qpdf-sha256: "db367d897829f22c4198ce1094143c9d467bd6ee7dfabc44ba6f02056b24f8b1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -64,7 +84,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install CLI tools
-        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl qpdf
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
+      - name: Install qpdf (pinned to pikepdf's libqpdf)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/qpdf.zip" \
+            "https://github.com/qpdf/qpdf/releases/download/v${{ matrix.qpdf }}/qpdf-${{ matrix.qpdf }}-bin-linux-x86_64.zip"
+          echo "${{ matrix.qpdf-sha256 }}  $RUNNER_TEMP/qpdf.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/qpdf.zip" -d "$RUNNER_TEMP/qpdf"
+          bin="$(find "$RUNNER_TEMP/qpdf" -type f -name qpdf -perm -u+x | head -1)"
+          "$bin" --version
+          dirname "$bin" >> "$GITHUB_PATH"
       - name: Install Python dependencies
         run: uv sync --locked --extra test
       - name: Run test suite

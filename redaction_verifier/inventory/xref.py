@@ -33,7 +33,8 @@ from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span
 from .flate import Predictor, flate_decode
 from .lexer import Lexer, TokenKind
-from .objects import ObjectParser, PdfArray, PdfDict, PdfInt, PdfName, PdfRef, PdfValue
+from .objects import (MAX_GENERATION, MAX_OBJECT_NUMBER, NumberRule, ObjectParser, PdfArray,
+                      PdfDict, PdfInt, PdfName, PdfRef, PdfValue)
 
 FREE, IN_USE, COMPRESSED = 0, 1, 2
 
@@ -222,7 +223,15 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
     - the revision's newest trailer names a /Type /Catalog via /Root
       (qpdf: "unable to find /Root dictionary"; a catalog inside an
       object stream is 3a-5's to check) and has /Size exactly one more
-      than its highest object number (§7.5.5; qpdf warns otherwise)."""
+      than its highest object number (§7.5.5; qpdf warns otherwise);
+    - object numbers and generations both readers read the same way
+      (NUMBER_OUT_OF_RANGE, NumberRule): every entry's number at most
+      MuPDF's 8,388,607 (and /Size at most that), an in-use entry's
+      generation below 65,535 (a compressed entry's third field is an
+      index, not a generation), and every number below a third of the
+      revision's end -- libqpdf 12 ignores objects at or past its id cap,
+      a third of the size of the file it opens (each revision's cut is at
+      least that long, so this is never looser than qpdf's own cap)."""
     flags: list[Flag] = []
     merged: dict[int, Entry] = {}
     highest = 0
@@ -246,6 +255,12 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
         changed: set[int] = set()
         for part in parts:
             for number, entry in part.entries.items():
+                if number > MAX_OBJECT_NUMBER:
+                    flags.append(Flag(FlagReason.NUMBER_OUT_OF_RANGE, None, (
+                        ("rule", int(NumberRule.OBJECT_NUMBER)), ("object", number))))
+                if entry.kind == IN_USE and entry.b > MAX_GENERATION:
+                    flags.append(Flag(FlagReason.NUMBER_OUT_OF_RANGE, None, (
+                        ("rule", int(NumberRule.GENERATION)), ("object", number))))
                 before = merged.get(number)
                 if before is not None and before.kind == COMPRESSED:
                     members.get(before.a, set()).discard(number)
@@ -255,6 +270,10 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
                 changed.add(number)
             if part.entries:
                 highest = max(highest, max(part.entries))
+        if highest >= end // 3:
+            flags.append(Flag(FlagReason.NUMBER_OUT_OF_RANGE, None, (
+                ("rule", int(NumberRule.ID_CAP)), ("revision", revision),
+                ("highest", highest), ("cap", end // 3))))
         for number in changed:
             live = members.get(number)
             if live and merged[number].kind != IN_USE:
@@ -290,6 +309,9 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
         if not catalog:
             flags.append(Flag(FlagReason.MISSING_ROOT, newest.span, (("revision", revision),)))
         size = _int(trailer.get(b"Size")) if trailer is not None else None
+        if size is not None and size > MAX_OBJECT_NUMBER:
+            flags.append(Flag(FlagReason.NUMBER_OUT_OF_RANGE, newest.span, (
+                ("rule", int(NumberRule.OBJECT_NUMBER)), ("revision", revision))))
         if size != highest + 1:
             flags.append(Flag(FlagReason.XREF_SIZE_MISMATCH, newest.span, (
                 ("revision", revision), ("size", -1 if size is None else size),

@@ -207,7 +207,8 @@ def test_children_that_disagree_on_flags_are_inconsistent() -> None:
     said_flagged = {"agreement": {"status": "flagged", "reasons": ["xref_tail"], "check": None,
                                   "revision": None, "obj": None, "templates": [],
                                   "encrypted": False, "streams_compared": 0,
-                                  "members_compared": 0, "qpdf_check_errors": 0},
+                                  "members_compared": 0, "qpdf_check_errors": 0,
+                                  "values_compared": 0},
                     "flags": ["xref_tail"], "measures": {}, "regions": {}}
     job = gate.Job("0" * 64, Path("unused"))
     result = gate.judge(job, 10, build, gate.ChildRun("ok", 0.1, said_flagged))
@@ -461,7 +462,9 @@ def test_linearized_updates_and_a_length_mismatch_are_apart(tmp_path: Path) -> N
 
 
 @requires_qpdf
-def test_qpdf_check_errors_are_counted_not_gated(tmp_path: Path) -> None:
+def test_qpdf_check_errors_are_gated(tmp_path: Path) -> None:
+    # 3a-6b: an ERROR line is a disagreement unless the allowlists cover it,
+    # like a WARNING line (they were counted, never gated, in 3a-6).
     from scorecard.pdfgen import Writer
     w = Writer()
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
@@ -470,15 +473,7 @@ def test_qpdf_check_errors_are_counted_not_gated(tmp_path: Path) -> None:
     table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
                           b" /Resources << >> >>"), 0)
     w.epilogue(w.table(table, b"/Size 4 /Root 1 0 R"))
-    data = bytes(w.out)
-    probe = tmp_path / "probe.pdf"
-    probe.write_bytes(data)
-    show = subprocess.run(["qpdf", "--show-xref", str(probe)], capture_output=True, timeout=60)
-    found = compare(data, tmp_path)
-    if show.returncode != 0:
-        # qpdf 12 (macOS Homebrew) also fails --show-xref on this page
-        # tree; then the object map is unverified and the file disagrees:
-        # fail closed, never counted as agreeing.
-        assert (found.agrees, found.check) == (False, Check.OBJECT_SET)
-    else:  # qpdf 11: the map reads, only --check stops with an ERROR
-        assert found.agrees and found.qpdf_check_errors == 1
+    found = compare(bytes(w.out), tmp_path)
+    # qpdf 12 already fails --show-xref on this page tree (OBJECT_SET); an
+    # older qpdf reads the map and stops --check with an ERROR (QPDF_CHECK).
+    assert found.disagrees and found.check in (Check.OBJECT_SET, Check.QPDF_CHECK)

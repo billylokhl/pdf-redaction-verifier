@@ -393,7 +393,14 @@ brew install exiftool qpdf && uv sync --extra test
 
 On Debian/Ubuntu the binaries are
 `sudo apt-get install libimage-exiftool-perl qpdf`. Drop `--extra test` if
-you do not need the test suite. Without uv, `pip install -e '.[test]'`
+you do not need the test suite. The inventory's reader-agreement tests
+(Phase 3a) compare against both the `qpdf` command and the libqpdf inside
+`pikepdf` (in the `test` extra), and need the two at one major.minor
+version: 12.4 with Python 3.11+, 12.3 with Python 3.10. Homebrew's qpdf
+12.4 matches; Debian/Ubuntu's packaged qpdf is older, so install the
+matching release binary from qpdf's GitHub releases, as CI does
+(`.github/workflows/tests.yml`). With a mismatch those tests fail closed
+and the inventory gate refuses to run. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
 `python verify.py --target ... --secrets ...` works installed or not; pass
 `--fail-fast` to stop at the first confirmed finding. `verify.py` imports

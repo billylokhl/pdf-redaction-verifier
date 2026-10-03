@@ -145,19 +145,19 @@ def run_child(argv: Sequence[str], timeout: float) -> ChildRun:
 
 
 def run_file(job: Job, *, workdir: Path, build_timeout: float = BUILD_TIMEOUT,
-             oracle_timeout: float = ORACLE_TIMEOUT, qpdf_members: int = 8,
+             oracle_timeout: float = ORACLE_TIMEOUT,
              build_command: Sequence[str] = BUILD_COMMAND,
              oracle_command: Sequence[str] = ORACLE_COMMAND) -> FileResult:
     try:
-        return _run_file(job, workdir, build_timeout, oracle_timeout, qpdf_members,
-                         build_command, oracle_command)
+        return _run_file(job, workdir, build_timeout, oracle_timeout, build_command,
+                         oracle_command)
     except Exception as error:  # the harness itself failed: a gate failure, never a pass
         failed = ChildRun("crash", 0.0, None, f"harness {type(error).__name__}")
         return FileResult(job, 0, CRASH, failed, None, None)
 
 
 def _run_file(job: Job, workdir: Path, build_timeout: float, oracle_timeout: float,
-              qpdf_members: int, build_command: Sequence[str],
+              build_command: Sequence[str],
               oracle_command: Sequence[str]) -> FileResult:
     size = job.path.stat().st_size
     build = run_child([*build_command, str(job.path)], build_timeout)
@@ -167,7 +167,6 @@ def _run_file(job: Job, workdir: Path, build_timeout: float, oracle_timeout: flo
     scratch = Path(tempfile.mkdtemp(prefix="oracle-", dir=workdir))
     try:
         oracle = run_child([*oracle_command, str(job.path), str(scratch),
-                            "--qpdf-members", str(qpdf_members),
                             "--qpdf-timeout", str(oracle_timeout)], oracle_timeout)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -381,13 +380,15 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
         "encrypted_files": sum(1 for r in results if r.measures.get("encrypted")),
         "encrypt_entry_files": sum(1 for r in results if r.measures.get("encrypt_entry")),
         # qpdf --check ERROR lines (exit 2) on files that otherwise agree:
-        # page-tree semantics so far, 3a-7's -- counted, not gated.
+        # gated since 3a-6b, so only ERROR lines the allowlists cover
+        # (page-tree semantics, 3a-7's).
         "qpdf_check_errors_on_agree": sum(1 for r in agree if r.agreement
                                           and r.agreement.qpdf_check_errors),
         "compared": {
             "streams": sum(r.agreement.streams_compared for r in agree if r.agreement),
             "object_stream_members": sum(r.agreement.members_compared
                                          for r in agree if r.agreement),
+            "values": sum(r.agreement.values_compared for r in agree if r.agreement),
         },
         "oracle": {
             "crashes": sum(1 for o in oracle_runs if o.outcome == "crash"),
@@ -417,6 +418,7 @@ def provenance(started: datetime) -> dict[str, Any]:
     an OS/architecture string."""
     import platform
 
+    import pikepdf
     import pymupdf
 
     def git(*argv: str) -> str | None:
@@ -432,6 +434,8 @@ def provenance(started: datetime) -> dict[str, Any]:
         "commit": commit if re.fullmatch(r"[0-9a-f]{40}", commit) else "unknown",
         "dirty": None if status is None else bool(status.strip()),
         "qpdf": tool_version("qpdf"),
+        "libqpdf": str(pikepdf.__libqpdf_version__),
+        "pikepdf": str(pikepdf.__version__),
         "pymupdf": str(pymupdf.VersionBind),
         "mupdf": str(pymupdf.VersionFitz),
         "python": platform.python_version(),
@@ -461,7 +465,7 @@ def render(agg: dict[str, Any]) -> str:
     ]
     lines.append(f"  encrypted {agg['encrypted_files']} (an /Encrypt entry: "
                  f"{agg['encrypt_entry_files']})  qpdf --check errors on agreeing files "
-                 f"{agg['qpdf_check_errors_on_agree']} (not gated)")
+                 f"{agg['qpdf_check_errors_on_agree']} (allowlisted)")
     for reason, count in agg["flags"]["top_reasons"]:
         lines.append(f"    {reason:28} {count}")
     for kind, totals in agg["regions"].items():

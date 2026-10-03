@@ -16,7 +16,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from scorecard.inventory import PAGE_TREE_SEMANTICS, chain_of, qpdf_map
 
-from redaction_verifier.inventory.objects import ObjectParser, PdfInt
+from redaction_verifier.inventory.objects import NumberRule, ObjectParser, PdfInt
 from redaction_verifier.inventory.xref import COMPRESSED, FREE, IN_USE, Entry
 
 from .conftest import requires_qpdf
@@ -514,3 +514,78 @@ def test_an_indirect_length_resolves_and_a_wrong_one_is_flagged() -> None:
 @requires_qpdf
 def test_an_indirect_length_agrees_with_the_readers(tmp_path: Path) -> None:
     _agree(indirect_length(12), tmp_path)
+
+
+# ── Object numbers both readers read the same way (3a-6b, NumberRule) ─────
+def sparse(number: int, pad: int, gen: int = 0, size: int | None = None) -> bytes:
+    """classic() plus object *number* (padded by *pad* bytes inside it)."""
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = _objects(BODIES, out)
+    offsets[number] = len(out)
+    out += b"%d %d obj\n<< /Pad (%s) >>\nendobj\n" % (number, gen, b"x" * pad)
+    xref = len(out)
+    lines = [b"xref\n0 1\n0000000000 65535 f \n"]
+    for num in sorted(offsets):
+        lines.append(b"%d 1\n%010d %05d n \n" % (num, offsets[num], gen if num == number else 0))
+    out += b"".join(lines) + b"trailer\n<< /Size %d /Root 1 0 R >>\n" % (
+        number + 1 if size is None else size)
+    return bytes(out + b"startxref\n%d\n%%%%EOF\n" % xref)
+
+
+def _number_rules(data: bytes) -> list[dict[str, int]]:
+    return [dict(f.params) for f in chain_of(data).flags
+            if f.reason.name == "NUMBER_OUT_OF_RANGE"]
+
+
+def _at_cap(number: int, below: int) -> bytes:
+    """sparse(number) padded so its revision ends where end // 3 == number + below."""
+    for pad in range(4000):
+        data = sparse(number, pad)
+        chain = chain_of(data)
+        if chain.revision_end(0) // 3 == number + below:
+            return data
+    raise AssertionError("no padding reaches the cap")
+
+
+def test_an_object_number_at_libqpdfs_id_cap_is_flagged() -> None:
+    # libqpdf 12 keeps an object only while its number < size // 3.
+    assert [r["rule"] for r in _number_rules(_at_cap(200, 0))] == [NumberRule.ID_CAP]
+    assert _number_rules(_at_cap(200, 1)) == []
+
+
+def test_an_update_adding_a_high_number_to_a_small_file_is_flagged_per_revision() -> None:
+    first = classic()
+    xref1 = int(re.search(rb"startxref\n(\d+)", first).group(1))  # type: ignore[union-attr]
+    out = bytearray(first)
+    offsets = _objects({400: b"<< /Pad (x) >>"}, out)
+    xref2 = len(out)
+    out += (b"xref\n400 1\n%010d 00000 n \ntrailer\n<< /Size 401 /Root 1 0 R /Prev %d >>\n"
+            % (offsets[400], xref1) + b"startxref\n%d\n%%%%EOF\n" % xref2)
+    rules = _number_rules(bytes(out))
+    assert {(r["rule"], r["revision"]) for r in rules if "revision" in r} >= {
+        (NumberRule.ID_CAP, 0)}
+
+
+@pytest.mark.parametrize(("data", "rule"), [
+    (sparse(8_388_608, 9_000_000), NumberRule.OBJECT_NUMBER),
+    (_mutate(classic(), b"/Size 4", b"/Size 8388608"), NumberRule.OBJECT_NUMBER),
+    (sparse(4, 0, gen=65535, size=5), NumberRule.GENERATION),
+])
+def test_object_numbers_and_generations_past_the_readers_limits_are_flagged(
+        data: bytes, rule: NumberRule) -> None:
+    assert rule in [r["rule"] for r in _number_rules(data)]
+
+
+def test_free_entries_past_mupdfs_object_limit_are_flagged() -> None:
+    data = classic()
+    xref = int(re.search(rb"startxref\n(\d+)", data).group(1))  # type: ignore[union-attr]
+    free = b"8388600 11\n" + b"0000000000 00001 f \n" * 11
+    data = _mutate(data, b"trailer", free + b"trailer")
+    data = _mutate(data, b"/Size 4", b"/Size 8388611")
+    assert xref == int(re.search(rb"startxref\n(\d+)", data).group(1))  # type: ignore[union-attr]
+    assert NumberRule.OBJECT_NUMBER in [r["rule"] for r in _number_rules(data)]
+
+
+@requires_qpdf
+def test_a_high_number_below_the_cap_agrees_with_the_readers(tmp_path: Path) -> None:
+    _agree(_at_cap(200, 1), tmp_path)
