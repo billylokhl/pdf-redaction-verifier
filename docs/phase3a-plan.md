@@ -256,6 +256,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   MuPDF resolves it by number, libqpdf reads null) is not flagged yet; the gate reports it
   as a disagreement. Re-run, all passing (eval/spikes/RESULTS.md, "The corpus"): corpus 1,730
   agree, 343 flagged, 0 unflagged disagreements; case library 396/4/0; fuzz 740/2,260/0.
+- 3a-6c The owner's pending decisions (owner decision 7 below). Done (this PR):
+  xref.read_chain accepts the linearized pair as the base revision under incremental
+  updates (flagged if its /L names the updated file's whole length: a reader trusting
+  linearization would read the stale first page); xref.no_object reads an in-use entry at offset 0 as no object (the oracle drops it
+  from qpdf's map only after MuPDF and libqpdf both read null; qpdf's warning is an anchored
+  allowlist entry, OFFSET_ZERO); build flags COMMENT_LINE. Re-run, all passing (eval/spikes/
+  RESULTS.md): corpus 1,939 agree, 134 flagged (6.46%, from 16.55%), 0 unflagged
+  disagreements -- all 80 updated linearized files and the 129 offset-0 files agree; case
+  library 396/4/0; fuzz 740/2,260/0.
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
@@ -287,3 +296,11 @@ OWNER DECISIONS (2026-09-27), all as recommended:
 6. (2026-10-03) The agreement gate reads qpdf's values through pikepdf (libqpdf in-process),
    pinned for test and eval now, not `qpdf --json` (lossy for strings, invalid JSON for some
    reals); the qpdf CLI and libqpdf must share a major.minor version (ADR 0010 amendment).
+7. (2026-10-03, the pending decisions measured on the corpus, all as recommended) An
+   incremental update to a linearized file is canonical: the linearized pair is the base
+   revision (#44 item 1; 80 corpus files). An in-use xref entry at offset 0 is no object, a
+   written leniency (129 corpus files from one writer; both readers read null). A claimed
+   comment line with a control byte, a high byte past the binary marker or an `N G obj` is
+   flagged (#46 item 1; no corpus file not already flagged); comment bytes stay claimed, so Phase 4's raw-byte
+   search must cover them. /Length in an object stream, REVISION_AMBIGUOUS and dead object
+   streams stay flagged (#46 item 4; 0, 0 and 7 already-flagged files).

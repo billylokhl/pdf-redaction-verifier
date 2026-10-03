@@ -111,6 +111,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
     FlagReason.OBJSTM_MEMBER_INVALID: lambda: _inventoried(_objstm_file(
         [(1, CATALOG), (6, b"")], {1: (2, 4, 0), 6: (2, 4, 1)})),
     FlagReason.OBJSTM_ENTRY_MISMATCH: lambda: _inventoried(replaced_home(same=False)),
+    FlagReason.COMMENT_LINE: lambda: _inventoried(
+        classic().replace(b"%PDF-1.7\n", b"%PDF-1.7\n% 4 0 obj\n", 1)),
 }
 
 

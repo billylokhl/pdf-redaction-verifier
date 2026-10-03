@@ -550,3 +550,28 @@ agree, 2,260 flagged, 0 unflagged disagreements, 19,144 values compared.
 A first fuzz re-run had found 2 ORACLE_ERRORs (a dictionary key that is
 not UTF-8, which pikepdf will not look up by its string): fixed, with a
 test and the keys added to the value fuzzer.
+
+**Re-run after the owner's decisions (3a-6c, commit 30f2a27, and
+unchanged after the #53 review fixes at commit 3c714f9; clean
+tree): the gate passed.** Updated linearized files are canonical, an
+in-use xref entry at offset 0 is no object, odd comment lines are
+flagged (owner decision 7).
+
+| Quantity | Value |
+| --- | --- |
+| Gate | **PASS**: 0 unflagged disagreements, 0 crashes, 0 timeouts, 0 unverified, 0 inconsistent |
+| Unflagged, agree | 1,939 (from 1,730) |
+| Flagged (rate) | 134 (6.46%, from 16.55%) |
+| Top flag reasons (files) | unindexed_non_whitespace 111, xref_table_malformed 98, length_mismatch 96, missing_endobj 26, xref_offset_mismatch 22, duplicate_key 21, comment_line 5, missing_root 5, xref_stream_malformed 5, number_out_of_range 1 |
+| Files with one reason only | unindexed_non_whitespace 7, number_out_of_range 1, xref_offset_mismatch 1 |
+| Compared | 31,607 streams, 6,239 object-stream members, 125,866 values |
+| Build / oracle seconds p50 / p99 / max | 0.09 / 0.17 / 9.6; 0.33 / 0.79 / 31.3 |
+| Updated linearized files flagged | 0 of 80 (all agree with both readers) |
+
+The 209 files that left the flagged set (80 updated linearized, 129
+offset-0) all agree with both readers. `comment_line` fires on 5 files,
+each a binary-marker line holding a control byte, and each already
+flagged for other reasons, so the decision flags no new file. Case
+library (396 agree, 4 flagged) and fuzz (740 agree, 2,260 flagged) are
+unchanged, 0 unflagged disagreements in both.
+
