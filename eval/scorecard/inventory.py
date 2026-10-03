@@ -189,6 +189,15 @@ OBJECT_ZERO_REFERENCE = re.compile(
     rb" \(object \d+ \d+, offset \d+\): treating bad indirect reference \(0 \d+ R\) as null")
 
 
+# An in-use xref entry at offset 0 (xref.no_object): both readers read no
+# object; qpdf says so in this message. The oracle drops such an entry from
+# qpdf's map only after MuPDF and libqpdf have both read it as null (owner
+# decision 7, 2026-10-03).
+OFFSET_ZERO = re.compile(
+    rb" \(object \d+ \d+\): object has offset 0 - a common error handled correctly by"
+    rb" qpdf and most other applications")
+
+
 def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
                undecoded: Collection[int] = ()) -> list[bytes]:
     """The qpdf messages (WARNING and ERROR lines, from --check or from
@@ -210,7 +219,7 @@ def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
             truncated = TRUNCATED_FLATE.fullmatch(rest)
             if truncated and int(truncated.group(1)) in undecoded:
                 continue
-            if OBJECT_ZERO_REFERENCE.fullmatch(rest):
+            if OBJECT_ZERO_REFERENCE.fullmatch(rest) or OFFSET_ZERO.fullmatch(rest):
                 continue
         found.append(line)
     return found
@@ -617,6 +626,10 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         qmap, code = qpdf_map(path)
         if code != 0:
             raise _Disagreement(Check.OBJECT_SET, revision, templates=(f"qpdf exit {code}",))
+        libqpdf = _Libqpdf(path, () if encrypted else undecoded)
+        opened.append(libqpdf)
+        _no_libqpdf_warning(libqpdf, revision)
+        _drop_offset_zero(qmap, doc, libqpdf, revision)
         bodies = inv.bodies_by_number(revision)
         if set(bodies) != set(qmap):
             raise _Disagreement(Check.OBJECT_SET, revision,
@@ -633,9 +646,6 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         if doc.is_repaired:
             raise _Disagreement(Check.MUPDF_WARNING, revision,
                                 templates=_mupdf_templates() or ("repaired",))
-        libqpdf = _Libqpdf(path, () if encrypted else undecoded)
-        opened.append(libqpdf)
-        _no_libqpdf_warning(libqpdf, revision)
         decoded_homes: dict[int, bytes] = {}
         live = set(qmap)
         parser = ObjectParser(blob)
@@ -694,6 +704,23 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
     warnings = _mupdf_templates()
     if warnings:
         raise _Disagreement(Check.MUPDF_WARNING, templates=warnings)
+
+
+def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,
+                      libqpdf: _Libqpdf, revision: int) -> None:
+    """qpdf --show-xref lists an in-use entry at offset 0 as an object; the
+    inventory reads no object there (xref.no_object). Drop it from qpdf's
+    map once both readers read it as null -- MuPDF without a warning,
+    libqpdf with only OFFSET_ZERO's -- and disagree otherwise."""
+    for number, (kind, offset, gen) in sorted(qmap.items()):
+        if kind != "u" or offset != 0 or number == 0:
+            continue
+        mu = doc.xref_object(number, compressed=True).strip()
+        got = libqpdf.pdf.get_object((number, gen))
+        _no_libqpdf_warning(libqpdf, revision, number)
+        if mu != "null" or got is not None:
+            raise _Disagreement(Check.OBJECT_SET, revision, number)
+        del qmap[number]
 
 
 def _no_libqpdf_warning(libqpdf: _Libqpdf, revision: int, number: int | None = None) -> None:

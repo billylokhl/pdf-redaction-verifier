@@ -17,10 +17,12 @@ Revisions: section *i* (newest first) and everything older is revision
 *i*; its bytes end where the section ends (the prefix cut a reader of
 that revision sees), and its object map is the sections merged, newer
 entries winning (``Chain.object_map``). The one exception: a linearized
-file's first-page section (the newest; the file's first object is the
-/Linearized dictionary) and the main section its /Prev points forward
-to are one revision. Any other forward /Prev is flagged, and so is any
-revision that does not end after every older one.
+file's first-page section (the file's first object is the /Linearized
+dictionary) and the main section its /Prev points forward to are one
+revision -- the base, the oldest two sections, which incremental updates
+may follow. Any other forward /Prev is flagged, and so is any revision
+that does not end after every older one. An in-use entry at offset 0
+(``no_object``) is no object, as both readers read it.
 """
 
 from __future__ import annotations
@@ -37,6 +39,17 @@ from .objects import (MAX_GENERATION, MAX_OBJECT_NUMBER, NumberRule, ObjectParse
                       PdfDict, PdfInt, PdfName, PdfRef, PdfValue)
 
 FREE, IN_USE, COMPRESSED = 0, 1, 2
+
+
+def no_object(number: int, entry: Entry) -> bool:
+    """An in-use entry at offset 0 for an object other than 0: both
+    readers read no object there (MuPDF null, without a warning or a
+    repair; qpdf null, "object has offset 0 - a common error handled
+    correctly"), so it is no body, not a flag -- a written leniency (owner
+    decision 7, 2026-10-03: 129 corpus files from one writer list unused
+    numbers so). Anything that names it as a home, a catalog or a /Length
+    still finds no object there and is flagged as before."""
+    return entry.kind == IN_USE and entry.a == 0 and number != 0
 
 # The file's end: startxref, its offset, %%EOF, at most one end-of-line.
 _TAIL: Final = re.compile(rb"startxref(?:\r\n|\r|\n)(\d{1,20})(?:\r\n|\r|\n)%%EOF(?:\r\n|\r|\n)?\Z")
@@ -149,11 +162,15 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
         prev = sections[i].prev
         if prev is not None and prev > sections[i].offset:
             # A forward /Prev: canonical only as a linearized file's
-            # first-page section -- the newest, the file's first object a
-            # /Linearized dictionary -- pointing at the main section,
-            # which has no /Prev of its own (§F.3.4).
-            if (i != 0 or i + 1 >= len(sections) or sections[1].prev is not None
-                    or not _linearized(data, parser, sections[0].offset)):
+            # first-page section -- the file's first object a /Linearized
+            # dictionary -- pointing at the main section, which has no
+            # /Prev of its own (§F.3.4).
+            # The pair is the base revision: the oldest two sections, so an
+            # incremental update may follow it (owner decision 7,
+            # 2026-10-03: 80 corpus files; each revision is still checked
+            # against both readers by the agreement gate).
+            if (i + 2 != len(sections) or sections[i + 1].prev is not None
+                    or not _linearized(data, parser, sections[i].offset)):
                 flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, sections[i].span,
                                   (("object", -1),)))
                 revisions.append((i,))
@@ -281,6 +298,8 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
                     ("stream", number), ("members", len(live)), ("revision", revision))))
         for part in parts:
             for number, entry in part.entries.items():
+                if no_object(number, entry):
+                    continue
                 if entry.kind == IN_USE:
                     header = _header_at(data, entry.a)
                     if (number == 0 or header is None or header[:2] != (number, entry.b)
@@ -289,7 +308,8 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
                             ("object", number), ("offset", entry.a))))
                 elif entry.kind == COMPRESSED:
                     home = merged.get(entry.a)
-                    if number == 0 or home is None or home.kind != IN_USE:
+                    if (number == 0 or home is None or home.kind != IN_USE
+                            or no_object(entry.a, home)):
                         flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
                             ("object", number), ("stream", entry.a))))
         newest = chain.sections[group[0]]

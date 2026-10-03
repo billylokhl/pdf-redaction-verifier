@@ -337,7 +337,10 @@ def test_an_updated_linearized_file_is_measured(tmp_path: Path) -> None:
     doc.save(tmp_path / "lin.pdf", incremental=True, encryption=0)
     updated = (tmp_path / "lin.pdf").read_bytes()
     assert _measured(updated)["linearized_updated"] == 1
-    assert oracle.inventory(updated).flags  # flagged today (#44 item 1)
+    # Owner decision 7 (2026-10-03, #44 item 1): the linearized pair is the
+    # base revision; the update after it reads alike in both readers.
+    assert oracle.inventory(updated).flags == ()
+    assert compare(updated, tmp_path).agrees
 
 
 # ── Review of #47 ─────────────────────────────────────────────────────────

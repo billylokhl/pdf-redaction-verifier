@@ -37,7 +37,8 @@ from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
 from .objects import IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull, PdfRef
 from .tiling import check_tiling, tile
 from .types import Inventory, ObjectStream, Region
-from .xref import COMPRESSED, IN_USE, Chain, Entry, _int, _name, _predictor, read_chain
+from .xref import (COMPRESSED, IN_USE, Chain, Entry, _int, _name, _predictor, no_object,
+                   read_chain)
 
 _WS: Final = rb"[\x00\t\n\x0c\r ]"
 _EOL: Final = rb"(?:\r\n|\r|\n)"
@@ -47,6 +48,14 @@ _EOL: Final = rb"(?:\r\n|\r|\n)"
 # test shows both read such a file alike. Comments anywhere else are left
 # unclaimed, so flagged.
 _HEADER: Final = re.compile(rb"%PDF-[0-9]\.[0-9](?=\r\n|\r|\n)")
+# A claimed comment line is flagged COMMENT_LINE when it holds a control
+# byte (other than tab) or DEL -- or, past the header's first comment (the
+# binary marker, §7.5.2), a byte of 128 or more -- or text shaped like an
+# object header, which a reader repairing the file could take for one
+# (owner decision 7, 2026-10-03; 0 of 2,073 corpus files).
+_COMMENT_ODD: Final = re.compile(rb"[\x00-\x08\x0a-\x1f\x7f]")
+_COMMENT_HIGH: Final = re.compile(rb"[\x80-\xff]")
+_COMMENT_OBJ: Final = re.compile(rb"\d+" + _WS + rb"+\d+" + _WS + rb"+obj")
 _PREAMBLE_COMMENT: Final = re.compile(_WS + rb"+(%[^\r\n]*)(?=\r\n|\r|\n)")
 # A revision's epilogue (§7.5.5), directly after its last section.
 _EPILOGUE: Final = re.compile(_WS + rb"*(startxref" + _EOL + rb"(\d{1,20})" + _EOL + rb"%%EOF)")
@@ -191,9 +200,9 @@ class _Builder:
                         elif not history or history[-1][1] != entry:
                             history.append((revision, entry))
                             self.changes[revision].append(number)
-        for history in self.history.values():
+        for number, history in self.history.items():
             for i, (revision, entry) in enumerate(history):
-                if entry.kind == IN_USE:
+                if entry.kind == IN_USE and not no_object(number, entry):
                     lo = history[i + 1][0] + 1 if i + 1 < len(history) else 0
                     self.ranges.setdefault(entry.a, []).append((lo, revision))
 
@@ -219,12 +228,19 @@ class _Builder:
         """Claim *span* and the comment lines right after it (the header's,
         or an update's after the previous ``%%EOF``) as one unit."""
         spans = [span]
+        flags: list[Flag] = []
         while (comment := _PREAMBLE_COMMENT.match(self.data, spans[-1].end)) is not None:
             if not self.budget.charge_work(comment.end() - spans[-1].end):
                 break
+            line = comment.group(1)
+            marker = ref.kind is UnitKind.HEADER and len(spans) == 1
+            if (_COMMENT_ODD.search(line) or _COMMENT_OBJ.search(line)
+                    or (not marker and _COMMENT_HIGH.search(line))):
+                flags.append(Flag(FlagReason.COMMENT_LINE, Span(comment.start(1), comment.end(1))))
             spans.append(Span(comment.start(1), comment.end(1)))
+        self.flags.extend(tuple(flags))
         self.claims += [(ref, each) for each in spans]
-        self.units.append(Unit(ref, tuple(spans)))
+        self.units.append(Unit(ref, tuple(spans), tuple(flags)))
 
     def _epilogues(self, chain: Chain) -> dict[int, int]:
         """``startxref N %%EOF`` right after each section; every revision
