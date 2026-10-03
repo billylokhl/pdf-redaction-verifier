@@ -32,7 +32,15 @@ dependencies = [
 [project.optional-dependencies]
 # Hypothesis drives the inventory's property tests (docs/REDESIGN.md
 # Phase 3a); tests/conftest.py registers its deterministic `ci` profile.
-test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.2"]
+# pikepdf is libqpdf in-process: the 3a-6b agreement gate reads qpdf's own
+# values through it (exact string bytes and numbers; ADR 0010 item 2 as
+# amended). Its bundled libqpdf must share a major.minor version with the
+# qpdf CLI -- the gate refuses otherwise -- so CI installs the qpdf release
+# that matches each pin. Python 3.10 needs an older pikepdf (10.14 dropped
+# 3.10). Test and eval only until 3a-8 makes it a runtime dependency.
+test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.2",
+        "pikepdf==10.16.0; python_version >= '3.11'",          # libqpdf 12.4.2
+        "pikepdf==10.13.0.post1; python_version < '3.11'"]     # libqpdf 12.3.2 (3.10)
 
 [dependency-groups]
 # Lint tools, pinned exact like everything else here: CI's lint job

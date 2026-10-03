@@ -379,10 +379,10 @@ def test_flags_are_capped_per_file() -> None:
 
 # ── Differential: every unflagged inventory agrees with the readers ───────
 # The oracle is scorecard.inventory.compare, shared with the 3a-6 gate.
-def inventory_agrees(data: bytes, tmp: Path, members_per_revision: int = 8) -> bool:
+def inventory_agrees(data: bytes, tmp: Path) -> bool:
     """False when flagged (readers may disagree then: we said so), else
     assert agreement with qpdf and MuPDF and return True."""
-    found = compare(data, tmp, qpdf_members=members_per_revision)
+    found = compare(data, tmp)
     assert not found.disagrees, found
     return found.agrees
 
