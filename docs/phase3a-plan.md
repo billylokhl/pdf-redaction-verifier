@@ -236,6 +236,25 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   updated linearized file, no /Length in an object stream, no REVISION_AMBIGUOUS, no dead
   object stream; comment lines in 322 files (533 lines, the longest 25 bytes, none
   non-printable or `N G obj`-like). The 2,031-file corpus run is the owner's (local only).
+- 3a-6b Corpus gate fixes (owner's first local corpus run, 2026-10-03: 2,073 macOS system
+  and application PDFs; FAIL -- 205 unflagged disagreements, all qpdf --check warnings).
+  Root-caused, with two adversarial review rounds of the analysis and a fresh third:
+  175 files only lint linearization hint tables (qpdf's linearizationWarning; readers do not
+  read objects through hint tables), 22 (+1 with lint) Flate data cut short in content, form
+  or image streams the inventory does not decode, 6 (all with lint) a reference to object 0,
+  1 a reference number past 2^63 that makes qpdf null the whole object. Done (this PR):
+  NUMBER_OUT_OF_RANGE now also flags the magnitudes MuPDF and qpdf read differently
+  (NumberRule: integers outside 32 bits; reals below 2^-126, at or above 2^24, or with a
+  10-character integer part; object numbers above 8,388,607 and generations of 65,535 or
+  more in references, headers, xref entries and /Size; object numbers at or past a third of
+  a revision's size, libqpdf 12's id cap). The gate compares every live object, member and
+  trailer with MuPDF and with libqpdf through pikepdf (ADR 0010 amendment; owner decision
+  6 below), gates qpdf --check ERROR lines, and has a written allowlist of whole qpdf
+  messages (LINEARIZATION_LINT, TRUNCATED_FLATE in undecoded streams, OBJECT_ZERO_REFERENCE),
+  each with a reader-agreement test. The value fuzzer gained the boundary numbers and the
+  gate's comparison. Known gap, the reference graph's: a generation mismatch (`1 5 R`;
+  MuPDF resolves it by number, libqpdf reads null) is not flagged yet; the gate reports it
+  as a disagreement. Re-run: see eval/spikes/RESULTS.md, "Phase 3a-6b".
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
@@ -264,3 +283,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    UNINDEXED/CONTESTED allowed but reported (not gated); >60 s per file = failure.
 4. pikepdf: regular runtime dependency (per ADR 0001).
 5. No CLI wiring in 3a (default accepted; shadow output via dev CLI + scorecard aggregate).
+6. (2026-10-03) The agreement gate reads qpdf's values through pikepdf (libqpdf in-process),
+   pinned for test and eval now, not `qpdf --json` (lossy for strings, invalid JSON for some
+   reals); the qpdf CLI and libqpdf must share a major.minor version (ADR 0010 amendment).
