@@ -265,6 +265,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   RESULTS.md): corpus 1,939 agree, 134 flagged (6.46%, from 16.55%), 0 unflagged
   disagreements -- all 80 updated linearized files and the 129 offset-0 files agree; case
   library 396/4/0; fuzz 740/2,260/0.
+- 3a-7's rules are [ADR 0011](adr/0011-reference-graph-canonical-form.md) (accepted 2026-10-04).
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and
   own the page-tree semantics the xref differential exempts.
@@ -304,3 +305,11 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    flagged (#46 item 1; no corpus file not already flagged); comment bytes stay claimed, so Phase 4's raw-byte
    search must cover them. /Length in an object stream, REVISION_AMBIGUOUS and dead object
    streams stay flagged (#46 item 4; 0, 0 and 7 already-flagged files).
+8. (2026-10-04, ADR 0011, all as recommended) The reference graph's canonical form: R1 every
+   dangling reference flags (+7 files); R2 annotations MuPDF synthesizes are ledger units 4a
+   decodes (flagged if their rich text could draw an image); R3 every orphaned stream is
+   `FLAGGED` by 3b's verdict, its rate re-measured before enforcement; R4 a strict canonical
+   page tree, page attributes and resource scopes; R5 an empty name-tree root reads as empty;
+   R6 hint streams stay flagged (ADR 0003), revisited only with a hint-table decoder; R7 images
+   inside XMP fall under decision D. Measured cost once the verdict is enforced: about 865 of
+   2,073 corpus files (42%), mostly R7, R6 and R3.
