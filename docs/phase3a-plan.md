@@ -311,5 +311,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    `FLAGGED` by 3b's verdict, its rate re-measured before enforcement; R4 a strict canonical
    page tree, page attributes and resource scopes; R5 an empty name-tree root reads as empty;
    R6 hint streams stay flagged (ADR 0003), revisited only with a hint-table decoder; R7 images
-   inside XMP fall under decision D. Measured cost once the verdict is enforced: about 865 of
-   2,073 corpus files (42%), mostly R7, R6 and R3.
+   inside XMP fall under decision D. Measured cost once every kind is enforced (each from its
+   decoder's phase; all of it when the shadow verdict ships, Phase 6): about 865 of 2,073
+   corpus files (42%), mostly R7, R6 and R3.

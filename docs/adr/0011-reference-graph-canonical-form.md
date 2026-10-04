@@ -99,7 +99,7 @@ Per revision, the inventory builds:
   once (item 2).
 - **Resource scopes** for pages, forms, tiling patterns, Type3 fonts and
   annotation appearances (item 3).
-- **Labels** on stream units: `DRAWABLE`, `STRUCTURAL` or `ORPHANED`, and
+- **Labels** on stream units: one or more of `DRAWABLE`, `STRUCTURAL`, `ORPHANED`, and
   `SYNTHESIZED` annotation units (item 5).
 
 It runs no content: which XObjects a page draws (`Do`), names resolved
@@ -158,8 +158,8 @@ run on an unflagged file, so the gate's page-tree substring exemptions
   through to enclosing scopes for a name missing there, and turns an
   unresolved font into a substitute without a warning; so 4a resolves
   every name with its own lookup in the innermost scope and flags a name
-  it does not find -- never through MuPDF (REDESIGN §4 and the 4a row
-  record this).
+  it does not find -- never through MuPDF (REDESIGN §4's reference-graph
+  bullet and the 4a row record this).
 
 ### 4. Edges and use kinds
 
@@ -190,7 +190,7 @@ that revision. Otherwise:
   pinned test `test_a_generation_mismatch_is_unflagged_until_the_reference_graph`
   flips to assert the flag;
 - a **dangling reference** (to a free, missing or offset-0 number, or to
-  object 0) is owner decision **R1**.
+  object 0) flags (`FlagReason.REF_DANGLING`, owner decision R1).
 
 Name and number trees (the catalog's `/Names` subtrees and
 `/PageLabels`; the catalog's own `/Dests` is a plain dictionary): each
@@ -198,7 +198,8 @@ node is a dictionary with exactly one of `/Names` (or `/Nums`), an array
 of key-value pairs with keys unique and sorted by bytes, or `/Kids`, an
 array of indirect references to nodes, none reached twice; every node
 below the root has a correct `/Limits`. Anything else flags
-(`FlagReason.NAME_TREE`) -- except an empty root, owner decision **R5**.
+(`FlagReason.NAME_TREE`) -- except an empty root, which reads as empty
+(owner decision R5).
 The rule holds for every tree, read by a reader or not: our own decoders
 walk them all (the `/JavaScript` tree leads to JavaScript streams).
 
@@ -272,8 +273,9 @@ revision:
 - **`STRUCTURAL`**, a closed list. A stream is structural only when
   reached by its key from a reachable object, its dictionary carries no
   image or form keys (`/Subtype /Image` or `/Form`, `/BBox`, `/Width`),
-  and its kind's decoder (REDESIGN's registry) parses the whole stream
-  in its format; each kind keeps that decoder's status:
+  and, for a kind that has a decoder (REDESIGN's registry), that decoder
+  parses the whole stream in its format; each kind keeps its decoder's
+  status, and a kind with none the status listed here:
   - cross-reference and object streams: the inventory's own decoding (ADR
     0003 reasons 1-2 cover the field data and the header table; the
     members are objects);
@@ -281,12 +283,13 @@ revision:
     condition, since nothing references it: the stream starting at the
     first byte offset `/H` gives in the canonical linearized pair's
     dictionary. No decoder: ADR 0003 keeps its payload `UNREADABLE`, so it
-    is `FLAGGED` and never discharged (owner decision **R6**);
+    is `FLAGGED`, not discharged until a hint-table decoder exists (owner
+    decision R6);
   - an XMP packet under `/Metadata`: the XMP decoder, the whole stream
     well-formed XML; an image inside it (a thumbnail, K22) is an image
     nothing draws -- unused under decision D, so `FLAGGED`. Images are
-    found by content, not by property name: every base64 or hex run in
-    the packet is unwrapped, as the embedded-file decoder does, and a run
+    found by content, not by property name: every base64, hex, ASCII85 or
+    quoted-printable run in the packet is unwrapped, as the embedded-file decoder does, and a run
     that decodes to an image signature, or to binary nothing accounts
     for, flags (a test puts a thumbnail under a custom namespace);
   - an embedded file under a file specification's `/EF`: the
@@ -364,8 +367,8 @@ every file the graph leaves unflagged:
   MuPDF's own (whether the appearance it draws is the stored one), so a
   misread trigger fails the gate instead of passing review;
 - the allowlist shrinks: `PAGE_TREE_SEMANTICS`, the retyped-catalog
-  exemption and (with R1 as recommended) `OBJECT_ZERO_REFERENCE` go, so
-  any qpdf page-tree message on an unflagged file is a disagreement; with
+  exemption and (R1) `OBJECT_ZERO_REFERENCE` go, so
+  any qpdf page-tree message on an unflagged file is a disagreement; for
   R5, anchored entries are added for qpdf's empty-name-tree-root warnings. This
   closes issue #52 items 1 and 5 and part of 2 (the unanchored
   content-stream substring stays, Phase 4's), and #44's page-tree item; qpdf's
@@ -388,8 +391,8 @@ Measured on the 1,939 unflagged files (current revisions):
 
 | When | Exit `2` |
 | --- | --- |
-| 3a-7, inventory flags (R1, R4, R5 as recommended) | 141 files (6.80%) |
-| Once the ledger verdict is enforced (from 4a) | about 865 (42%): 134, plus 728 of the unflagged files from the table together, plus up to 7 |
+| 3a-7, inventory flags (R1, R4, R5) | 141 files (6.80%) |
+| Once every kind is enforced -- each from its decoder's phase, all of it when the shadow verdict ships (Phase 6), since a kind is enforced only once its decoder lands (REDESIGN §6) | about 865 (42%): 134, plus 728 of the unflagged files from the table together, plus up to 7 |
 | -- after 4a decodes synthesized annotations and a JavaScript decoder exists | about 865 (42%): orphans, hint streams and XMP images alone cover the same 728 |
 | -- if hint streams were not flagged (R6 (b), at best) | about 840 (40-41%) |
 | -- orphans and XMP images only | about 775 (37%) |
@@ -480,8 +483,7 @@ the user it is there.
 ## Consequences
 
 - New closed flag reasons (`PAGE_TREE` with `PageTreeRule`,
-  `RESOURCE_SCOPE`, `REF_GENERATION`, `NAME_TREE`, and with R1
-  `REF_DANGLING`), each with an EMITTERS entry; new `UseKind`, the
+  `RESOURCE_SCOPE`, `REF_GENERATION`, `NAME_TREE`, `REF_DANGLING`), each with an EMITTERS entry; new `UseKind`, the
   `DRAWABLE`/`STRUCTURAL`/`ORPHANED` labels and a `SYNTHESIZED` unit kind;
   `Inventory` gains per-revision page lists, page attributes, scopes and
   edges.
