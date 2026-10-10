@@ -274,7 +274,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable` rewrites the objects
+- **Method:** `qpdf --qdf --object-streams=disable --deterministic-id`
+  rewrites the objects
   reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
@@ -283,7 +284,11 @@ damaged cross-reference table, and it decompresses attachment contents.
   **not** in qpdf's output; the Objects layer covers those.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
-  Binary warning on a clean document.
+  Binary warning on a clean document. qpdf also writes a trailer `/ID`
+  (32 hex digits) of its own; `--deterministic-id` derives it from the
+  file rather than the clock, so a short value made only of hex
+  characters (`4567`, `Abe`) can match it — but the same file always gets
+  the same answer.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction

@@ -350,6 +350,13 @@ findings as (rule, tier, storage), review warnings as (rule, "review",
 storage, adjacency), other warnings as (code, layer, tool) — each as a
 *multiset*, so losing one of two otherwise-identical findings (the same
 rule in two separate orphaned streams) is a real, visible difference.
+The reference runs with a `qpdf` shim first on its `PATH` that adds
+`--deterministic-id` (`scorecard.differential.deterministic_qpdf_env`):
+`eval-ref-0` predates that flag, so its qpdf output carried a trailer
+`/ID` seeded by the current second, which the case library's `SHORT`
+rule (`45-67` → `4567`) matched about once in 1,000 scans — a warning
+that came and went with the clock. The shim removes only that input; the
+candidate passes the flag itself.
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
