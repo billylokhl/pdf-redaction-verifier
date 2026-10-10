@@ -28,7 +28,7 @@ from redaction_verifier.matching import (
 )
 from redaction_verifier.model import ScanReport, Secret
 
-from .conftest import run_verify
+from .conftest import report_layers, run_verify
 
 SSN = "123-45-6789"
 
@@ -430,5 +430,5 @@ class TestQpdfIsNowOrphanBackstopOnly:
         doc.close()
         result = run_verify(path, ssn_rules)
         assert result.returncode == 1
-        assert "LAYER: Objects" in result.stdout
-        assert "LAYER: Binary" not in result.stdout
+        assert "Objects" in report_layers(result.stdout)
+        assert "Binary" not in report_layers(result.stdout)

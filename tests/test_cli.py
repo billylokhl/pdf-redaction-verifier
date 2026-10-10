@@ -24,8 +24,11 @@ from redaction_verifier.matching import PatternRule, SecretMatcher, normalize_st
 from redaction_verifier.model import ScanReport, Secret
 
 from .conftest import (
+    EXIT_BANNER,
     REPO_ROOT,
     SSN,
+    report_banner,
+    report_layers,
     requires_exiftool,
     requires_full_env,
     requires_qpdf,
@@ -50,10 +53,11 @@ class TestProcessExit:
         assert "[*] Scanning" in result.stdout          # head intact
         # Assert the marker before indexing, so a regressed verdict fails
         # readably instead of raising ValueError from str.index.
-        assert "[PASS]" in result.stdout, result.stdout
+        banner = f"[{EXIT_BANNER[result.returncode]}]"
+        assert report_banner(result.stdout) == EXIT_BANNER[result.returncode], result.stdout
         # The closing rule is printed after the verdict, so finding it
         # later in the stream proves the tail was flushed, not truncated.
-        assert result.stdout.rindex("=" * 70) > result.stdout.index("[PASS]")
+        assert result.stdout.rindex("=" * 70) > result.stdout.index(banner)
 
     def test_exit_code_survives_for_each_verdict(
         self, clean_pdf, leaky_pdf, secrets_file, tmp_path
@@ -370,8 +374,8 @@ class TestBaselines:
         # backstop, which can only raise manual-review warnings.
         result = run_verify(leaky_pdf, secrets_file)
         assert result.returncode == 1
-        for layer in ("LAYER: Text", "LAYER: OCR", "LAYER: Metadata", "LAYER: Objects"):
-            assert layer in result.stdout, f"expected a Finding for {layer}"
+        for layer in ("Text", "OCR", "Metadata", "Objects"):
+            assert layer in report_layers(result.stdout), f"expected a Finding for {layer}"
 
     def test_clean_pdf_certified(self, clean_pdf, secrets_file) -> None:
         result = run_verify(clean_pdf, secrets_file)
@@ -435,7 +439,7 @@ class TestFalsePositives:
 
         result = run_verify(path2, secrets_file)
         assert result.returncode == 2
-        assert "[PASS]" in result.stdout
+        assert report_banner(result.stdout) == "NOT CERTIFIED"
         assert "manual review" in result.stdout
 
 
@@ -767,7 +771,7 @@ class TestSubprocessHardening:
         doc.close()
         result = run_verify(path, secrets_file)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: Metadata" in result.stdout
+        assert "Metadata" in report_layers(result.stdout)
 
 
 # A config file with an OBSERVABLE effect when exiftool actually loads it:
@@ -914,7 +918,7 @@ class TestCleanupIsBestEffort:
         )
         out, err = capsys.readouterr()
         assert code == baseline
-        assert "[PASS]" in out or "[FAIL]" in out
+        assert report_banner(out) == EXIT_BANNER[code]
         assert "simulated cleanup failure" in err
 
     def test_scratch_cleanup_failure_never_overrides_the_verdict(
@@ -934,5 +938,5 @@ class TestCleanupIsBestEffort:
         )
         out, err = capsys.readouterr()
         assert code == baseline
-        assert "[PASS]" in out or "[FAIL]" in out
+        assert report_banner(out) == EXIT_BANNER[code]
         assert "simulated scratch cleanup failure" in err
