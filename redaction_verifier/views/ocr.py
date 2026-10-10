@@ -245,10 +245,11 @@ def _confirm_vertical(
                 try:
                     reads = _upright_reads(image, fitz.IRect(*corners))
                 except RuntimeError:
-                    # Vision failing on a re-read (_vision_recognize_batch
-                    # raises RuntimeError) confirms nothing: its lines stay
-                    # manual review, and the page's other lines still count.
-                    # Anything else is a bug and fails the page (PAGE_FAILED).
+                    # A re-read that fails (Vision: _vision_recognize_batch
+                    # raises RuntimeError; MuPDF's errors subclass it too)
+                    # confirms nothing: its lines stay manual review, and the
+                    # page's other lines still count. Any other exception,
+                    # such as a bug, fails the page (PAGE_FAILED).
                     continue
                 for p, i in members:
                     text = normalize_string(passes[p][i].text)

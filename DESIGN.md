@@ -350,8 +350,8 @@ review. A re-read Vision fails on confirms nothing (manual review); it
 does not fail the page. Small slanted text is sometimes not confirmed
 either: in a further 1,080-page sweep of a slanted SSN line (30–60° in
 each quadrant, 7–14 pt, centred and at the page edges), 10 of the 1,047
-lines Vision read, mostly 7 pt near an edge, were manual review. Lines read horizontally, such as a row of form
-boxes, are not re-read.
+lines Vision read, mostly 7 pt near an edge, were manual review. Lines
+read horizontally, such as a row of form boxes, are not re-read.
 
 ## Bounded resources
 

@@ -470,7 +470,7 @@ class TestOcrVerticalLines:
             self._confirm(monkeypatch, ([ROTATED_90], []), bug)
 
     def test_the_re_read_crop_is_padded_by_the_line_thickness(self) -> None:
-        # A slanted line, about 43 px thick and 690 px long: the first crop
+        # A slanted line, about 43 px thick and 720 px long: the first crop
         # adds its thickness plus 2 pt around the line's own box, not a
         # margin as large as the box's short side (about 520 px here).
         slanted = ocr.Observation("x", (0.3, 0.3), (0.5, 0.45), (0.29, 0.31))

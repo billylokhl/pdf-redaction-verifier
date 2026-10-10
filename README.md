@@ -251,7 +251,8 @@ flattened to images, text converted to vector outlines.
   repeat its misread: #65). Like the Text layer's reconstructed
   readings, a match in an unconfirmed line is only ever a manual-review
   warning. A page gets at most 64 re-reads, retries included; vertical
-  lines past that are manual review.
+  lines past that are manual review, and so, sometimes, is small slanted
+  text near a page edge whose re-read does not match.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
