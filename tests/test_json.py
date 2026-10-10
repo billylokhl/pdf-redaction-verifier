@@ -35,7 +35,7 @@ from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
 from redaction_verifier.rules import RuleSet
 from redaction_verifier.views import OCR_DPI, _OCR_IMPORTS_OK
 
-from .conftest import REPO_ROOT, SSN, run_verify
+from .conftest import REPO_ROOT, SSN, requires_full_env, run_verify
 
 # verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
 # live in redaction_verifier/ — the static checks below must still see
@@ -296,6 +296,27 @@ class TestVersion:
     def test_package_version_is_the_module_version(self) -> None:
         pyproject = (REPO_ROOT / "pyproject.toml").read_text()
         assert 'version = {attr = "verify.__version__"}' in pyproject
+
+
+@requires_full_env
+class TestOcrFailureFailsClosed:
+    def test_a_vision_error_on_a_page_exits_2(self, tmp_path, monkeypatch) -> None:
+        # How macOS 27 broke the bridge: Vision raised on every page. A
+        # page OCR cannot read must stay uncertified (PAGE_FAILED, exit 2),
+        # never a clean pass, whatever the bridge raises.
+        from redaction_verifier.views import ocr
+
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
+
+        def _raise(png_bytes: bytes) -> tuple[str, str]:
+            raise ValueError("NSInvalidArgumentException - key does not exist")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", _raise)
+        code, data = _run(pdf, rules, tmp_path)
+        assert code == 2
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
 
 
 class TestEnvironmentField:
