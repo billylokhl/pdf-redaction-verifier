@@ -50,13 +50,15 @@ SSN`, or the `name` you gave it): an exact value's characters are never
 shown, a pattern's match at most its last four. *Where* says what kind of
 problem it is — `on a page` (the page's text or what it shows), `stored`
 (in the file's objects), `left over` (no page shows it but the file still
-stores it — see ORPHANED in the [Glossary](#glossary)), `earlier version`
+stores it — see ORPHANED in the [Glossary](#glossary); `left over?` when
+that could not be confirmed), `earlier version`
 (an older save inside the file), `properties` (metadata), or the hidden
 part it is in (`comment or note`, `form field`, `link`, `attachment`,
 `script`, `layer name`). A "What this means" section after the findings
 explains, once each, every kind that occurred, with the usual fix. A run
 that found nothing but cannot certify (exit `2`) opens with
-**`[NOT CERTIFIED]`** and lists why; only exit `0` prints `[PASS]`.
+**`[NOT CERTIFIED]`** and says why — including when the `--json` report
+could not be written; only exit `0` prints `[PASS]`.
 
 For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
