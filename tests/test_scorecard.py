@@ -897,6 +897,25 @@ def test_run_cli_parses_report_on_success(tmp_path):
     assert result.report == {"exit_code": 0, "error": None, "findings": [], "warnings": []}
 
 
+def test_run_cli_passes_env_to_the_child(tmp_path):
+    """run_cli's *env* must reach the CLI: it is how the reference's
+    deterministic-qpdf shim gets onto PATH. Without it the shim would
+    silently do nothing (the reference tests replace run_cli itself)."""
+    script = tmp_path / "env_echo.py"
+    script.write_text(_STAND_IN_OK.replace(
+        '"warnings": []}', '"warnings": [], "sentinel": __import__("os").environ.get("SENTINEL")}'
+    ))
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"%PDF-1.4\n")
+    env = {**__import__("os").environ, "SENTINEL": "from-run-cli"}
+    result = run_cli(
+        sys.executable, script, target, [], tmp_path / "work", "case-env", timeout=10, env=env,
+    )
+    assert result.report is not None and result.report["sentinel"] == "from-run-cli"
+    inherited = run_cli(sys.executable, script, target, [], tmp_path / "work", "case-env2", timeout=10)
+    assert inherited.report is not None and inherited.report["sentinel"] is None
+
+
 def test_run_cli_times_out(tmp_path):
     script = tmp_path / "hangs.py"
     script.write_text(_STAND_IN_HANGS)

@@ -750,7 +750,7 @@ class TestSubprocessHardening:
         """The Binary layer sweeps qpdf's output, so it must be a function
         of the file alone. Without --deterministic-id qpdf writes a trailer
         /ID seeded by the current second, and a short all-hex value rule
-        matched it about once in 1,000 runs (a clean file then exited 2,
+        matched it about once in 2,000 runs (a clean file then exited 2,
         at random). Two runs in different seconds must agree byte for
         byte."""
         pdf = tmp_path / "doc.pdf"

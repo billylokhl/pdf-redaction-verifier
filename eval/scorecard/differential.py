@@ -47,22 +47,24 @@ def deterministic_qpdf_env() -> Iterator[dict[str, str] | None]:
     The reference (`eval-ref-0`) predates that flag, so its qpdf writes a
     trailer /ID seeded by the current second into the output its Binary
     layer sweeps, and a short all-hex value rule (the case library's
-    SHORT, "45-67") matched it about once in 1,000 scans — a warning that
+    SHORT, "45-67") matched it about once in 2,000 scans — a warning that
     came and went with the clock, failing the differential at random.
     The candidate passes the flag itself. This shim, first on PATH (the
     reference launches a bare `qpdf`), removes that one clock input from
     the reference and changes nothing else; it is the owner's chosen fix
-    over re-tagging the reference (docs/REDESIGN.md §7, Phase 0c)."""
+    over re-tagging the reference (docs/REDESIGN.md §7, Phase 0c). The
+    shim is a POSIX shell script, like the rest of the tool's tooling."""
     real = shutil.which("qpdf")
     if real is None:
         yield None
         return
+    real = os.path.abspath(real)
     with tempfile.TemporaryDirectory(prefix="scorecard-qpdf-") as shim_dir:
         shim = Path(shim_dir) / "qpdf"
         shim.write_text(f'#!/bin/sh\nexec {shlex.quote(real)} --deterministic-id "$@"\n')
         shim.chmod(0o755)
         env = dict(os.environ)
-        env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
+        env["PATH"] = shim_dir + os.pathsep + env.get("PATH", os.defpath)
         yield env
 
 

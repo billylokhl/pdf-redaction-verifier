@@ -274,8 +274,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable --deterministic-id`
-  rewrites the objects
+- **Method:** qpdf rewrites the objects
+  (`qpdf --qdf --object-streams=disable --deterministic-id`)
   reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
@@ -288,7 +288,7 @@ damaged cross-reference table, and it decompresses attachment contents.
   (32 hex digits) of its own; `--deterministic-id` derives it from the
   file rather than the clock, so a short value made only of hex
   characters (`4567`, `Abe`) can match it — but the same file always gets
-  the same answer.
+  the same answer with a given qpdf version.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction
