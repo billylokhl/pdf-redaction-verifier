@@ -769,7 +769,13 @@ codes for '0'-'9' in order — the literal digits `0123456789` — purely as
 a byproduct of the ramp itself. The Binary (qpdf) layer's raw byte sweep
 cannot distinguish that coincidence from a real leak inside binary data,
 so it warns (exit `2`) on a genuinely clean file
-(`false-alarm.binary-value-collision`).
+(`false-alarm.binary-value-collision`). A second Binary false alarm was
+not even repeatable: qpdf writes a time-based document `/ID` of its own,
+which the raw sweep scanned, so a short value rule matched it about once
+in 20 full scorecard runs (an occasional unlisted `scorecard-diff` on
+`main`). Fixed in today's tool (CHANGELOG, "Binary layer: qpdf's own
+document `/ID`"); the inventory's qpdf cross-check must likewise compare
+only bytes that are in the file.
 
 Two more silent misses used to have no K-number, because every K-number
 must have a case and these did not; Phase 3a added cases for both

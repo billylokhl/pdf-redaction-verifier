@@ -450,6 +450,15 @@ cache (and never trusted back out of it), so one flaky run doesn't
 poison every run after it. CI passes a persistent cache directory
 (`actions/cache`) so most PRs never re-run the reference at all.
 
+The reference is not perfectly repeatable either. `eval-ref-0`'s Binary
+layer scans the document `/ID` qpdf generates from the current time (the
+current tool blanks it; see the CHANGELOG), so about one reference run in
+20 over the whole library picks up a coincidental `REVIEW_BINARY` on a
+short value rule. A cached reference holding one shows up on every later
+run as an unlisted "warning removed" on that case. Check the reference
+report's warning against qpdf's `/ID` before accepting anything, and
+rebuild the cache entry rather than listing the difference.
+
 ### The real-world corpus (local only)
 
 Clean-side metrics (false hard, review rate) on real files, stratified

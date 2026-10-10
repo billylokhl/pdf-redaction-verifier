@@ -182,6 +182,20 @@ and earlier revisions of an incrementally saved file are absent from its
 output. Its matches stay manual-review warnings, because a byte-level
 match can be coincidence.
 
+Only the file's bytes are scanned there, not bytes qpdf invents. qpdf
+writes a document `/ID` of its own: by default the second element (both,
+if the file has none) comes from the current time, so the same file was
+scanned as different bytes on every run, and a short value rule such as
+`45-67` occasionally matched that hex at random — a warning, and exit `2`,
+that a rerun would not repeat. qpdf now runs with `--deterministic-id`,
+and the generated elements are blanked before the scan. Blanking is
+deliberately narrow: only in a trailer of exactly qpdf's shape at the very
+end of its output, only elements that are none of the input's own `/ID`
+elements, and only when qpdf's first element is the input's own (as qpdf
+always keeps it). Anything unexpected leaves the bytes as they are, so a
+mistake costs at most a stable false alarm, never an unscanned byte of
+the file.
+
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode
 — a redactor that drew a box and left the original content stream

@@ -28,7 +28,7 @@ from redaction_verifier.matching import (
 )
 from redaction_verifier.model import ScanReport, Secret
 
-from .conftest import report_layers, run_verify
+from .conftest import report_layers, requires_qpdf, run_verify
 
 SSN = "123-45-6789"
 
@@ -432,3 +432,140 @@ class TestQpdfIsNowOrphanBackstopOnly:
         assert result.returncode == 1
         assert "Objects" in report_layers(result.stdout)
         assert "Binary" not in report_layers(result.stdout)
+
+
+def _qdf_tail(first: str, second: str, extra: str = "") -> bytes:
+    """The end of qpdf's QDF output, exactly as qpdf writes it."""
+    return (
+        b"0000001585 00000 n \ntrailer <<\n  /Root 1 0 R\n  /Size 16\n"
+        + extra.encode()
+        + f"  /ID [<{first}><{second}>]\n>>\nstartxref\n1692\n%%EOF\n".encode()
+    )
+
+
+def _collect(data: bytes, input_ids: frozenset[str] | None, value: str = "4567") -> list[str]:
+    import subprocess
+    import sys
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(data)
+    proc.stdin.close()
+    report = ScanReport()
+    verify._collect_qpdf(proc, SecretMatcher([Secret("short", value)]), report, input_ids)
+    return [w.code for w in report.warnings]
+
+
+ORIGINAL = "31415926535897932384626433832795"
+LUCKY = "0123abcd0123abcd9e4567f0deadbeef"     # a generated /ID that spells 4567
+
+
+class TestQpdfGeneratedId:
+    """qpdf writes a document /ID of its own (time-based by default): the
+    input's first element is kept, the second (both, if the input has
+    none) is new. Those bytes are not in the file, so the Binary layer must
+    not scan them, or a short value rule matches at random and the same
+    file gets a different verdict from one run to the next."""
+
+    def test_input_ids_are_every_id_array_in_the_file(self) -> None:
+        raw = b"<< /ID [<ABcd 12> <ef01>] >> ... /ID[<00><1>] /IDx [<99><99>]"
+        assert verify._input_document_ids(raw) == frozenset({"abcd12", "ef01", "00", "10"})
+        assert verify._input_document_ids(b"no ids here") == frozenset()
+
+    def test_literal_string_ids_are_decoded(self) -> None:
+        # MuPDF writes /ID as one hex and one literal string.
+        # octal escapes, escaped parens and backslash, an unknown escape
+        # (\q is just q), a line continuation, and CR LF read as one LF.
+        raw = b"/ID[<C2B0>(E\\033Z\\(\\)\\\\(n)\\101\\\nx\\qz\r\ny)]"
+        expected = (b"E\x1bZ()\\(n)Axqz\ny").hex()
+        assert verify._input_document_ids(raw) == frozenset({"c2b0", expected})
+
+    @pytest.mark.parametrize("raw", [
+        b"/ID 5 0 R", b"/ID [<aa>]", b"/ID [<aa><bb><cc>]", b"/ID [<zz><bb>]",
+        b"/ID [(unclosed <bb>]", b"/ID [<aa> /Name]",
+    ])
+    def test_an_id_that_cannot_be_read_means_nothing_is_stripped(self, raw: bytes) -> None:
+        assert verify._input_document_ids(raw) is None
+
+    def test_only_the_generated_element_is_blanked(self) -> None:
+        tail = _qdf_tail(ORIGINAL, LUCKY)
+        out = verify._strip_generated_ids(tail, frozenset({ORIGINAL}))
+        assert out == tail.replace(LUCKY.encode(), b"")
+        # No /ID in the input: both elements are qpdf's own.
+        both = verify._strip_generated_ids(_qdf_tail(LUCKY, LUCKY), frozenset())
+        assert LUCKY.encode() not in both and b"  /ID [<><>]\n" in both
+
+    @pytest.mark.parametrize("tail, input_ids", [
+        (_qdf_tail(ORIGINAL, LUCKY), None),                                  # input unreadable
+        (_qdf_tail(ORIGINAL, LUCKY), frozenset({"abcd"})),       # qpdf's first is not the input's
+        (_qdf_tail(ORIGINAL, LUCKY, extra=f"  /X (/ID [<{LUCKY}><{LUCKY}>])\n"), frozenset()),
+        (_qdf_tail(ORIGINAL, LUCKY) + b"more", frozenset()),                 # not at the end
+        (_qdf_tail(ORIGINAL, LUCKY).replace(b"  /Size", b"/Size"), frozenset()),  # not QDF's shape
+    ], ids=["ids-unknown", "first-not-input-s", "two-ids-in-trailer", "not-at-end",
+            "not-qdf-shape"])
+    def test_anything_unexpected_is_left_as_it_is(
+        self, tail: bytes, input_ids: frozenset[str] | None
+    ) -> None:
+        assert verify._strip_generated_ids(tail, input_ids) == tail
+
+    def test_a_generated_id_is_not_scanned(self) -> None:
+        assert _collect(b"%PDF-1.7\n" + _qdf_tail(ORIGINAL, LUCKY), frozenset({ORIGINAL})) == []
+
+    def test_the_input_s_own_id_still_is(self) -> None:
+        data = b"%PDF-1.7\n" + _qdf_tail(LUCKY, ORIGINAL)
+        assert _collect(data, frozenset({LUCKY})) == ["REVIEW_BINARY"]
+        assert _collect(data, None) == ["REVIEW_BINARY"]
+
+    def test_the_held_back_tail_is_scanned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Nothing qpdf wrote may go unscanned: not the held tail, not a
+        # match across the point where it was held back.
+        monkeypatch.setattr(verify, "QPDF_TAIL_HOLD_BYTES", 16)
+        body = b"x" * 100
+        assert _collect(body + b"45-67" + _qdf_tail(ORIGINAL, ORIGINAL), frozenset({ORIGINAL})) \
+            == ["REVIEW_BINARY"]
+        tail = _qdf_tail(ORIGINAL, ORIGINAL)
+        for cut in range(1, 6):     # "4567" straddling the hold boundary at every offset
+            data = body + b"4567"[:cut] + b"4567"[cut:] + b"y" * (16 - (4 - cut)) + tail
+            assert _collect(data, frozenset({ORIGINAL})) == ["REVIEW_BINARY"], cut
+
+    @requires_qpdf
+    @pytest.mark.parametrize("new_id", [False, True], ids=["no-input-id", "mupdf-literal-id"])
+    def test_qpdf_s_own_id_does_not_reach_the_report(self, tmp_path: Path, new_id: bool) -> None:
+        # End to end with the real qpdf: a value found only in the /ID
+        # element qpdf generates for this file is never reported, while one
+        # from the input's own /ID still is; the same on every run.
+        import subprocess
+
+        path = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing to see")
+        doc.save(path, no_new_id=not new_id)
+        doc.close()
+        assert (b"/ID" in path.read_bytes()) is new_id
+        qdf = subprocess.run(
+            ["qpdf", "--qdf", "--object-streams=disable", "--deterministic-id", str(path), "-"],
+            capture_output=True, check=True,
+        ).stdout
+        first, second = (g.decode() for g in re.search(
+            rb"/ID \[<([0-9a-f]+)><([0-9a-f]+)>\]", qdf).groups())
+        normalized = normalize_string(qdf.decode("latin-1"))
+        generated = second[4:16]
+        assert normalized.count(generated) == (1 if new_id else 2)   # only in the /ID
+        rules = [{"name": "from-generated-id", "value": generated}]
+        if new_id:
+            own = first[4:16]                                       # the input's own element
+            assert first in verify._input_document_ids(path.read_bytes())
+            rules.append({"name": "from-own-id", "value": own})
+        rules_path = tmp_path / "rules.json"
+        rules_path.write_text(json.dumps(rules))
+        seen = []
+        for _ in range(2):
+            out = tmp_path / "report.json"
+            run_verify(path, rules_path, "--json", str(out))
+            warnings = json.loads(out.read_text())["warnings"]
+            binary = sorted(w["rule"] for w in warnings if w["code"] == "REVIEW_BINARY")
+            assert binary == (["from-own-id"] if new_id else [])
+            seen.append(sorted((w["code"], w.get("rule")) for w in warnings))
+        assert seen[0] == seen[1]

@@ -248,6 +248,11 @@ except BaseException as exc:  # pragma: no cover
 __version__ = "0.1.0"
 SUBPROCESS_TIMEOUT_S: int = 120
 QPDF_CHUNK_BYTES: int = 4 << 20
+# qpdf's output is scanned only once this much of it has arrived behind it:
+# the final trailer (and the /ID qpdf writes there) must be whole before
+# its generated element can be told apart from the input's own (see
+# _strip_generated_ids).
+QPDF_TAIL_HOLD_BYTES: int = 64 << 10
 # Image codecs PyMuPDF does not decode to text. Feeding their bytes to a
 # text parser is the category error the structural pass exists to avoid:
 # roughly 1 byte in 256 of a JPEG is "(", which stalls a literal scanner
@@ -615,7 +620,10 @@ def start_hidden_tools(
         "exiftool": launch("exiftool", "Metadata", ["-config", "", "-json", "--", target]),
         "qpdf": launch(
             "qpdf", "Binary",
-            ["--qdf", "--object-streams=disable", target, "-"],
+            # --deterministic-id: qpdf writes a document /ID of its own;
+            # by default it is derived from the current time, so the
+            # bytes scanned below would differ from one run to the next.
+            ["--qdf", "--object-streams=disable", "--deterministic-id", target, "-"],
         ),
     }
     return procs, scratch
@@ -2384,10 +2392,140 @@ def _superseded(old: fitz.Document, doc: fitz.Document, xref: int, source: str,
     return False
 
 
+# A /ID key (not /IDx); its value must be an array of two strings.
+_ID_KEY_RE = re.compile(rb"/ID(?=[\s\[\]<>()/{}%])")
+_PDF_WS = b" \t\r\n\f\x00"
+_LITERAL_ESCAPES = {
+    ord("n"): b"\n", ord("r"): b"\r", ord("t"): b"\t", ord("b"): b"\b",
+    ord("f"): b"\f", ord("("): b"(", ord(")"): b")", ord("\\"): b"\\",
+}
+# The end of qpdf's QDF output: its one trailer, then startxref and %%EOF.
+# Anchored at the very end, every line indented as QDF writes dictionary
+# entries.
+_QDF_TRAILER_RE = re.compile(
+    rb"\ntrailer <<\n((?:  [^\n]*\n)*)>>\nstartxref\n[0-9]+\n%%EOF\n?\Z"
+)
+_QDF_ID_LINE_RE = re.compile(rb"^  /ID \[<([0-9a-f]*)><([0-9a-f]*)>\]$", re.M)
+
+
+def _pdf_string_at(raw: bytes, i: int) -> tuple[bytes, int] | None:
+    """The bytes of the PDF string (hex or literal) starting at *raw[i]*,
+    and the index just past it; None if there is no well-formed one."""
+    if raw[i:i + 1] == b"<":
+        end = raw.find(b">", i + 1)
+        if end < 0:
+            return None
+        digits = bytes(c for c in raw[i + 1:end] if c not in _PDF_WS)
+        if any(c not in b"0123456789abcdefABCDEF" for c in digits):
+            return None
+        return bytes.fromhex((digits + b"0" if len(digits) % 2 else digits).decode()), end + 1
+    if raw[i:i + 1] != b"(":
+        return None
+    out, depth, j, n = bytearray(), 1, i + 1, len(raw)
+    while j < n:
+        c = raw[j]
+        if c == 0x5C:                               # backslash (§7.3.4.2, Table 3)
+            if j + 1 >= n:
+                return None
+            e = raw[j + 1]
+            if e in _LITERAL_ESCAPES:
+                out += _LITERAL_ESCAPES[e]
+                j += 2
+            elif e in b"01234567":
+                k = j + 1
+                while k < min(j + 4, n) and raw[k] in b"01234567":
+                    k += 1
+                out.append(int(raw[j + 1:k], 8) & 0xFF)
+                j = k
+            elif e == 0x0D:                         # line continuation
+                j += 3 if raw[j + 2:j + 3] == b"\n" else 2
+            elif e == 0x0A:
+                j += 2
+            else:                                   # any other escaped byte is itself
+                out.append(e)
+                j += 2
+        elif c == 0x0D:                             # an end of line is one LF
+            out.append(0x0A)
+            j += 2 if raw[j + 1:j + 2] == b"\n" else 1
+        else:
+            if c == 0x28:
+                depth += 1
+            elif c == 0x29:
+                depth -= 1
+                if depth == 0:
+                    return bytes(out), j + 1
+            out.append(c)
+            j += 1
+    return None
+
+
+def _input_document_ids(raw: bytes) -> frozenset[str] | None:
+    """Every document /ID element the input file holds, as lowercase hex.
+
+    None unless every /ID key in the file is followed by an array of two
+    well-formed strings: then nothing qpdf writes can be called generated
+    (see _strip_generated_ids), so nothing is stripped.
+    """
+    ids: set[str] = set()
+    for key in _ID_KEY_RE.finditer(raw):
+        i = key.end()
+        elements = []
+        while i < len(raw) and raw[i] in _PDF_WS:
+            i += 1
+        if raw[i:i + 1] != b"[":
+            return None
+        i += 1
+        for _ in range(2):
+            while i < len(raw) and raw[i] in _PDF_WS:
+                i += 1
+            parsed = _pdf_string_at(raw, i)
+            if parsed is None:
+                return None
+            element, i = parsed
+            elements.append(element.hex())
+        while i < len(raw) and raw[i] in _PDF_WS:
+            i += 1
+        if raw[i:i + 1] != b"]":
+            return None
+        ids.update(elements)
+    return frozenset(ids)
+
+
+def _strip_generated_ids(tail: bytes, input_ids: frozenset[str] | None) -> bytes:
+    """Blank the /ID elements qpdf generated in its output's final trailer.
+
+    qpdf writes a document /ID of its own: the input's first element is
+    kept, but the second (both, if the input has none) is new. Those bytes
+    are not in the file, and scanning them can only produce a coincidental
+    match (a random hex string that happens to spell a short value rule).
+    An element is blanked only when it appears nowhere among the input's
+    own /ID elements, and only in a trailer of exactly qpdf's shape at the
+    very end of the output, holding exactly one /ID. When the input has an
+    /ID, qpdf keeps its first element, so that element must match one of
+    the input's or nothing is blanked: a misreading of the input then
+    costs only the old behaviour, never a skipped byte of the file.
+    """
+    if input_ids is None:
+        return tail
+    trailer = _QDF_TRAILER_RE.search(tail)
+    if trailer is None or trailer.group(1).count(b"/ID") != 1:
+        return tail
+    line = _QDF_ID_LINE_RE.search(trailer.group(1))
+    if line is None:
+        return tail
+    if input_ids and line.group(1).decode("ascii") not in input_ids:
+        return tail
+    kept = [e if e.decode("ascii") in input_ids else b"" for e in line.groups()]
+    start = trailer.start(1) + line.start()
+    end = trailer.start(1) + line.end()
+    return tail[:start] + b"  /ID [<" + kept[0] + b"><" + kept[1] + b">]" + tail[end:]
+
+
 def _collect_qpdf(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
     report: ScanReport,
+    input_ids: frozenset[str] | None = None,
 ) -> None:
     """Sweep qpdf's QDF byte stream as the damaged-file backstop.
 
@@ -2404,6 +2542,10 @@ def _collect_qpdf(
     """
     raw = RollingScanner(matcher)
     got_output = False
+    complete = False
+    # The last QPDF_TAIL_HOLD_BYTES are held back until qpdf finishes, so
+    # its final trailer can be read whole; everything is scanned in order.
+    held = b""
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
     if proc.stdout is None:
         report.warn(
@@ -2435,10 +2577,16 @@ def _collect_qpdf(
             break
         chunk = os.read(proc.stdout.fileno(), QPDF_CHUNK_BYTES)
         if not chunk:
+            complete = True
             break
         got_output = True
-        text = chunk.decode("latin-1")  # 1:1 byte mapping, nothing lost
-        raw.feed(normalize_string(text))
+        held += chunk
+        if len(held) > QPDF_TAIL_HOLD_BYTES:
+            ready_bytes, held = held[:-QPDF_TAIL_HOLD_BYTES], held[-QPDF_TAIL_HOLD_BYTES:]
+            raw.feed(normalize_string(ready_bytes.decode("latin-1")))  # 1:1, nothing lost
+    if complete:
+        held = _strip_generated_ids(held, input_ids)
+    raw.feed(normalize_string(held.decode("latin-1")))
 
     try:
         proc.wait(timeout=10)
@@ -2494,6 +2642,7 @@ def check_hidden_layers(
     matcher: SecretMatcher,
     patterns: Sequence[PatternRule],
     report: ScanReport,
+    input_ids: frozenset[str] | None = None,
 ) -> None:
     """Phase 4 collector: reap the tools started by start_hidden_tools.
 
@@ -2514,7 +2663,7 @@ def check_hidden_layers(
             )
     if procs["qpdf"] is not None:
         try:
-            _collect_qpdf(procs["qpdf"], matcher, report)
+            _collect_qpdf(procs["qpdf"], matcher, report, input_ids)
         except Exception as exc:
             report.warn(
                 "LAYER_CRASHED",
@@ -2801,7 +2950,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
                 try:
-                    check_hidden_layers(procs, matcher, patterns, report)
+                    try:
+                        input_ids = _input_document_ids(pdf_path.read_bytes())
+                    except Exception:
+                        input_ids = None    # strip nothing qpdf wrote
+                    check_hidden_layers(procs, matcher, patterns, report, input_ids)
                 except Exception as exc:
                     report.warn(
                         "LAYER_CRASHED",

@@ -741,6 +741,31 @@ class TestSubprocessHardening:
         finally:
             scratch.cleanup()
 
+    def test_qpdf_writes_a_deterministic_document_id(self, monkeypatch) -> None:
+        # By default qpdf derives the /ID it writes from the current time,
+        # so the Binary layer would scan different bytes on every run (see
+        # tests/test_objects.py::TestQpdfGeneratedId).
+        monkeypatch.setattr(verify.shutil, "which", lambda name: f"/opt/tools/{name}")
+        captured: dict[str, list[str]] = {}
+
+        class _FakeProc:
+            def poll(self):
+                return None
+
+        def _fake_popen(argv, stdout=None, stderr=None, env=None, cwd=None):
+            captured[argv[0]] = list(argv)
+            return _FakeProc()
+
+        monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
+        report = ScanReport()
+        procs, scratch = verify.start_hidden_tools(Path("/nonexistent/target.pdf"), report)
+        try:
+            argv = captured["/opt/tools/qpdf"]
+            assert "--deterministic-id" in argv
+            assert argv.index("--deterministic-id") < argv.index("/nonexistent/target.pdf")
+        finally:
+            scratch.cleanup()
+
     @requires_qpdf
     def test_dash_prefixed_target_is_scanned_not_parsed_as_an_option(
         self, secrets_file, tmp_path

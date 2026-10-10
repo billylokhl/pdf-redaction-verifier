@@ -283,7 +283,12 @@ damaged cross-reference table, and it decompresses attachment contents.
   **not** in qpdf's output; the Objects layer covers those.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
-  Binary warning on a clean document.
+  Binary warning on a clean document. qpdf also writes a document `/ID` of
+  its own in the trailer (keeping the file's first element, generating the
+  second, or both if the file has none). The tool asks for a deterministic
+  one (`--deterministic-id`) and blanks the elements qpdf generated before
+  scanning, so those bytes, which are not in the file, can neither raise a
+  warning nor change the result from one run to the next.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction
