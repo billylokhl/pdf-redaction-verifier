@@ -707,7 +707,16 @@ extended to warnings, sorted by `str` rather than the tuple itself (a
 code reported at both a string and a `None` storage otherwise crashes
 the sort) (`eval/caselib/run.py`); `caselib.run.available()` probing OCR
 directly rather than through whichever `verify.py` happens to be the
-in-process import. Not yet done, left for a later PR: the additive
+in-process import; the reference's `qpdf` run through a shim adding
+`--deterministic-id` (the candidate passes it itself), after an
+intermittent unlisted `SHORT` review warning was traced to qpdf's
+clock-seeded trailer `/ID` in the Binary sweep (owner's decision, over
+re-tagging the reference). Not yet done, left for a later PR:
+qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
+file) still swept by the Binary layer, so a 4-character all-hex value
+rule matches it on about 0.05% of files and a 3-character one (`Abe`,
+`Ada`) on about 0.75% — stable and fail-closed, but noise: bytes qpdf
+wrote itself are not file content; the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
