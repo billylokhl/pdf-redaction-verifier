@@ -310,6 +310,11 @@ secret can still be **not detected** (exit `0`). In short:
   resource that is never drawn (plain text there *is* read).
 - **Unindexed bytes:** anything after the final `%%EOF`, in comments, or in
   an object whose table entry is marked free.
+- **The file's trailer:** a classic trailer dictionary (current or from
+  an earlier revision) is not an object, so its document `/ID` and any
+  other strings in it are not read (a known value in a private trailer
+  key is a Binary manual-review warning; a pattern rule there, or
+  anything in `/ID` or an earlier trailer, passes).
 - **Leftover text in a font that maps ordinary-looking codes to other
   glyphs**, and **containers encoded as text** (a base64 email part, an
   HTML `data:` URI).

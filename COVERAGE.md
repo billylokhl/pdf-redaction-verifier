@@ -40,10 +40,11 @@ cells).
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
 | `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
 | `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ · ✗ after a stream's end marker⁹, or labelled as a font or image | ⚑ Objects⁴ · ✗ ordinary-looking codes⁴, one glyph per show operator | ⚑ Objects⁵ · ✗ small images⁵, text as outlines | ⚑ Objects |
-| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ · ✗ strings in an earlier revision's trailer¹¹ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
 | `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
 | `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
 | `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
+| `trailer` | **Document trailer** — the `/ID` and any other strings in the trailer dictionary | ✗ Objects never reads it¹¹ (a known value in a private trailer key gets a Binary manual-review warning) | — | — | — |
 | `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ · ✗ encoded as text² |
 | `embedded-other` | **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
 | `orphaned-attachment` | **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) · ✗ untyped text with three stand-alone words that are content operators (`n`, `m`, `q` …) | — | ⚑ Objects | ⚑ Objects⁸ |
@@ -95,6 +96,15 @@ raw byte sweep sees them because it reads the file's stream bytes
 directly, not through the image decoder. A pattern rule (rather than a
 known value) over the same hidden bytes is not — the Binary layer's
 sweep is value secrets only, the same limit as `embedded-other.plain`.
+
+¹¹ A classic trailer dictionary (after `trailer`, ahead of `startxref`)
+is not an object, so the Objects layer's walk never reads its strings,
+and the Binary layer sees only qpdf's rewrite, where the file's first
+`/ID` element comes back hex-encoded, the second is replaced by qpdf's
+own, and earlier revisions' trailers are not written at all. A
+cross-reference *stream*'s dictionary (PDF 1.5+) is an object, so its
+`/ID` and other strings are read (labelled `ORPHANED`, since nothing
+references that object).
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the

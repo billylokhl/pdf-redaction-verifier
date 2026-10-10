@@ -156,8 +156,12 @@ whose bytes are other objects' serialized form. A stream that passes
 the key test is still skipped if under 85% of its first 64 KB is
 printable. That catches marker-less binary, but it also skips a content
 stream carrying a large inline image — text and all (see Known
-limitations). Only stream *bodies* are skipped; every dictionary is
-scanned.
+limitations). Only stream *bodies* are skipped; every object's
+dictionary is scanned. A classic trailer dictionary is not an object, so
+its strings (the document `/ID`, any private key) are not read today, in
+the current trailer or an earlier revision's (COVERAGE.md's `trailer`
+row; K40 and K41 in docs/REDESIGN.md §8). A cross-reference stream's
+dictionary is an object and is read.
 
 Only PDF string tokens are matched, decoded as latin-1 or as UTF-16 when
 they carry a byte-order mark. Text shown through a CID font with

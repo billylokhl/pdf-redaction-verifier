@@ -757,9 +757,14 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K37 | A referenced, drawn 200×20 DeviceGray image whose declared frame renders blank, but whose stream holds 20 more undeclared rows with an SSN render: MuPDF decodes only the declared `Width`×`Height`×components×bits-per-component byte range, so the extra rows are never drawn, never rendered, and never OCR'd, and MuPDF raises no warning that more data followed |
 | K38 | The strips variant of K21, drawn under a box: a 90×14 SSN render split into two 90×7 images, drawn stacked on the page, with a black box painted over both afterwards — OCR only ever sees the rendered, composited page (the box), not what is under it, the same gap as K12 but for a render stored as two image objects rather than one |
 | K39 | A small JPEG's own EXIF (APP1) thumbnail renders the SSN: a second, fully decodable picture the main image's declared frame never mentions. Only the main picture is ever drawn or OCR'd, and unlike a raw sample byte or a JPEG comment segment, the thumbnail's render is itself DCT/Huffman-compressed pixel data, not literal text bytes, so no raw byte sweep finds it either |
+| K40 | The document `/ID` in a classic trailer holds the secret as a literal string (or as hex-encoded text): the trailer dictionary is not an object, so the Objects layer never reads it, and the Binary layer scans qpdf's rewrite, where the file's first `/ID` element comes back hex-encoded and the second is replaced by qpdf's own. A private (non-standard) trailer key fails the same way for a pattern rule; a known value there gets only Binary's manual-review warning |
+| K41 | Same, in an earlier revision's trailer: an incremental update writes a new trailer, the earlier-revision scan compares objects, not trailers, and qpdf writes only the current trailer |
 
 K12-K36 are pinned in `eval/caselib/families/gaps.py` (the remaining
-`UNDOCUMENTED_GAPS`, now empty); K37, K38 and K39 are pinned, alongside
+`UNDOCUMENTED_GAPS`, now empty), and so are K40 and K41
+(`document.trailer-id-literal`, `revision.earlier-trailer-id`, with two
+unnumbered siblings on K40's cell: hex-encoded text in the second `/ID`
+element, and a private trailer key under a pattern rule); K37, K38 and K39 are pinned, alongside
 the rest of ADR 0003/0004's scheduled image cases, in
 `eval/caselib/families/image_bytes.py`. One more case in `gaps.py` is the
 opposite problem — a **false alarm**, not a silent miss: a clean document whose

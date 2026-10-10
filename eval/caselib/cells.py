@@ -89,6 +89,7 @@ def _cells() -> dict[str, Cell]:
         # superseded — rewritten by an incremental update
         "superseded.plain": Cell(read, "plain strings an incremental update rewrote"),
         "superseded.plain.revision-cap": Cell(flagged, "more earlier revisions than are scanned"),
+        "superseded.plain.trailer": Cell(gap, "strings in an earlier revision's trailer dictionary"),
         "superseded.font": Cell(flagged, "font-coded text an incremental update rewrote"),
         "superseded.font.compact-syntax": Cell(flagged, "rewritten font-coded text without spaces"),
         "superseded.pixels": Cell(flagged, "an image an incremental update replaced"),
@@ -99,6 +100,8 @@ def _cells() -> dict[str, Cell]:
         "leftover-xmp.plain": Cell(read, "orphaned or superseded XMP"),
         "leftover-xmp.pixels": Cell(gap, "thumbnails in leftover XMP"),
         "thumbnail.pixels": Cell(gap, "page thumbnails (/Thumb)"),
+        # trailer — the document trailer dictionary (not an object)
+        "trailer.plain": Cell(gap, "the trailer's /ID and other trailer strings"),
         # attachments
         "attachment.plain": Cell(read, "an attachment that is text", tier="review"),
         "attachment.pixels": Cell(flagged, "an attached image"),

@@ -28,6 +28,10 @@ K39 was added the same way, from a PR review rather than from §8's own
 SSN, a second decoded picture the tool never looks at, is a new silent
 miss with no cell-sharing sibling, so it gets its own row and number.
 
+K40 and K41 were added the same way, from a PR review: a secret in the
+document trailer's ``/ID``, current (K40) or an earlier revision's (K41),
+a storage place with no COVERAGE.md row until then.
+
 K1-K11's cases (``caselib/families/raw.py``) also write their K-number
 into the story itself ("K7: plain text appended after the file's final
 %%EOF."); that's the source this table was read from for those ids.
@@ -87,6 +91,8 @@ CASE_TO_K: dict[str, int] = {
     "page.image-extra-rows": 37,
     "page.ssn-strips-under-box": 38,
     "page.jpeg-exif-thumbnail": 39,
+    "document.trailer-id-literal": 40,
+    "revision.earlier-trailer-id": 41,
 }
 
 
