@@ -105,8 +105,9 @@ _WHERE_EXPLAINED: dict[str, tuple[str, str]] = {
     "Hidden:comment or note": ("Hidden, comment or note", "IN A COMMENT OR NOTE on the page "
                                "shown. Some are drawn on the page; others appear when clicked, "
                                "hovered, or in the comments panel."),
-    "Hidden:form field": ("Hidden, form field", "IN A FORM FIELD on the page shown. Its value is "
-                          "usually drawn on the page, and can be read in the form panel."),
+    "Hidden:form field": ("Hidden, form field", "IN A FORM FIELD on the page shown: its "
+                          "value (usually drawn on the page, and shown in the form panel) or "
+                          "its name (not drawn, but any PDF tool can read it)."),
     "Hidden:link": ("Hidden, link", "IN A LINK on the page shown: its address or action."),
     "Hidden:attachment": ("Hidden, attachment", "IN AN ATTACHMENT'S NAME OR DESCRIPTION, shown in "
                           "the attachments panel."),
@@ -128,7 +129,8 @@ _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "
 def _label(finding: Finding, rules: RuleSet | None) -> str:
     label = rules.labels.get(finding.secret_name) if rules is not None else None
     text = repr(finding.secret_name) if label is None else label.text
-    text = _sanitize_report_text(text)
+    # "|" separates the columns; a rule name must not be able to fake one.
+    text = _sanitize_report_text(text).replace("|", "¦")
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
@@ -166,15 +168,16 @@ def _found_explained(report: ScanReport, rules: RuleSet | None) -> list[str]:
              if f.secret_name in rules.labels}
     out = []
     if "exact_values" in kinds:
-        out.append(("exact value #N", "The Nth item under exact_values in your secrets file "
-                    "(counting from 1; its place in the file is in brackets). Its characters "
-                    "are never shown."))
+        out.append(("exact value #N", "The Nth item under exact_values in your secrets file, "
+                    "counting from 1. In brackets: the same item as warnings and the --json "
+                    "report name it (counting from 0). Its characters are never shown."))
     if "value" in kinds:
         out.append(("'name' (a value)", "A value from your rules file, by the name you gave it. "
                     "Its characters are never shown."))
     if "patterns" in kinds:
         out.append(("pattern #N", "Text matching the Nth item under patterns in your secrets "
-                    "file. Only the last characters of the matched text are shown."))
+                    "file, counting from 1 (in brackets: counting from 0, as in warnings). Only "
+                    "the last characters of the matched text are shown."))
     if "pattern" in kinds:
         out.append(("'name' (a pattern)", "Text matching a pattern from your rules file, by the "
                     "name you gave it. Only the last characters of the match are shown."))
@@ -182,12 +185,13 @@ def _found_explained(report: ScanReport, rules: RuleSet | None) -> list[str]:
         why = ("They are checked by default because your secrets file does not list "
                "entity_types." if rules.entity_types_by_default
                else "Your secrets file lists them under entity_types.")
-        out.append(("built-in type", "Text that looks like this kind of data (SSN, email "
-                    "address, phone number, card number). " + why + " Only the last characters "
-                    "of the match are shown."))
+        out.append(("built-in type", "Text that looks like the kind of data named (for "
+                    "example an SSN or an email address). " + why + " Only the last "
+                    "characters of the match are shown."))
     if "class" in kinds:
-        out.append(("'name' (a built-in type)", "Text that looks like the kind of data that rule "
-                    "names. Only the last characters of the match are shown."))
+        out.append(("'name' (a built-in type)", "Text that looks like the kind of data the "
+                    "rule's class names (for example an SSN). Only the last characters of the "
+                    "match are shown."))
     lines = ["", "  What was found"]
     for head, body in out:
         lines.append(f"    {head}")
@@ -196,11 +200,13 @@ def _found_explained(report: ScanReport, rules: RuleSet | None) -> list[str]:
 
 
 def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = None,
-                 fail_fast: bool = False) -> None:
+                 json_unwritten: bool = False) -> None:
     """Render the verdict banner, the findings and what they mean.
 
     This is the single choke point where pattern samples are masked and
-    all document- and rules-derived text is sanitized.
+    all document- and rules-derived text is sanitized. *json_unwritten*:
+    the --json report could not be written, so a clean run is NOT
+    certified (exit 2).
     """
     name = _sanitize_report_text(pdf_path.name)
     print(f"\n{_BAR}")
@@ -215,9 +221,8 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
                 "checks.) If this is a redacted copy, the redaction did not remove them. Do not "
                 "share this file until each one is removed or checked.", "          "):
             print(line)
-        if fail_fast:
-            print("          The scan stopped at the first finding (--fail-fast); there may "
-                  "be more.")
+        if any(getattr(w, "code", "") == "SKIPPED_FAIL_FAST" for w in report.warnings):
+            print("          Later checks were skipped (--fail-fast); there may be more.")
         print(_BAR)
         for f in report.findings:
             tag, _ = _where(f)
@@ -225,12 +230,13 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
                     f"{f.location}")
             print(_sanitize_report_text(line))
         _print_meaning(report, rules)
-    elif report.degraded:
+    elif report.degraded or json_unwritten:
         print(f"  [NOT CERTIFIED]  No secret was confirmed in: {name}")
-        for line in _wrap(
-                "But the checks below did not finish, need a person to review them, or your "
-                "rules ask for something this tool cannot check -- so this is NOT a "
-                "certified clean result (exit code 2). Resolve them first.", "                   "):
+        why = ("But the checks below did not finish, need a person to review them, or your "
+               "rules ask for something this tool cannot check" if report.degraded
+               else "But the JSON report could not be written")
+        for line in _wrap(f"{why} -- so this is NOT a certified clean result (exit code 2). "
+                          "Resolve this first.", "                   "):
             print(line)
     else:
         print(f"  [PASS]  No target secrets detected in: {name}")

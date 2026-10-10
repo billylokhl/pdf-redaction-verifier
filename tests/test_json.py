@@ -158,7 +158,10 @@ class TestReportFile:
         target = tmp_path / "missing-dir" / "r.json"
         args = ["--secrets", str(secrets_file), "--json", str(target)]
         assert verify.main(["--target", str(clean_pdf), *args]) == 2
-        assert "NOT a certified clean result" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert report_banner(out) == "NOT CERTIFIED", out  # never a [PASS] first
+        if "ATTENTION" not in out:  # else the run is already 2 for its warnings
+            assert "JSON report could not be written" in " ".join(out.split())
         assert verify.main(["--target", str(leaky_pdf), *args]) == 1
 
     def _seed_pass(self, path: Path) -> None:

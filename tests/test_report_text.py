@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pymupdf as fitz
 import pytest
 
 from redaction_verifier.model import ScanReport
 from redaction_verifier.report import print_report
 from redaction_verifier.rules import load_rules
 
-from .conftest import SSN, ReportLine, report_banner, report_lines
+from .conftest import SSN, ReportLine, report_banner, report_lines, run_verify
 
 VALUE = "Jane Q. Example"  # fabricated
 
@@ -89,9 +90,19 @@ class TestBanners:
         assert "built-in types checked by default" in flat
         assert "because your secrets file does not list entity_types" in flat
 
-    def test_fail_fast_note(self, capsys, yaml_rules) -> None:
-        out = _render(capsys, _leaky_report(), yaml_rules, fail_fast=True)
-        assert "stopped at the first finding (--fail-fast); there may be more" in out
+    def test_fail_fast_note_only_when_checks_were_skipped(self, capsys, yaml_rules) -> None:
+        report = _leaky_report()
+        assert "there may be more" not in _render(capsys, report, yaml_rules)
+        report.warn("SKIPPED_FAIL_FAST", "OCR", "OCR: skipped (--fail-fast after earlier finding)")
+        out = _render(capsys, report, yaml_rules)
+        assert "Later checks were skipped (--fail-fast); there may be more." in out
+
+    def test_unwritten_json_report_is_not_certified(self, capsys, yaml_rules) -> None:
+        out = _render(capsys, ScanReport(), yaml_rules, json_unwritten=True)
+        assert report_banner(out) == "NOT CERTIFIED"
+        assert "[PASS]" not in out
+        assert "JSON report could not be written -- so this is NOT a certified clean result" \
+            in " ".join(out.split())
 
     def test_pass_with_warnings_is_not_certified(self, capsys, yaml_rules) -> None:
         report = ScanReport()
@@ -119,7 +130,7 @@ class TestBanners:
 class TestLabels:
     def test_no_character_of_an_exact_value_is_shown(self, capsys, yaml_rules) -> None:
         out = _render(capsys, _leaky_report(), yaml_rules)
-        for token in ("Jane", "Example", "Another", "Value", "ample"):
+        for token in ("Jane", "Q. Ex", "Another Value"):
             assert token not in out
         # ...nor the YAML comment beside a pattern.
         assert "account" not in out
@@ -140,8 +151,11 @@ class TestLabels:
         assert "\x1b" not in out
         line = next(ln for ln in out.splitlines() if "STILL PRESENT" in ln)
         label = line.split("STILL PRESENT | ", 1)[1]
-        assert label.startswith("'evil | Text | ")
+        # "|" cannot fake a column: the parser still sees five columns.
+        assert label.startswith("'evil ¦ Text ¦ ")
         assert label.split("…", 1)[0].__len__() == 39  # capped at 40 incl. "…"
+        (parsed,) = report_lines(out)
+        assert (parsed.layer, parsed.where, parsed.location) == ("Metadata", "properties", "Title")
         assert VALUE not in out
         assert "Found: 1 of your 1 values, 0 of your 1 built-in types." in " ".join(out.split())
 
@@ -163,12 +177,13 @@ class TestWhatThisMeans:
             ("Objects", "ORPHANED object 6 (XMP metadata)", "orphaned", "left over",
              "older copy of the document's metadata"),
             ("Objects", "object 7", "unreferenced", "left over?", "PROBABLY HIDDEN"),
-            ("Objects", "object 8 (revision 1)", "superseded", "earlier version",
+            ("Objects", "earlier revision 1, object 8", "superseded", "earlier version",
              "IN AN OLDER VERSION OF THE FILE"),
             ("Metadata", "Title", "live", "properties", "IN THE DOCUMENT'S PROPERTIES"),
             ("Hidden", "annotation 4 on page 1 (contents)", "live", "comment or note",
              "IN A COMMENT OR NOTE"),
             ("Hidden", "form field 7 on page 1 (value)", "live", "form field", "IN A FORM FIELD"),
+            ("Hidden", "form field 7 on page 1 (name)", "live", "form field", "or its name"),
             ("Hidden", "link #0 on page 1 (uri)", "live", "link", "IN A LINK"),
             ("Hidden", "embedded file #1 (name)", "live", "attachment", "ATTACHMENT'S NAME"),
             ("Hidden", "JavaScript in object 9", "live", "script", "JAVASCRIPT"),
@@ -198,3 +213,30 @@ class TestWhatThisMeans:
     def test_garbage_collection_advice_for_orphans(self, capsys, yaml_rules) -> None:
         flat = " ".join(_render(capsys, _leaky_report(), yaml_rules).split())
         assert 'save the file with "garbage collection"' in flat
+
+
+class TestCliWiring:
+    """The CLI must hand print_report the rules (labels, counts); calling
+    print_report directly, as the tests above do, cannot catch that."""
+
+    def _scan(self, tmp_path: Path, *extra: str):
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+        doc.save(pdf)
+        doc.close()
+        rules = _yaml_rules(tmp_path, f'exact_values:\n  - "{SSN}"\nentity_types: []\n')
+        return run_verify(pdf, rules, *extra)
+
+    def test_labels_and_counts_reach_the_cli_report(self, tmp_path) -> None:
+        result = self._scan(tmp_path)
+        assert result.returncode == 1, result.stdout
+        assert {ln.label for ln in report_lines(result.stdout)} == {
+            "exact value #1 (exact_values[0])"}
+        assert "Found: 1 of your 1 exact values." in " ".join(result.stdout.split())
+        assert "123-45" not in result.stdout
+
+    def test_fail_fast_note_reaches_the_cli_report(self, tmp_path) -> None:
+        result = self._scan(tmp_path, "--fail-fast")
+        assert result.returncode == 1, result.stdout
+        assert "Later checks were skipped (--fail-fast); there may be more." in result.stdout
