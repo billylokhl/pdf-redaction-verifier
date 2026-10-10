@@ -394,7 +394,10 @@ class TestOcrFailureFailsClosed:
             "        return getattr(Vision, name)\n"
             "\n"
             "ocr.Vision = _Vision()\n"
-            "sys.exit(verify.main(sys.argv[1:]))\n"
+            # run_cli, like every child-process test: it leaves via
+            # os._exit, so Vision's native teardown cannot SIGKILL the
+            # child after the report is written (seen on CI's macOS VMs).
+            "verify.run_cli(sys.argv[1:])\n"
         )
         result = subprocess.run(
             [sys.executable, str(script), "--target", str(pdf), "--secrets", str(rules),

@@ -241,8 +241,8 @@ flattened to images, text converted to vector outlines.
   CHANGELOG, this happened to every page on macOS 27.) A page where
   Vision reports success without delivering both readings is also
   `PAGE_FAILED`: a reading counts only once its request's completion
-  handler has run to the end. A page Vision reads without error but with text missing is
-  not detected; see DESIGN's known limitations.
+  handler has run to the end. A page Vision reads without error but
+  with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
