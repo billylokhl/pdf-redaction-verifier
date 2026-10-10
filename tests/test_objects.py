@@ -500,6 +500,10 @@ class TestQpdfGeneratedId:
     @pytest.mark.parametrize("tail, input_ids", [
         (_qdf_tail(ORIGINAL, LUCKY), None),                                  # input unreadable
         (_qdf_tail(ORIGINAL, LUCKY), frozenset({"abcd"})),       # qpdf's first is not the input's
+        # The input's first /ID element is empty: qpdf replaces it and
+        # generates both, but the input did have an /ID, so neither rule
+        # lets anything be blanked (scanned, the same on every run).
+        (_qdf_tail(LUCKY, LUCKY), frozenset({"", "abcd"})),
         # No /ID found in the input, yet qpdf kept a first element of its
         # own (an /ID key spelled in a way the parser missed): not generated.
         (_qdf_tail(ORIGINAL, LUCKY), frozenset()),
@@ -507,7 +511,8 @@ class TestQpdfGeneratedId:
         (_qdf_tail(LUCKY, LUCKY, extra=f"  /X (/ID [<{LUCKY}><{LUCKY}>])\n"), frozenset()),
         (_qdf_tail(LUCKY, LUCKY) + b"more", frozenset()),                    # not at the end
         (_qdf_tail(LUCKY, LUCKY).replace(b"  /Size", b"/Size"), frozenset()),  # not QDF's shape
-    ], ids=["ids-unknown", "first-not-input-s", "no-input-id-but-elements-differ",
+    ], ids=["ids-unknown", "first-not-input-s", "empty-first-element",
+            "no-input-id-but-elements-differ",
             "two-ids-in-trailer", "not-at-end", "not-qdf-shape"])
     def test_anything_unexpected_is_left_as_it_is(
         self, tail: bytes, input_ids: frozenset[str] | None
