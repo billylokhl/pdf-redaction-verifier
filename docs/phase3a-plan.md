@@ -274,7 +274,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   generation, to an in-use non-stream dictionary (xref._page_tree; build checks the
   object-stream cases), and a stream catalog MISSING_ROOT. A reference to a free or missing
   object stays 3a-7's below except as the catalog's /Pages, which no reader-agreeing file
-  can have. ADR 0011 item 2's PAGE_TREE is the fuller rule.
+  can have. ADR 0011 item 2's PAGE_TREE is the fuller rule; until 3a-7, a /Pages naming a
+  dictionary that is not the tree's root (qpdf: "doesn't point to the root of the page
+  tree; attempting to correct") stays unflagged and the gate reports it (qpdf_check).
+  Found in review: an object stream's xref entry must have generation 0 (qpdf reads it
+  only as `N 0 R`; any other is "not a stream", its members null): XREF_OFFSET_MISMATCH.
   Gate re-run, all passing: corpus 1,939 agree, 134 flagged, 0 unflagged disagreements;
   case library 396/4/0; fuzz (--count 2000 --seed 0) 501/1,499/0 -- every file's verdict as
   in 3a-6c's run, 19 already-flagged fuzz files now also MISSING_PAGE_TREE.

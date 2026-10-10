@@ -475,9 +475,10 @@ def test_qpdf_check_errors_are_gated(tmp_path: Path) -> None:
     table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [] /Count 0 >>"), 0)
     w.epilogue(w.table(table, b"/Size 3 /Root 1 0 R"))
     found = compare(bytes(w.out), tmp_path)
-    # A page tree with no pages: qpdf opens it, but --check stops with
-    # "ERROR: file does not contain any pages" (no allowlist covers it).
+    # A page tree with no pages: qpdf opens it, but --check stops with an
+    # ERROR line no allowlist covers -- "file does not contain any pages"
+    # in 12.4; in 12.3, the out-of-range error of reading page 1's outlines.
     # (A /Pages that is no dictionary, this test's fixture until qpdf 12
     # refused to open it, is now flagged MISSING_PAGE_TREE.)
     assert found.disagrees and found.check is Check.QPDF_CHECK, found
-    assert found.templates and "does not contain any pages" in found.templates[0]
+    assert found.qpdf_check_errors == 1, found

@@ -239,7 +239,8 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
       section's /XRefStm (an indirect /Length resolves in the revision
       being checked: ``_Lengths``);
     - every compressed entry names an object stream in use in the
-      revision, inherited entries included: a revision that frees an
+      revision, with generation 0 (qpdf reads no other), inherited
+      entries included: a revision that frees an
       object stream (or makes it compressed) while older entries still
       live in it is flagged (MuPDF: "corrupt object stream"). Whether
       an in-use home is really an object stream holding that index is
@@ -317,8 +318,10 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
                             ("object", number), ("offset", entry.a))))
                 elif entry.kind == COMPRESSED:
                     home = merged.get(entry.a)
+                    # qpdf reads an object stream as `N 0 R` only (§7.5.7:
+                    # its generation is 0): any other is "not a stream".
                     if (number == 0 or home is None or home.kind != IN_USE
-                            or no_object(entry.a, home)):
+                            or home.b != 0 or no_object(entry.a, home)):
                         flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
                             ("object", number), ("stream", entry.a))))
         newest = chain.sections[group[0]]

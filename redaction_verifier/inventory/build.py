@@ -470,9 +470,11 @@ class _Builder:
 
     def _home(self, entry: Entry, revision: int) -> _Member | None:
         """The member a compressed *entry* names in *revision*: its home
-        in use there, an object stream we read, listing it at the index."""
+        in use there with generation 0 (qpdf reads no other), an object
+        stream we read, listing it at the index."""
         home = self._entry(entry.a, revision)
-        members = self.members.get(home.a) if home and home.kind == IN_USE else None
+        members = (self.members.get(home.a) if home and home.kind == IN_USE and home.b == 0
+                   else None)
         return members[entry.b] if members and entry.b < len(members) else None
 
     def _compressed(self, chain: Chain) -> None:
@@ -532,7 +534,8 @@ class _Builder:
                 pages = held.get(b"Pages") if isinstance(held, PdfDict) else None
                 target = (self._entry(pages.num, revision) if isinstance(pages, PdfRef)
                           else None)
-                if target is None or target.kind != COMPRESSED:
+                if (target is None or target.kind != COMPRESSED
+                        or not isinstance(pages, PdfRef) or pages.gen != 0):
                     continue  # the chain's to check (xref._page_tree)
             else:
                 continue

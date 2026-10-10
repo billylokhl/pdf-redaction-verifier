@@ -696,3 +696,43 @@ def test_a_compressed_catalog_or_page_tree_agrees_or_qpdf_cannot_open_it(
                              timeout=60).returncode == 2
     assert refused == (expected is not None)
     assert inventory_agrees(data, tmp_path) == (expected is None)
+
+
+# ── An object stream's own generation is 0 (found in review) ──────────────
+def _objstm_generation(generation: int, member: int) -> bytes:
+    """Object stream 4, written `4 <generation> obj`, holding *member*: 1
+    (the catalog), 2 (the page tree) or 5 (a string)."""
+    bodies = {1: CATALOG, 2: PAGES,
+              3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << >> >>",
+              5: b"(x)"}
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    for n in (1, 2, 3):
+        if n != member:
+            table[n] = (1, w.obj(n, bodies[n]), 0)
+    at = w.objstm(4, [(member, bodies[member])])
+    w.out[at:at + 7] = b"4 %d obj" % generation  # same length: offsets stay put
+    table[4] = (1, at, generation)
+    table[member] = (2, 4, 0)
+    w.epilogue(w.xref_stream(6, table, b"/Size 7 /Root 1 0 R"))
+    return bytes(w.out)
+
+
+@pytest.mark.parametrize("member", [1, 2, 5])
+def test_an_object_stream_with_another_generation_is_flagged(member: int) -> None:
+    # qpdf reads an object stream as `N 0 R` only ("supposed object stream 4
+    # is not a stream"): every member then reads null -- a catalog or page
+    # tree among them, and qpdf cannot open the file.
+    assert reasons(_objstm_generation(0, member)) == []
+    assert "XREF_OFFSET_MISMATCH" in reasons(_objstm_generation(1, member))
+
+
+@requires_qpdf
+@pytest.mark.parametrize("member", [1, 2, 5])
+def test_qpdf_reads_no_object_stream_with_another_generation(member: int,
+                                                              tmp_path: Path) -> None:
+    path = tmp_path / "in.pdf"
+    path.write_bytes(_objstm_generation(1, member))
+    check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True, timeout=60)
+    assert b"not a stream" in check.stdout + check.stderr or check.returncode == 2
+    assert inventory_agrees(_objstm_generation(0, member), tmp_path)

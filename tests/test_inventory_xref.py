@@ -612,6 +612,8 @@ def _catalog(pages: bytes, two: bytes = PAGES, **more: bytes) -> bytes:
     return _with(bodies | {int(k[1:]): v for k, v in more.items()})
 
 
+# The fuzz's own example: the incremental file's object 2 marked free.
+FREED = _mutate(incremental(), b"0000000064 00000 n", b"0000000064 00000 f")
 UNOPENABLE = [
     pytest.param(_catalog(b"2 0 R", PAGES[:-2] + b"/Length 1 >>\nstream\nx\nendstream"),
                  "MISSING_PAGE_TREE", id="pages-a-stream"),
@@ -625,9 +627,7 @@ UNOPENABLE = [
                  id="a-reference-to-a-reference"),
     pytest.param(_catalog(b"9 0 R"), "MISSING_PAGE_TREE", id="past-the-table"),
     pytest.param(_catalog(b"0 0 R"), "MISSING_PAGE_TREE", id="object-zero"),
-    # The fuzz's own example: the incremental file's object 2 marked free.
-    pytest.param(_mutate(incremental(), b"0000000064 00000 n", b"0000000064 00000 f"),
-                 "MISSING_PAGE_TREE", id="pages-freed"),
+    pytest.param(FREED, "MISSING_PAGE_TREE", id="pages-freed"),
     pytest.param(_with({1: b"<< /Type /Catalog /Pages 2 0 R /Length 1 >>\nstream\nx\nendstream",
                         2: PAGES, 3: BODIES[3]}), "MISSING_ROOT", id="catalog-a-stream"),
 ]
@@ -639,8 +639,7 @@ def test_a_catalog_qpdf_cannot_open_is_flagged(data: bytes, reason: str) -> None
 
 
 def test_a_freed_page_tree_is_flagged_in_each_revision() -> None:
-    data = UNOPENABLE[-2].values[0]
-    assert sorted(dict(f.params)["revision"] for f in chain_of(data).flags) == [0, 1]
+    assert sorted(dict(f.params)["revision"] for f in chain_of(FREED).flags) == [0, 1]
 
 
 def _direct() -> bytes:
