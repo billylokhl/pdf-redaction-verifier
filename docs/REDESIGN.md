@@ -527,9 +527,12 @@ Generators are portable: built-in or vendored OFL fonts, tools from
 ### Scorecard
 
 Run only through the CLI's `--json` output, one subprocess per file,
-with a timeout. Compared **per case** against a pinned reference (a git
-tag, checked out in a worktree — never the live code) on the normalised
-key {exit, set of (rule, tier, storage class), set of warning codes}.
+with a timeout — and by default at most one concurrent subprocess per
+core (and per GiB of RAM), since the timeout is wall-clock and would
+otherwise measure contention.
+Compared **per case** against a pinned reference (a git tag, checked
+out in a worktree — never the live code) on the normalised key {exit,
+set of (rule, tier, storage class), set of warning codes}.
 
 | Metric | Definition | Measured on |
 | --- | --- | --- |
@@ -707,7 +710,23 @@ extended to warnings, sorted by `str` rather than the tuple itself (a
 code reported at both a string and a `None` storage otherwise crashes
 the sort) (`eval/caselib/run.py`); `caselib.run.available()` probing OCR
 directly rather than through whichever `verify.py` happens to be the
-in-process import. Not yet done, left for a later PR: the additive
+in-process import; the scorecard's default parallelism lowered from
+four subprocesses per core to one per usable core (capped by RAM),
+after the weekly job's per-file timeouts were traced to
+oversubscription of its 3-core, 7 GB runner (cases that take ~9 s alone
+took 45–68 s at 12 workers, with the VM swapping), and that job's limit
+raised from 45 to 60 minutes (a run now takes 34.6); the reference's
+`qpdf` run through a shim adding `--deterministic-id` (the candidate
+passes it itself), after an intermittent unlisted `SHORT` review warning
+was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
+(owner's decision, over re-tagging the reference). Not yet done, left
+for a later PR: `scorecard metrics` exiting non-zero on a crash or
+timeout (today only `scorecard diff` fails on them); qpdf's own
+generated trailer `/ID` (32 hex digits, now derived from the file) still
+swept by the Binary layer, so a 4-character all-hex value rule matches
+it on about 0.05% of files and a 3-character one (`Abe`, `Ada`) on about
+0.75% — stable and fail-closed, but noise: bytes qpdf wrote itself are
+not file content; the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.

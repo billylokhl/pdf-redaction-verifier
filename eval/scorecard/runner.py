@@ -61,11 +61,13 @@ def run_cli(
     case_id: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    env: Mapping[str, str] | None = None,
 ) -> CliResult:
     """Run `python verify_path --target target --secrets ... --json ...`
     as a subprocess and return its outcome. *workdir* holds the scratch
     rules/report files, named after *case_id* so parallel runs (and runs
-    against different refs) never collide."""
+    against different refs) never collide. *env*, if given, replaces the
+    child's environment (default: inherit this process's)."""
     workdir.mkdir(parents=True, exist_ok=True)
     rules_path = workdir / f"{case_id}.rules.json"
     rules_path.write_text(json.dumps(list(rules)))
@@ -92,6 +94,7 @@ def run_cli(
             argv,
             capture_output=True,
             timeout=timeout,
+            env=dict(env) if env is not None else None,
             text=True,
         )
         returncode = proc.returncode

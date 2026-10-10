@@ -350,6 +350,13 @@ findings as (rule, tier, storage), review warnings as (rule, "review",
 storage, adjacency), other warnings as (code, layer, tool) — each as a
 *multiset*, so losing one of two otherwise-identical findings (the same
 rule in two separate orphaned streams) is a real, visible difference.
+The reference runs with a `qpdf` shim first on its `PATH` that adds
+`--deterministic-id` (`scorecard.differential.deterministic_qpdf_env`):
+`eval-ref-0` predates that flag, so its qpdf output carried a trailer
+`/ID` seeded by the current second, which the case library's `SHORT`
+rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
+that came and went with the clock. The shim removes only that input; the
+candidate passes the flag itself.
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -389,6 +396,18 @@ selection also skips any case marked `perf` (a large, multi-minute
 generator such as a 300-page scan) unless you name it explicitly — it
 would very likely time out at `--timeout` (default 60s) otherwise, which
 reads as a crash rather than a deliberate skip.
+
+`--timeout` is wall-clock, so it measures a file's own runtime only while
+each scan has a core and its memory to itself: `--workers` defaults to
+one per usable core (the CPU-affinity mask, where Python exposes it), and
+no more than one per GiB of physical RAM (a scan peaks at 0.3–0.5 GB).
+Neither a container's CPU quota nor its memory limit is seen: pass
+`--workers` there. Do not raise it past that — extra workers do not finish
+sooner, they only stretch each file's wall time toward the timeout. On
+the weekly macOS runner (3 cores, 7 GB, OCR on the CPU at about 1–2 s a
+page), 12 workers turned four-page cases that take about 9 s alone into
+45–68 s, sent the VM into swap, timed eight cases out, and made a pass
+over the library take 11.4 minutes instead of 6.7.
 
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
@@ -634,7 +653,8 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`).
+  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
+  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

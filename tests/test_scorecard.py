@@ -25,8 +25,12 @@ from scorecard.accepted import (
 from scorecard.differential import (
     CaseDiff,
     CaseRun,
+    default_workers,
+    deterministic_qpdf_env,
     load_reference_cache,
     normalization_have,
+    run_candidate,
+    run_differential,
     save_reference_cache,
     select_cases,
     stale_accepted_diffs,
@@ -896,6 +900,25 @@ def test_run_cli_parses_report_on_success(tmp_path):
     assert result.report == {"exit_code": 0, "error": None, "findings": [], "warnings": []}
 
 
+def test_run_cli_passes_env_to_the_child(tmp_path):
+    """run_cli's *env* must reach the CLI: it is how the reference's
+    deterministic-qpdf shim gets onto PATH. Without it the shim would
+    silently do nothing (the reference tests replace run_cli itself)."""
+    script = tmp_path / "env_echo.py"
+    script.write_text(_STAND_IN_OK.replace(
+        '"warnings": []}', '"warnings": [], "sentinel": __import__("os").environ.get("SENTINEL")}'
+    ))
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"%PDF-1.4\n")
+    env = {**__import__("os").environ, "SENTINEL": "from-run-cli"}
+    result = run_cli(
+        sys.executable, script, target, [], tmp_path / "work", "case-env", timeout=10, env=env,
+    )
+    assert result.report is not None and result.report["sentinel"] == "from-run-cli"
+    inherited = run_cli(sys.executable, script, target, [], tmp_path / "work", "case-env2", timeout=10)
+    assert inherited.report is not None and inherited.report["sentinel"] is None
+
+
 def test_run_cli_times_out(tmp_path):
     script = tmp_path / "hangs.py"
     script.write_text(_STAND_IN_HANGS)
@@ -983,3 +1006,150 @@ def test_run_cli_crashed_when_subprocess_exit_disagrees_with_its_own_report(tmp_
     assert result.returncode == 0
     assert result.report == {"exit_code": 2, "error": None, "findings": [], "warnings": []}
     assert result.crashed
+
+
+# ── default_workers: the per-file timeout must measure the file, not contention ──
+
+GIB = 1 << 30
+
+
+@pytest.mark.parametrize(
+    "cores, memory, expected",
+    [
+        (3, 7 * GIB, 3),     # the weekly macOS runner: one per core
+        (10, 24 * GIB, 10),
+        (16, 8 * GIB, 8),    # many cores, little RAM: memory caps it
+        (4, None, 4),        # memory unknown: cores alone
+        (4, GIB // 2, 1),    # never zero
+    ],
+)
+def test_default_workers_is_one_per_core_within_memory(monkeypatch, cores, memory, expected):
+    """DEFAULT_TIMEOUT is wall-clock, so more scans than cores (or than
+    RAM holds) turns it into a contention measurement: at the old
+    cpu_count() * 4 on a 3-core, 7 GB runner, cases that take ~9 s alone
+    took 45-68 s, the VM swapped, and eight cases timed out."""
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential, "_usable_cores", lambda: cores)
+    monkeypatch.setattr(differential, "_physical_memory", lambda: memory)
+    assert default_workers() == expected
+
+
+def test_usable_cores_prefers_the_process_view(monkeypatch):
+    """The CPU-affinity mask (os.process_cpu_count, else
+    os.sched_getaffinity) wins over the machine's core count."""
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential.os, "cpu_count", lambda: 64, raising=False)
+    monkeypatch.setattr(differential.os, "process_cpu_count", lambda: 2, raising=False)
+    assert differential._usable_cores() == 2
+    monkeypatch.delattr(differential.os, "process_cpu_count")
+    monkeypatch.setattr(differential.os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    assert differential._usable_cores() == 3
+    monkeypatch.delattr(differential.os, "sched_getaffinity")
+    assert differential._usable_cores() == 64
+
+
+def test_physical_memory_on_this_host_is_known_or_none():
+    """The real sysconf lookup, unpatched: a positive byte count or None,
+    never a negative or zero product."""
+    import scorecard.differential as differential
+
+    memory = differential._physical_memory()
+    assert memory is None or memory > 0
+
+
+@pytest.mark.parametrize("runner", [run_candidate, run_differential])
+def test_runs_default_to_default_workers(monkeypatch, tmp_path, runner):
+    """Both entry points size their pool from default_workers() when no
+    --workers is given. (An empty selection builds only the candidate
+    pool; run_differential's reference pool shares the same `workers`.)"""
+    import concurrent.futures
+
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential, "default_workers", lambda: 3)
+    seen: list[int] = []
+    real = concurrent.futures.ThreadPoolExecutor
+
+    def spy(*args, max_workers=None, **kwargs):
+        seen.append(max_workers)
+        return real(*args, max_workers=max_workers, **kwargs)
+
+    monkeypatch.setattr(differential.concurrent.futures, "ThreadPoolExecutor", spy)
+    runner([], out_dir=tmp_path)
+    assert seen and set(seen) == {3}
+
+
+# ── the reference's qpdf: its trailer /ID must not come from the clock ──
+
+
+def _fake_qpdf(directory):
+    """A stand-in `qpdf` that prints its own argv, one per line."""
+    directory.mkdir()
+    exe = directory / "qpdf"
+    exe.write_text('#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n')
+    exe.chmod(0o755)
+    return exe
+
+
+def test_deterministic_qpdf_env_prepends_the_flag(tmp_path, monkeypatch):
+    """eval-ref-0 launches a bare `qpdf` without --deterministic-id, so its
+    output carried a clock-seeded /ID that a short all-hex value rule
+    matched at random. The shim, first on PATH, must add the flag ahead
+    of the reference's own arguments and pass those through unchanged."""
+    import subprocess
+
+    _fake_qpdf(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    with deterministic_qpdf_env() as env:
+        assert env is not None
+        out = subprocess.run(
+            ["qpdf", "--qdf", "--object-streams=disable", "a file.pdf", "-"],
+            env=env, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+    assert out == ["--deterministic-id", "--qdf", "--object-streams=disable", "a file.pdf", "-"]
+
+
+def test_deterministic_qpdf_env_is_none_without_qpdf(tmp_path, monkeypatch):
+    """No qpdf installed: inherit the environment, so the reference still
+    reports TOOL_MISSING exactly as before."""
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with deterministic_qpdf_env() as env:
+        assert env is None
+
+
+def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeypatch):
+    """run_differential hands every reference run an environment whose
+    `qpdf` adds --deterministic-id, and the candidate (which passes the
+    flag itself) its own unchanged environment."""
+    import contextlib
+    import os
+    import subprocess
+
+    import scorecard.differential as differential
+
+    _fake_qpdf(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    reference_verify = tmp_path / "reference-verify.py"
+
+    @contextlib.contextmanager
+    def fake_worktree(ref, root=None):
+        yield reference_verify
+
+    seen: dict[str, list[list[str]]] = {"reference": [], "candidate": []}
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        # What a bare `qpdf` launched by this CLI would actually receive.
+        argv = subprocess.run(
+            ["qpdf", "x.pdf"], env=None if env is None else dict(env),
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        seen["reference" if verify_path == reference_verify else "candidate"].append(argv)
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "worktree_for_ref", fake_worktree)
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_differential(["page.memo"], out_dir=tmp_path / "out")
+
+    assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}
