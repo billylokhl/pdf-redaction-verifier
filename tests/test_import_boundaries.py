@@ -179,7 +179,7 @@ def _module_attributes() -> frozenset[str]:
     walked further (typing.collections is collections): any other route
     must pass one of these names first, so banning them closes it.
     It differs between Python versions, so the guard bans
-    KNOWN_MODULE_ATTRS (3.10 to 3.14's) as well, and a test fails when
+    KNOWN_MODULE_ATTRS (3.10 to 3.15's) as well, and a test fails when
     the running Python exposes a name that list lacks. A lazy import
     (3.15's ``lazy import``) is resolved first, so it counts too."""
     lazy = getattr(types, "LazyImportType", ())  # 3.15+
@@ -203,12 +203,11 @@ def _module_attributes() -> frozenset[str]:
     return frozenset(names)
 
 
-# _module_attributes() under this test suite on Python 3.10 to 3.15
-# (3.15's release candidate bare, without the test dependencies), so the
-# ban does not depend on the interpreter the guard runs on: CI's 3.10 and
-# 3.12 must also ban what only a newer Python exposes
-# (dataclasses.annotationlib from 3.14), and a newer Python what only an
-# older one does (typing.contextlib before 3.13). The set also depends on
+# _module_attributes() under this test suite on Python 3.10 to 3.15 (3.15
+# on its release candidate), so the ban does not depend on the interpreter
+# the guard runs on: CI's 3.10 and 3.12 must also ban what only a newer
+# Python exposes (dataclasses.annotationlib from 3.14), and a newer Python
+# what only an older one does (typing.contextlib before 3.13). The set also depends on
 # what has run: on 3.14, typing rebinds _lazy_annotationlib to the
 # annotationlib module on first use, and Counter.most_common(n) binds
 # collections.heapq. Add a name when test_known_module_attrs_cover_this_python
