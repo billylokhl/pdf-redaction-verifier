@@ -564,21 +564,22 @@ difference fails the gate.
   (never exit `0`) and was found only by a local run. Open follow-ups:
   (a) the OCR engine's *tool* obligation should record the OS and Vision
   versions it ran under, so a result is never carried over to a
-  different OS; (b) each page's OCR *view* obligation should be discharged
-  only when both Vision completion handlers ran without error — today a
-  `performRequests` that succeeds without calling them leaves both
-  readings empty and the page passes as read; (c) because (b) does not
-  cover Vision returning less text with no error (only OCR tests run on
-  the new OS can catch that), (a)'s versions should gate whether a
-  result counts. macOS 27 also changed what Vision reads without any
-  error: a one-character-per-line stack became one sideways line, whose
-  misread made four `layout.vertical-stack-*` pattern-rule grid cases exit
-  `1` instead of `2`. The OCR view now holds a vertical line hard-finding
-  eligible only when an upright re-read confirms it (DESIGN.md,
-  two-tier model), measured on generated pages alone; (d) the 4b OCR
-  view should re-measure it on the real-world corpus's scanned pages,
-  and (e) read a scanned stack character by character (#61: with a
-  value rule it passes as clean).
+  different OS; (b) the ledger should keep, as each page's OCR *view*
+  obligation's witness, the check today's tool already makes (CHANGELOG,
+  "OCR readings Vision never delivered"): both Vision completion
+  handlers ran to the end without error, else the page is
+  `PAGE_FAILED`; (c) because (b) does not cover Vision returning less
+  text with no error (only OCR tests run on the new OS can catch that),
+  (a)'s versions should gate whether a result counts. macOS 27 also
+  changed what Vision reads without any error: a one-character-per-line
+  stack became one sideways line, whose misread made four
+  `layout.vertical-stack-*` pattern-rule grid cases exit `1` instead of
+  `2`. The OCR view now holds a vertical line hard-finding eligible only
+  when an upright re-read confirms it (DESIGN.md, two-tier model),
+  measured on generated pages alone; (d) the 4b OCR view should
+  re-measure it on the real-world corpus's scanned pages, and (e) read a
+  scanned stack character by character (#61: with a value rule it passes
+  as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -715,7 +716,16 @@ extended to warnings, sorted by `str` rather than the tuple itself (a
 code reported at both a string and a `None` storage otherwise crashes
 the sort) (`eval/caselib/run.py`); `caselib.run.available()` probing OCR
 directly rather than through whichever `verify.py` happens to be the
-in-process import. Not yet done, left for a later PR: the additive
+in-process import; the reference's `qpdf` run through a shim adding
+`--deterministic-id` (the candidate passes it itself), after an
+intermittent unlisted `SHORT` review warning was traced to qpdf's
+clock-seeded trailer `/ID` in the Binary sweep (owner's decision, over
+re-tagging the reference). Not yet done, left for a later PR:
+qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
+file) still swept by the Binary layer, so a 4-character all-hex value
+rule matches it on about 0.05% of files and a 3-character one (`Abe`,
+`Ada`) on about 0.75% — stable and fail-closed, but noise: bytes qpdf
+wrote itself are not file content; the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.

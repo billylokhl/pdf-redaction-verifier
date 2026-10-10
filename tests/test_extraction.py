@@ -688,3 +688,183 @@ class TestVisionBridge:
         copied.removeObjectForKey_(Vision.VNImageOptionProperties)
         copied.removeObjectForKey_(Vision.VNImageOptionCameraIntrinsics)
         assert all(normalize_string(SSN) in normalize_string(text) for text in readings)
+
+
+class _FakeCandidate:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def string(self) -> str:
+        return self._text
+
+
+class _FakePoint:
+    def __init__(self, x: float, y: float) -> None:
+        self.x, self.y = x, y
+
+
+class _FakeObservation:
+    """A horizontal line of text, as Vision reports one."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def topCandidates_(self, count: int) -> list[_FakeCandidate]:
+        return [_FakeCandidate(self._text)]
+
+    def topLeft(self) -> _FakePoint:
+        return _FakePoint(0.1, 0.9)
+
+    def topRight(self) -> _FakePoint:
+        return _FakePoint(0.5, 0.9)
+
+    def bottomLeft(self) -> _FakePoint:
+        return _FakePoint(0.1, 0.88)
+
+
+class _RaisingObservation:
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def topCandidates_(self, count: int) -> list[_FakeCandidate]:
+        raise self._exc
+
+
+class _UnprintableError(Exception):
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
+
+
+class _FakeRequest:
+    def __init__(self, handler: Any) -> None:
+        self.handler = handler
+        self.correction: bool | None = None
+        self.observations: list[Any] | None = None
+
+    def setRecognitionLevel_(self, level: Any) -> None:
+        pass
+
+    def setUsesLanguageCorrection_(self, on: bool) -> None:
+        self.correction = on
+
+    def results(self) -> list[Any] | None:
+        return self.observations
+
+
+def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
+    """A stand-in for the Vision module. *plans* says, per language
+    correction setting, what performRequests does with that request:
+    ("text", [lines]) runs its handler with those observations, ("none",
+    None) runs it with results() None, ("error", message) runs it with an
+    error, ("raises", exc) runs it on an observation whose topCandidates_
+    raises *exc*, and ("skip", None) never runs it — all while
+    still reporting success. Handlers run on the calling thread here; on
+    real Vision they run on worker threads, where an exception escaping
+    one aborts the process, so the handler itself must not let one out.
+    """
+
+    class _Alloc:
+        def __init__(self, make: Any) -> None:
+            self._make = make
+
+        def initWithCompletionHandler_(self, handler: Any) -> _FakeRequest:
+            return _FakeRequest(handler)
+
+        def initWithData_options_(self, data: Any, options: Any) -> Any:
+            return self._make()
+
+    class _ImageHandler:
+        def performRequests_error_(
+            self, requests: list[_FakeRequest], error: Any
+        ) -> tuple[bool, None]:
+            for request in requests:
+                assert request.correction is not None
+                kind, value = plans[request.correction]
+                if kind == "text":
+                    request.observations = [_FakeObservation(v) for v in value]
+                    request.handler(request, None)
+                elif kind == "none":
+                    request.handler(request, None)
+                elif kind == "error":
+                    request.handler(request, value)
+                elif kind == "raises":
+                    request.observations = [_RaisingObservation(value)]
+                    request.handler(request, None)
+            return True, None
+
+    class _Request:
+        @staticmethod
+        def alloc() -> _Alloc:
+            return _Alloc(None)
+
+    class _Handler:
+        @staticmethod
+        def alloc() -> _Alloc:
+            return _Alloc(_ImageHandler)
+
+    class _Vision:
+        VNRecognizeTextRequest = _Request
+        VNImageRequestHandler = _Handler
+        VNRequestTextRecognitionLevelAccurate = 0
+
+    return _Vision
+
+
+class TestVisionBridgeCompletion:
+    """A reading counts only once Vision has delivered it: each request's
+    completion handler must have run to the end. Fakes stand in for Vision
+    and Foundation, so these run on every platform."""
+
+    @staticmethod
+    def _recognize(monkeypatch: pytest.MonkeyPatch,
+                   plans: dict[bool, tuple[str, Any]]) -> tuple[str, str]:
+        from types import SimpleNamespace
+
+        from redaction_verifier.views import ocr
+
+        monkeypatch.setattr(ocr, "Vision", _fake_vision(plans), raising=False)
+        monkeypatch.setattr(ocr, "NSData", SimpleNamespace(
+            dataWithBytes_length_=lambda data, length: data), raising=False)
+        monkeypatch.setattr(ocr, "NSDictionary", SimpleNamespace(
+            dictionary=lambda: {}), raising=False)
+        on, off = ocr._vision_recognize_batch(b"png")
+        return "\n".join(o.text for o in on), "\n".join(o.text for o in off)
+
+    def test_both_handlers_completing_returns_both_readings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        readings = self._recognize(monkeypatch, {
+            True: ("text", ["SSN", SSN]), False: ("text", [SSN]),
+        })
+        assert readings == (f"SSN\n{SSN}", SSN)
+
+    def test_a_page_with_no_text_is_an_empty_reading_not_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._recognize(monkeypatch, {
+            True: ("text", []), False: ("text", []),
+        }) == ("", "")
+
+    @pytest.mark.parametrize("plans, message", [
+        ({True: ("skip", None), False: ("skip", None)}, "correction on never completed"),
+        ({True: ("text", [SSN]), False: ("skip", None)}, "correction off never completed"),
+        ({True: ("skip", None), False: ("text", [SSN])}, "correction on never completed"),
+        ({True: ("none", None), False: ("text", [SSN])}, "no results"),
+        ({True: ("text", [SSN]), False: ("error", "boom")}, "boom"),
+        ({True: ("raises", AttributeError("x")), False: ("text", [SSN])},
+         "completion handler raised AttributeError"),
+        # On a Vision worker thread even these would abort the process.
+        ({True: ("raises", SystemExit(0)), False: ("text", [SSN])},
+         "completion handler raised SystemExit"),
+        ({True: ("raises", _UnprintableError()), False: ("text", [SSN])},
+         "correction on never completed"),
+    ], ids=["neither-ran", "off-never-ran", "on-never-ran", "results-none", "error",
+            "handler-raised", "handler-raised-systemexit", "handler-raised-unprintable"])
+    def test_a_request_that_did_not_complete_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+        plans: dict[bool, tuple[str, Any]], message: str,
+    ) -> None:
+        # Reported success, but a reading was never delivered: an empty
+        # reading here would let the page pass as read with nothing on it.
+        with pytest.raises(RuntimeError, match=message):
+            self._recognize(monkeypatch, plans)

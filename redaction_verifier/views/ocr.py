@@ -4,12 +4,14 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged. Two changes
-since the move, both for macOS 27: the image handler's options are a
-native NSDictionary, not a Python {} (see _vision_recognize_batch); and
-a line Vision reads vertically is hard-finding eligible only when an
-upright re-read confirms it, since Vision there returns a stack of
-upright characters as one line read sideways (see _confirm_vertical).
+`verify.X` references and the CLI keep working unchanged. Three changes
+since the move. In _vision_recognize_batch: the image handler's options
+are a native NSDictionary, not a Python {} (macOS 27 compatibility), and
+a reading counts only once its completion handler ran to the end, with
+nothing allowed to escape a handler. And a line Vision reads vertically
+is hard-finding eligible only when an upright re-read confirms it, since
+Vision on macOS 27 returns a stack of upright characters as one line
+read sideways (see _confirm_vertical).
 
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
@@ -101,27 +103,53 @@ def _vision_recognize_batch(
     """OCR a PNG with Apple Vision in one pass: correction on AND off.
 
     Both requests share a single VNImageRequestHandler so the image is
-    decoded once instead of twice.  Raises on any Vision-level failure.
-    Returns each pass's observations in Vision's order.
+    decoded once instead of twice.  Raises on any Vision-level failure,
+    and unless both completion handlers ran to the end: a reading is
+    only returned once Vision has demonstrably delivered it. Returns each
+    pass's observations in Vision's order.
     """
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
     results: dict[bool, list[Observation]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
+    # Set only as a handler's last step: if performRequests ever reported
+    # success without having run a request's handler to the end, that
+    # reading would be empty and the page would pass as read with nothing
+    # on it.
+    completed: dict[bool, bool] = {True: False, False: False}
 
     def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
         def handler(request: Any, error: Any) -> None:
-            if error:
-                errors[correction].append(str(error))
-                return
-            for observation in request.results() or []:
-                candidates = observation.topCandidates_(1)
-                if candidates:
-                    tl, tr, bl = (observation.topLeft(), observation.topRight(),
-                                  observation.bottomLeft())
-                    results[correction].append(Observation(
-                        candidates[0].string(),
-                        (tl.x, tl.y), (tr.x, tr.y), (bl.x, bl.y),
-                    ))
+            # With more than one request, Vision runs these handlers on its
+            # own worker threads (seen on macOS 27; they finish before
+            # performRequests returns). An exception escaping one is
+            # uncaught on that thread and aborts the whole process, so
+            # nothing may leave this function: any failure is recorded and
+            # raised by the caller instead.
+            try:
+                if error:
+                    errors[correction].append(str(error))
+                    return
+                observations = request.results()
+                if observations is None:
+                    # A page with no text gives an empty list; None means
+                    # the request produced no results at all.
+                    errors[correction].append("no results")
+                    return
+                for observation in observations:
+                    candidates = observation.topCandidates_(1)
+                    if candidates:
+                        tl, tr, bl = (observation.topLeft(), observation.topRight(),
+                                      observation.bottomLeft())
+                        results[correction].append(Observation(
+                            candidates[0].string(),
+                            (tl.x, tl.y), (tr.x, tr.y), (bl.x, bl.y),
+                        ))
+                completed[correction] = True
+            except BaseException as exc:  # even SystemExit: it would abort
+                try:
+                    errors[correction].append(f"completion handler raised {exc!r}")
+                except BaseException:
+                    pass  # completed stays False: "never completed"
         return handler
 
     request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
@@ -155,6 +183,11 @@ def _vision_recognize_batch(
     for correction in (True, False):
         if errors[correction]:
             raise RuntimeError(f"Apple Vision error: {'; '.join(errors[correction])}")
+        if not completed[correction]:
+            raise RuntimeError(
+                "Apple Vision: the request with language correction "
+                f"{'on' if correction else 'off'} never completed"
+            )
 
     return (results[True], results[False])
 

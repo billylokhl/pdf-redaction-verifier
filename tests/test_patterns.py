@@ -26,7 +26,13 @@ from redaction_verifier.model import ScanReport, Secret, VerifyError
 from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS, load_rules
 from redaction_verifier.views import OCR_GENUINE_READINGS
 
-from .conftest import requires_full_env, requires_metadata_tools, run_verify
+from .conftest import (
+    report_layers,
+    report_lines,
+    requires_full_env,
+    requires_metadata_tools,
+    run_verify,
+)
 
 # Valid under SSA rules (area not 000/666/9xx, group not 00, serial not 0000).
 VALID_SSN = "123-45-6789"
@@ -194,7 +200,7 @@ class TestPatternDetection:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
         # The report must never leak the full match — only the masked tail.
         assert "123-45" not in result.stdout
         assert "6789" in result.stdout
@@ -209,7 +215,7 @@ class TestPatternDetection:
         # Not exit 1: the invalid card must produce no finding. (Exit 0
         # or 2 depending on environment completeness.)
         assert result.returncode in (0, 2), result.stdout
-        assert "LAYER: Text" not in result.stdout
+        assert "Text" not in report_layers(result.stdout)
         assert "Scanning" in result.stdout  # the scan actually ran
 
     def test_custom_pattern(self, tmp_path) -> None:
@@ -217,7 +223,7 @@ class TestPatternDetection:
         rules = _rules_file(tmp_path, [{"name": "case id", "pattern": r"CASE-\d{4}"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
 
     @requires_metadata_tools
     def test_pattern_in_metadata(self, tmp_path) -> None:
@@ -230,7 +236,7 @@ class TestPatternDetection:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(path, rules)
         assert result.returncode == 1
-        assert "LAYER: Metadata" in result.stdout or "LAYER: Binary" in result.stdout
+        assert report_layers(result.stdout) & {"Metadata", "Binary"}
 
 
 class TestTiering:
@@ -258,7 +264,7 @@ class TestTiering:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(pdf, rules)
         assert result.returncode != 0, result.stdout
-        assert "manual review" in result.stdout or "LAYER:" in result.stdout
+        assert "manual review" in result.stdout or report_lines(result.stdout)
 
     def test_same_line_table_cells_not_a_hard_finding(self, tmp_path) -> None:
         # Regression: extract_visual_text drops whitespace glyphs, so
@@ -290,7 +296,7 @@ class TestTiering:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(path, rules)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
 
     def test_space_separated_ssn_on_one_line_still_hard(self, tmp_path) -> None:
         # Guard against over-fencing: ordinary word spaces are narrower
@@ -299,7 +305,7 @@ class TestTiering:
         rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
 
     def test_adjacent_metadata_values_do_not_fuse(self, tmp_path) -> None:
         # Regression: metadata string values were joined with a single
@@ -418,7 +424,7 @@ scrub_metadata: true
         path = self._yaml(tmp_path, 'exact_values:\n  - "123-45-6789"\n')
         result = run_verify(pdf, path)
         assert result.returncode == 1
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
 
     def test_yaml_patterns_are_case_insensitive(self, tmp_path) -> None:
         # The redactor compiles its patterns IGNORECASE; a shared file
@@ -480,7 +486,7 @@ class TestYamlScalarCoercion:
         path = self._yaml(tmp_path, "exact_values:\n  - 00123456\n")
         result = run_verify(pdf, path)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: Text" in result.stdout
+        assert "Text" in report_layers(result.stdout)
 
 
 class TestYamlAdapterFidelity:
