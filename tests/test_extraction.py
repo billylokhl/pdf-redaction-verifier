@@ -451,6 +451,19 @@ class _FakeObservation:
         return [_FakeCandidate(self._text)]
 
 
+class _RaisingObservation:
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def topCandidates_(self, count: int) -> list[_FakeCandidate]:
+        raise self._exc
+
+
+class _UnprintableError(Exception):
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
+
+
 class _FakeRequest:
     def __init__(self, handler: Any) -> None:
         self.handler = handler
@@ -472,8 +485,8 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
     correction setting, what performRequests does with that request:
     ("text", [lines]) runs its handler with those observations, ("none",
     None) runs it with results() None, ("error", message) runs it with an
-    error, ("raises", None) runs it on an observation whose
-    topCandidates_ raises, and ("skip", None) never runs it — all while
+    error, ("raises", exc) runs it on an observation whose topCandidates_
+    raises *exc*, and ("skip", None) never runs it — all while
     still reporting success. Handlers run on the calling thread here; on
     real Vision they run on worker threads, where an exception escaping
     one aborts the process, so the handler itself must not let one out.
@@ -504,7 +517,7 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
                 elif kind == "error":
                     request.handler(request, value)
                 elif kind == "raises":
-                    request.observations = [None]  # None.topCandidates_ raises
+                    request.observations = [_RaisingObservation(value)]
                     request.handler(request, None)
             return True, None
 
@@ -566,9 +579,15 @@ class TestVisionBridgeCompletion:
         ({True: ("skip", None), False: ("text", [SSN])}, "correction on never completed"),
         ({True: ("none", None), False: ("text", [SSN])}, "no results"),
         ({True: ("text", [SSN]), False: ("error", "boom")}, "boom"),
-        ({True: ("raises", None), False: ("text", [SSN])}, "completion handler raised"),
+        ({True: ("raises", AttributeError("x")), False: ("text", [SSN])},
+         "completion handler raised AttributeError"),
+        # On a Vision worker thread even these would abort the process.
+        ({True: ("raises", SystemExit(0)), False: ("text", [SSN])},
+         "completion handler raised SystemExit"),
+        ({True: ("raises", _UnprintableError()), False: ("text", [SSN])},
+         "correction on never completed"),
     ], ids=["neither-ran", "off-never-ran", "on-never-ran", "results-none", "error",
-            "handler-raised"])
+            "handler-raised", "handler-raised-systemexit", "handler-raised-unprintable"])
     def test_a_request_that_did_not_complete_raises(
         self, monkeypatch: pytest.MonkeyPatch,
         plans: dict[bool, tuple[str, Any]], message: str,

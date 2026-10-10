@@ -404,6 +404,7 @@ class TestOcrFailureFailsClosed:
         )
         assert result.returncode == 2, result.stderr[-2000:]
         data = json.loads(out.read_text())
+        assert data["exit_code"] == 2 and data["verdict"] == VERDICTS[2]
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
         assert "completion handler raised" in data["warnings"][0]["message"]
 

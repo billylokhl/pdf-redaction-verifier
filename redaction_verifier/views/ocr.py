@@ -4,9 +4,11 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged. One change
-since the move: the image handler's options are a native NSDictionary,
-not a Python {} (see _vision_recognize_batch; macOS 27 compatibility).
+`verify.X` references and the CLI keep working unchanged. Two changes
+since the move, both in _vision_recognize_batch: the image handler's
+options are a native NSDictionary, not a Python {} (macOS 27
+compatibility), and a reading counts only once its completion handler
+ran to the end, with nothing allowed to escape a handler.
 
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
@@ -66,19 +68,20 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
     results: dict[bool, list[str]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
-    # Set only as a handler's last step: performRequests can report
-    # success without having run a request's handler to the end, and that
-    # reading would then be empty, so the page would pass as read with
-    # nothing on it.
+    # Set only as a handler's last step: if performRequests ever reported
+    # success without having run a request's handler to the end, that
+    # reading would be empty and the page would pass as read with nothing
+    # on it.
     completed: dict[bool, bool] = {True: False, False: False}
 
     def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
         def handler(request: Any, error: Any) -> None:
-            # With two requests, Vision runs these handlers on its own
-            # worker threads (finishing before performRequests returns). An
-            # exception escaping one is uncaught on that thread and aborts
-            # the whole process, so nothing may leave this function: any
-            # failure is recorded and raised by the caller instead.
+            # With more than one request, Vision runs these handlers on its
+            # own worker threads (seen on macOS 27; they finish before
+            # performRequests returns). An exception escaping one is
+            # uncaught on that thread and aborts the whole process, so
+            # nothing may leave this function: any failure is recorded and
+            # raised by the caller instead.
             try:
                 if error:
                     errors[correction].append(str(error))
@@ -94,8 +97,11 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
                     if candidates:
                         results[correction].append(candidates[0].string())
                 completed[correction] = True
-            except Exception as exc:
-                errors[correction].append(f"completion handler raised {exc!r}")
+            except BaseException as exc:  # even SystemExit: it would abort
+                try:
+                    errors[correction].append(f"completion handler raised {exc!r}")
+                except BaseException:
+                    pass  # completed stays False: "never completed"
         return handler
 
     request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(

@@ -238,10 +238,10 @@ flattened to images, text converted to vector outlines.
   itself unavailable and the run never exits `0`. A page where Vision
   raises an error is a `PAGE_FAILED` warning, so the run never exits `0`
   (`2`, or `1` if another layer found a leak). (Before the fix in the
-  CHANGELOG, this happened to every page on macOS 27.) So is a page
-  where Vision reports success without delivering both readings: a
-  reading counts only once its request's completion handler has run to
-  the end. A page Vision reads without error but with text missing is
+  CHANGELOG, this happened to every page on macOS 27.) A page where
+  Vision reports success without delivering both readings is also
+  `PAGE_FAILED`: a reading counts only once its request's completion
+  handler has run to the end. A page Vision reads without error but with text missing is
   not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings.
