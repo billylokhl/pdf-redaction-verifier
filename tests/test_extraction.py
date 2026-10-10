@@ -6,6 +6,7 @@ Each test pins a previously confirmed detection-gap bug.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pymupdf as fitz
@@ -461,16 +462,26 @@ class TestOcrVerticalLines:
         confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), fail)
         assert confirmed == [[False, True], []]
 
+    def test_a_bug_in_a_re_read_is_not_swallowed(self, monkeypatch) -> None:
+        def bug(call: int) -> tuple[list[str], list[str]]:
+            raise AttributeError("no such method")
+
+        with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
+            self._confirm(monkeypatch, ([ROTATED_90], []), bug)
+
     def test_the_re_read_crop_is_padded_by_the_line_thickness(self) -> None:
-        # ROTATED_90 is 0.016 x 2479 = 40 px thick: the first crop adds
-        # that plus 2 pt (8 px) around the line's own box; the retry more.
-        x0, y0 = 0.490 * A4_PX[0], (1 - 0.510) * A4_PX[1]
-        x1, y1 = 0.506 * A4_PX[0], (1 - 0.406) * A4_PX[1]
-        first = ocr._box(ROTATED_90, *A4_PX, ocr.REREAD_PADS[0])
-        assert first.x0 <= x0 - 47 and first.x1 >= x1 + 47
-        assert first.y0 <= y0 - 47 and first.y1 >= y1 + 47
-        assert first.width < (x1 - x0) + 2 * 50   # thickness, not the line's length
-        assert ocr._box(ROTATED_90, *A4_PX, ocr.REREAD_PADS[1]).contains(first)
+        # A slanted line, about 43 px thick and 690 px long: the first crop
+        # adds its thickness plus 2 pt around the line's own box, not a
+        # margin as large as the box's short side (about 520 px here).
+        slanted = ocr.Observation("x", (0.3, 0.3), (0.5, 0.45), (0.29, 0.31))
+        corners = [(x * A4_PX[0], (1 - y) * A4_PX[1]) for x, y in (
+            (0.3, 0.3), (0.5, 0.45), (0.29, 0.31), (0.49, 0.46))]
+        thickness = math.hypot(corners[0][0] - corners[2][0], corners[0][1] - corners[2][1])
+        x0, x1 = min(x for x, _ in corners), max(x for x, _ in corners)
+        first = ocr._box(slanted, *A4_PX, ocr.REREAD_PADS[0])
+        margin = (first.width - (x1 - x0)) / 2
+        assert abs(margin - (thickness + 2 * ocr.OCR_DPI / 72)) <= 1.5
+        assert ocr._box(slanted, *A4_PX, ocr.REREAD_PADS[1]).contains(first)
 
     def test_a_re_read_counts_only_lines_read_horizontally(self, monkeypatch) -> None:
         # Turned upright, a stack is a row of sideways glyphs; Vision may
@@ -596,6 +607,22 @@ class TestOcrVerticalLinesWithVision:
         page.insert_text(at, text, fontname="cour", fontsize=8, rotate=rotate)
         try:
             assert normalize_string(SSN) in self._genuine(page)
+        finally:
+            doc.close()
+
+    def test_a_line_slanted_near_45_degrees_stays_one_line(self) -> None:
+        # 135 degrees, 10 pt, near the right edge: turned upright it is
+        # still near 45 degrees, which a 45-degree cut on re-reads dropped.
+        text, size, angle = f"Employee SSN {SSN} on file", 10, 135
+        doc = fitz.open()
+        page = doc.new_page()
+        length = fitz.get_text_length(text, fontsize=size)
+        cos, sin = math.cos(math.radians(angle)), -math.sin(math.radians(angle))
+        centre = (page.rect.width - abs(cos) * length / 2 - size - 4, page.rect.height / 2)
+        start = fitz.Point(centre[0] - cos * length / 2, centre[1] - sin * length / 2)
+        page.insert_text(start, text, fontsize=size, morph=(start, fitz.Matrix(angle)))
+        try:
+            assert any(normalize_string(SSN) in line for line in self._genuine(page))
         finally:
             doc.close()
 

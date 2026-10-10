@@ -53,9 +53,11 @@ OCR_GENUINE_READINGS = 2
 # many per page, retries included; a vertical line past the cap stays
 # unconfirmed (manual review), so a page of sideways text cannot make
 # the run unbounded.
-# Each re-read is two Vision calls on a small crop, both passes each
-# (measured 70-150 ms; a page of sideways text about 8-11 s, of text
-# slanted near 45 degrees about 25 s, against under half a second).
+# Each re-read is two Vision calls, both passes each, on a crop around
+# the line: 70-150 ms for a vertical line, more for a slanted one, whose
+# crop is a square around the whole line. Measured per page: sideways
+# text about 8-11 s, text slanted near 45 degrees about a minute, against
+# under half a second.
 MAX_UPRIGHT_REREADS = 64
 # The margin around a re-read box, in multiples of the line's thickness:
 # a second, wider crop for a line the first did not confirm (Vision
@@ -195,8 +197,10 @@ def _upright_reads(image: fitz.Page, box: fitz.IRect) -> tuple[list[str], list[s
         passes = _vision_recognize_batch(pix.tobytes("png"))
         for read, observations in zip(reads, passes):
             # A stack turned upright may be read sideways again (near
-            # vertical), which confirms nothing; a line near 45 degrees
-            # stays near 45 turned, so only steep lines are left out.
+            # vertical), which confirms nothing. A line near 45 degrees
+            # stays near 45 turned, so only steep lines are left out: with
+            # a 45-degree cut, a 10 pt line at 135 degrees near the page's
+            # right edge was never confirmed.
             read.extend(o.text for o in observations
                         if not _is_vertical(o, width, height, steeper_than=60.0))
     return reads
@@ -240,9 +244,11 @@ def _confirm_vertical(
                     image.insert_image(image.rect, stream=png_bytes)
                 try:
                     reads = _upright_reads(image, fitz.IRect(*corners))
-                except Exception:
-                    # A re-read that fails confirms nothing: its lines stay
+                except RuntimeError:
+                    # Vision failing on a re-read (_vision_recognize_batch
+                    # raises RuntimeError) confirms nothing: its lines stay
                     # manual review, and the page's other lines still count.
+                    # Anything else is a bug and fails the page (PAGE_FAILED).
                     continue
                 for p, i in members:
                     text = normalize_string(passes[p][i].text)

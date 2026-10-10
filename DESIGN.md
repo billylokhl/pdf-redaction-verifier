@@ -346,8 +346,11 @@ same misread and stay hard, a finding on a number not on the page
 ([#65](https://github.com/billylokhl/pdf-redaction-verifier/issues/65));
 and a page gets at most 64 re-reads, retries included, so on a page of
 sideways text (a scan inserted rotated) the lines past that are manual
-review. A re-read that fails confirms nothing (manual review); it does
-not fail the page. Lines read horizontally, such as a row of form
+review. A re-read Vision fails on confirms nothing (manual review); it
+does not fail the page. Small slanted text is sometimes not confirmed
+either: in a further 1,080-page sweep of a slanted SSN line (30–60° in
+each quadrant, 7–14 pt, centred and at the page edges), 10 of the 1,047
+lines Vision read, mostly 7 pt near an edge, were manual review. Lines read horizontally, such as a row of form
 boxes, are not re-read.
 
 ## Bounded resources
@@ -363,9 +366,11 @@ masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 OCR's upright re-reads of vertical lines are capped at 64 per page,
-retries included: a page of sideways text costs about 8–11 s and one of
-text slanted near 45° about 25 s, instead of under half a second
-(measured on macOS 27), so a long sideways scan is slow, not unbounded.
+retries included (at most 128 extra Vision calls): a page of sideways
+text costs about 8–11 s and one of text slanted near 45°, whose crops
+are squares around whole lines, about a minute, instead of under half a
+second (measured on macOS 27), so a long sideways scan is slow, not
+unbounded.
 Vision calls themselves have no deadline (as before the re-reads).
 
 The subprocesses themselves are launched defensively, not just bounded:
