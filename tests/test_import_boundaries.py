@@ -178,7 +178,9 @@ def _module_attributes() -> frozenset[str]:
     typing.contextlib, re.enum.bltns, ...). Only allowlisted modules are
     walked further (typing.collections is collections): any other route
     must pass one of these names first, so banning them closes it.
-    Computed rather than listed: it differs between Python versions."""
+    It differs between Python versions, so the guard bans
+    KNOWN_MODULE_ATTRS (every version's) as well, and a test fails when
+    the running Python exposes a name that list lacks."""
     names: set[str] = set()
     seen: set[str] = set()
     extra = frozenset().union(*ENTRY_POINTS.values())
@@ -197,10 +199,24 @@ def _module_attributes() -> frozenset[str]:
     return frozenset(names)
 
 
+# _module_attributes() under this test suite on Python 3.10 to 3.14 (and
+# in a bare 3.15 release candidate), so the ban does not depend on the
+# interpreter the guard runs on: CI's 3.10 and 3.12 must also ban what
+# only a newer Python exposes (typing.annotationlib on 3.14), and a newer
+# Python what only an older one does (typing.contextlib before 3.13). The
+# set also depends on what has run: 3.14's typing rebinds
+# _lazy_annotationlib to the annotationlib module on first use. Add a name
+# when test_known_module_attrs_cover_this_python fails; never remove one.
+KNOWN_MODULE_ATTRS = frozenset({
+    "_casefix", "_compiler", "_constants", "_jit", "_lazy_annotationlib", "_locale",
+    "_parser", "_sre", "_sys", "_thread", "abc", "annotationlib", "bltns", "builtins",
+    "codecs", "contextlib", "copy", "copyreg", "decoder", "encoder", "functools", "inspect",
+    "itertools", "keyword", "monitoring", "operator", "scanner", "sre_compile", "sre_parse",
+    "sys", "types", "warnings"})
 # Module attributes are banned as attributes and as strings
 # (getattr(dataclasses, "inspect")); the fixed names keep the ban on
 # versions where one is not reachable.
-MODULE_ATTRS = _module_attributes() | {
+MODULE_ATTRS = _module_attributes() | KNOWN_MODULE_ATTRS | {
     "inspect", "sys", "_sys", "os", "builtins", "bltns", "importlib", "subprocess"}
 BANNED_ATTRS |= MODULE_ATTRS | {"_evaluate", "__forward_code__"}
 # ...and as strings, except "keyword": the lexer's TokenKind.KEYWORD value,
@@ -337,12 +353,25 @@ class TestProcessBoundary:
         "typing.List['x'].__args__[0]._evaluate(g, None, frozenset())",
         "dataclasses.functools.singledispatch", "typing.contextlib", "re.copyreg",
         "getattr(typing, 'functools')",
+        # Module attributes of another Python version than the one running
+        # (typing.contextlib is gone in 3.13; typing.annotationlib is new in 3.14).
+        "typing.annotationlib.call_evaluate_function(f, 1)", "x = 'annotationlib'",
+        "re.sre_compile", "x = 'contextlib'", "typing._lazy_annotationlib",
         # Imports anywhere in the tree, not only at the top.
         "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",
     ])
     def test_check_catches_each_form_of_forbidden_import(self, source: str) -> None:
         assert _forbidden_imports(source, "redaction_verifier.inventory.tiling", False)
+
+    def test_known_module_attrs_cover_this_python(self) -> None:
+        # The running Python's module attributes are banned either way;
+        # this keeps KNOWN_MODULE_ATTRS complete, so the guard on CI's
+        # Pythons also bans them.
+        missing = _module_attributes() - KNOWN_MODULE_ATTRS
+        assert not missing, (
+            f"Python {sys.version_info[0]}.{sys.version_info[1]} exposes module "
+            f"attributes {sorted(missing)}: add them to KNOWN_MODULE_ATTRS")
 
     def test_entry_points_exist_and_are_exempt_only_for_their_own_modules(self) -> None:
         for module, extra in ENTRY_POINTS.items():
