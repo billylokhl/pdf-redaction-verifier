@@ -460,13 +460,20 @@ def scan_page_layer(
             for text in variants[:hard_variants]:
                 for line in text.split("\n"):
                     page_hard.update(match_patterns(line, patterns, page_hard))
-            for text in variants:
+            for vi, text in enumerate(variants):
                 seen = set(page_hard) | set(page_soft)
                 if len(seen) == len(patterns):
                     break
                 page_soft.update(
                     match_patterns(text, patterns, seen, collapse_separators=True)
                 )
+                # A reconstruction's own lines, as written: collapsing
+                # separators can stop a rule that needs a run of them
+                # ('REF--\d{6}') from matching anywhere above.
+                if vi >= hard_variants:
+                    for line in text.split("\n"):
+                        page_soft.update(match_patterns(
+                            line, patterns, set(page_hard) | set(page_soft)))
         for name, sample in page_hard.items():
             hard_pages, _ = layer_hard.setdefault(name, ([], sample))
             hard_pages.append(page_index + 1)

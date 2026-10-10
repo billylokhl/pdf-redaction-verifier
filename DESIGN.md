@@ -318,27 +318,36 @@ so both feed the hard tier. Correction-off is run precisely because the
 language model can "correct" digits in codes and serial numbers.
 
 One exception. On macOS 27, Vision returns a one-character-per-line
-stack as a single line rotated 90° or 270° — the orientation it gives
-rotated text — and reads the upright glyphs sideways, often wrongly
+stack as a single line rotated 270° (in every case measured) — an
+orientation it also gives rotated text — and reads the upright glyphs sideways, often wrongly
 (`199140190` for the digits 1 to 9: a valid SSN shape that is not on the
 page). So a line Vision reads vertically counts as a line of the page
 only if an upright re-read confirms it: its box is cropped, turned 90°
 and 270°, and read again, and a re-read in the same pass must contain
-its text (one retry with a wider crop; at most 64 per page). Rotated
-text turned upright is an ordinary line and reads back the same; a
-stack turns into a row of sideways glyphs and does not. Shape alone
+its text (one retry with a wider crop). Rotated text turned upright is
+an ordinary line and reads back the same; a stack turns into a row of
+sideways glyphs and usually does not. Shape alone
 cannot tell them apart: letter-spaced or space-separated rotated text
 is as sparse along the line as a stack. In the genuine readings an
 unconfirmed line is split one character per line, as the Text layer's
 genuine readings hold a stack, so nothing in it is hard; Vision's own
-line is kept in two more, reconstructed, readings (which the cross-page
-pattern scan also reads), so a value or pattern in it is still manual
-review. On 1,728 generated pages under macOS 27 — 8 fonts, 8–24 pt,
-plain, letter-spaced and space-separated rotated text, and stacks, each
-as text and as a scanned image — no stack's genuine readings held its
-value or matched a pattern, and 688 of the 692 rotated values Vision
-read stayed hard (the other 4 are manual review).
-Lines read horizontally, such as a row of form boxes, are not re-read.
+line is kept in two more, reconstructed, readings, so a value or
+pattern in it is still manual review: their lines are matched as
+written as well as with separators collapsed, and the cross-page pattern
+scan reads the correction-on one. On 1,728 generated pages under
+macOS 27 — 8 fonts, 8–24 pt, plain, letter-spaced and space-separated
+rotated text, and stacks of `123456789`, `123-45-6789` and `SECRET`,
+each as text and as a scanned image — no stack's genuine readings held
+its value or matched a pattern, and 688 of the 692 rotated values
+Vision read stayed hard (the other 4, including plain 16 pt Helvetica
+at 90°, are manual review). Two limits: a stack of glyphs that look
+alike turned sideways (`0`, `1`, `8`, `O`, `I`, `H`) can re-read as the
+same misread and stay hard, a finding on a number not on the page
+([#65](https://github.com/billylokhl/pdf-redaction-verifier/issues/65));
+and at most 64 vertical lines per page are re-read, so on a page of
+sideways text (a scan inserted rotated) the lines past that are manual
+review. Lines read horizontally, such as a row of form boxes, are not
+re-read.
 
 ## Bounded resources
 
@@ -352,6 +361,9 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
+OCR's upright re-reads of vertical lines are capped at 64 per page: a
+page of sideways text costs about 8–11 s instead of under half a second
+(measured on macOS 27), so a long sideways scan is slow, not unbounded.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)

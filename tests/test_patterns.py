@@ -328,7 +328,7 @@ class TestTiering:
                 doc, SecretMatcher([Secret("unused", "zzzz")]), report,
                 layer="OCR",
                 extractor=lambda page: ["SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
-                note="test", patterns=patterns, hard_variants=2,
+                note="test", patterns=patterns, hard_variants=verify.OCR_GENUINE_READINGS,
             )
             assert [f.secret_name for f in report.findings] == ["ssn"]
         finally:

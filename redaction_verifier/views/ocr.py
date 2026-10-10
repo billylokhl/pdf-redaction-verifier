@@ -51,7 +51,8 @@ OCR_GENUINE_READINGS = 2
 # Upright re-reads of vertical lines (_confirm_vertical), at most this
 # many per page; a vertical line past the cap stays unconfirmed (manual
 # review), so a page of sideways text cannot make the run unbounded.
-# Each re-read costs two small Vision calls (~70 ms).
+# Each re-read is two Vision calls on a small crop, both passes each
+# (measured 70-150 ms; a page of sideways text about 18 times slower).
 MAX_UPRIGHT_REREADS = 64
 # The margin around a re-read box, in multiples of the line's thickness:
 # a second, wider crop for a line the first did not confirm (Vision
@@ -202,8 +203,10 @@ def _confirm_vertical(
     the orientation it gives rotated text, and reads the upright glyphs
     sideways, often wrongly ('199140190' for the digits 1 to 9). Turned
     upright, rotated text is an ordinary line and reads back the same; a
-    stack becomes a row of sideways glyphs and does not. No geometric
-    cut separates them: letter-spaced rotated text is as sparse as a
+    stack becomes a row of sideways glyphs and usually does not. Glyphs
+    that look alike turned sideways (0, 1, 8, O, I, H) can read back the
+    same misread, which then stays hard-eligible (#65). No geometric cut
+    separates the two: letter-spaced rotated text is as sparse as a
     stack. Unconfirmed is never clean: the caller keeps such a line only
     as a reconstruction (manual review).
     """

@@ -247,8 +247,11 @@ flattened to images, text converted to vector outlines.
   characters written one per line as a single line read sideways, often
   misread (`199140190` for the digits 1 to 9). So a vertical line's box
   is turned upright and read again: rotated text reads back the same, a
-  stack does not. Like the Text layer's reconstructed readings, a match
-  in an unconfirmed line is only ever a manual-review warning.
+  stack usually does not (a stack of `0`, `1`, `8`, `O`, `I`, `H` can
+  repeat its misread: #65). Like the Text layer's reconstructed
+  readings, a match in an unconfirmed line is only ever a manual-review
+  warning. At most 64 vertical lines per page are re-read; past that
+  they are manual review.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page

@@ -366,7 +366,7 @@ class TestPageBreaksOcr:
         for _ in readings:
             doc.new_page()
         by_page = dict(enumerate(readings))
-        return _scan(doc, layer="OCR", hard_variants=2,
+        return _scan(doc, layer="OCR", hard_variants=ocr.OCR_GENUINE_READINGS,
                      extractor=lambda page: by_page[page.number])
 
     def test_seam_in_the_second_reading_only(self) -> None:
@@ -442,14 +442,29 @@ class TestOcrVerticalLines:
 
     def test_an_unconfirmed_line_gets_one_wider_re_read(self, monkeypatch) -> None:
         confirmed = self._confirm(monkeypatch, ([ROTATED_270], []),
-                                  lambda call: (["123-45-"] if call == 2 else ["123-45-ął"], []))
+                                  lambda call: (["123-45-"] if call == 2 else ["123-4ął"], []))
         assert confirmed == [[True], []]
 
     def test_past_the_cap_a_vertical_line_stays_unconfirmed(self, monkeypatch) -> None:
-        monkeypatch.setattr(ocr, "MAX_UPRIGHT_REREADS", 0)
-        confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []),
-                                  lambda call: pytest.fail("re-read past the cap"))
-        assert confirmed == [[False, True], []]
+        # One re-read allowed: the first line takes it, failing in both
+        # rounds, so the second line is never re-read.
+        monkeypatch.setattr(ocr, "MAX_UPRIGHT_REREADS", 1)
+        confirmed = self._confirm(
+            monkeypatch, ([ROTATED_90, ROTATED_270, HORIZONTAL], []),
+            lambda call: ([], []) if call == 1 else pytest.fail("re-read past the cap"))
+        assert confirmed == [[False, False, True], []]
+
+    def test_a_re_read_counts_only_lines_read_horizontally(self, monkeypatch) -> None:
+        # Turned upright, a stack is a row of sideways glyphs; Vision may
+        # read that sideways again, which confirms nothing.
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: ([_as(STACK, "123"), _as(HORIZONTAL, "456")], []))
+        doc = fitz.open()
+        try:
+            image = doc.new_page(width=200, height=100)
+            assert ocr._upright_reads(image, fitz.IRect(0, 0, 200, 100)) == (["456", "456"], [])
+        finally:
+            doc.close()
 
     def test_genuine_readings_split_an_unconfirmed_line_one_character_per_line(
         self, monkeypatch
@@ -512,6 +527,20 @@ class TestOcrVerticalLines:
         assert exit_code == 1
         assert [(f["layer"], f["rule"]) for f in data["findings"]] == [("OCR", rule["name"])]
 
+    def test_an_unconfirmed_line_still_matches_a_rule_needing_a_run_of_separators(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Collapsing separators turns 'REF--482913' into 'REF-482913';
+        # the raw line itself must still be matched (it was hard before
+        # vertical lines needed confirming, so it must not become silent).
+        exit_code, data = self._scan(
+            tmp_path, monkeypatch, [_as(STACK, "REF--482913")],
+            {"name": "Ref", "pattern": r"REF--\d{6}"}, upright="")
+        assert exit_code == 2
+        assert data["findings"] == []
+        assert ("REVIEW_FUSED_PATTERN", "OCR", "Ref") in {
+            (w["code"], w["layer"], w["rule"]) for w in data["warnings"]}
+
     def test_an_unconfirmed_pattern_across_a_page_break_is_manual_review(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -537,11 +566,12 @@ class TestOcrVerticalLinesWithVision:
         return [normalize_string(ln)
                 for r in readings[:ocr.OCR_GENUINE_READINGS] for ln in r.split("\n")]
 
+    @pytest.mark.parametrize("rotate, at", [(90, (300, 650)), (270, (300, 150))])
     @pytest.mark.parametrize("text", ["1 2 3 - 4 5 - 6 7 8 9", SSN])
-    def test_spaced_rotated_digits_stay_one_line(self, text) -> None:
+    def test_spaced_rotated_digits_stay_one_line(self, text, rotate, at) -> None:
         doc = fitz.open()
         page = doc.new_page()
-        page.insert_text((300, 650), text, fontname="cour", fontsize=8, rotate=90)
+        page.insert_text(at, text, fontname="cour", fontsize=8, rotate=rotate)
         try:
             assert normalize_string(SSN) in self._genuine(page)
         finally:

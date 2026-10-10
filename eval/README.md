@@ -640,7 +640,7 @@ own machine (`sha256sum`) when a number needs explaining.
   library locally after an OS upgrade: on macOS 27 that is how an OCR
   failure on every page was found, and then Vision reading a
   one-character-per-line stack as one line, which turned four
-  `layout.vertical-stack-*-pattern` cases from manual review into a hard
+  `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
   finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
   skips the grids, so only the weekly job runs those cases with OCR.
 - **Local**: the real-world corpus (above) — never in CI, since the

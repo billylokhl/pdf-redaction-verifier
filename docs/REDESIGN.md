@@ -572,7 +572,7 @@ difference fails the gate.
   the new OS can catch that), (a)'s versions should gate whether a
   result counts. macOS 27 also changed what Vision reads without any
   error: a one-character-per-line stack became one sideways line, whose
-  misread made four `layout.vertical-stack-*-pattern` grid cases exit
+  misread made four `layout.vertical-stack-*` pattern-rule grid cases exit
   `1` instead of `2`. The OCR view now holds a vertical line hard-finding
   eligible only when an upright re-read confirms it (DESIGN.md,
   two-tier model), measured on generated pages alone; (d) the 4b OCR
