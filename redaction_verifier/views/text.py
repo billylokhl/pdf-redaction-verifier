@@ -32,7 +32,11 @@ MAX_LINE_TOLERANCE_PT: float = 12.0
 
 # How many of extract_visual_text's readings are genuine reading orders
 # (hard-finding eligible); the rest are reconstructions (manual review).
-TEXT_GENUINE_READINGS = 4
+TEXT_GENUINE_READINGS = 7
+# How many of them feed the hard page seam (a value running from one
+# page's last line onto the next page's first line). Not the readings
+# across the visible edge: their last line may be off-page text.
+TEXT_SEAM_READINGS = 4
 
 
 def _reconstruct(
@@ -127,38 +131,66 @@ def _join_cluster(
 def extract_visual_text(page: fitz.Page) -> list[str]:
     """Reconstruct page text in visual reading orders.
 
-    Returns six readings, or [] for a page with no glyphs:
+    Returns nine readings, or [] for a page with no glyphs:
 
     0. horizontal — visible, horizontally written text, lines top to bottom;
     1-2. rotated, top-to-bottom and bottom-to-top — visible text written
        vertically (a rotated matrix), read along its own direction;
     3. off-page — text placed outside the visible area (crop or media box),
        read horizontally on its own;
-    4-5. every visible glyph read in vertical columns, top-to-bottom and
+    4. across the visible edge, horizontal — every horizontally written
+       glyph, visible or not, read as lines;
+    5-6. across the visible edge, rotated — every vertically written
+       glyph, visible or not, read along its own direction;
+    7-8. every visible glyph read in vertical columns, top-to-bottom and
        bottom-to-top.
 
-    Readings 0-3 are genuine: each reads text the way it was written.
-    Off-page text is kept apart from the visible readings: merged into
-    them, a slug or Bates stamp below the page became the page's "last
-    line" and hid a value split across the page break. Readings 4-5 are
-    reconstructions: a column of an ordinary horizontal page stacks one
-    glyph from each of many lines (a ledger's last digits, a numbered
-    list's numbers), so they can assemble a value by accident — yet they
-    are also the only reading of a value written one character per line.
-    Callers treat them as manual-review only.
+    Readings 0-6 are genuine: each reads text the way it was written, so
+    the caller matches known values and pattern rules on each of their
+    lines for hard findings. Off-page text is kept apart from the visible
+    readings 0-2: merged into them, a slug or Bates stamp below the page
+    became the page's "last line" and hid a value split across the page
+    break. Readings 4-6 read across the visible edge, so a value that
+    starts on the page and runs off it, or vertically written text off
+    the page (which reading 3, horizontal only, scrambles), is read
+    whole. They add to 0-3 and replace none of them. Across a page
+    break, readings 0-3 (TEXT_SEAM_READINGS) feed the hard seam, so 0-2
+    still give the visible text's true last line; 4-6 feed only the
+    caller's manual-review net, because their last line may be an
+    off-page slug, which does not run on into the next page. When a page
+    has no off-page glyph of a direction, the matching across-the-edge
+    reading repeats the visible one, so that net always joins the same
+    reading on adjacent pages. A visible line and an off-page slug on one
+    baseline meet in reading 4 only across a gap; one wider than one and
+    a half characters and three times the line's median gap is a column
+    break (_join_cluster), which no match crosses.
+
+    Readings 7-8 are reconstructions: a column of an ordinary horizontal
+    page stacks one glyph from each of many lines (a ledger's last
+    digits, a numbered list's numbers), so they can assemble a value by
+    accident — yet they are also the only reading of a value written one
+    character per line. Callers treat them as manual-review only.
     """
     Glyph = tuple[float, float, float, float, str]
     flat: list[Glyph] = []
     rotated: list[Glyph] = []
-    off_page: list[Glyph] = []
+    off_page: list[Glyph] = []      # in drawing order, both directions
+    off_flat: list[Glyph] = []
+    off_rotated: list[Glyph] = []
     # The visible area in the (unrotated) coordinates glyphs are reported
     # in, computed once per page: a per-glyph Point * Matrix doubled the
-    # Text layer's run time. Glyphs are reported with the visible area's
-    # top-left corner at the origin, whatever the rotation; derotating
-    # page.rect gives the right size but, on a rotated page whose crop box
-    # reaches past its media box, the wrong offset (the rotation matrix is
-    # built from the unclipped crop box), which filed visible text as
-    # off-page and split a value across the two readings.
+    # Text layer's run time. Its origin is (0, 0): glyphs are reported
+    # with the top-left corner of the visible area (crop box ∩ media box,
+    # scaled by /UserUnit) at the origin, whatever the rotation. Its size
+    # is page.rect's, derotated. page.rect * page.derotation_matrix has
+    # that size but not that offset on a rotated page (90, 180 or 270)
+    # whose crop box reaches past its media box, whose /UserUnit is not 1,
+    # or whose crop box ∩ media box is empty (MuPDF then falls back to a
+    # 612x792 frame): it filed visible text as off-page and split a value
+    # across the two readings. PyMuPDF normalizes a /Rotate that is not a
+    # multiple of 90 to 0, so the derotation matrix is the identity; MuPDF
+    # still turns such a page to the nearest multiple of 90 and reports
+    # glyphs in the turned frame, which page.rect describes as it is.
     unrotated = page.rect * page.derotation_matrix
     vx0, vy0, vx1, vy1 = 0.0, 0.0, unrotated.width, unrotated.height
     # No clipping to the page: text outside the visible area is invisible
@@ -179,12 +211,13 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
                     x0, y0, x1, y1 = char["bbox"]
                     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
                     glyph = (cx, cy, x1 - x0, y1 - y0, c)
-                    if not (vx0 <= cx <= vx1 and vy0 <= cy <= vy1):
+                    visible = vx0 <= cx <= vx1 and vy0 <= cy <= vy1
+                    if not visible:
                         off_page.append(glyph)
-                    elif written_vertically:
-                        rotated.append(glyph)
+                    if written_vertically:
+                        (rotated if visible else off_rotated).append(glyph)
                     else:
-                        flat.append(glyph)
+                        (flat if visible else off_flat).append(glyph)
 
     if not (flat or rotated or off_page):
         return []
@@ -198,5 +231,9 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     horizontal = _reconstruct(flat, cluster_axis=1) if flat else ""
     rotated_down, rotated_up = columns(rotated)
     outside = _reconstruct(off_page, cluster_axis=1) if off_page else ""
+    across = _reconstruct(flat + off_flat, cluster_axis=1) if off_flat else horizontal
+    across_down, across_up = (columns(rotated + off_rotated) if off_rotated
+                              else (rotated_down, rotated_up))
     all_down, all_up = columns(flat + rotated)
-    return [horizontal, rotated_down, rotated_up, outside, all_down, all_up]
+    return [horizontal, rotated_down, rotated_up, outside,
+            across, across_down, across_up, all_down, all_up]

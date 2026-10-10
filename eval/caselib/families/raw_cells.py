@@ -127,6 +127,73 @@ def off_page_font_coded(path: Path) -> None:
     _write(path, one_page(content, o6=differences_font(SECRET)))
 
 
+# ── Font-coded text across the visible edge, or written vertically off it ─
+# The visible area is the crop box ∩ the media box. The Text layer reads
+# every glyph of one writing direction together, visible or not, so a
+# value that starts on the page and runs off it, or that is written
+# vertically outside it, is read whole. Font codes keep the Objects
+# layer's literal scan from reading the value, and OCR sees at most the
+# visible half, so the Text layer is the one that must find it. Each
+# layout at /Rotate 0 and 270: the visible area is computed in the
+# unrotated frame glyphs are reported in.
+EDGE_MISTAKE = "Nobody redacted it; the value simply runs past the visible margin."
+OFF_PAGE_MISTAKE = "Nobody redacted it; the value simply sits off the visible page."
+
+
+def _edge_page(path: Path, matrix: bytes, crop: tuple[int, int, int, int] | None,
+               rotate: int) -> None:
+    """A page with a line of plain text and SECRET in font codes drawn
+    with text matrix *matrix*, under an optional crop box and /Rotate."""
+    content = stream(b"", text("Quarterly report", 400) + b"\nBT /F2 12 Tf " + matrix
+                     + b" Tm " + coded(SECRET) + b" Tj ET")
+    extra = b"/Rotate %d" % rotate
+    if crop is not None:
+        extra += b" /CropBox [%d %d %d %d]" % crop
+    objects = one_page(content, o7=differences_font(SECRET))
+    objects[3] = page(resources=b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>", extra=extra)
+    _write(path, objects)
+
+
+def _edge_cases() -> None:
+    inside = (0, 0, 500, 792)        # a crop box inside the 612x792 media box
+    overhanging = (0, 0, 812, 792)   # one reaching 200 pt past its right edge
+    for rotate, suffix in ((0, ""), (270, "-rotated")):
+        turned = " The page is turned with /Rotate 270." if rotate else ""
+
+        @leak(f"page.raw-font-coded-runs-past-crop-box{suffix}", "off-page.font.straddling",
+              "The SSN in font codes, starting inside the crop box and running past its "
+              "right edge: the end of the value is cropped away, the rest is on the page."
+              + turned,
+              mistake="Cropping the page so that it cuts through a value.",
+              recovery="Remove the crop box and read the font's Encoding /Differences.")
+        def past_crop(path: Path, rotate: int = rotate) -> None:
+            _edge_page(path, b"1 0 0 1 450 300", inside, rotate)
+
+        @leak(f"page.raw-font-coded-runs-off-overhanging-crop{suffix}",
+              "off-page.font.straddling",
+              "The SSN in font codes running off the right edge of the media box, under a "
+              "crop box that reaches past that edge: the visible area ends at the media "
+              "box." + turned,
+              mistake=EDGE_MISTAKE,
+              recovery="Enlarge the media box and read the font's Encoding /Differences.")
+        def off_overhanging_crop(path: Path, rotate: int = rotate) -> None:
+            _edge_page(path, b"1 0 0 1 560 300", overhanging, rotate)
+
+        for direction, matrix in (("up", b"0 1 -1 0 700 300"), ("down", b"0 -1 1 0 700 500")):
+            @leak(f"page.raw-font-coded-vertical-off-page-{direction}{suffix}",
+                  "off-page.font.vertical",
+                  f"The SSN in font codes written vertically, reading {direction}ward, right "
+                  "of the page edge." + turned,
+                  mistake=OFF_PAGE_MISTAKE,
+                  recovery="Enlarge the page box, turn the view, and read the font's "
+                           "Encoding /Differences.")
+            def vertical_off_page(path: Path, matrix: bytes = matrix, rotate: int = rotate) -> None:
+                _edge_page(path, matrix, None, rotate)
+
+
+_edge_cases()
+
+
 # ── Document-level live content ─────────────────────────────────────────
 
 @leak("document.raw-title", "metadata.plain",

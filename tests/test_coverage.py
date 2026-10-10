@@ -30,7 +30,7 @@ from redaction_verifier.matching import (
     normalize_string,
 )
 from redaction_verifier.model import ScanReport, Secret
-from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text
+from redaction_verifier.views import TEXT_GENUINE_READINGS, TEXT_SEAM_READINGS, extract_visual_text
 
 from .conftest import SSN, requires_qpdf
 
@@ -144,7 +144,7 @@ class TestNowRead:
                 doc, SecretMatcher([Secret("SSN", NORM)]), report,
                 layer="Text", extractor=extract_visual_text,
                 note="visual text layer", patterns=[],
-                hard_variants=TEXT_GENUINE_READINGS)
+                hard_variants=TEXT_GENUINE_READINGS, seam_variants=TEXT_SEAM_READINGS)
         finally:
             doc.close()
         assert [f.location for f in report.findings] == [

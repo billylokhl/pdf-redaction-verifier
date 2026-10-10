@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from ..model import CODE, SSN, KnownGap, case, expect
+from ..model import CODE, SSN, case, expect
 from ..pdfkit import (FILLER, body, cjk_font, embedded_font, lookalike_font,
                       png_of, redact, save, update)
 
@@ -119,7 +119,9 @@ def outside_crop(path: Path) -> None:
 
 @leak("page.runs-off-right-edge", "live.plain",
       "An SSN that starts on the page and runs past its right edge. Found in the "
-      "stored string; the page reading splits it at the edge.",
+      "stored string, and by the page reading across the edge.",
+      expected=expect(1, findings=(("SSN", "live"),),
+                      layers=(("SSN", "Objects"), ("SSN", "Text"))),
       mistake="Nobody redacted it; the value simply runs past the visible margin.",
       recovery="Widen the page or copy the underlying string.")
 def off_right_edge(path: Path) -> None:
@@ -129,8 +131,8 @@ def off_right_edge(path: Path) -> None:
 
 @leak("page.runs-off-right-edge-embedded-font", "off-page.font.straddling",
       "The same SSN running past the right edge, in an embedded font: the glyph codes "
-      "are not readable as a string, and the page reading splits the value at the edge.",
-      known_gap=KnownGap("off-page.font.straddling", expect(0)),
+      "are not readable as a string, so only the page reading across the edge finds it.",
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Text"),)),
       mistake="Nobody redacted it; the value simply runs past the visible margin.",
       recovery="Widen the page and map the glyph codes through the font's Unicode table.")
 def off_right_edge_embedded(path: Path) -> None:

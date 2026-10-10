@@ -163,24 +163,33 @@ still there: invisible on screen, but selectable and copyable.
   per form box still reads back as `123-45-6789`. A wide gap inside a line
   is treated as a column break, so neighbouring table cells never merge
   into a false number. Text placed outside the visible page area (the
-  crop or media box) is read too, as its own reading — invisible to a
-  viewer, but still in the file — and kept apart from the visible text so
-  it cannot come between the halves of a value split across a page break.
-- **Readings:** three *genuine* readings — horizontally written text read
-  left to right, and text written vertically (rotated) read along its own
-  direction both ways — plus two *reconstructed* readings of every glyph
-  in vertical columns. The reconstructions are the only reading of a value
-  written one character per line, but a column of an ordinary page also
-  stacks unrelated lines (a numbered list's numbers), so they only ever
-  give manual-review warnings.
+  crop box ∩ the media box) is read too, as its own reading — invisible
+  to a viewer, but still in the file — and kept apart from the visible
+  text so it cannot come between the halves of a value split across a
+  page break. It is also read together with the visible text, across the
+  visible edge, so a value that starts on the page and runs off it, or
+  that is written vertically off the page, is read whole.
+- **Readings:** seven *genuine* readings — the visible text, written
+  horizontally (read left to right) or vertically (rotated, read along its
+  own direction both ways); the off-page text; and the same three
+  directions across the visible edge, visible and off-page text together —
+  plus two *reconstructed* readings of every visible glyph in vertical
+  columns. The reconstructions are the only reading of a value written
+  one character per line, but a column of an ordinary page also stacks
+  unrelated lines (a numbered list's numbers), so they only ever give
+  manual-review warnings.
 - **Across pages:** each page break is checked on its own. A value running
   from the last line of one page onto the first line of the next, in a
-  genuine reading, is hard. Any other match crossing the break — needing
-  other lines, or across a blank or unreadable page — is a manual-review
-  warning at the page it crosses into.
+  genuine reading of the visible or the off-page text, is hard. Any other
+  match crossing the break — needing other lines, across a blank or
+  unreadable page, or in a reading across the visible edge, whose last
+  line may be a slug below the page — is a manual-review warning at the
+  page it crosses into.
 - **Tier:** a known value is hard on one line of a genuine reading, or at
   a page seam as above. A pattern is hard only on one line of a genuine
-  reading. Everything that needs text joined is manual-review.
+  reading, the readings across the visible edge included. A wide gap on
+  a line (a column break) keeps a visible line and an off-page slug on
+  its baseline apart. Everything that needs text joined is manual-review.
 
 ### 2. Objects — everything the file stores
 
@@ -541,7 +550,7 @@ and what the file stores.
 | **Form-field value** | Data typed into a fillable form. |
 | **Fused** | Separate pieces of text joined together (e.g. two table cells), which can accidentally form a digit sequence. |
 | **Garbage-collected rewrite** | Saving a PDF so unreferenced (orphaned) objects are dropped. The fix for leftover-content leaks. |
-| **Genuine reading** | Page text read in the direction it was written (horizontal, rotated, or an OCR pass); its matches can be hard findings. |
+| **Genuine reading** | Page text read in the direction it was written (horizontal, rotated, or an OCR pass) — on the page, off it, or across the visible edge; its matches can be hard findings. |
 | **Guard** | A check in the code that prevents a known bug. |
 | **Hard finding** | A match strong enough to count as a confirmed leak (exit `1`) — see each layer's *Tier* for the exact rule. |
 | **Incremental update** | Edits appended to the end of a file; earlier revisions stay inside it, and no layer reads them (see Known gaps). |

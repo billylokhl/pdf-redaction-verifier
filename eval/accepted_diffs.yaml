@@ -194,6 +194,220 @@
     normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
   pr: '#13'
+- case: page.raw-font-coded-runs-off-overhanging-crop
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge (the crop box ∩ the
+    media box): every glyph of one writing direction, visible or not, read together. A font-coded
+    value that starts on the page and runs off it, which the visible and the off-page readings
+    each held only in part, is now read whole and found hard; its font codes keep the Objects
+    layer''s literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter
+    only.'
+  cell: off-page.font.straddling
+  pr: '#68'
+- case: page.raw-font-coded-runs-past-crop-box
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge (the crop box ∩ the
+    media box): every glyph of one writing direction, visible or not, read together. A font-coded
+    value that starts on the page and runs off it, which the visible and the off-page readings
+    each held only in part, is now read whole and found hard; its font codes keep the Objects
+    layer''s literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter
+    only.'
+  cell: off-page.font.straddling
+  pr: '#68'
+- case: page.raw-font-coded-runs-past-crop-box-rotated
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge (the crop box ∩ the
+    media box): every glyph of one writing direction, visible or not, read together. A font-coded
+    value that starts on the page and runs off it, which the visible and the off-page readings
+    each held only in part, is now read whole and found hard; its font codes keep the Objects
+    layer''s literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter
+    only.'
+  cell: off-page.font.straddling
+  pr: '#68'
+- case: page.raw-font-coded-vertical-off-page-down
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge, one per writing
+    direction. Font-coded text written vertically off the page, which the off-page reading
+    (horizontal only) scrambled, is now read along its own direction and found hard. The reference
+    (eval-ref-0) exited 0, or 2 where the scrambled reading happened to join the value across
+    lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
+  cell: off-page.font.vertical
+  pr: '#68'
+- case: page.raw-font-coded-vertical-off-page-down-rotated
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge, one per writing
+    direction. Font-coded text written vertically off the page, which the off-page reading
+    (horizontal only) scrambled, is now read along its own direction and found hard. The reference
+    (eval-ref-0) exited 0, or 2 where the scrambled reading happened to join the value across
+    lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
+  cell: off-page.font.vertical
+  pr: '#68'
+- case: page.raw-font-coded-vertical-off-page-up
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge, one per writing
+    direction. Font-coded text written vertically off the page, which the off-page reading
+    (horizontal only) scrambled, is now read along its own direction and found hard. The reference
+    (eval-ref-0) exited 0, or 2 where the scrambled reading happened to join the value across
+    lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
+  cell: off-page.font.vertical
+  pr: '#68'
+- case: page.raw-font-coded-vertical-off-page-up-rotated
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge, one per writing
+    direction. Font-coded text written vertically off the page, which the off-page reading
+    (horizontal only) scrambled, is now read along its own direction and found hard. The reference
+    (eval-ref-0) exited 0, or 2 where the scrambled reading happened to join the value across
+    lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
+  cell: off-page.font.vertical
+  pr: '#68'
+- case: page.runs-off-right-edge
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  reason: 'PR #68: the Text layer''s reading across the visible edge now also finds the plain
+    value running past the right edge, a second hard finding beside the Objects layer''s literal
+    one; the exit is unchanged (1). Stricter only.'
+  cell: live.plain
+  pr: '#68'
+- case: page.runs-off-right-edge-embedded-font
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer gains readings across the visible edge (the crop box ∩ the
+    media box): every glyph of one writing direction, visible or not, read together. A font-coded
+    value that starts on the page and runs off it, which the visible and the off-page readings
+    each held only in part, is now read whole and found hard; its font codes keep the Objects
+    layer''s literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter
+    only.'
+  cell: off-page.font.straddling
+  pr: '#68'
 - case: revision.raw-rewritten-font-compact
   old:
     exit: 0

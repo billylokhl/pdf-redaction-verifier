@@ -60,7 +60,8 @@ def _cells() -> dict[str, Cell]:
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),
         "off-page.font.no-unicode": Cell(gap, "font-coded text outside the page, no Unicode map"),
-        "off-page.font.straddling": Cell(gap, "font-coded text running across the page edge"),
+        "off-page.font.straddling": Cell(read, "font-coded text running across the page edge"),
+        "off-page.font.vertical": Cell(read, "font-coded text written vertically outside the page"),
         "off-page.pixels": Cell(gap, "pixels outside the page"),
         # oc-off — switched-off optional content
         "oc-off.plain": Cell(read, "plain strings in a switched-off layer"),

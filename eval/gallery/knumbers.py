@@ -35,7 +35,8 @@ K12-K36's (``caselib/families/gaps.py``) don't carry that prefix, so
 these were matched by hand against §8's table, cell id by cell id.
 
 K8 has no case: §8 says it was fixed in the current tool before this
-gallery existed.
+gallery existed. K9 was fixed after it: its case is now an ordinary
+caught leak case, so it has no K-number here any more.
 """
 
 from __future__ import annotations
@@ -56,7 +57,8 @@ CASE_TO_K: dict[str, int] = {
     "page.hidden-layer-outlines": 6,
     "file.after-final-eof": 7,
     # K8: fixed in the current tool (§8) — no case.
-    "page.runs-off-right-edge-embedded-font": 9,
+    # K9: fixed later (§8); its case, page.runs-off-right-edge-embedded-font,
+    # is now a caught leak case, no longer a known gap.
     "leftover.single-glyph-show-runs": 10,
     "leftover.untyped-text-operator-words": 11,
     "page.pixels-under-box": 12,
@@ -91,8 +93,8 @@ CASE_TO_K: dict[str, int] = {
 
 
 def documented_k_numbers(redesign_text: str) -> set[int]:
-    """Every K-number §8 documents as a still-open gap (excludes K8,
-    which §8 itself says was fixed) — the source of truth
+    """Every K-number §8 documents as a still-open gap (excludes K8 and
+    K9, which §8 itself says were fixed) — the source of truth
     ``CASE_TO_K``'s values are checked against."""
     try:
         start = redesign_text.index(_SECTION_START)

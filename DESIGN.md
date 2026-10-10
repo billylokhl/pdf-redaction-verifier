@@ -241,8 +241,9 @@ The resolution is that **not all matches are equally trustworthy**:
 
 - **Hard findings (exit 1)** for a pattern come only from surfaces where
   the matched characters were genuinely adjacent in the document: one
-  visual line of the horizontal reading or of either OCR reading, one
-  decoded PDF literal, one metadata value.
+  visual line of a genuine page reading (horizontal, rotated, off-page or
+  across the visible edge) or of either OCR reading, one decoded PDF
+  literal, one metadata value.
 - **Soft findings (exit 2, manual-review warnings)** come from anything
   that required fusing separate things: multi-line text, vertical column
   reconstructions, adjacent literals, page boundaries.
@@ -256,7 +257,8 @@ see at all is a different matter — see Known limitations.)
 specific, so a split at a *structural* seam is treated as deliberate, not
 coincidental: across the strings of one PDF object, and from the last
 line of one page onto the first line of the next page, in a genuine
-reading — the natural continuation of the text. Every other join stays
+reading of the visible or the off-page text — the natural continuation
+of the text. Every other join stays
 manual review: two lines within a page, a vertical column of an ordinary
 page, a page break reached only by also joining other lines, or a break
 across a blank, image-only or unreadable page (what lies between the
@@ -304,13 +306,21 @@ Text is read along the direction it was written. PyMuPDF reports each
 line's writing direction, so horizontally written glyphs form the
 horizontal reading and glyphs written vertically (a rotated matrix) are
 read in their own columns, top-down and bottom-up: three *genuine*
-readings, all eligible for hard findings. Two more readings stack *every*
-glyph into vertical columns. They are *reconstructions*: the only way to
-read a value written one character per line, but on an ordinary page a
-column stacks one glyph from each of many lines — a ledger's last digits,
-a numbered list's numbers — which assembled the README's own example
-value out of a clean numbered list. Their matches are only ever manual
-review, for values and patterns alike.
+readings, all eligible for hard findings. Text outside the visible area
+(the crop box ∩ the media box) has a reading of its own, so a slug below
+a page never becomes that page's last line, and the same three
+directions are read again across the visible edge, visible and off-page
+glyphs together, so a value that runs off the page, or is written
+vertically off it, is read whole: seven genuine readings in all. The
+readings across the edge feed the page-break seam only at the
+manual-review tier, since their last line may be off-page text that
+does not run on into the next page. Two more readings stack *every*
+visible glyph into vertical columns. They are *reconstructions*: the only
+way to read a value written one character per line, but on an ordinary
+page a column stacks one glyph from each of many lines — a ledger's last
+digits, a numbered list's numbers — which assembled the README's own
+example value out of a clean numbered list. Their matches are only ever
+manual review, for values and patterns alike.
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,
