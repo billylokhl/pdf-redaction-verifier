@@ -20,7 +20,7 @@ import verify
 from redaction_verifier.matching import SecretMatcher
 from redaction_verifier.model import ScanReport, Secret
 
-from .conftest import run_verify
+from .conftest import report_lines, run_verify
 
 SSN = "123-45-6789"
 
@@ -53,7 +53,7 @@ def _scan(path: Path, rules: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _hidden_findings(result: subprocess.CompletedProcess[str]) -> list[str]:
-    return [ln for ln in result.stdout.splitlines() if "LAYER: Hidden" in ln]
+    return [ln.location for ln in report_lines(result.stdout) if ln.layer == "Hidden"]
 
 
 class TestHiddenLayer:

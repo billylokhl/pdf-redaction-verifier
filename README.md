@@ -39,6 +39,27 @@ certifying the document clean; the severity order is `0 < 2 < 1`, so a
 crash can only ever push the verdict *up* from a clean-so-far `2`, never
 down from a confirmed `1`.
 
+The report printed on the terminal says the same thing in plain words.
+A leak opens with **`[FAIL]  SECRETS ARE STILL IN THIS FILE`** and how
+many of your rules matched; each finding is one line —
+`✖ STILL PRESENT | rule | layer | where | location` — meaning that text
+matching that rule is still in the file, so a redaction did not remove
+it. The rule is named by its place in your rules file (`exact value #2
+(exact_values[1])`, `pattern #5 (patterns[4]) ****5916`, `built-in type:
+SSN`, or the `name` you gave it): an exact value's characters are never
+shown, a pattern's match at most its last four. *Where* says what kind of
+problem it is — `on a page` (the page's text or what it shows), `stored`
+(in the file's objects), `left over` (no page shows it but the file still
+stores it — see ORPHANED in the [Glossary](#glossary); `left over?` when
+that could not be confirmed), `earlier version`
+(an older save inside the file), `properties` (metadata), or the hidden
+part it is in (`comment or note`, `form field`, `link`, `attachment`,
+`script`, `layer name`). A "What this means" section after the findings
+explains, once each, every kind that occurred, with the usual fix. A run
+that found nothing but cannot certify (exit `2`) opens with
+**`[NOT CERTIFIED]`** and says why — including when the `--json` report
+could not be written; only exit `0` prints `[PASS]`.
+
 For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
 a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
@@ -539,7 +560,7 @@ and what the file stores.
 | **OCR** | Optical character recognition: reading text from pixels. |
 | **Octal coercion** | YAML gotcha: an unquoted `00123456` is read as a base-8 number, changing its value. |
 | **Optional-content group** | A PDF "layer" that can be switched on or off; its name alone can leak data. |
-| **ORPHANED** | Label for a finding in an object nothing references — present in the file, never displayed. |
+| **ORPHANED** | Label for a finding in an object nothing references — present in the file, never displayed. The terminal report tags it `left over`. |
 | **Outlined vector text** | Letters converted into drawn shapes: looks like text, isn't text data. |
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |

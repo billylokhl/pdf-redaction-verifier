@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pymupdf as fitz
 import pytest
@@ -71,6 +73,51 @@ requires_exiftool = pytest.mark.skipif(not HAS_EXIFTOOL, reason="needs exiftool"
 requires_metadata_tools = pytest.mark.skipif(
     not (HAS_EXIFTOOL or HAS_QPDF), reason="needs exiftool or qpdf"
 )
+
+
+class ReportLine(NamedTuple):
+    """One finding line of the human report (redaction_verifier/report/text.py)."""
+
+    label: str
+    layer: str
+    where: str
+    location: str
+
+
+_REPORT_LINE = re.compile(
+    r"^  ✖ STILL PRESENT \| (?P<label>.*?) +\| (?P<layer>Text|OCR|Metadata|Objects|Hidden|Binary)"
+    r" +\| (?P<where>[a-z ?]+?) +\| (?P<location>.*)$"
+)
+_BANNER = re.compile(r"^  \[(PASS|FAIL|NOT CERTIFIED)\]  ", re.MULTILINE)
+
+
+def report_lines(stdout: str) -> list[ReportLine]:
+    """The finding lines of a human report. Every test that asserts on
+    findings in stdout goes through this one parser, so a change to the
+    line format fails loudly (test_report_lines_parser) instead of
+    turning "not in stdout" assertions vacuous."""
+    lines = []
+    for raw in stdout.splitlines():
+        m = _REPORT_LINE.match(raw)
+        if m:
+            lines.append(ReportLine(**m.groupdict()))
+        else:
+            assert "STILL PRESENT" not in raw, f"unparsed finding line: {raw!r}"
+    return lines
+
+
+def report_layers(stdout: str) -> set[str]:
+    return {line.layer for line in report_lines(stdout)}
+
+
+def report_banner(stdout: str) -> str:
+    """PASS, FAIL or NOT CERTIFIED: the verdict banner of a human report."""
+    found = _BANNER.findall(stdout)
+    assert len(found) == 1, f"expected one verdict banner, got {found}:\n{stdout}"
+    return str(found[0])
+
+
+EXIT_BANNER = {0: "PASS", 1: "FAIL", 2: "NOT CERTIFIED"}
 
 
 def run_verify(

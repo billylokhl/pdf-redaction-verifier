@@ -68,7 +68,9 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
+import io
 import json
 import os
 import re
@@ -2601,11 +2603,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if not write_json_report(json_path, data) and code == 0:
                 # A caller that asked for the JSON report gates on it; a
-                # missing report must not read as a certified pass.
-                print(
-                    "\n  The JSON report could not be written — this is NOT a "
-                    "certified clean result (exit code 2)."
-                )
+                # missing report must not read as a certified pass (the
+                # main path then prints a [NOT CERTIFIED] banner, never
+                # a [PASS] first).
                 return 2
         return code
 
@@ -2809,13 +2809,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"Metadata/Binary: collection crashed ({exc}) — NOT fully scanned",
                     )
 
-            print_report(report, pdf_path)
-
-            if report.leaked:
-                return finish(1)
-            if report.degraded:
-                return finish(2)  # clean-so-far, but not certifiable as a real PASS
-            return finish(0)
+            # 2 = clean-so-far, but not certifiable as a real PASS.
+            code = 1 if report.leaked else 2 if report.degraded else 0
+            # Render first, print last: a renderer crash happens before any
+            # JSON report exists (crash() then writes its own), and the
+            # verdict printed is the one finish() settles on -- so a run
+            # whose JSON report cannot be written never prints [PASS].
+            rendered = io.StringIO()
+            with contextlib.redirect_stdout(rendered):
+                print_report(report, pdf_path, rules=rules)
+            try:
+                final = finish(code)
+            except BaseException:
+                if code == 1:  # a confirmed leak never moves down: show it
+                    sys.stdout.write(rendered.getvalue())
+                raise
+            if final != code:
+                print_report(report, pdf_path, rules=rules, json_unwritten=True)
+                return final
+            try:
+                sys.stdout.write(rendered.getvalue())
+            except BaseException:
+                # The JSON report already says this run's verdict; if the
+                # human report cannot be printed, crash() rewrites it as an
+                # error -- and should that fail too, no JSON report must be
+                # left behind saying more than the exit code does.
+                if json_path is not None:
+                    with contextlib.suppress(OSError):
+                        json_path.unlink()
+                raise
+            return final
         finally:
             # Guaranteed on every exit from the block above — a normal
             # return, an early return, or ANY exception (including a
