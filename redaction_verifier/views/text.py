@@ -153,8 +153,14 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     off_page: list[Glyph] = []
     # The visible area in the (unrotated) coordinates glyphs are reported
     # in, computed once per page: a per-glyph Point * Matrix doubled the
-    # Text layer's run time.
-    vx0, vy0, vx1, vy1 = page.rect * page.derotation_matrix
+    # Text layer's run time. Glyphs are reported with the visible area's
+    # top-left corner at the origin, whatever the rotation; derotating
+    # page.rect gives the right size but, on a rotated page whose crop box
+    # reaches past its media box, the wrong offset (the rotation matrix is
+    # built from the unclipped crop box), which filed visible text as
+    # off-page and split a value across the two readings.
+    unrotated = page.rect * page.derotation_matrix
+    vx0, vy0, vx1, vy1 = 0.0, 0.0, unrotated.width, unrotated.height
     # No clipping to the page: text outside the visible area is invisible
     # to a reader but still in the file, and still a leak.
     raw: dict[str, Any] = page.get_text(

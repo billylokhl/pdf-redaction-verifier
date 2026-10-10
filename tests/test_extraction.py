@@ -95,6 +95,65 @@ class TestVisualOrder:
             doc.close()
 
 
+
+def _overhanging_crop_page(crop: tuple[int, int, int, int], rotate: int,
+                           on_page: tuple[int, int], off_page: tuple[int, int]) -> fitz.Document:
+    """A 595x842 page whose crop box reaches past its media box, rotated,
+    with the SSN drawn once inside the visible area and once outside it."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    # Set directly: PyMuPDF's set_cropbox refuses a box past the media box.
+    doc.xref_set_key(page.xref, "CropBox", "[%d %d %d %d]" % crop)
+    doc.xref_set_key(page.xref, "Rotate", str(rotate))
+    font = doc.get_new_xref()
+    doc.update_object(font, "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>")
+    doc.xref_set_key(page.xref, "Resources", f"<</Font<</F1 {font} 0 R>>>>")
+    contents = doc.get_new_xref()
+    doc.update_object(contents, "<<>>")
+    doc.update_stream(contents, (
+        f"BT /F1 9 Tf {on_page[0]} {on_page[1]} Td (VISIBLE {SSN}) Tj ET\n"
+        f"BT /F1 9 Tf {off_page[0]} {off_page[1]} Td (HIDDEN 987654321) Tj ET\n"
+    ).encode())
+    doc.xref_set_key(page.xref, "Contents", f"{contents} 0 R")
+    return fitz.open("pdf", doc.tobytes())
+
+
+class TestVisibleAreaOnRotatedCrops:
+    """Glyphs are reported with the visible area (crop box ∩ media box) at
+    the origin whatever the rotation. Derotating page.rect has the right
+    size but, on a rotated page whose crop box reaches past its media box,
+    the wrong offset — which filed visible text as off-page (reading 3)
+    and could split a value between the two readings."""
+
+    # (crop box, a point inside crop ∩ media, a point inside the media box
+    # but outside the crop box), all in PDF user space.
+    CASES = [
+        ((0, 200, 612, 992), (300, 500), (300, 100)),
+        ((-100, -100, 400, 600), (150, 300), (450, 300)),
+        ((200, 300, 900, 1000), (300, 600), (60, 600)),
+        ((50, 60, 500, 700), (200, 400), (520, 400)),  # control: inside the media box
+    ]
+
+    @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+    @pytest.mark.parametrize(("crop", "on_page", "off_page"), CASES)
+    def test_visible_and_off_page_text_land_in_the_right_reading(
+        self, crop, on_page, off_page, rotate
+    ) -> None:
+        doc = _overhanging_crop_page(crop, rotate, on_page, off_page)
+        try:
+            page = doc[0]
+            # Positive control: MuPDF itself shows the one and not the other.
+            shown = page.get_text("text", clip=page.rect)
+            assert "VISIBLE" in shown and "HIDDEN" not in shown
+            readings = extract_visual_text(page)
+            visible, off = readings[0], readings[3]
+            assert SSN.replace("-", "") in normalize_string(visible), readings
+            assert "HIDDEN" not in visible
+            assert "HIDDEN" in off and "VISIBLE" not in off
+        finally:
+            doc.close()
+
+
 def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
     """One list of lines per page (an empty list is a blank page);
     rotate=90 writes each line vertically."""
