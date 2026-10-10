@@ -36,6 +36,20 @@ from .runner import CliResult, current_python, run_cli
 DEFAULT_TIMEOUT = 60.0
 
 
+def default_workers() -> int:
+    """Parallel CLI subprocesses when `--workers` is not given: one per
+    core, never more.
+
+    `DEFAULT_TIMEOUT` is a wall-clock limit per file, so it only measures
+    a file's own runtime while every subprocess has a core to itself.
+    Oversubscribing (this used to be `cpu_count() * 4`) makes it measure
+    contention instead: on the weekly macOS runner (3 cores, OCR on the
+    CPU at ~1-2.5 s a page) twelve concurrent scans stretched four-page
+    cases that take ~8 s alone to ~45 s, and the slowest past 60 s, while
+    the step as a whole got slower, not faster (the work is CPU-bound)."""
+    return os.cpu_count() or 1
+
+
 @dataclass(frozen=True)
 class CaseRun:
     """One side (reference or candidate) of a case's differential.
@@ -349,7 +363,7 @@ def run_differential(
     cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
 
     pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
     input_hashes = {
@@ -509,7 +523,7 @@ def run_candidate(
     candidate_verify = candidate_verify_path(root)
 
     rows: list[CaseMetricRow] = []
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for case in cases:

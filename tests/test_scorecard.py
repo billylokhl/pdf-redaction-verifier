@@ -26,7 +26,10 @@ from scorecard.differential import (
     CaseDiff,
     CaseRun,
     load_reference_cache,
+    default_workers,
     normalization_have,
+    run_candidate,
+    run_differential,
     save_reference_cache,
     select_cases,
     stale_accepted_diffs,
@@ -983,3 +986,39 @@ def test_run_cli_crashed_when_subprocess_exit_disagrees_with_its_own_report(tmp_
     assert result.returncode == 0
     assert result.report == {"exit_code": 2, "error": None, "findings": [], "warnings": []}
     assert result.crashed
+
+
+# ── default_workers: the per-file timeout must measure the file, not contention ──
+
+
+@pytest.mark.parametrize("cores, expected", [(3, 3), (10, 10), (None, 1)])
+def test_default_workers_is_one_per_core(monkeypatch, cores, expected):
+    """DEFAULT_TIMEOUT is wall-clock, so more scans than cores turns it
+    into a contention measurement: at the old cpu_count() * 4 on a
+    3-core runner, cases that take ~8 s alone took ~45 s and the slowest
+    timed out. One per core, and 1 when the count is unknown."""
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential.os, "cpu_count", lambda: cores)
+    assert default_workers() == expected
+
+
+@pytest.mark.parametrize("runner", [run_candidate, run_differential])
+def test_runs_default_to_default_workers(monkeypatch, tmp_path, runner):
+    """Both entry points size their pool from default_workers() when no
+    --workers is given (an empty selection still builds the pool)."""
+    import concurrent.futures
+
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential.os, "cpu_count", lambda: 3)
+    seen: list[int] = []
+    real = concurrent.futures.ThreadPoolExecutor
+
+    def spy(*args, max_workers=None, **kwargs):
+        seen.append(max_workers)
+        return real(*args, max_workers=max_workers, **kwargs)
+
+    monkeypatch.setattr(differential.concurrent.futures, "ThreadPoolExecutor", spy)
+    runner([], out_dir=tmp_path)
+    assert seen and set(seen) == {3}
