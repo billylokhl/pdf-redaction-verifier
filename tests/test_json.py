@@ -318,6 +318,46 @@ class TestOcrFailureFailsClosed:
         assert code == 2
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
 
+    def test_vision_reporting_success_without_running_exits_2(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Vision says the requests succeeded but never ran them: both
+        # readings would be empty, so the page would pass as read with
+        # nothing on it. The bridge must refuse (PAGE_FAILED, exit 2).
+        from typing import Any
+
+        import Vision
+
+        from redaction_verifier.views import ocr
+
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
+
+        class _NeverRuns:
+            def performRequests_error_(self, requests: Any, error: Any) -> Any:
+                return True, None
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> Any:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> _NeverRuns:
+                return _NeverRuns()
+
+        class _Vision:
+            VNImageRequestHandler = _Handler
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(Vision, name)
+
+        monkeypatch.setattr(ocr, "Vision", _Vision())
+        code, data = _run(pdf, rules, tmp_path)
+        assert code == 2
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "never completed" in data["warnings"][0]["message"]
+
 
 class TestEnvironmentField:
     def test_ocr_available_matches_the_running_process(self, tmp_path) -> None:

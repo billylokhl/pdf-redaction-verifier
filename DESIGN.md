@@ -386,9 +386,12 @@ the gap is stated rather than implied away.
   page (Vision began removing keys from a copy of the image handler's
   options, which a PyObjC-bridged Python dict rejects) until the bridge
   switched to a native `NSDictionary`; see the CHANGELOG. A change that
-  makes Vision *read less* — fewer or empty results, no error — does
-  not fail closed: nothing checks Vision's output, so a secret only OCR
-  can see would pass as clean. Only running OCR tests (the case
+  stops Vision delivering a reading — a request reported as performed
+  whose completion handler never ran to the end, or saw no results —
+  also fails closed. A change that makes Vision *read less* — fewer or
+  empty results in a reading it does deliver, no error — does not: no
+  check can tell an empty reading from a blank page, so a secret only
+  OCR can see would pass as clean. Only running OCR tests (the case
   library, the OCR unit tests) on that OS can catch it, and only for
   the content they cover.
 - **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted

@@ -59,21 +59,35 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     """OCR a PNG with Apple Vision in one pass: correction on AND off.
 
     Both requests share a single VNImageRequestHandler so the image is
-    decoded once instead of twice.  Raises on any Vision-level failure.
+    decoded once instead of twice.  Raises on any Vision-level failure,
+    and unless both completion handlers ran to the end: a reading is
+    only returned once Vision has demonstrably delivered it.
     """
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
     results: dict[bool, list[str]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
+    # Set only as a handler's last step. performRequests can report
+    # success without running a request's handler, and an exception inside
+    # a handler might not reach us; either way both readings would be
+    # empty and the page would pass as read with nothing on it.
+    completed: dict[bool, bool] = {True: False, False: False}
 
     def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
         def handler(request: Any, error: Any) -> None:
             if error:
                 errors[correction].append(str(error))
                 return
-            for observation in request.results() or []:
+            observations = request.results()
+            if observations is None:
+                # A page with no text gives an empty list; None means the
+                # request produced no results at all.
+                errors[correction].append("no results")
+                return
+            for observation in observations:
                 candidates = observation.topCandidates_(1)
                 if candidates:
                     results[correction].append(candidates[0].string())
+            completed[correction] = True
         return handler
 
     request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
@@ -107,6 +121,11 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     for correction in (True, False):
         if errors[correction]:
             raise RuntimeError(f"Apple Vision error: {'; '.join(errors[correction])}")
+        if not completed[correction]:
+            raise RuntimeError(
+                "Apple Vision: the request with language correction "
+                f"{'on' if correction else 'off'} never completed"
+            )
 
     return ("\n".join(results[True]), "\n".join(results[False]))
 
