@@ -179,8 +179,10 @@ def _module_attributes() -> frozenset[str]:
     walked further (typing.collections is collections): any other route
     must pass one of these names first, so banning them closes it.
     It differs between Python versions, so the guard bans
-    KNOWN_MODULE_ATTRS (every version's) as well, and a test fails when
-    the running Python exposes a name that list lacks."""
+    KNOWN_MODULE_ATTRS (3.10 to 3.14's) as well, and a test fails when
+    the running Python exposes a name that list lacks. A lazy import
+    (3.15's ``lazy import``) is resolved first, so it counts too."""
+    lazy = getattr(types, "LazyImportType", ())  # 3.15+
     names: set[str] = set()
     seen: set[str] = set()
     extra = frozenset().union(*ENTRY_POINTS.values())
@@ -190,7 +192,9 @@ def _module_attributes() -> frozenset[str]:
         if module.__name__ in seen:
             continue
         seen.add(module.__name__)
-        for name, value in vars(module).items():
+        for name, value in list(vars(module).items()):
+            if isinstance(value, lazy):
+                value = getattr(module, name)
             if isinstance(value, types.ModuleType):
                 if value.__name__ in ALLOWED_STDLIB:
                     todo.append(value)
@@ -199,20 +203,22 @@ def _module_attributes() -> frozenset[str]:
     return frozenset(names)
 
 
-# _module_attributes() under this test suite on Python 3.10 to 3.14 (and
-# in a bare 3.15 release candidate), so the ban does not depend on the
-# interpreter the guard runs on: CI's 3.10 and 3.12 must also ban what
-# only a newer Python exposes (typing.annotationlib on 3.14), and a newer
-# Python what only an older one does (typing.contextlib before 3.13). The
-# set also depends on what has run: 3.14's typing rebinds
-# _lazy_annotationlib to the annotationlib module on first use. Add a name
-# when test_known_module_attrs_cover_this_python fails; never remove one.
+# _module_attributes() under this test suite on Python 3.10 to 3.15
+# (3.15's release candidate bare, without the test dependencies), so the
+# ban does not depend on the interpreter the guard runs on: CI's 3.10 and
+# 3.12 must also ban what only a newer Python exposes
+# (dataclasses.annotationlib from 3.14), and a newer Python what only an
+# older one does (typing.contextlib before 3.13). The set also depends on
+# what has run: on 3.14, typing rebinds _lazy_annotationlib to the
+# annotationlib module on first use, and Counter.most_common(n) binds
+# collections.heapq. Add a name when test_known_module_attrs_cover_this_python
+# fails. Never remove one: nothing but review enforces that.
 KNOWN_MODULE_ATTRS = frozenset({
     "_casefix", "_compiler", "_constants", "_jit", "_lazy_annotationlib", "_locale",
     "_parser", "_sre", "_sys", "_thread", "abc", "annotationlib", "bltns", "builtins",
-    "codecs", "contextlib", "copy", "copyreg", "decoder", "encoder", "functools", "inspect",
-    "itertools", "keyword", "monitoring", "operator", "scanner", "sre_compile", "sre_parse",
-    "sys", "types", "warnings"})
+    "codecs", "contextlib", "copy", "copyreg", "decoder", "encoder", "functools", "heapq",
+    "inspect", "itertools", "keyword", "monitoring", "operator", "scanner", "sre_compile",
+    "sre_parse", "sys", "types", "warnings"})
 # Module attributes are banned as attributes and as strings
 # (getattr(dataclasses, "inspect")); the fixed names keep the ban on
 # versions where one is not reachable.
@@ -353,10 +359,11 @@ class TestProcessBoundary:
         "typing.List['x'].__args__[0]._evaluate(g, None, frozenset())",
         "dataclasses.functools.singledispatch", "typing.contextlib", "re.copyreg",
         "getattr(typing, 'functools')",
-        # Module attributes of another Python version than the one running
-        # (typing.contextlib is gone in 3.13; typing.annotationlib is new in 3.14).
-        "typing.annotationlib.call_evaluate_function(f, 1)", "x = 'annotationlib'",
+        # Module attributes only some Python versions expose (typing.contextlib
+        # is gone in 3.13; dataclasses.annotationlib is new in 3.14).
+        "dataclasses.annotationlib.call_evaluate_function(f, 1)", "x = 'annotationlib'",
         "re.sre_compile", "x = 'contextlib'", "typing._lazy_annotationlib",
+        "collections.heapq.nlargest(1, x)",
         # Imports anywhere in the tree, not only at the top.
         "def f():\n    import os", "try:\n    import os\nexcept ImportError:\n    pass",
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import verify",
@@ -372,6 +379,13 @@ class TestProcessBoundary:
         assert not missing, (
             f"Python {sys.version_info[0]}.{sys.version_info[1]} exposes module "
             f"attributes {sorted(missing)}: add them to KNOWN_MODULE_ATTRS")
+
+    @pytest.mark.parametrize("name", sorted(KNOWN_MODULE_ATTRS))
+    def test_check_catches_every_known_module_attribute(self, name: str) -> None:
+        assert _forbidden_imports(f"x.{name}", "redaction_verifier.inventory.tiling", False)
+        if name != "keyword":
+            assert _forbidden_imports(f"x = {name!r}", "redaction_verifier.inventory.tiling",
+                                      False)
 
     def test_entry_points_exist_and_are_exempt_only_for_their_own_modules(self) -> None:
         for module, extra in ENTRY_POINTS.items():

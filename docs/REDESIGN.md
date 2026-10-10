@@ -844,12 +844,14 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   as strings, every name under which an allowed module exposes some
   other module (`dataclasses.functools`, `typing.contextlib`, `re.enum.bltns`,
   ...), plus `ForwardRef._evaluate`. That set differs between Python
-  versions (`typing.contextlib` is gone in 3.13, `typing.annotationlib`
-  is new in 3.14), so the guard bans the union recorded from 3.10 to 3.14
-  (`KNOWN_MODULE_ATTRS`) together with what the running Python exposes,
-  and a test fails when the running Python exposes a name the union
-  lacks. CI runs 3.10 and 3.12 only, so a name first exposed by a newer
-  Python is caught only once someone runs the suite on it. It is a
+  versions (`typing.contextlib` is gone in 3.13,
+  `dataclasses.annotationlib` is new in 3.14), so the guard bans the
+  union recorded from 3.10 to 3.15 (`KNOWN_MODULE_ATTRS`) together with
+  what the running Python exposes, and a test fails when the running
+  Python exposes a name the union lacks. CI runs 3.10 and 3.12 only, so
+  a name first exposed by a newer Python is caught only once someone
+  runs the suite on it, and a name a module binds only on first use
+  (3.14's `collections.heapq`) only once something has used it. It is a
   mistake-catcher, frozen by ADR 0010: plain routes past it remain
   (issue #38) and are closed by the Phase 3b child process, which never
   receives secrets; the OS sandbox follows in 3d. Loosen it
