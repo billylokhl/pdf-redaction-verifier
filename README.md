@@ -496,8 +496,8 @@ The **scorecard** (`PYTHONPATH=eval:. python -m scorecard diff`) runs
 this same case library through the real CLI as a subprocess and diffs it
 against a pinned reference version, so every intended verdict change is
 reviewed explicitly in `eval/accepted_diffs.yaml`. It runs one scan per
-core by default, so its per-file timeout measures the file rather than
-contention — see
+usable core by default (fewer if RAM is short), so its per-file timeout
+measures the file rather than contention — see
 [eval/README.md](eval/README.md#the-scorecard-scorecard).
 
 The **gallery** (`PYTHONPATH=eval:. python -m gallery build --out DIR`) is

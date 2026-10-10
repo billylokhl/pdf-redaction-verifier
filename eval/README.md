@@ -391,12 +391,14 @@ would very likely time out at `--timeout` (default 60s) otherwise, which
 reads as a crash rather than a deliberate skip.
 
 `--timeout` is wall-clock, so it measures a file's own runtime only while
-each scan has a core to itself: `--workers` defaults to one per core. Do
-not raise it past your core count — the work is CPU-bound, so extra
-workers do not finish sooner, they only stretch each file's wall time
-toward the timeout. On the weekly macOS runner (3 cores, OCR on the CPU
-at about 1–2.5 s a page), 12 workers turned four-page cases that take
-about 8 s alone into about 45 s, and the slowest into timeouts.
+each scan has a core and its memory to itself: `--workers` defaults to
+one per usable core, and no more than one per GiB of RAM (a scan peaks at
+0.3–0.5 GB). Do not raise it past that — extra workers do not finish
+sooner, they only stretch each file's wall time toward the timeout. On
+the weekly macOS runner (3 cores, 7 GB, OCR on the CPU at about 1–2 s a
+page), 12 workers turned four-page cases that take about 9 s alone into
+45–68 s, sent the VM into swap, timed eight cases out, and made a pass
+over the library take 11.4 minutes instead of 6.7.
 
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
@@ -641,9 +643,8 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`). It takes about 36 minutes
-  (pytest ~13–15, then three scorecard passes of ~7 each at one scan per
-  core); the job's limit is 60.
+  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
+  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

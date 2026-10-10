@@ -36,18 +36,48 @@ from .runner import CliResult, current_python, run_cli
 DEFAULT_TIMEOUT = 60.0
 
 
+# Memory to budget per concurrent scan. One CLI scan peaks at 0.3-0.5 GB
+# RSS (OCR rasterizes each page at 300 dpi); 1 GiB leaves room for the
+# rest of the machine.
+SCAN_MEMORY_BYTES = 1 << 30
+
+
+def _usable_cores() -> int:
+    """Cores this process may run on: the affinity mask / cgroup-aware
+    count where Python offers one, else the machine's."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)  # Python 3.13+
+    if process_cpu_count is not None:
+        return process_cpu_count() or 1
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)  # Linux
+    if sched_getaffinity is not None:
+        return len(sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def _physical_memory() -> int | None:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
 def default_workers() -> int:
     """Parallel CLI subprocesses when `--workers` is not given: one per
-    core, never more.
+    usable core, and no more than `SCAN_MEMORY_BYTES` of RAM each allows.
 
     `DEFAULT_TIMEOUT` is a wall-clock limit per file, so it only measures
-    a file's own runtime while every subprocess has a core to itself.
-    Oversubscribing (this used to be `cpu_count() * 4`) makes it measure
-    contention instead: on the weekly macOS runner (3 cores, OCR on the
-    CPU at ~1-2.5 s a page) twelve concurrent scans stretched four-page
-    cases that take ~8 s alone to ~45 s, and the slowest past 60 s, while
-    the step as a whole got slower, not faster (the work is CPU-bound)."""
-    return os.cpu_count() or 1
+    a file's own runtime while every scan has a core, and the memory it
+    needs, to itself. This used to be `cpu_count() * 4`: on the weekly
+    macOS runner (3 cores, 7 GB, OCR on the CPU at ~1-2 s a page) that
+    meant twelve concurrent scans of 0.3-0.5 GB each, which pushed the
+    VM into memory compression and swap on top of the CPU contention.
+    Four-page cases that take ~9 s alone took 45-68 s, eight cases passed
+    60 s, and a pass over the library took 11.4 min instead of 6.7."""
+    cores = _usable_cores()
+    memory = _physical_memory()
+    if memory is None:
+        return cores
+    return max(1, min(cores, memory // SCAN_MEMORY_BYTES))
 
 
 @dataclass(frozen=True)

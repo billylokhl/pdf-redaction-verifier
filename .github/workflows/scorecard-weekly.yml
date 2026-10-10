@@ -24,12 +24,12 @@ jobs:
   full-environment-scorecard:
     runs-on: macos-latest
     # The job-level limit only stops a runaway run; the per-file timeout
-    # (60 s) is what gates. Budget: on this runner (3 cores, OCR on the
-    # CPU) the pytest step takes ~13-15 min and each scorecard pass over
-    # the library ~7 min at one scan per core (`--workers`' default), so
-    # diff (reference + candidate) plus metrics is ~21 min more: ~36 min
-    # in all. 45 left too little room once the scorecard oversubscribed
-    # the cores (both runs before this change were cancelled at 45 min).
+    # (60 s) is what gates. Measured on this runner (3 cores, 7 GB, OCR
+    # on the CPU) at one scan per core (`--workers`' default): 34.6 min
+    # in all — pytest 12.4, scorecard diff (reference + candidate) 14.9,
+    # metrics 6.8. The two runs before that default were cancelled at
+    # the old 45-minute limit, their scorecard steps slowed by
+    # oversubscription.
     timeout-minutes: 60
     permissions:
       contents: read

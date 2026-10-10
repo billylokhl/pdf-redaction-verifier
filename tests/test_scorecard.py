@@ -25,8 +25,8 @@ from scorecard.accepted import (
 from scorecard.differential import (
     CaseDiff,
     CaseRun,
-    load_reference_cache,
     default_workers,
+    load_reference_cache,
     normalization_have,
     run_candidate,
     run_differential,
@@ -990,28 +990,56 @@ def test_run_cli_crashed_when_subprocess_exit_disagrees_with_its_own_report(tmp_
 
 # ── default_workers: the per-file timeout must measure the file, not contention ──
 
+GIB = 1 << 30
 
-@pytest.mark.parametrize("cores, expected", [(3, 3), (10, 10), (None, 1)])
-def test_default_workers_is_one_per_core(monkeypatch, cores, expected):
-    """DEFAULT_TIMEOUT is wall-clock, so more scans than cores turns it
-    into a contention measurement: at the old cpu_count() * 4 on a
-    3-core runner, cases that take ~8 s alone took ~45 s and the slowest
-    timed out. One per core, and 1 when the count is unknown."""
+
+@pytest.mark.parametrize(
+    "cores, memory, expected",
+    [
+        (3, 7 * GIB, 3),     # the weekly macOS runner: one per core
+        (10, 24 * GIB, 10),
+        (16, 8 * GIB, 8),    # many cores, little RAM: memory caps it
+        (4, None, 4),        # memory unknown: cores alone
+        (4, GIB // 2, 1),    # never zero
+    ],
+)
+def test_default_workers_is_one_per_core_within_memory(monkeypatch, cores, memory, expected):
+    """DEFAULT_TIMEOUT is wall-clock, so more scans than cores (or than
+    RAM holds) turns it into a contention measurement: at the old
+    cpu_count() * 4 on a 3-core, 7 GB runner, cases that take ~9 s alone
+    took 45-68 s, the VM swapped, and eight cases timed out."""
     import scorecard.differential as differential
 
-    monkeypatch.setattr(differential.os, "cpu_count", lambda: cores)
+    monkeypatch.setattr(differential, "_usable_cores", lambda: cores)
+    monkeypatch.setattr(differential, "_physical_memory", lambda: memory)
     assert default_workers() == expected
+
+
+def test_usable_cores_prefers_the_process_view(monkeypatch):
+    """An affinity mask or cgroup quota (os.process_cpu_count, else
+    os.sched_getaffinity) wins over the machine's core count."""
+    import scorecard.differential as differential
+
+    monkeypatch.setattr(differential.os, "cpu_count", lambda: 64, raising=False)
+    monkeypatch.setattr(differential.os, "process_cpu_count", lambda: 2, raising=False)
+    assert differential._usable_cores() == 2
+    monkeypatch.delattr(differential.os, "process_cpu_count")
+    monkeypatch.setattr(differential.os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    assert differential._usable_cores() == 3
+    monkeypatch.delattr(differential.os, "sched_getaffinity")
+    assert differential._usable_cores() == 64
 
 
 @pytest.mark.parametrize("runner", [run_candidate, run_differential])
 def test_runs_default_to_default_workers(monkeypatch, tmp_path, runner):
     """Both entry points size their pool from default_workers() when no
-    --workers is given (an empty selection still builds the pool)."""
+    --workers is given. (An empty selection builds only the candidate
+    pool; run_differential's reference pool shares the same `workers`.)"""
     import concurrent.futures
 
     import scorecard.differential as differential
 
-    monkeypatch.setattr(differential.os, "cpu_count", lambda: 3)
+    monkeypatch.setattr(differential, "default_workers", lambda: 3)
     seen: list[int] = []
     real = concurrent.futures.ThreadPoolExecutor
 
