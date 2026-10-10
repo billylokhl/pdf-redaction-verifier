@@ -259,9 +259,11 @@ flattened to images, text converted to vector outlines.
   itself unavailable and the run never exits `0`. A page where Vision
   raises an error is a `PAGE_FAILED` warning, so the run never exits `0`
   (`2`, or `1` if another layer found a leak). (Before the fix in the
-  CHANGELOG, this happened to every page on macOS 27.) A page Vision
-  reads without error but with text missing is not detected; see
-  DESIGN's known limitations.
+  CHANGELOG, this happened to every page on macOS 27.) A page where
+  Vision reports success without delivering both readings is also
+  `PAGE_FAILED`: a reading counts only once its request's completion
+  handler has run to the end. A page Vision reads without error but
+  with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
@@ -274,8 +276,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable` rewrites the objects
-  reachable from the file's root, decompressing their streams (image
+- **Method:** qpdf (`qpdf --qdf --object-streams=disable
+  --deterministic-id`) rewrites the objects reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
   are not run here — raw bytes produce too many coincidental matches.
@@ -283,7 +285,11 @@ damaged cross-reference table, and it decompresses attachment contents.
   **not** in qpdf's output; the Objects layer covers those.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
-  Binary warning on a clean document.
+  Binary warning on a clean document. qpdf also writes a trailer `/ID`
+  (32 hex digits) of its own; `--deterministic-id` derives it from the
+  file rather than the clock, so a short value made only of hex
+  characters (`4567`, `Abe`) can match it — but the same file always gets
+  the same answer with a given qpdf version.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction

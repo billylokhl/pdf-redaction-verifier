@@ -180,7 +180,10 @@ attachment streams. It is *not* an orphan backstop — `qpdf --qdf`
 rewrites only objects reachable from the trailer, so unreferenced objects
 and earlier revisions of an incrementally saved file are absent from its
 output. Its matches stay manual-review warnings, because a byte-level
-match can be coincidence.
+match can be coincidence. It runs with `--deterministic-id`: otherwise
+qpdf writes a trailer `/ID` hashed from the current second into the
+output being swept, and a short all-hex value matched it at random — a
+verdict that depended on the clock, not the file.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode
@@ -386,11 +389,18 @@ the gap is stated rather than implied away.
   page (Vision began removing keys from a copy of the image handler's
   options, which a PyObjC-bridged Python dict rejects) until the bridge
   switched to a native `NSDictionary`; see the CHANGELOG. A change that
-  makes Vision *read less* — fewer or empty results, no error — does
-  not fail closed: nothing checks Vision's output, so a secret only OCR
-  can see would pass as clean. Only running OCR tests (the case
-  library, the OCR unit tests) on that OS can catch it, and only for
-  the content they cover.
+  stops Vision delivering a reading — a request reported as performed
+  whose completion handler never ran to the end, got no results at all
+  (`results()` is `None`), or raised (handlers run on Vision's worker
+  threads, as seen on macOS 27, so the bridge catches the exception
+  there instead of letting it abort the process) — also fails closed. A
+  change that makes Vision *read less* — fewer or empty results in a
+  reading it does deliver, no error — does not: nothing the bridge
+  checks tells an empty or partial reading from a page with that little
+  text (a raster check — ink on the page, no text read — could catch the
+  empty case, but none exists), so a secret only OCR can see would pass
+  as clean. Today only running OCR tests (the case library, the OCR unit
+  tests) on that OS can catch it, and only for the content they cover.
 - **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted
   with only an owner password opens without one and is scanned normally.
 - **Pattern rules cannot span pages as hard findings** — they surface as

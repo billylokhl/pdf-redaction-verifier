@@ -567,13 +567,13 @@ difference fails the gate.
   (never exit `0`) and was found only by a local run. Open follow-ups:
   (a) the OCR engine's *tool* obligation should record the OS and Vision
   versions it ran under, so a result is never carried over to a
-  different OS; (b) each page's OCR *view* obligation should be discharged
-  only when both Vision completion handlers ran without error — today a
-  `performRequests` that succeeds without calling them leaves both
-  readings empty and the page passes as read; (c) because (b) does not
-  cover Vision returning less text with no error (only OCR tests run on
-  the new OS can catch that), (a)'s versions should gate whether a
-  result counts.
+  different OS; (b) the ledger should keep, as each page's OCR *view*
+  obligation's witness, the check today's tool already makes (CHANGELOG,
+  "OCR readings Vision never delivered"): both Vision completion
+  handlers ran to the end without error, else the page is
+  `PAGE_FAILED`; (c) because (b) does not cover Vision returning less
+  text with no error (only OCR tests run on the new OS can catch that),
+  (a)'s versions should gate whether a result counts.
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -715,9 +715,18 @@ four subprocesses per core to one per usable core (capped by RAM),
 after the weekly job's per-file timeouts were traced to
 oversubscription of its 3-core, 7 GB runner (cases that take ~9 s alone
 took 45–68 s at 12 workers, with the VM swapping), and that job's limit
-raised from 45 to 60 minutes (a run now takes 34.6). Not yet done, left
+raised from 45 to 60 minutes (a run now takes 34.6); the reference's
+`qpdf` run through a shim adding `--deterministic-id` (the candidate
+passes it itself), after an intermittent unlisted `SHORT` review warning
+was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
+(owner's decision, over re-tagging the reference). Not yet done, left
 for a later PR: `scorecard metrics` exiting non-zero on a crash or
-timeout (today only `scorecard diff` fails on them), the additive
+timeout (today only `scorecard diff` fails on them); qpdf's own
+generated trailer `/ID` (32 hex digits, now derived from the file) still
+swept by the Binary layer, so a 4-character all-hex value rule matches
+it on about 0.05% of files and a 3-character one (`Abe`, `Ada`) on about
+0.75% — stable and fail-closed, but noise: bytes qpdf wrote itself are
+not file content; the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
