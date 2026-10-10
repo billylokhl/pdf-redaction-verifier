@@ -130,7 +130,7 @@ class TestBanners:
 class TestLabels:
     def test_no_character_of_an_exact_value_is_shown(self, capsys, yaml_rules) -> None:
         out = _render(capsys, _leaky_report(), yaml_rules)
-        for token in ("Jane", "Q. Ex", "Another Value"):
+        for token in ("Jane", "Example", "Another", "Value"):
             assert token not in out
         # ...nor the YAML comment beside a pattern.
         assert "account" not in out

@@ -2818,11 +2818,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             rendered = io.StringIO()
             with contextlib.redirect_stdout(rendered):
                 print_report(report, pdf_path, rules=rules)
-            final = finish(code)
+            try:
+                final = finish(code)
+            except BaseException:
+                if code == 1:  # a confirmed leak never moves down: show it
+                    sys.stdout.write(rendered.getvalue())
+                raise
             if final != code:
                 print_report(report, pdf_path, rules=rules, json_unwritten=True)
-            else:
+                return final
+            try:
                 sys.stdout.write(rendered.getvalue())
+            except BaseException:
+                # The JSON report already says this run's verdict; if the
+                # human report cannot be printed, crash() rewrites it as an
+                # error -- and should that fail too, no JSON report must be
+                # left behind saying more than the exit code does.
+                if json_path is not None:
+                    with contextlib.suppress(OSError):
+                        json_path.unlink()
+                raise
             return final
         finally:
             # Guaranteed on every exit from the block above — a normal

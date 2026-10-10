@@ -129,13 +129,13 @@ _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "
 def _label(finding: Finding, rules: RuleSet | None) -> str:
     label = rules.labels.get(finding.secret_name) if rules is not None else None
     text = repr(finding.secret_name) if label is None else label.text
-    # "|" separates the columns; a rule name must not be able to fake one.
-    text = _sanitize_report_text(text).replace("|", "¦")
+    text = _sanitize_report_text(text)
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
         text += f" {mask(finding.sample)}"
-    return _sanitize_report_text(text)
+    # "|" separates the columns; neither a rule name nor a sample may fake one.
+    return _sanitize_report_text(text).replace("|", "¦")
 
 
 def _counts(report: ScanReport, rules: RuleSet) -> str:
