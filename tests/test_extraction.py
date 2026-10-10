@@ -5,6 +5,7 @@ Each test pins a previously confirmed detection-gap bug.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pymupdf as fitz
@@ -14,7 +15,7 @@ import verify
 
 from redaction_verifier.matching import SecretMatcher, normalize_string
 from redaction_verifier.model import ScanReport, Secret
-from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text
+from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text, ocr
 
 from .conftest import HAS_OCR, SSN
 
@@ -382,6 +383,100 @@ class TestPageBreaksOcr:
         report = self._ocr([["nothing", "ref 123\n45-"], ["page two", "6789 end"]])
         assert report.findings == []
         assert report.warnings == [crossing(2, layer="OCR")]
+
+
+# Vision's observations as macOS 27 returned them for case-library pages
+# (A4 at 300 dpi: 2479 x 3508 px), in normalized image coordinates.
+A4_PX = (2479, 3508)
+# One digit per line, 1 to 9, read as one line rotated 270 degrees.
+STACK = ocr.Observation("199140190", (0.179, 0.891), (0.179, 0.747), (0.167, 0.891))
+# Genuinely rotated text: 90 and 270 degrees.
+ROTATED_90 = ocr.Observation(f"SSN {SSN}", (0.490, 0.406), (0.490, 0.510), (0.506, 0.406))
+ROTATED_270 = ocr.Observation("123-45-", (0.854, 0.642), (0.854, 0.594), (0.835, 0.642))
+HORIZONTAL = ocr.Observation("body text here", (0.121, 0.891), (0.239, 0.891), (0.121, 0.878))
+
+
+class TestOcrStacks:
+    """On macOS 27, Vision reads a one-character-per-line stack as one
+    sideways line (often a misread: '199140190' for 1 to 9). Like the
+    Text layer's stack readings, it is manual review, never hard."""
+
+    def test_a_stack_is_told_apart_from_rotated_text(self) -> None:
+        assert ocr._is_stacked(STACK, *A4_PX)
+        assert not ocr._is_stacked(ROTATED_90, *A4_PX)
+        assert not ocr._is_stacked(ROTATED_270, *A4_PX)
+        assert not ocr._is_stacked(HORIZONTAL, *A4_PX)
+
+    def test_widely_spaced_horizontal_text_is_one_line(self) -> None:
+        # A row of form boxes is a line of the page, however far apart.
+        boxes = ocr.Observation("123456789", (0.1, 0.8), (0.9, 0.8), (0.1, 0.79))
+        assert not ocr._is_stacked(boxes, *A4_PX)
+
+    def test_an_empty_observation_is_not_a_stack(self) -> None:
+        empty = ocr.Observation("", STACK.top_left, STACK.top_right, STACK.bottom_left)
+        assert not ocr._is_stacked(empty, *A4_PX)
+
+    def test_the_geometry_is_measured_in_pixels(self) -> None:
+        # The same normalized box on a landscape image is a different shape.
+        assert ocr._is_stacked(STACK, *A4_PX)
+        assert not ocr._is_stacked(STACK, A4_PX[1] * 4, A4_PX[0] // 4)
+
+    @staticmethod
+    def _readings(monkeypatch: pytest.MonkeyPatch,
+                  observations: list[ocr.Observation]) -> list[str]:
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: (observations, observations))
+        doc = fitz.open()
+        try:
+            return ocr.extract_ocr_text(doc.new_page())  # A4 by default
+        finally:
+            doc.close()
+
+    def test_genuine_readings_split_a_stack_one_character_per_line(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        readings = self._readings(monkeypatch, [HORIZONTAL, STACK, ROTATED_90])
+        split = "\n".join([HORIZONTAL.text, *STACK.text, ROTATED_90.text])
+        fused = "\n".join([HORIZONTAL.text, STACK.text, ROTATED_90.text])
+        assert len(readings) == 4 and ocr.OCR_GENUINE_READINGS == 2
+        assert readings == [split, split, fused, fused]
+
+    def _scan(self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+              observation: ocr.Observation, rule: dict) -> tuple[int, dict]:
+        # The CLI end to end, with Vision stubbed: runs without macOS.
+        monkeypatch.setattr(verify, "_OCR_IMPORTS_OK", True)
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: ([observation], [observation]))
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing here")
+        pdf = tmp_path / "page.pdf"
+        doc.save(pdf)
+        doc.close()
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([rule]))
+        out = tmp_path / "report.json"
+        code = verify.main(["--target", str(pdf), "--secrets", str(rules),
+                            "--json", str(out)])
+        return code, json.loads(out.read_text())
+
+    @pytest.mark.parametrize("rule, code", [
+        ({"name": "Any SSN", "class": "ssn"}, "REVIEW_FUSED_PATTERN"),
+        ({"name": "SSN", "value": SSN}, "REVIEW_CROSS_LINE"),
+    ])
+    def test_a_stacked_value_is_manual_review(self, tmp_path, monkeypatch, rule, code) -> None:
+        stack = ocr.Observation("123456789", STACK.top_left, STACK.top_right, STACK.bottom_left)
+        exit_code, data = self._scan(tmp_path, monkeypatch, stack, rule)
+        assert exit_code == 2
+        assert data["findings"] == []
+        assert (code, "OCR", rule["name"]) in {
+            (w["code"], w["layer"], w["rule"]) for w in data["warnings"]}
+
+    @pytest.mark.parametrize("rule", [
+        {"name": "Any SSN", "class": "ssn"}, {"name": "SSN", "value": SSN}])
+    def test_rotated_text_is_still_a_hard_finding(self, tmp_path, monkeypatch, rule) -> None:
+        exit_code, data = self._scan(tmp_path, monkeypatch, ROTATED_90, rule)
+        assert exit_code == 1
+        assert [(f["layer"], f["rule"]) for f in data["findings"]] == [("OCR", rule["name"])]
 
 
 @pytest.mark.skipif(not HAS_OCR, reason="needs the PyObjC Vision bridge (macOS)")

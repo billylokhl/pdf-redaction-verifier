@@ -317,6 +317,23 @@ off) are genuine full-page reads of the same pixels, not reconstructions,
 so both feed the hard tier. Correction-off is run precisely because the
 language model can "correct" digits in codes and serial numbers.
 
+One exception. On macOS 27, Vision returns a one-character-per-line
+stack as a single line rotated 90° or 270° — the orientation it gives
+rotated text — and reads the upright glyphs sideways, often wrongly
+(`199140190` for the digits 1 to 9: a valid SSN shape that is not on the
+page). The geometry tells a stack from rotated text: rotated text is
+thick across the line (a glyph's height) with characters close together
+along it (a glyph's width); a stack is one upright glyph wide with
+characters a line-spacing apart. A vertically read line whose character
+pitch exceeds its thickness is a stack. On the case library under
+macOS 27, every OCR hard finding — rotated text included — has a pitch
+of at most 0.69 times its thickness and the stack 1.84; the cut is at
+1. In the genuine readings a stack is split one character per line, as
+the Text layer's genuine readings hold it, so nothing in it is hard;
+Vision's fused line is kept in two more, reconstructed, readings, so a
+value or pattern in it is still manual review. A row of form boxes, read
+horizontally, is never a stack.
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
@@ -390,7 +407,11 @@ the gap is stated rather than implied away.
   not fail closed: nothing checks Vision's output, so a secret only OCR
   can see would pass as clean. Only running OCR tests (the case
   library, the OCR unit tests) on that OS can catch it, and only for
-  the content they cover.
+  the content they cover. A change in *how* Vision reads can also move
+  verdicts: on macOS 27 Vision reads a one-character-per-line stack as
+  one line, which made a misread number a hard finding until such lines
+  were treated as stacks (see the two-tier model above). The stack
+  threshold is measured on generated pages only.
 - **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted
   with only an owner password opens without one and is scanned normally.
 - **Pattern rules cannot span pages as hard findings** — they surface as

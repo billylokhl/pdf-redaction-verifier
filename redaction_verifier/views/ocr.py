@@ -4,9 +4,11 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged. One change
-since the move: the image handler's options are a native NSDictionary,
-not a Python {} (see _vision_recognize_batch; macOS 27 compatibility).
+`verify.X` references and the CLI keep working unchanged. Two changes
+since the move, both for macOS 27: the image handler's options are a
+native NSDictionary, not a Python {} (see _vision_recognize_batch); and
+a vertical stack of upright characters, which Vision there returns as
+one line read sideways, is only manual review (see _is_stacked).
 
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
@@ -31,11 +33,25 @@ and this module's own value never drift apart.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import pymupdf as fitz
 
 OCR_DPI: int = 300
+
+# How many of extract_ocr_text's readings are genuine reading orders
+# (hard-finding eligible): Vision's reading with language correction on
+# and off. The rest are reconstructions (manual review).
+OCR_GENUINE_READINGS = 2
+
+# A vertically read observation whose characters lie further apart along
+# the reading direction than the line is thick is a stack of upright
+# characters, not rotated text (see _is_stacked). Measured on the case
+# library under macOS 27: rotated text and every other OCR hard finding
+# at most 0.69, a one-digit-per-line stack 1.84.
+STACK_PITCH_RATIO = 1.0
 
 try:
     import Vision
@@ -55,14 +71,30 @@ except Exception:  # pragma: no cover
     _OCR_IMPORTS_OK = False
 
 
-def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
+@dataclass(frozen=True)
+class Observation:
+    """One line Vision recognized: its top candidate's string and three
+    corners of its quadrilateral, as (x, y) in Vision's normalized image
+    coordinates (0 to 1, origin bottom-left). top_left -> top_right runs
+    along the reading direction, bottom_left -> top_left across the line."""
+
+    text: str
+    top_left: tuple[float, float]
+    top_right: tuple[float, float]
+    bottom_left: tuple[float, float]
+
+
+def _vision_recognize_batch(
+    png_bytes: bytes,
+) -> tuple[list[Observation], list[Observation]]:
     """OCR a PNG with Apple Vision in one pass: correction on AND off.
 
     Both requests share a single VNImageRequestHandler so the image is
     decoded once instead of twice.  Raises on any Vision-level failure.
+    Returns each pass's observations in Vision's order.
     """
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
-    results: dict[bool, list[str]] = {True: [], False: []}
+    results: dict[bool, list[Observation]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
 
     def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
@@ -73,7 +105,12 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
             for observation in request.results() or []:
                 candidates = observation.topCandidates_(1)
                 if candidates:
-                    results[correction].append(candidates[0].string())
+                    tl, tr, bl = (observation.topLeft(), observation.topRight(),
+                                  observation.bottomLeft())
+                    results[correction].append(Observation(
+                        candidates[0].string(),
+                        (tl.x, tl.y), (tr.x, tr.y), (bl.x, bl.y),
+                    ))
         return handler
 
     request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
@@ -108,7 +145,49 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
         if errors[correction]:
             raise RuntimeError(f"Apple Vision error: {'; '.join(errors[correction])}")
 
-    return ("\n".join(results[True]), "\n".join(results[False]))
+    return (results[True], results[False])
+
+
+def _is_stacked(observation: Observation, width: int, height: int) -> bool:
+    """Whether an observation is upright characters stacked one per line,
+    read by Vision as a single line rotated 90 or 270 degrees.
+
+    On macOS 27, Vision returns a one-character-per-line stack as one
+    vertical observation (CI's macOS 26 never made a hard finding of it), the same orientation it gives rotated text. Its
+    string is then a reading of upright glyphs turned sideways
+    ('199140190' for 1 to 9, one digit per line): not a line of the page.
+    The geometry tells the two apart. Rotated text is thick across the
+    line (a glyph's height) with characters close together along it (a
+    glyph's width); a stack is thin across (one upright glyph's width)
+    with characters a line-spacing apart along it. Measured in pixels of
+    the *width* x *height* image, so the page's aspect ratio cannot skew
+    it. Observations read horizontally (within 45 degrees) are never
+    stacks: a row of form boxes is one line of the page.
+    """
+    if not observation.text:
+        return False
+    def vector(start: tuple[float, float], end: tuple[float, float]) -> tuple[float, float]:
+        return (end[0] - start[0]) * width, (end[1] - start[1]) * height
+
+    along_x, along_y = vector(observation.top_left, observation.top_right)
+    if abs(along_y) <= abs(along_x):
+        return False
+    pitch = math.hypot(along_x, along_y) / len(observation.text)
+    thickness = math.hypot(*vector(observation.bottom_left, observation.top_left))
+    return pitch > STACK_PITCH_RATIO * thickness
+
+
+def _reading(observations: list[Observation], width: int, height: int,
+             *, split_stacks: bool) -> str:
+    """One reading, one observation per line; with *split_stacks*, a
+    stacked observation contributes one character per line instead."""
+    lines: list[str] = []
+    for observation in observations:
+        if split_stacks and _is_stacked(observation, width, height):
+            lines.extend(observation.text)
+        else:
+            lines.append(observation.text)
+    return "\n".join(lines)
 
 
 def extract_ocr_text(page: fitz.Page) -> list[str]:
@@ -121,9 +200,17 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
 
     Both recognition passes share one image handler so the PNG is decoded
     once (see _vision_recognize_batch).
+
+    Four readings, the first OCR_GENUINE_READINGS genuine: each pass with
+    a stacked observation (_is_stacked) split one character per line, as
+    the Text layer reads such a stack, so nothing in it is a hard finding;
+    then each pass exactly as Vision returned it, a reconstruction, so a
+    value or pattern in a stack's fused string is still manual review.
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
+    width, height = pix.width, pix.height
     png_bytes: bytes = pix.tobytes("png")
     del pix  # release the raster before Vision runs
-    text_on, text_off = _vision_recognize_batch(png_bytes)
-    return [text_on, text_off]
+    passes = _vision_recognize_batch(png_bytes)
+    return [_reading(obs, width, height, split_stacks=True) for obs in passes] + [
+        _reading(obs, width, height, split_stacks=False) for obs in passes]

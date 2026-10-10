@@ -222,6 +222,7 @@ try:
     from redaction_verifier.views import MAX_LINE_TOLERANCE_PT as MAX_LINE_TOLERANCE_PT
     from redaction_verifier.views import MIN_LINE_TOLERANCE_PT as MIN_LINE_TOLERANCE_PT
     from redaction_verifier.views import OCR_DPI as OCR_DPI
+    from redaction_verifier.views import OCR_GENUINE_READINGS as OCR_GENUINE_READINGS
     from redaction_verifier.views import TEXT_GENUINE_READINGS as TEXT_GENUINE_READINGS
     from redaction_verifier.views import _OCR_IMPORTS_OK as _OCR_IMPORTS_OK
     from redaction_verifier.views import _join_cluster as _join_cluster
@@ -2781,8 +2782,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             # are independent natural-order reads of the same
                             # pixels, not reconstructions — correction-off is in
                             # fact the more reliable read for digit strings — so
-                            # both are eligible for hard findings.
-                            hard_variants=2,
+                            # both are eligible for hard findings, except for a
+                            # vertical stack of characters Vision fused into one
+                            # line: that is only in the two reconstructed
+                            # readings after them (extract_ocr_text).
+                            hard_variants=OCR_GENUINE_READINGS,
                             fail_fast=args.fail_fast,
                         )
                     except Exception as exc:
