@@ -454,15 +454,37 @@ class TestOcrVerticalLines:
             lambda call: ([], []) if call == 1 else pytest.fail("re-read past the cap"))
         assert confirmed == [[False, False, True], []]
 
+    def test_a_failed_re_read_leaves_the_line_unconfirmed(self, monkeypatch) -> None:
+        def fail(call: int) -> tuple[list[str], list[str]]:
+            raise RuntimeError("Apple Vision error")
+
+        confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), fail)
+        assert confirmed == [[False, True], []]
+
+    def test_the_re_read_crop_is_padded_by_the_line_thickness(self) -> None:
+        # ROTATED_90 is 0.016 x 2479 = 40 px thick: the first crop adds
+        # that plus 2 pt (8 px) around the line's own box; the retry more.
+        x0, y0 = 0.490 * A4_PX[0], (1 - 0.510) * A4_PX[1]
+        x1, y1 = 0.506 * A4_PX[0], (1 - 0.406) * A4_PX[1]
+        first = ocr._box(ROTATED_90, *A4_PX, ocr.REREAD_PADS[0])
+        assert first.x0 <= x0 - 47 and first.x1 >= x1 + 47
+        assert first.y0 <= y0 - 47 and first.y1 >= y1 + 47
+        assert first.width < (x1 - x0) + 2 * 50   # thickness, not the line's length
+        assert ocr._box(ROTATED_90, *A4_PX, ocr.REREAD_PADS[1]).contains(first)
+
     def test_a_re_read_counts_only_lines_read_horizontally(self, monkeypatch) -> None:
         # Turned upright, a stack is a row of sideways glyphs; Vision may
         # read that sideways again, which confirms nothing.
-        monkeypatch.setattr(ocr, "_vision_recognize_batch",
-                            lambda png: ([_as(STACK, "123"), _as(HORIZONTAL, "456")], []))
+        # A line near 45 degrees stays near 45 turned upright: it counts.
+        # (On the 100 x 200 turned crop: 60 px across, 70 up, about 49 degrees.)
+        slanted = ocr.Observation("789", (0.2, 0.2), (0.8, 0.55), (0.25, 0.15))
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: (
+            [_as(STACK, "123"), _as(HORIZONTAL, "456"), slanted], []))
         doc = fitz.open()
         try:
             image = doc.new_page(width=200, height=100)
-            assert ocr._upright_reads(image, fitz.IRect(0, 0, 200, 100)) == (["456", "456"], [])
+            reads = ocr._upright_reads(image, fitz.IRect(0, 0, 200, 100))
+            assert reads == (["456", "789", "456", "789"], [])
         finally:
             doc.close()
 
@@ -577,7 +599,9 @@ class TestOcrVerticalLinesWithVision:
         finally:
             doc.close()
 
-    def test_a_stack_is_never_one_line(self) -> None:
+    def test_a_digit_stack_is_never_one_line(self) -> None:
+        # Digits 1 to 9; a stack of glyphs that look alike turned sideways
+        # (0, 1, 8, O, I, H) can still be confirmed (#65).
         doc = fitz.open()
         page = doc.new_page()
         for i, digit in enumerate("123456789"):

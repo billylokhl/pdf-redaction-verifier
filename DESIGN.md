@@ -344,10 +344,11 @@ at 90°, are manual review). Two limits: a stack of glyphs that look
 alike turned sideways (`0`, `1`, `8`, `O`, `I`, `H`) can re-read as the
 same misread and stay hard, a finding on a number not on the page
 ([#65](https://github.com/billylokhl/pdf-redaction-verifier/issues/65));
-and at most 64 vertical lines per page are re-read, so on a page of
+and a page gets at most 64 re-reads, retries included, so on a page of
 sideways text (a scan inserted rotated) the lines past that are manual
-review. Lines read horizontally, such as a row of form boxes, are not
-re-read.
+review. A re-read that fails confirms nothing (manual review); it does
+not fail the page. Lines read horizontally, such as a row of form
+boxes, are not re-read.
 
 ## Bounded resources
 
@@ -361,9 +362,11 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 masked — at most four trailing characters, never more than half — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
-OCR's upright re-reads of vertical lines are capped at 64 per page: a
-page of sideways text costs about 8–11 s instead of under half a second
+OCR's upright re-reads of vertical lines are capped at 64 per page,
+retries included: a page of sideways text costs about 8–11 s and one of
+text slanted near 45° about 25 s, instead of under half a second
 (measured on macOS 27), so a long sideways scan is slow, not unbounded.
+Vision calls themselves have no deadline (as before the re-reads).
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
