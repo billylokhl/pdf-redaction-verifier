@@ -25,6 +25,7 @@ from scorecard.accepted import (
 from scorecard.differential import (
     CaseDiff,
     CaseRun,
+    deterministic_qpdf_env,
     load_reference_cache,
     normalization_have,
     save_reference_cache,
@@ -983,3 +984,77 @@ def test_run_cli_crashed_when_subprocess_exit_disagrees_with_its_own_report(tmp_
     assert result.returncode == 0
     assert result.report == {"exit_code": 2, "error": None, "findings": [], "warnings": []}
     assert result.crashed
+
+
+# ── the reference's qpdf: its trailer /ID must not come from the clock ──
+
+
+def _fake_qpdf(directory):
+    """A stand-in `qpdf` that prints its own argv, one per line."""
+    directory.mkdir()
+    exe = directory / "qpdf"
+    exe.write_text('#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n')
+    exe.chmod(0o755)
+    return exe
+
+
+def test_deterministic_qpdf_env_prepends_the_flag(tmp_path, monkeypatch):
+    """eval-ref-0 launches a bare `qpdf` without --deterministic-id, so its
+    output carried a clock-seeded /ID that a short all-hex value rule
+    matched at random. The shim, first on PATH, must add the flag ahead
+    of the reference's own arguments and pass those through unchanged."""
+    import subprocess
+
+    _fake_qpdf(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    with deterministic_qpdf_env() as env:
+        assert env is not None
+        out = subprocess.run(
+            ["qpdf", "--qdf", "--object-streams=disable", "a file.pdf", "-"],
+            env=env, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+    assert out == ["--deterministic-id", "--qdf", "--object-streams=disable", "a file.pdf", "-"]
+
+
+def test_deterministic_qpdf_env_is_none_without_qpdf(tmp_path, monkeypatch):
+    """No qpdf installed: inherit the environment, so the reference still
+    reports TOOL_MISSING exactly as before."""
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with deterministic_qpdf_env() as env:
+        assert env is None
+
+
+def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeypatch):
+    """run_differential hands every reference run an environment whose
+    `qpdf` adds --deterministic-id, and the candidate (which passes the
+    flag itself) its own unchanged environment."""
+    import contextlib
+    import os
+    import subprocess
+
+    import scorecard.differential as differential
+
+    _fake_qpdf(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    reference_verify = tmp_path / "reference-verify.py"
+
+    @contextlib.contextmanager
+    def fake_worktree(ref, root=None):
+        yield reference_verify
+
+    seen: dict[str, list[list[str]]] = {"reference": [], "candidate": []}
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        # What a bare `qpdf` launched by this CLI would actually receive.
+        argv = subprocess.run(
+            ["qpdf", "x.pdf"], env=None if env is None else dict(env),
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        seen["reference" if verify_path == reference_verify else "candidate"].append(argv)
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "worktree_for_ref", fake_worktree)
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_differential(["page.memo"], out_dir=tmp_path / "out")
+
+    assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}

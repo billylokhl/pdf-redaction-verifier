@@ -18,14 +18,17 @@ reference entirely on a cache hit, at the case-id granularity).
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .accepted import AcceptedDiff, find_accepted, load_accepted_diffs
 from .keys import NormalizedKey, effective_exit, normalize
@@ -34,6 +37,33 @@ from .refs import REFERENCE_REF, candidate_verify_path, repo_root, resolve_commi
 from .runner import CliResult, current_python, run_cli
 
 DEFAULT_TIMEOUT = 60.0
+
+
+@contextlib.contextmanager
+def deterministic_qpdf_env() -> Iterator[dict[str, str] | None]:
+    """An environment for the *reference* CLI whose `qpdf` always gets
+    `--deterministic-id`, or None (inherit) when qpdf is not installed.
+
+    The reference (`eval-ref-0`) predates that flag, so its qpdf writes a
+    trailer /ID seeded by the current second into the output its Binary
+    layer sweeps, and a short all-hex value rule (the case library's
+    SHORT, "45-67") matched it about once in 1,000 scans — a warning that
+    came and went with the clock, failing the differential at random.
+    The candidate passes the flag itself. This shim, first on PATH (the
+    reference launches a bare `qpdf`), removes that one clock input from
+    the reference and changes nothing else; it is the owner's chosen fix
+    over re-tagging the reference (docs/REDESIGN.md §7, Phase 0c)."""
+    real = shutil.which("qpdf")
+    if real is None:
+        yield None
+        return
+    with tempfile.TemporaryDirectory(prefix="scorecard-qpdf-") as shim_dir:
+        shim = Path(shim_dir) / "qpdf"
+        shim.write_text(f'#!/bin/sh\nexec {shlex.quote(real)} --deterministic-id "$@"\n')
+        shim.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
+        yield env
 
 
 @dataclass(frozen=True)
@@ -365,20 +395,23 @@ def run_differential(
     reference_runs: dict[str, CaseRun] = dict(cached)
     missing = [case for case in cases if case.id not in reference_runs]
     if missing:
-        with worktree_for_ref(reference_ref, root=root) as reference_verify:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(
-                        run_cli, python_exe, reference_verify, pdfs[case.id], case.rules,
-                        out_dir / "reference", case.id, timeout=timeout,
-                    ): case
-                    for case in missing
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    case = futures[future]
-                    reference_runs[case.id] = CaseRun.from_result(
-                        case.id, future.result(), have=filter_have
-                    )
+        with (
+            worktree_for_ref(reference_ref, root=root) as reference_verify,
+            deterministic_qpdf_env() as reference_env,
+            concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool,
+        ):
+            futures = {
+                pool.submit(
+                    run_cli, python_exe, reference_verify, pdfs[case.id], case.rules,
+                    out_dir / "reference", case.id, timeout=timeout, env=reference_env,
+                ): case
+                for case in missing
+            }
+            for future in concurrent.futures.as_completed(futures):
+                case = futures[future]
+                reference_runs[case.id] = CaseRun.from_result(
+                    case.id, future.result(), have=filter_have
+                )
         if cache_dir is not None and cache_key is not None:
             save_reference_cache(cache_dir, cache_key, reference_runs, input_hashes)
 
