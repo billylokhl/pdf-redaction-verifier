@@ -265,6 +265,19 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   RESULTS.md): corpus 1,939 agree, 134 flagged (6.46%, from 16.55%), 0 unflagged
   disagreements -- all 80 updated linearized files and the 129 offset-0 files agree; case
   library 396/4/0; fuzz 740/2,260/0.
+- Fix after 3a-6c (found by the dev-profile mutation fuzz of tests/test_inventory_xref.py: the
+  page-tree root's xref entry flipped to free): qpdf 12 refuses to open a file whose catalog's
+  /Pages is not a dictionary ("unable to find page tree", QPDF_objects.cc Objects::parse;
+  12.3.2, 12.4.1 and 12.4.2 alike) or whose /Root is a stream ("unable to find /Root
+  dictionary"); MuPDF opens both. The chain accepted them. Now flagged per revision:
+  MISSING_PAGE_TREE unless /Pages is a direct dictionary or a reference, number and
+  generation, to an in-use non-stream dictionary (xref._page_tree; build checks the
+  object-stream cases), and a stream catalog MISSING_ROOT. A reference to a free or missing
+  object stays 3a-7's below except as the catalog's /Pages, which no reader-agreeing file
+  can have. ADR 0011 item 2's PAGE_TREE is the fuller rule.
+  Gate re-run, all passing: corpus 1,939 agree, 134 flagged, 0 unflagged disagreements;
+  case library 396/4/0; fuzz (--count 2000 --seed 0) 501/1,499/0 -- every file's verdict as
+  in 3a-6c's run, 19 already-flagged fuzz files now also MISSING_PAGE_TREE.
 - 3a-7's rules are [ADR 0011](adr/0011-reference-graph-canonical-form.md) (accepted 2026-10-04).
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and

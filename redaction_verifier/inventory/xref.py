@@ -244,9 +244,11 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
       live in it is flagged (MuPDF: "corrupt object stream"). Whether
       an in-use home is really an object stream holding that index is
       3a-5's to check; object 0 is never in use (MuPDF warns);
-    - the revision's newest trailer names a /Type /Catalog via /Root
-      (qpdf: "unable to find /Root dictionary"; a catalog inside an
-      object stream is 3a-5's to check) and has /Size exactly one more
+    - the revision's newest trailer names a /Type /Catalog dictionary
+      (not a stream) via /Root (qpdf: "unable to find /Root
+      dictionary"), whose /Pages is a dictionary (``_page_tree``; qpdf:
+      "unable to find page tree") -- a catalog or a /Pages inside an
+      object stream is 3a-5's to check -- and has /Size exactly one more
       than its highest object number (§7.5.5; qpdf warns otherwise);
     - object numbers and generations both readers read the same way
       (NUMBER_OUT_OF_RANGE, NumberRule): every entry's number at most
@@ -259,7 +261,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
     flags: list[Flag] = []
     merged: dict[int, Entry] = {}
     highest = 0
-    catalogs: dict[int, bool] = {}
+    dicts: dict[int, tuple[int, PdfDict] | None] = {}  # offset -> (num, dictionary)
     whole: dict[int, int | None] = {}  # offset -> where its object ends (None: never)
     members: dict[int, set[int]] = {}  # object stream -> live compressed entries in it
     lengths.merged = merged
@@ -323,22 +325,21 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
         trailer = newest.trailer
         root = trailer.get(b"Root") if trailer is not None else None
         home = merged.get(root.num) if isinstance(root, PdfRef) else None
-        catalog = False
+        catalog, pages = False, True
         if (isinstance(root, PdfRef) and home is not None and home.kind == IN_USE
                 and not no_object(root.num, home)):
-            if home.a not in catalogs:
-                # parse_indirect_at reads the first object at or after the
-                # offset: the catalog must start there and be that object.
-                obj = parser.parse_indirect_at(home.a, end)
-                catalogs[home.a] = (obj is not None and not obj.flags
-                                    and obj.span.start == home.a and obj.num == root.num
-                                    and isinstance(obj.value, PdfDict)
-                                    and _name(obj.value.get(b"Type")) == b"Catalog")
-            catalog = catalogs[home.a] and home.b == root.gen
+            found = _dictionary_at(parser, home.a, end, dicts)
+            catalog = (found is not None and found[0] == root.num and home.b == root.gen
+                       and _name(found[1].get(b"Type")) == b"Catalog")
+            if found is not None and catalog:
+                pages = _page_tree(found[1].get(b"Pages"), merged, parser, end, dicts)
         elif isinstance(root, PdfRef) and home is not None and home.kind == COMPRESSED:
             catalog = True
         if not catalog:
             flags.append(Flag(FlagReason.MISSING_ROOT, newest.span, (("revision", revision),)))
+        elif not pages:
+            flags.append(Flag(FlagReason.MISSING_PAGE_TREE, newest.span,
+                              (("revision", revision),)))
         size = _int(trailer.get(b"Size")) if trailer is not None else None
         if size is not None and size > MAX_OBJECT_NUMBER:
             flags.append(Flag(FlagReason.NUMBER_OUT_OF_RANGE, newest.span, (
@@ -538,6 +539,44 @@ def _linearized_length(data: bytes, parser: ObjectParser, first_section: int) ->
     """The linearization dictionary's /L: the file's length when written."""
     found = _linearization(data, parser, first_section)
     return _int(found.get(b"L")) if found is not None else None
+
+
+def _dictionary_at(parser: ObjectParser, offset: int, end: int,
+                   dicts: dict[int, tuple[int, PdfDict] | None]) -> tuple[int, PdfDict] | None:
+    """(number, value) of the object at *offset* when it parses clean and
+    its value is a dictionary, not a stream (qpdf's isDictionary); parsed
+    once per offset, bounded by the first (oldest) revision's *end* that
+    asks -- a failure there is never loosened. parse_indirect_at reads
+    the first object at or after *offset*: it must start there."""
+    if offset not in dicts:
+        obj = parser.parse_indirect_at(offset, end)
+        dicts[offset] = ((obj.num, obj.value) if obj is not None and not obj.flags
+                         and obj.span.start == offset and obj.stream is None
+                         and isinstance(obj.value, PdfDict) else None)
+    return dicts[offset]
+
+
+def _page_tree(pages: PdfValue | None, merged: dict[int, Entry], parser: ObjectParser,
+               end: int, dicts: dict[int, tuple[int, PdfDict] | None]) -> bool:
+    """Is a catalog's /Pages a dictionary, as qpdf 12 requires to open a
+    file at all ("unable to find page tree"; MuPDF opens it, so the
+    readers disagree)? A direct one, or a reference whose number and
+    generation name an in-use object that is one (not a stream; qpdf
+    reads a reference to a free, missing or other-generation object as
+    null). One in an object stream is 3a-5's to check (build). What the
+    page tree holds is the reference graph's (3a-7)."""
+    if isinstance(pages, PdfDict):
+        return True
+    if not isinstance(pages, PdfRef) or pages.num == 0:
+        return False
+    entry = merged.get(pages.num)
+    if entry is not None and entry.kind == COMPRESSED:
+        return pages.gen == 0
+    if (entry is None or entry.kind != IN_USE or no_object(pages.num, entry)
+            or entry.b != pages.gen):
+        return False
+    found = _dictionary_at(parser, entry.a, end, dicts)
+    return found is not None and found[0] == pages.num
 
 
 def _header_at(data: bytes, offset: int) -> tuple[int, int, int] | None:

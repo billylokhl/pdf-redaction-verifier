@@ -650,3 +650,49 @@ def test_the_dev_cli_prints_counts_and_no_document_bytes(tmp_path: Path) -> None
     bad = subprocess.run([sys.executable, "-m", "redaction_verifier.inventory"],
                          cwd=REPO_ROOT, capture_output=True, timeout=60)
     assert bad.returncode == 2
+
+
+# ── A /Pages qpdf can open, in object streams (xref._page_tree) ───────────
+PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+COMPRESSED_PAGE_TREES = [
+    pytest.param([(2, PAGES)], {2: (2, 4, 0)}, None, id="pages-compressed"),
+    pytest.param([(1, CATALOG), (2, PAGES)], {1: (2, 4, 0), 2: (2, 4, 1)}, None,
+                 id="both-compressed"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 9 0 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-pages-missing"),
+    pytest.param([(1, b"<< /Type /Catalog >>")], {1: (2, 4, 0)}, "MISSING_PAGE_TREE",
+                 id="catalog-compressed-no-pages"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-other-generation"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 4 0 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-pages-a-stream"),
+    pytest.param([(2, b"[3 0 R]")], {2: (2, 4, 0)}, "MISSING_PAGE_TREE",
+                 id="pages-compressed-an-array"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>"), (2, PAGES)],
+                 {1: (2, 4, 0), 2: (2, 4, 1)}, "MISSING_PAGE_TREE",
+                 id="both-compressed-other-generation"),
+    pytest.param([(1, CATALOG), (2, b"(x)")], {1: (2, 4, 0), 2: (2, 4, 1)},
+                 "MISSING_PAGE_TREE", id="both-compressed-a-string"),
+]
+
+
+@pytest.mark.parametrize(("members", "entries", "expected"), COMPRESSED_PAGE_TREES)
+def test_a_compressed_catalog_or_page_tree_is_checked(
+        members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
+        expected: str | None) -> None:
+    found = reasons(_objstm_file(members, entries))
+    assert found == ([expected] if expected else []), found
+
+
+@requires_qpdf
+@pytest.mark.parametrize(("members", "entries", "expected"), COMPRESSED_PAGE_TREES)
+def test_a_compressed_catalog_or_page_tree_agrees_or_qpdf_cannot_open_it(
+        members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
+        expected: str | None, tmp_path: Path) -> None:
+    data = _objstm_file(members, entries)
+    path = tmp_path / "in.pdf"
+    path.write_bytes(data)
+    refused = subprocess.run(["qpdf", "--show-xref", str(path)], capture_output=True,
+                             timeout=60).returncode == 2
+    assert refused == (expected is not None)
+    assert inventory_agrees(data, tmp_path) == (expected is None)

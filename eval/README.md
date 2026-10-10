@@ -541,7 +541,8 @@ PYTHONPATH=eval:. python -m scorecard inventory fuzz --count 2000 --seed 0 \
 What each part of the output means:
 
 - `gate`: `passed`, and the gating counts: `unflagged_disagree` (by
-  failed check in `unflagged_disagree_by_check`: `object_set`,
+  failed check in `unflagged_disagree_by_check`: `object_set` (qpdf
+  could not open a revision at all, "qpdf exit 2", counts here too),
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
