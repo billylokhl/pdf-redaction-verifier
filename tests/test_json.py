@@ -358,6 +358,55 @@ class TestOcrFailureFailsClosed:
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
         assert "never completed" in data["warnings"][0]["message"]
 
+    def test_a_handler_raising_on_a_vision_thread_exits_2(self, tmp_path) -> None:
+        # Real Vision runs the two completion handlers on its own worker
+        # threads; an exception escaping one there aborts the process
+        # (no verdict, no report). The handler must catch it so the page
+        # is PAGE_FAILED. Run in a child process: a regression kills the
+        # child, not this test run.
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        out = tmp_path / "report.json"
+        script = tmp_path / "raising_handler.py"
+        script.write_text(
+            "import sys\n"
+            "import Vision\n"
+            "import verify\n"
+            "from redaction_verifier.views import ocr\n"
+            "\n"
+            "class _Broken:\n"
+            "    def results(self):\n"
+            "        raise ValueError('results() failed')\n"
+            "\n"
+            "class _Alloc:\n"
+            "    def initWithCompletionHandler_(self, handler):\n"
+            "        return Vision.VNRecognizeTextRequest.alloc()"
+            ".initWithCompletionHandler_(lambda request, error: handler(_Broken(), error))\n"
+            "\n"
+            "class _Request:\n"
+            "    @staticmethod\n"
+            "    def alloc():\n"
+            "        return _Alloc()\n"
+            "\n"
+            "class _Vision:\n"
+            "    VNRecognizeTextRequest = _Request\n"
+            "    def __getattr__(self, name):\n"
+            "        return getattr(Vision, name)\n"
+            "\n"
+            "ocr.Vision = _Vision()\n"
+            "sys.exit(verify.main(sys.argv[1:]))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(script), "--target", str(pdf), "--secrets", str(rules),
+             "--json", str(out)],
+            capture_output=True, text=True, timeout=300, cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        assert result.returncode == 2, result.stderr[-2000:]
+        data = json.loads(out.read_text())
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "completion handler raised" in data["warnings"][0]["message"]
+
 
 class TestEnvironmentField:
     def test_ocr_available_matches_the_running_process(self, tmp_path) -> None:

@@ -66,28 +66,36 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
     results: dict[bool, list[str]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
-    # Set only as a handler's last step. performRequests can report
-    # success without running a request's handler, and an exception inside
-    # a handler might not reach us; either way both readings would be
-    # empty and the page would pass as read with nothing on it.
+    # Set only as a handler's last step: performRequests can report
+    # success without having run a request's handler to the end, and that
+    # reading would then be empty, so the page would pass as read with
+    # nothing on it.
     completed: dict[bool, bool] = {True: False, False: False}
 
     def _make_handler(correction: bool) -> Callable[[Any, Any], None]:
         def handler(request: Any, error: Any) -> None:
-            if error:
-                errors[correction].append(str(error))
-                return
-            observations = request.results()
-            if observations is None:
-                # A page with no text gives an empty list; None means the
-                # request produced no results at all.
-                errors[correction].append("no results")
-                return
-            for observation in observations:
-                candidates = observation.topCandidates_(1)
-                if candidates:
-                    results[correction].append(candidates[0].string())
-            completed[correction] = True
+            # With two requests, Vision runs these handlers on its own
+            # worker threads (finishing before performRequests returns). An
+            # exception escaping one is uncaught on that thread and aborts
+            # the whole process, so nothing may leave this function: any
+            # failure is recorded and raised by the caller instead.
+            try:
+                if error:
+                    errors[correction].append(str(error))
+                    return
+                observations = request.results()
+                if observations is None:
+                    # A page with no text gives an empty list; None means
+                    # the request produced no results at all.
+                    errors[correction].append("no results")
+                    return
+                for observation in observations:
+                    candidates = observation.topCandidates_(1)
+                    if candidates:
+                        results[correction].append(candidates[0].string())
+                completed[correction] = True
+            except Exception as exc:
+                errors[correction].append(f"completion handler raised {exc!r}")
         return handler
 
     request_on = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(

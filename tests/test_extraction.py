@@ -472,9 +472,11 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
     correction setting, what performRequests does with that request:
     ("text", [lines]) runs its handler with those observations, ("none",
     None) runs it with results() None, ("error", message) runs it with an
-    error, ("swallowed", None) runs it but it raises part-way and the
-    exception never reaches the caller, and ("skip", None) never runs it —
-    all while still reporting success.
+    error, ("raises", None) runs it on an observation whose
+    topCandidates_ raises, and ("skip", None) never runs it — all while
+    still reporting success. Handlers run on the calling thread here; on
+    real Vision they run on worker threads, where an exception escaping
+    one aborts the process, so the handler itself must not let one out.
     """
 
     class _Alloc:
@@ -501,12 +503,9 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
                     request.handler(request, None)
                 elif kind == "error":
                     request.handler(request, value)
-                elif kind == "swallowed":
-                    request.observations = [None]
-                    try:
-                        request.handler(request, None)
-                    except AttributeError:  # None.topCandidates_
-                        pass
+                elif kind == "raises":
+                    request.observations = [None]  # None.topCandidates_ raises
+                    request.handler(request, None)
             return True, None
 
     class _Request:
@@ -567,9 +566,9 @@ class TestVisionBridgeCompletion:
         ({True: ("skip", None), False: ("text", [SSN])}, "correction on never completed"),
         ({True: ("none", None), False: ("text", [SSN])}, "no results"),
         ({True: ("text", [SSN]), False: ("error", "boom")}, "boom"),
-        ({True: ("swallowed", None), False: ("text", [SSN])}, "correction on never completed"),
+        ({True: ("raises", None), False: ("text", [SSN])}, "completion handler raised"),
     ], ids=["neither-ran", "off-never-ran", "on-never-ran", "results-none", "error",
-            "handler-raised-unseen"])
+            "handler-raised"])
     def test_a_request_that_did_not_complete_raises(
         self, monkeypatch: pytest.MonkeyPatch,
         plans: dict[bool, tuple[str, Any]], message: str,

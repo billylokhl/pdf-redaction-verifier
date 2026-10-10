@@ -564,13 +564,12 @@ difference fails the gate.
   (never exit `0`) and was found only by a local run. Open follow-ups:
   (a) the OCR engine's *tool* obligation should record the OS and Vision
   versions it ran under, so a result is never carried over to a
-  different OS; (b) each page's OCR *view* obligation should be
-  discharged only when both Vision completion handlers ran to the end
-  without error. Today's tool already does this (CHANGELOG, "OCR
-  readings Vision never delivered"): a page whose handlers did not both
-  finish is `PAGE_FAILED`. The ledger should keep that as the view
-  obligation's witness. (c) Because (b) does not cover Vision returning less text
-  with no error (only OCR tests run on the new OS can catch that),
+  different OS; (b) the ledger should keep, as each page's OCR *view*
+  obligation's witness, the check today's tool already makes (CHANGELOG,
+  "OCR readings Vision never delivered"): both Vision completion
+  handlers ran to the end without error, else the page is
+  `PAGE_FAILED`; (c) because (b) does not cover Vision returning less
+  text with no error (only OCR tests run on the new OS can catch that),
   (a)'s versions should gate whether a result counts.
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed

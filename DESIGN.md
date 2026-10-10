@@ -387,8 +387,10 @@ the gap is stated rather than implied away.
   options, which a PyObjC-bridged Python dict rejects) until the bridge
   switched to a native `NSDictionary`; see the CHANGELOG. A change that
   stops Vision delivering a reading — a request reported as performed
-  whose completion handler never ran to the end, or saw no results —
-  also fails closed. A change that makes Vision *read less* — fewer or
+  whose completion handler never ran to the end, saw no results, or
+  raised (handlers run on Vision's worker threads, so the bridge catches
+  the exception there instead of letting it abort the process) — also
+  fails closed. A change that makes Vision *read less* — fewer or
   empty results in a reading it does deliver, no error — does not: no
   check can tell an empty reading from a blank page, so a secret only
   OCR can see would pass as clean. Only running OCR tests (the case
