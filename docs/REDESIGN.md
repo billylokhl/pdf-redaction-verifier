@@ -527,9 +527,11 @@ Generators are portable: built-in or vendored OFL fonts, tools from
 ### Scorecard
 
 Run only through the CLI's `--json` output, one subprocess per file,
-with a timeout. Compared **per case** against a pinned reference (a git
-tag, checked out in a worktree — never the live code) on the normalised
-key {exit, set of (rule, tier, storage class), set of warning codes}.
+with a timeout — and at most one concurrent subprocess per core, since
+the timeout is wall-clock and would otherwise measure contention.
+Compared **per case** against a pinned reference (a git tag, checked
+out in a worktree — never the live code) on the normalised key {exit,
+set of (rule, tier, storage class), set of warning codes}.
 
 | Metric | Definition | Measured on |
 | --- | --- | --- |
@@ -707,7 +709,12 @@ extended to warnings, sorted by `str` rather than the tuple itself (a
 code reported at both a string and a `None` storage otherwise crashes
 the sort) (`eval/caselib/run.py`); `caselib.run.available()` probing OCR
 directly rather than through whichever `verify.py` happens to be the
-in-process import. Not yet done, left for a later PR: the additive
+in-process import; the scorecard's default parallelism lowered from
+four subprocesses per core to one, after the weekly job's per-file
+timeouts were traced to oversubscription of its 3-core runner (cases
+that take ~8 s alone took ~45 s at 12 workers), with that job's limit
+raised from 45 to 60 minutes against a measured ~36. Not yet done,
+left for a later PR: the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
