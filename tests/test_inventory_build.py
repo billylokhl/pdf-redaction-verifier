@@ -727,6 +727,28 @@ def test_an_object_stream_with_another_generation_is_flagged(member: int) -> Non
     assert "XREF_OFFSET_MISMATCH" in reasons(_objstm_generation(1, member))
 
 
+def test_an_object_stream_replaced_with_another_generation_is_flagged() -> None:
+    # Revision 1 replaces object stream 4 (holding 5) with `4 1 obj`: the
+    # inherited member 5 now names a home qpdf does not read.
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, CATALOG), 0)
+    table[2] = (1, w.obj(2, PAGES), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> >>"), 0)
+    table[4] = (1, w.objstm(4, [(5, b"(x)")]), 0)
+    table[5] = (2, 4, 0)
+    first = w.xref_stream(6, table, b"/Size 7 /Root 1 0 R")
+    w.epilogue(first)
+    at = w.objstm(4, [(5, b"(x)")])
+    w.out[at:at + 7] = b"4 1 obj"
+    w.epilogue(w.xref_stream(7, {4: (1, at, 1)}, b"/Size 8 /Root 1 0 R /Prev %d" % first))
+    data = bytes(w.out)
+    assert ("XREF_OFFSET_MISMATCH", {"stream": 4, "members": 1, "revision": 0}) in [
+        (f.reason.name, dict(f.params)) for f in chain_of(data).flags]
+    assert "OBJSTM_ENTRY_MISMATCH" in reasons(data)
+
+
 @requires_qpdf
 @pytest.mark.parametrize("member", [1, 2, 5])
 def test_qpdf_reads_no_object_stream_with_another_generation(member: int,
@@ -734,5 +756,5 @@ def test_qpdf_reads_no_object_stream_with_another_generation(member: int,
     path = tmp_path / "in.pdf"
     path.write_bytes(_objstm_generation(1, member))
     check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True, timeout=60)
-    assert b"not a stream" in check.stdout + check.stderr or check.returncode == 2
+    assert b"supposed object stream 4 is not a stream" in check.stdout + check.stderr
     assert inventory_agrees(_objstm_generation(0, member), tmp_path)

@@ -281,7 +281,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   only as `N 0 R`; any other is "not a stream", its members null): XREF_OFFSET_MISMATCH.
   Gate re-run, all passing: corpus 1,939 agree, 134 flagged, 0 unflagged disagreements;
   case library 396/4/0; fuzz (--count 2000 --seed 0) 501/1,499/0 -- every file's verdict as
-  in 3a-6c's run, 19 already-flagged fuzz files now also MISSING_PAGE_TREE.
+  in the last recorded local run (2026-10-03, 3a-6c; the same first 2,000 of its 3,000 fuzz
+  files), 19 already-flagged fuzz files now also MISSING_PAGE_TREE.
 - 3a-7's rules are [ADR 0011](adr/0011-reference-graph-canonical-form.md) (accepted 2026-10-04).
 - 3a-7 (from 3a-4b's differential) must flag a reference to a free or missing object (the
   chain accepts it -- readers' object maps agree -- but qpdf --check warns when it is used), and

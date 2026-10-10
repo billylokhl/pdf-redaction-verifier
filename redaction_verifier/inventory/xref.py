@@ -303,7 +303,7 @@ def _check_revisions(data: bytes, chain: Chain, parser: ObjectParser,
                 ("highest", highest), ("cap", end // 3))))
         for number in changed:
             live = members.get(number)
-            if live and merged[number].kind != IN_USE:
+            if live and (merged[number].kind != IN_USE or merged[number].b != 0):
                 flags.append(Flag(FlagReason.XREF_OFFSET_MISMATCH, None, (
                     ("stream", number), ("members", len(live)), ("revision", revision))))
         for part in parts:
