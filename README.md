@@ -274,9 +274,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** qpdf rewrites the objects
-  (`qpdf --qdf --object-streams=disable --deterministic-id`)
-  reachable from the file's root, decompressing their streams (image
+- **Method:** qpdf (`qpdf --qdf --object-streams=disable
+  --deterministic-id`) rewrites the objects reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
   are not run here — raw bytes produce too many coincidental matches.
