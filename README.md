@@ -287,7 +287,7 @@ damaged cross-reference table, and it decompresses attachment contents.
   runs such as `123456789`, so a sequential value can raise a coincidental
   Binary warning on a clean document. qpdf also writes a document `/ID` of
   its own in the trailer (keeping the file's first element, generating the
-  second, or both if the file has none). The tool asks for a deterministic
+  second, or both if the file has none or its first element is empty). The tool asks for a deterministic
   one (`--deterministic-id`), so they no longer change from one run to the
   next, and blanks the elements qpdf generated before scanning whenever it
   can tell them apart from the file's own (when it cannot, they are still

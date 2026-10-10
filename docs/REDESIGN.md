@@ -776,8 +776,9 @@ in 20 full scorecard runs (an occasional unlisted `scorecard-diff` on
 `main`). Fixed in today's tool (CHANGELOG, "Binary layer: qpdf's own
 document `/ID`"); the inventory's qpdf cross-check must likewise compare
 only bytes that are in the file. One constructible residual remains: an
-`/ID` element equal to the one qpdf generates for that file, under a key
-spelling the raw parser misses (`/I#44`), is blanked too. Taking the
+`/ID` element equal to the one qpdf generates for that file, under an
+`/ID` key the raw parse does not reach (a spelling such as `/I#44`, or a
+key inside an earlier `/ID` array's string), is blanked too. Taking the
 input's `/ID` from qpdf's own reading of the trailer instead of a raw
 parse would close it.
 

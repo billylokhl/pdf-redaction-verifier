@@ -567,6 +567,8 @@ class TestQpdfGeneratedId:
              "sys.stdout.flush(); time.sleep(30)", str(written)],
             stdout=subprocess.PIPE,
         )
+        import select
+        select.select([proc.stdout], [], [], 30)    # the 1 s deadline covers only the stall
         report = ScanReport()
         verify._collect_qpdf(proc, SecretMatcher([Secret("short", "4567")]), report, frozenset())
         assert sorted(w.code for w in report.warnings) == [
