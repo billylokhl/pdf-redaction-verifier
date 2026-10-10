@@ -124,13 +124,15 @@ matcher sees it whole. Each is ✗:
   one-character-per-line stack or rotated text, or with mixed separators —
   no reading joins it in a form the pattern accepts, so without a value
   rule for the same number it passes silently.
-
-A one-character-per-line stack on a single page is manual review in
-every layer, OCR included: on macOS 27, Vision reads such a stack as
-one sideways line, which OCR treats as a stack, never as a line of the
-page (DESIGN.md, two-tier model).
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
   PyMuPDF does not return.
+- A one-character-per-line stack in a scanned page (pixels only), with a
+  value rule ([#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)).
+  With text on the page the Text layer reads the stack (manual review).
+  OCR on macOS 27 reads it, if at all, as one sideways line, usually
+  misread; a line read vertically is never a hard finding unless an
+  upright re-read confirms it, so a pattern rule flags the stack only
+  when the misread happens to fit the pattern.
 
 ## What ⚑ costs, and what comes next
 

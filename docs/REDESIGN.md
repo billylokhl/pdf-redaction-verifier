@@ -573,10 +573,12 @@ difference fails the gate.
   result counts. macOS 27 also changed what Vision reads without any
   error: a one-character-per-line stack became one sideways line, whose
   misread made four `layout.vertical-stack-*-pattern` grid cases exit
-  `1` instead of `2`. The OCR view now treats such a line as a stack
-  (manual review only; DESIGN.md, two-tier model), by a geometric
-  threshold measured on the case library alone; (d) the 4b OCR view
-  should re-measure it on the real-world corpus's scanned pages.
+  `1` instead of `2`. The OCR view now holds a vertical line hard-finding
+  eligible only when an upright re-read confirms it (DESIGN.md,
+  two-tier model), measured on generated pages alone; (d) the 4b OCR
+  view should re-measure it on the real-world corpus's scanned pages,
+  and (e) read a scanned stack character by character (#61: with a
+  value rule it passes as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.

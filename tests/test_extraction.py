@@ -396,59 +396,90 @@ ROTATED_270 = ocr.Observation("123-45-", (0.854, 0.642), (0.854, 0.594), (0.835,
 HORIZONTAL = ocr.Observation("body text here", (0.121, 0.891), (0.239, 0.891), (0.121, 0.878))
 
 
-class TestOcrStacks:
+def _as(observation: ocr.Observation, text: str) -> ocr.Observation:
+    return ocr.Observation(text, observation.top_left, observation.top_right,
+                           observation.bottom_left)
+
+
+class TestOcrVerticalLines:
     """On macOS 27, Vision reads a one-character-per-line stack as one
-    sideways line (often a misread: '199140190' for 1 to 9). Like the
-    Text layer's stack readings, it is manual review, never hard."""
+    sideways line (often a misread: '199140190' for 1 to 9), the
+    orientation it gives rotated text. A vertical line is a line of the
+    page only if an upright re-read of its box confirms it; otherwise it
+    is manual review, never hard and never silent. Vision is stubbed, so
+    these run without macOS."""
 
-    def test_a_stack_is_told_apart_from_rotated_text(self) -> None:
-        assert ocr._is_stacked(STACK, *A4_PX)
-        assert not ocr._is_stacked(ROTATED_90, *A4_PX)
-        assert not ocr._is_stacked(ROTATED_270, *A4_PX)
-        assert not ocr._is_stacked(HORIZONTAL, *A4_PX)
-
-    def test_widely_spaced_horizontal_text_is_one_line(self) -> None:
-        # A row of form boxes is a line of the page, however far apart.
-        boxes = ocr.Observation("123456789", (0.1, 0.8), (0.9, 0.8), (0.1, 0.79))
-        assert not ocr._is_stacked(boxes, *A4_PX)
-
-    def test_an_empty_observation_is_not_a_stack(self) -> None:
-        empty = ocr.Observation("", STACK.top_left, STACK.top_right, STACK.bottom_left)
-        assert not ocr._is_stacked(empty, *A4_PX)
-
-    def test_the_geometry_is_measured_in_pixels(self) -> None:
-        # The same normalized box on a landscape image is a different shape.
-        assert ocr._is_stacked(STACK, *A4_PX)
-        assert not ocr._is_stacked(STACK, A4_PX[1] * 4, A4_PX[0] // 4)
+    def test_vertical_is_measured_in_pixels(self) -> None:
+        for observation in (STACK, ROTATED_90, ROTATED_270):
+            assert ocr._is_vertical(observation, *A4_PX)
+        assert not ocr._is_vertical(HORIZONTAL, *A4_PX)
+        # A slanted line: steep on A4, shallow on an image 40 times as wide.
+        slanted = ocr.Observation("x", (0.10, 0.5), (0.11, 0.6), (0.09, 0.5))
+        assert ocr._is_vertical(slanted, *A4_PX)
+        assert not ocr._is_vertical(slanted, A4_PX[0] * 40, A4_PX[1])
 
     @staticmethod
-    def _readings(monkeypatch: pytest.MonkeyPatch,
-                  observations: list[ocr.Observation]) -> list[str]:
-        monkeypatch.setattr(ocr, "_vision_recognize_batch",
-                            lambda png: (observations, observations))
+    def _confirm(monkeypatch: pytest.MonkeyPatch, passes, reads) -> list[list[bool]]:
+        calls: list[fitz.IRect] = []
+
+        def upright(image: fitz.Page, box: fitz.IRect) -> tuple[list[str], list[str]]:
+            calls.append(box)
+            return reads(len(calls))
+
+        monkeypatch.setattr(ocr, "_upright_reads", upright)
         doc = fitz.open()
         try:
-            return ocr.extract_ocr_text(doc.new_page())  # A4 by default
+            png = doc.new_page().get_pixmap().tobytes("png")
         finally:
             doc.close()
+        return ocr._confirm_vertical(png, *A4_PX, passes)
 
-    def test_genuine_readings_split_a_stack_one_character_per_line(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_a_re_read_in_the_same_pass_confirms_a_vertical_line(self, monkeypatch) -> None:
+        confirmed = self._confirm(
+            monkeypatch, ([HORIZONTAL, ROTATED_90], [ROTATED_90]),
+            lambda call: ([f"x {ROTATED_90.text} y"], ["something else"]))
+        assert confirmed == [[True, True], [False]]
+
+    def test_an_unconfirmed_line_gets_one_wider_re_read(self, monkeypatch) -> None:
+        confirmed = self._confirm(monkeypatch, ([ROTATED_270], []),
+                                  lambda call: (["123-45-"] if call == 2 else ["123-45-ął"], []))
+        assert confirmed == [[True], []]
+
+    def test_past_the_cap_a_vertical_line_stays_unconfirmed(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "MAX_UPRIGHT_REREADS", 0)
+        confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []),
+                                  lambda call: pytest.fail("re-read past the cap"))
+        assert confirmed == [[False, True], []]
+
+    def test_genuine_readings_split_an_unconfirmed_line_one_character_per_line(
+        self, monkeypatch
     ) -> None:
-        readings = self._readings(monkeypatch, [HORIZONTAL, STACK, ROTATED_90])
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: ([HORIZONTAL, STACK, ROTATED_90],) * 2)
+        monkeypatch.setattr(ocr, "_upright_reads",
+                            lambda image, box: ([ROTATED_90.text, "1 G G"],) * 2)
+        doc = fitz.open()
+        try:
+            readings = ocr.extract_ocr_text(doc.new_page())  # A4 by default
+        finally:
+            doc.close()
         split = "\n".join([HORIZONTAL.text, *STACK.text, ROTATED_90.text])
         fused = "\n".join([HORIZONTAL.text, STACK.text, ROTATED_90.text])
         assert len(readings) == 4 and ocr.OCR_GENUINE_READINGS == 2
         assert readings == [split, split, fused, fused]
 
-    def _scan(self, tmp_path, monkeypatch: pytest.MonkeyPatch,
-              observation: ocr.Observation, rule: dict) -> tuple[int, dict]:
-        # The CLI end to end, with Vision stubbed: runs without macOS.
+    def _scan(self, tmp_path, monkeypatch, pages: list[ocr.Observation], rule: dict,
+              upright: str) -> tuple[int, dict]:
+        # The CLI end to end, with Vision stubbed: one observation per page,
+        # and *upright* what every upright re-read returns.
         monkeypatch.setattr(verify, "_OCR_IMPORTS_OK", True)
+        per_page = iter(pages)
         monkeypatch.setattr(ocr, "_vision_recognize_batch",
-                            lambda png: ([observation], [observation]))
+                            lambda png: ([next(per_page)],) * 2)
+        monkeypatch.setattr(ocr, "_upright_reads", lambda image, box: ([upright],) * 2)
         doc = fitz.open()
-        doc.new_page().insert_text((72, 72), "nothing here")
+        for _ in pages:
+            doc.new_page().insert_text((72, 72), "nothing here")
         pdf = tmp_path / "page.pdf"
         doc.save(pdf)
         doc.close()
@@ -463,9 +494,11 @@ class TestOcrStacks:
         ({"name": "Any SSN", "class": "ssn"}, "REVIEW_FUSED_PATTERN"),
         ({"name": "SSN", "value": SSN}, "REVIEW_CROSS_LINE"),
     ])
-    def test_a_stacked_value_is_manual_review(self, tmp_path, monkeypatch, rule, code) -> None:
-        stack = ocr.Observation("123456789", STACK.top_left, STACK.top_right, STACK.bottom_left)
-        exit_code, data = self._scan(tmp_path, monkeypatch, stack, rule)
+    def test_an_unconfirmed_vertical_value_is_manual_review(
+        self, tmp_path, monkeypatch, rule, code
+    ) -> None:
+        exit_code, data = self._scan(tmp_path, monkeypatch, [_as(STACK, "123456789")],
+                                     rule, upright="")
         assert exit_code == 2
         assert data["findings"] == []
         assert (code, "OCR", rule["name"]) in {
@@ -473,10 +506,56 @@ class TestOcrStacks:
 
     @pytest.mark.parametrize("rule", [
         {"name": "Any SSN", "class": "ssn"}, {"name": "SSN", "value": SSN}])
-    def test_rotated_text_is_still_a_hard_finding(self, tmp_path, monkeypatch, rule) -> None:
-        exit_code, data = self._scan(tmp_path, monkeypatch, ROTATED_90, rule)
+    def test_confirmed_rotated_text_is_a_hard_finding(self, tmp_path, monkeypatch, rule) -> None:
+        exit_code, data = self._scan(tmp_path, monkeypatch, [ROTATED_90], rule,
+                                     upright=ROTATED_90.text)
         assert exit_code == 1
         assert [(f["layer"], f["rule"]) for f in data["findings"]] == [("OCR", rule["name"])]
+
+    def test_an_unconfirmed_pattern_across_a_page_break_is_manual_review(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Split one character per line, the genuine readings cannot join
+        # it; the cross-page scan reads Vision's raw line instead.
+        exit_code, data = self._scan(
+            tmp_path, monkeypatch, [_as(STACK, "123-45-"), _as(STACK, "6789")],
+            {"name": "Any SSN", "class": "ssn"}, upright="")
+        assert exit_code == 2
+        assert data["findings"] == []
+        assert ("REVIEW_FUSED_PATTERN", "OCR") in {
+            (w["code"], w["layer"]) for w in data["warnings"]}
+
+
+@pytest.mark.skipif(not HAS_OCR, reason="needs the PyObjC Vision bridge (macOS)")
+class TestOcrVerticalLinesWithVision:
+    """The re-read with Apple Vision itself, on the text a geometric rule
+    could not tell from a stack."""
+
+    @staticmethod
+    def _genuine(page: fitz.Page) -> list[str]:
+        readings = ocr.extract_ocr_text(page)
+        return [normalize_string(ln)
+                for r in readings[:ocr.OCR_GENUINE_READINGS] for ln in r.split("\n")]
+
+    @pytest.mark.parametrize("text", ["1 2 3 - 4 5 - 6 7 8 9", SSN])
+    def test_spaced_rotated_digits_stay_one_line(self, text) -> None:
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((300, 650), text, fontname="cour", fontsize=8, rotate=90)
+        try:
+            assert normalize_string(SSN) in self._genuine(page)
+        finally:
+            doc.close()
+
+    def test_a_stack_is_never_one_line(self) -> None:
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, digit in enumerate("123456789"):
+            page.insert_text((100, 100 + 14 * i), digit, fontsize=11)
+        try:
+            assert all(len(ln) <= 1 for ln in self._genuine(page) if ln)
+        finally:
+            doc.close()
 
 
 @pytest.mark.skipif(not HAS_OCR, reason="needs the PyObjC Vision bridge (macOS)")

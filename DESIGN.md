@@ -321,18 +321,24 @@ One exception. On macOS 27, Vision returns a one-character-per-line
 stack as a single line rotated 90° or 270° — the orientation it gives
 rotated text — and reads the upright glyphs sideways, often wrongly
 (`199140190` for the digits 1 to 9: a valid SSN shape that is not on the
-page). The geometry tells a stack from rotated text: rotated text is
-thick across the line (a glyph's height) with characters close together
-along it (a glyph's width); a stack is one upright glyph wide with
-characters a line-spacing apart. A vertically read line whose character
-pitch exceeds its thickness is a stack. On the case library under
-macOS 27, every OCR hard finding — rotated text included — has a pitch
-of at most 0.69 times its thickness and the stack 1.84; the cut is at
-1. In the genuine readings a stack is split one character per line, as
-the Text layer's genuine readings hold it, so nothing in it is hard;
-Vision's fused line is kept in two more, reconstructed, readings, so a
-value or pattern in it is still manual review. A row of form boxes, read
-horizontally, is never a stack.
+page). So a line Vision reads vertically counts as a line of the page
+only if an upright re-read confirms it: its box is cropped, turned 90°
+and 270°, and read again, and a re-read in the same pass must contain
+its text (one retry with a wider crop; at most 64 per page). Rotated
+text turned upright is an ordinary line and reads back the same; a
+stack turns into a row of sideways glyphs and does not. Shape alone
+cannot tell them apart: letter-spaced or space-separated rotated text
+is as sparse along the line as a stack. In the genuine readings an
+unconfirmed line is split one character per line, as the Text layer's
+genuine readings hold a stack, so nothing in it is hard; Vision's own
+line is kept in two more, reconstructed, readings (which the cross-page
+pattern scan also reads), so a value or pattern in it is still manual
+review. On 1,728 generated pages under macOS 27 — 8 fonts, 8–24 pt,
+plain, letter-spaced and space-separated rotated text, and stacks, each
+as text and as a scanned image — no stack's genuine readings held its
+value or matched a pattern, and 688 of the 692 rotated values Vision
+read stayed hard (the other 4 are manual review).
+Lines read horizontally, such as a row of form boxes, are not re-read.
 
 ## Bounded resources
 
@@ -409,9 +415,10 @@ the gap is stated rather than implied away.
   library, the OCR unit tests) on that OS can catch it, and only for
   the content they cover. A change in *how* Vision reads can also move
   verdicts: on macOS 27 Vision reads a one-character-per-line stack as
-  one line, which made a misread number a hard finding until such lines
-  were treated as stacks (see the two-tier model above). The stack
-  threshold is measured on generated pages only.
+  one line, which made a misread number a hard finding until a
+  vertical line had to be confirmed by an upright re-read (see the
+  two-tier model above). That check is measured on generated pages
+  only.
 - **Password-protected PDFs are rejected** (exit `2`). A PDF encrypted
   with only an owner password opens without one and is scanned normally.
 - **Pattern rules cannot span pages as hard findings** — they surface as

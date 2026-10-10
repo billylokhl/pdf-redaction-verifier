@@ -242,12 +242,13 @@ flattened to images, text converted to vector outlines.
   reads without error but with text missing is not detected; see
   DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
-  hard findings — except a column of characters written one per line.
-  On macOS 27, Vision returns such a stack as a single line read
-  sideways, often misread (`199140190` for the digits 1 to 9). A
-  vertically read line whose characters lie further apart than the line
-  is thick is treated as a stack: like the Text layer's reconstructed
-  readings, a match in it is only ever a manual-review warning.
+  hard findings — except a line Vision reads vertically that an upright
+  re-read does not confirm. On macOS 27, Vision returns a column of
+  characters written one per line as a single line read sideways, often
+  misread (`199140190` for the digits 1 to 9). So a vertical line's box
+  is turned upright and read again: rotated text reads back the same, a
+  stack does not. Like the Text layer's reconstructed readings, a match
+  in an unconfirmed line is only ever a manual-review warning.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
@@ -547,7 +548,7 @@ and what the file stores.
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |
 | **qpdf** | External command-line tool that rewrites a PDF's reachable objects with their streams decompressed. |
-| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. OCR's equivalent is Vision's own reading of such a stack as one line. |
+| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. OCR's equivalent is Vision's own reading of a vertical line no upright re-read confirms. |
 | **Regex** | A text-search pattern language. |
 | **Rendered page** | The page drawn as an image — what a viewer sees. |
 | **Sidecar** | A small companion file next to a PDF listing the secrets it contains. |
