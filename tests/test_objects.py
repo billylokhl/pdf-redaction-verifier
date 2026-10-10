@@ -500,11 +500,15 @@ class TestQpdfGeneratedId:
     @pytest.mark.parametrize("tail, input_ids", [
         (_qdf_tail(ORIGINAL, LUCKY), None),                                  # input unreadable
         (_qdf_tail(ORIGINAL, LUCKY), frozenset({"abcd"})),       # qpdf's first is not the input's
-        (_qdf_tail(ORIGINAL, LUCKY, extra=f"  /X (/ID [<{LUCKY}><{LUCKY}>])\n"), frozenset()),
-        (_qdf_tail(ORIGINAL, LUCKY) + b"more", frozenset()),                 # not at the end
-        (_qdf_tail(ORIGINAL, LUCKY).replace(b"  /Size", b"/Size"), frozenset()),  # not QDF's shape
-    ], ids=["ids-unknown", "first-not-input-s", "two-ids-in-trailer", "not-at-end",
-            "not-qdf-shape"])
+        # No /ID found in the input, yet qpdf kept a first element of its
+        # own (an /ID key spelled in a way the parser missed): not generated.
+        (_qdf_tail(ORIGINAL, LUCKY), frozenset()),
+        # The rest would otherwise be blanked (both elements generated).
+        (_qdf_tail(LUCKY, LUCKY, extra=f"  /X (/ID [<{LUCKY}><{LUCKY}>])\n"), frozenset()),
+        (_qdf_tail(LUCKY, LUCKY) + b"more", frozenset()),                    # not at the end
+        (_qdf_tail(LUCKY, LUCKY).replace(b"  /Size", b"/Size"), frozenset()),  # not QDF's shape
+    ], ids=["ids-unknown", "first-not-input-s", "no-input-id-but-elements-differ",
+            "two-ids-in-trailer", "not-at-end", "not-qdf-shape"])
     def test_anything_unexpected_is_left_as_it_is(
         self, tail: bytes, input_ids: frozenset[str] | None
     ) -> None:
@@ -519,15 +523,16 @@ class TestQpdfGeneratedId:
         assert _collect(data, None) == ["REVIEW_BINARY"]
 
     def test_the_held_back_tail_is_scanned(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Nothing qpdf wrote may go unscanned: not the held tail, not a
-        # match across the point where it was held back.
-        monkeypatch.setattr(verify, "QPDF_TAIL_HOLD_BYTES", 16)
-        body = b"x" * 100
-        assert _collect(body + b"45-67" + _qdf_tail(ORIGINAL, ORIGINAL), frozenset({ORIGINAL})) \
-            == ["REVIEW_BINARY"]
+        # Nothing qpdf wrote may go unscanned: not the held tail, and not a
+        # match across the point where the tail was held back.
         tail = _qdf_tail(ORIGINAL, ORIGINAL)
-        for cut in range(1, 6):     # "4567" straddling the hold boundary at every offset
+        hold = len(tail) + 16
+        monkeypatch.setattr(verify, "QPDF_TAIL_HOLD_BYTES", hold)
+        body = b"x" * 100
+        assert _collect(body + b"45-67" + tail, frozenset({ORIGINAL})) == ["REVIEW_BINARY"]
+        for cut in range(1, 4):     # "4567" split by the hold boundary at every offset
             data = body + b"4567"[:cut] + b"4567"[cut:] + b"y" * (16 - (4 - cut)) + tail
+            assert data[: len(data) - hold].endswith(b"4567"[:cut]), cut  # really straddles
             assert _collect(data, frozenset({ORIGINAL})) == ["REVIEW_BINARY"], cut
 
     @requires_qpdf
@@ -569,3 +574,27 @@ class TestQpdfGeneratedId:
             assert binary == (["from-own-id"] if new_id else [])
             seen.append(sorted((w["code"], w.get("rule")) for w in warnings))
         assert seen[0] == seen[1]
+
+    @requires_qpdf
+    @pytest.mark.parametrize("key", [b"/I#44 [", b"/ID\x00["], ids=["hex-escaped-key", "nul-after-key"])
+    def test_an_id_key_the_parser_misses_does_not_unblank_the_file(
+        self, tmp_path: Path, key: bytes
+    ) -> None:
+        # qpdf reads these spellings as /ID and keeps the file's first
+        # element; the parser does not see them and reports no /ID. The
+        # file's element must still be scanned (a review warning, as on
+        # the tool before qpdf's own /ID was blanked).
+        path = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing to see")
+        doc.save(path, no_new_id=True)
+        doc.close()
+        ids = b"<123456789000000000000000000000ab><00000000000000000000000000000000>]"
+        path.write_bytes(path.read_bytes().replace(b"/Root 1 0 R", b"/Root 1 0 R" + key + ids, 1))
+        assert verify._input_document_ids(path.read_bytes()) == frozenset()
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "SSN", "value": SSN}]))
+        out = tmp_path / "report.json"
+        run_verify(path, rules, "--json", str(out))
+        warnings = json.loads(out.read_text())["warnings"]
+        assert [w["rule"] for w in warnings if w["code"] == "REVIEW_BINARY"] == ["SSN"]

@@ -286,9 +286,10 @@ damaged cross-reference table, and it decompresses attachment contents.
   Binary warning on a clean document. qpdf also writes a document `/ID` of
   its own in the trailer (keeping the file's first element, generating the
   second, or both if the file has none). The tool asks for a deterministic
-  one (`--deterministic-id`) and blanks the elements qpdf generated before
-  scanning, so those bytes, which are not in the file, can neither raise a
-  warning nor change the result from one run to the next.
+  one (`--deterministic-id`), so they no longer change from one run to the
+  next, and blanks the elements qpdf generated before scanning whenever it
+  can tell them apart from the file's own (when it cannot, they are still
+  scanned, and a coincidental match is the same on every run).
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction

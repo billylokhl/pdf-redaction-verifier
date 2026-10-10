@@ -191,10 +191,16 @@ that a rerun would not repeat. qpdf now runs with `--deterministic-id`,
 and the generated elements are blanked before the scan. Blanking is
 deliberately narrow: only in a trailer of exactly qpdf's shape at the very
 end of its output, only elements that are none of the input's own `/ID`
-elements, and only when qpdf's first element is the input's own (as qpdf
-always keeps it). Anything unexpected leaves the bytes as they are, so a
-mistake costs at most a stable false alarm, never an unscanned byte of
-the file.
+elements, and only when the input accounts for qpdf's first element —
+either it is one of the input's own (qpdf keeps a non-empty first
+element), or no `/ID` was found in the input and qpdf's two elements are
+identical, as qpdf writes them when it generates both. The second rule
+matters because qpdf reads `/ID` keys this tool's parser does not (`/I#44`,
+`/ID` followed by NUL): it keeps the file's first element and generates a
+different second one, so nothing is blanked. Anything unexpected leaves
+the bytes as they are: a mistake costs at most a false alarm, now the
+same on every run. The one file element that can still be blanked is one
+byte-for-byte equal to the `/ID` qpdf generates for that same file.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode

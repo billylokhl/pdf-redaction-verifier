@@ -2467,7 +2467,8 @@ def _input_document_ids(raw: bytes) -> frozenset[str] | None:
     (see _strip_generated_ids), so nothing is stripped.
     """
     ids: set[str] = set()
-    for key in _ID_KEY_RE.finditer(raw):
+    key = _ID_KEY_RE.search(raw)
+    while key is not None:
         i = key.end()
         elements = []
         while i < len(raw) and raw[i] in _PDF_WS:
@@ -2488,6 +2489,9 @@ def _input_document_ids(raw: bytes) -> frozenset[str] | None:
         if raw[i:i + 1] != b"]":
             return None
         ids.update(elements)
+        # Resume after this array: restarting inside its strings is
+        # quadratic on a file built of nested "/ID [(" runs.
+        key = _ID_KEY_RE.search(raw, i + 1)
     return frozenset(ids)
 
 
@@ -2500,10 +2504,14 @@ def _strip_generated_ids(tail: bytes, input_ids: frozenset[str] | None) -> bytes
     match (a random hex string that happens to spell a short value rule).
     An element is blanked only when it appears nowhere among the input's
     own /ID elements, and only in a trailer of exactly qpdf's shape at the
-    very end of the output, holding exactly one /ID. When the input has an
-    /ID, qpdf keeps its first element, so that element must match one of
-    the input's or nothing is blanked: a misreading of the input then
-    costs only the old behaviour, never a skipped byte of the file.
+    very end of the output, holding exactly one /ID, and only when the
+    input's own /ID accounts for qpdf's first element: either that element
+    is one of the input's, or, when no /ID was found in the input, qpdf's
+    two elements are identical, as qpdf writes them when it generates both.
+    The second rule is what makes a missed /ID key harmless: qpdf reads
+    spellings this parser does not (/I#44, /ID followed by NUL), keeps the
+    file's first element, and generates a different second one, so the
+    elements differ and nothing is blanked.
     """
     if input_ids is None:
         return tail
@@ -2514,6 +2522,8 @@ def _strip_generated_ids(tail: bytes, input_ids: frozenset[str] | None) -> bytes
     if line is None:
         return tail
     if input_ids and line.group(1).decode("ascii") not in input_ids:
+        return tail
+    if not input_ids and line.group(1) != line.group(2):
         return tail
     kept = [e if e.decode("ascii") in input_ids else b"" for e in line.groups()]
     start = trailer.start(1) + line.start()

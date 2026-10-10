@@ -150,5 +150,6 @@ The Binary layer (qpdf) is a cross-check with a second PDF parser rather
 than a row of its own: it sees only objects reachable from the file's
 root, so it is not a backstop for orphaned or superseded content. The
 document `/ID` elements qpdf generates in its output (they are not in the
-file) are blanked before that scan; the file's own `/ID` element that
-qpdf keeps is still scanned, as qpdf writes it (hex).
+file) are blanked before that scan whenever they can be told apart from
+the file's own; the file's own `/ID` element that qpdf keeps is still
+scanned, as qpdf writes it (hex).
