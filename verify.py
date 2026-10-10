@@ -2603,8 +2603,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # A caller that asked for the JSON report gates on it; a
                 # missing report must not read as a certified pass.
                 print(
-                    "\n  The JSON report could not be written — this is NOT a "
-                    "certified clean result (exit code 2)."
+                    "\n  [NOT CERTIFIED]  The JSON report could not be written — this "
+                    "is NOT a certified clean result (exit code 2), whatever the "
+                    "banner above says."
                 )
                 return 2
         return code
@@ -2809,7 +2810,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"Metadata/Binary: collection crashed ({exc}) — NOT fully scanned",
                     )
 
-            print_report(report, pdf_path)
+            print_report(report, pdf_path, rules=rules, fail_fast=args.fail_fast)
 
             if report.leaked:
                 return finish(1)

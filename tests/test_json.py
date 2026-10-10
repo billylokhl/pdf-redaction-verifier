@@ -35,7 +35,7 @@ from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
 from redaction_verifier.rules import RuleSet
 from redaction_verifier.views import OCR_DPI, _OCR_IMPORTS_OK
 
-from .conftest import REPO_ROOT, SSN, run_verify
+from .conftest import REPO_ROOT, SSN, report_banner, run_verify
 
 # verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
 # live in redaction_verifier/ — the static checks below must still see
@@ -108,7 +108,7 @@ class TestVerdict:
         out = tmp_path / "r.json"
         result = run_verify(leaky_pdf, secrets_file, "--json", str(out))
         assert result.returncode == json.loads(out.read_text())["exit_code"] == 1
-        assert "[FAIL]" in result.stdout          # the human report is unchanged
+        assert report_banner(result.stdout) == "FAIL"  # the human report still prints
 
     def test_deterministic(self, leaky_pdf, secrets_file, tmp_path) -> None:
         _, first = _run(leaky_pdf, secrets_file, tmp_path)
@@ -175,7 +175,7 @@ class TestReportFile:
         # consumer polling the file never reads the stale pass as this
         # run's verdict.
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         target = _pdf(tmp_path / "doc.pdf", "hello")
         code = verify.main(["--target", str(target), "--secrets", str(secrets_file),
                             "--json", str(out)])
@@ -209,7 +209,7 @@ class TestReportFile:
         # — the secret was still found, crash or no crash.
         out = tmp_path / "r.json"
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         code = verify.main(["--target", str(leaky_pdf), "--secrets", str(secrets_file),
                             "--json", str(out)])
         assert code == 1
@@ -224,7 +224,7 @@ class TestReportFile:
     ) -> None:
         out = tmp_path / "r.json"
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         code = verify.main(["--target", str(clean_pdf), "--secrets", str(secrets_file),
                             "--json", str(out)])
         assert code == 2
