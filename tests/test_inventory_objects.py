@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 from redaction_verifier.budget import Budget, Counter, Limits
 from redaction_verifier.inventory.objects import (
     IndirectObject,
+    NumberRule,
     ObjectParser,
     PdfArray,
     PdfBool,
@@ -68,7 +69,8 @@ _names = st.binary(min_size=1, max_size=6).filter(lambda raw: b"\x00" not in raw
 _scalars = st.one_of(
     st.none().map(lambda _: (b"null", None)),
     st.booleans().map(lambda b: (b"true" if b else b"false", b)),
-    st.integers(-10**12, 10**12).map(lambda i: (str(i).encode(), i)),
+    # Signed 32 bits: past it is flagged (NumberRule.INT32, tested below).
+    st.integers(-2**31, 2**31 - 1).map(lambda i: (str(i).encode(), i)),
     st.integers(0, 10**6).flatmap(lambda n: st.integers(0, 99).map(
         lambda g: (f"{n} {g} R".encode(), ("ref", n, g)))),
     st.integers(-10**6, 10**6).map(lambda i: (f"{i / 100:.2f}".encode(), round(i / 100, 2))),
@@ -427,11 +429,53 @@ def test_a_comment_between_length_and_endstream_is_slack() -> None:
     assert _reasons(parsed) == ["STREAM_SLACK"]
 
 
+def _rules(parsed: IndirectObject) -> list[int]:
+    return [dict(flag.params)["rule"] for flag in parsed.flags
+            if flag.reason is FlagReason.NUMBER_OUT_OF_RANGE]
+
+
 def test_the_digit_cap_is_inclusive() -> None:
+    # At the cap the token converts (flagged only for its magnitude); past
+    # it, it does not.
     at_cap = _obj(b"1 0 obj " + b"7" * 64 + b" endobj")
-    assert at_cap.flags == () and _plain(at_cap.value) == int("7" * 64)
+    assert _rules(at_cap) == [NumberRule.INT32] and _plain(at_cap.value) == int("7" * 64)
     past = _obj(b"1 0 obj " + b"7" * 65 + b" endobj")
-    assert _reasons(past) == ["NUMBER_OUT_OF_RANGE"]
+    assert _rules(past) == [NumberRule.DIGITS] and _plain(past.value) is None
+
+
+# ── Number magnitudes the readers read differently (3a-6b) ────────────────
+# Each boundary measured against MuPDF 1.28 and qpdf 12 (and their sources):
+# NumberRule's docstring says what each reader does past it.
+@pytest.mark.parametrize(("text", "rules"), [
+    (b"2147483647", []), (b"-2147483648", []),
+    (b"2147483648", [NumberRule.INT32]), (b"-2147483649", [NumberRule.INT32]),
+    (b"18446744073386459286", [NumberRule.INT32]),
+    (b"16777215.9", []), (b"-16777215.9", []), (b"16777216.0", [NumberRule.REAL_LARGE]),
+    (b"-16777216.", [NumberRule.REAL_LARGE]), (b"2147483648.5", [NumberRule.REAL_LONG]),
+    (b"0." + b"0" * 36 + b"1", []),                   # 1e-37: above 2^-126 (~1.18e-38)
+    (b"0." + b"0" * 37 + b"1", [NumberRule.REAL_TINY]),  # 1e-38: below it
+    (b"-0." + b"0" * 46 + b"1", [NumberRule.REAL_TINY]), (b"0.0", []), (b"-.0", []),
+    (b"000012345.5", []), (b"-12345678.5", []),         # integer part 9 characters
+    (b"0123456789.5", [NumberRule.REAL_LONG]), (b"-123456789.5", [NumberRule.REAL_LONG]),
+    (b"0000000001.5", [NumberRule.REAL_LONG]),
+    (b"8388607 0 R", []), (b"8388608 0 R", [NumberRule.OBJECT_NUMBER]),
+    (b"1 65534 R", []), (b"1 65535 R", [NumberRule.GENERATION]),
+    (b"9999999999 99999 R", [NumberRule.OBJECT_NUMBER, NumberRule.GENERATION]),
+])
+def test_numbers_readers_read_differently_are_flagged(text: bytes, rules: list[int]) -> None:
+    parsed = _obj(b"1 0 obj [" + text + b"] endobj")
+    assert _rules(parsed) == rules
+    assert len(parsed.flags) == len(rules) and parsed.complete
+
+
+@pytest.mark.parametrize(("header", "rules"), [
+    (b"8388607 65534 obj", []), (b"8388608 0 obj", [NumberRule.OBJECT_NUMBER]),
+    (b"1 65535 obj", [NumberRule.GENERATION]),
+])
+def test_object_headers_past_the_readers_limits_are_flagged(header: bytes,
+                                                            rules: list[int]) -> None:
+    parsed = ObjectParser(header + b" 5 endobj").parse_indirect_at(0)
+    assert parsed is not None and _rules(parsed) == rules
 
 
 @pytest.mark.parametrize("text", [b"-1 0 R", b"1 -0 R", b"+1 0 R", b"1 0.0 R"])

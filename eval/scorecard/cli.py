@@ -138,10 +138,9 @@ def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
             print(f"inventory gate: {done}/{total}", file=sys.stderr, flush=True)
     results = gate.run_gate(
         jobs, workdir=workdir, workers=args.workers, progress=progress,
-        build_timeout=args.timeout, oracle_timeout=args.oracle_timeout,
-        qpdf_members=args.qpdf_members)
+        build_timeout=args.timeout, oracle_timeout=args.oracle_timeout)
     config = config | gate.provenance(args.started) | {"build_timeout": args.timeout, "oracle_timeout": args.oracle_timeout,
-                       "qpdf_members": args.qpdf_members, "workers": args.workers}
+                       "workers": args.workers}
     agg = gate.aggregate(results, config)
     gate.write_detail(results, detail)
     print(gate.render(agg))
@@ -153,7 +152,8 @@ def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
 def _inventory_preflight(args: argparse.Namespace) -> int | None:
     """Before any gate run: note the start, remove a stale --json (a failed
     run must never leave an old aggregate that passes for a fresh one),
-    and refuse without qpdf. Returns an exit status to stop with, or None."""
+    and refuse without qpdf, or with a qpdf CLI whose major.minor version is
+    not pikepdf's libqpdf's. Returns an exit status to stop with, or None."""
     import shutil
     from datetime import datetime, timezone
 
@@ -163,6 +163,13 @@ def _inventory_preflight(args: argparse.Namespace) -> int | None:
     if shutil.which("qpdf") is None:
         print("ERROR: qpdf is not on PATH -- the gate compares against qpdf and MuPDF. "
               "Install qpdf and run again.", file=sys.stderr)
+        return 2
+    from .inventory import qpdf_versions, qpdf_versions_match
+    if not qpdf_versions_match():
+        cli_version, lib_version = qpdf_versions()
+        print(f"ERROR: the qpdf CLI is {cli_version} but pikepdf's libqpdf is {lib_version}: "
+              "the gate needs one qpdf major.minor version (their messages and limits "
+              "differ across releases). Install a matching qpdf.", file=sys.stderr)
         return 2
     return None
 
@@ -321,9 +328,6 @@ def build_parser() -> argparse.ArgumentParser:
                        help="build_inventory's per-file timeout (s); past it is a failure")
         p.add_argument("--oracle-timeout", type=float, default=ORACLE_TIMEOUT,
                        help="the reader differential's per-file timeout (s)")
-        p.add_argument("--qpdf-members", type=int, default=8,
-                       help="object-stream members per revision also compared with qpdf "
-                       "(every member is compared with MuPDF)")
         p.add_argument("--workers", type=int, default=1, help="files in parallel")
         add_allow_outside(p)
 

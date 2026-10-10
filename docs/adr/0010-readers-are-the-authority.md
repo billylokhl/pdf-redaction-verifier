@@ -110,3 +110,36 @@ Also decided the same day:
   PyMuPDF upgrade); 4b's "used" geometry (decision D); font-program
   span parsing (prefer fontTools, under the budget, in the child); 4d
   filter end-of-data rules; 3c's flag rate (7.2% measured by a proxy).
+
+## Amendment (2026-10-03, 3a-6b): how the gate reads qpdf's values
+
+The first corpus run of the 3a-6 gate (2,073 macOS system and
+application PDFs) failed, and its root-causing showed that item 2 had
+been implemented only in part: values were compared for object-stream
+members alone, never for uncompressed objects or trailers. A fabricated
+`/Matrix [1e-47 0 0 1 0 0]` (MuPDF reads 1) passed it. Item 2 also named
+the wrong mechanism for qpdf's side: `qpdf --json` v2 prints a string as
+decoded text (`(A)`, `<FEFF0041>` and `<EFBBBF41>` all print `u:A`),
+prints some reals as invalid JSON (`4.` in 11.9, `+.5` in 12.4), and
+drops or keeps references differently across versions. Owner decision
+(2026-10-03), as recommended:
+
+- **qpdf's values come from libqpdf in-process, through pikepdf**, opened
+  with no recovery and no page-attribute pushing (which rewrites page
+  objects), in explicit-conversion mode: exact string bytes, exact
+  numbers, references by number and generation. pikepdf is pinned in the
+  test and eval environment now; 3a-8 still makes it a runtime dependency
+  (ADR 0001). The gate refuses to run unless the qpdf CLI (object map,
+  `--check`) and pikepdf's libqpdf share a major.minor version; CI
+  installs the matching qpdf release binary.
+- **Every live object, object-stream member and revision trailer** is
+  compared with both readers: kinds kept, integers and reals exact against
+  libqpdf; against MuPDF, a real may be one 32-bit float step from ours
+  rounded once (MuPDF holds reals in 32 bits and converts them without
+  correct rounding), the magnitudes where it errs further being flagged
+  by the inventory (`NUMBER_OUT_OF_RANGE`). A reference to an object
+  number with no body reads as null; a generation mismatch stays a
+  difference. Any libqpdf warning while reading is a disagreement unless
+  the gate's written allowlist covers it.
+- **qpdf `--check` ERROR lines are gated** like WARNING lines (3a-6 had
+  counted them only).

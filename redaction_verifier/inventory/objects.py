@@ -22,6 +22,7 @@ import re
 from bisect import bisect_left
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Final, TypeAlias
 
 from ..budget import Budget, Counter, Limits
@@ -41,6 +42,56 @@ class PdfBool:
     start: int
     end: int
     value: bool
+
+
+class NumberRule(IntEnum):
+    """Why a number was flagged NUMBER_OUT_OF_RANGE (its ``rule`` param):
+    a magnitude MuPDF and qpdf read differently (3a-6b, measured against
+    both readers' sources and a fabricated boundary grid).
+
+    - DIGITS: more than ``Limits.max_number_digits`` digits (not converted).
+    - INT32: an integer outside signed 32 bits. Past signed 64 bits MuPDF
+      wraps and qpdf reads the whole object as null; past 32 bits MuPDF's
+      pdf_to_int truncates (``/Rotate 4294967386`` rotates 90) while qpdf
+      clamps.
+    - REAL_TINY: a nonzero real below 2^-126 in magnitude: MuPDF's
+      conversion underflows and reads it as 1.
+    - REAL_LARGE: a real of 2^24 or more in magnitude: MuPDF holds reals
+      in 32 bits (one unit apart or more from here; past 2^31 it clamps
+      and wraps) where qpdf keeps the written value.
+    - REAL_LONG: a real whose integer part (sign and leading zeros
+      included) is 10 or more characters: MuPDF converts those through a
+      second path that rounds twice and wraps modulo 2^32.
+    - OBJECT_NUMBER: an object number above 8,388,607 in a reference, an
+      object header or an xref entry, or a /Size above it: MuPDF's limit
+      (a reference past it reads as null, an entry past it repairs the
+      file); qpdf reads them.
+    - GENERATION: a generation of 65,535 or more in a reference, an object
+      header or an in-use xref entry: qpdf reads the reference as null and
+      (12.x) drops the entry; MuPDF resolves the reference by its number.
+    - ID_CAP: an object number at or above a third of the revision's size:
+      libqpdf 12 ignores such objects (its id cap is the file's size // 3,
+      exclusive); MuPDF reads them.
+    """
+
+    DIGITS = 0
+    INT32 = 1
+    REAL_TINY = 2
+    REAL_LARGE = 3
+    REAL_LONG = 4
+    OBJECT_NUMBER = 5
+    GENERATION = 6
+    ID_CAP = 7
+
+
+# MuPDF's PDF_MAX_OBJECT_NUMBER and PDF_MAX_GEN_NUMBER (qpdf nulls a
+# reference whose generation is >= 65,535).
+MAX_OBJECT_NUMBER: Final = 8_388_607
+MAX_GENERATION: Final = 65_534
+_INT32: Final = (-(1 << 31), (1 << 31) - 1)
+_REAL_TINY_BITS: Final = 126  # nonzero and below 2^-126
+_REAL_LARGE: Final = 1 << 24
+_REAL_LONG: Final = 10
 
 
 @dataclass(frozen=True)
@@ -415,6 +466,7 @@ class _Run:
         start = first.start
         for _ in range(3):
             self.take()
+        self._identity(num, gen, start, third.end)
         return num, gen, start
 
     def value(self) -> PdfValue | None:
@@ -476,12 +528,22 @@ class _Run:
                 assert second is not None
                 for _ in range(3):
                     self.take()
-                return PdfRef(token.start, third.end, int(raw), int(self.text(second)))
+                ref = PdfRef(token.start, third.end, int(raw), int(self.text(second)))
+                self._identity(ref.num, ref.gen, ref.start, ref.end)
+                return ref
             self.take()
-            return PdfInt(token.start, token.end, int(raw) if self._fits(token) else None)
+            if not self._fits(token):
+                return PdfInt(token.start, token.end, None)
+            number = int(raw)
+            if not _INT32[0] <= number <= _INT32[1]:
+                self._out_of_range(NumberRule.INT32, token.start, token.end)
+            return PdfInt(token.start, token.end, number)
         self.take()
         if kind is TokenKind.REAL:
-            return PdfReal(token.start, token.end, float(raw) if self._fits(token) else None)
+            if not self._fits(token):
+                return PdfReal(token.start, token.end, None)
+            self._check_real(raw, token.start, token.end)
+            return PdfReal(token.start, token.end, float(raw))
         if kind is TokenKind.NAME:
             return PdfName(token.start, token.end, name_bytes(raw[1:]))
         if kind is TokenKind.LITERAL_STRING:
@@ -499,9 +561,34 @@ class _Run:
         past 4,300 digits; no real PDF number comes close to the cap.)"""
         if len(token.span) > self._max_digits():
             self.flags.add(FlagReason.NUMBER_OUT_OF_RANGE, token.start, token.end,
-                           (("digits", len(token.span)),))
+                           (("rule", int(NumberRule.DIGITS)), ("digits", len(token.span))))
             return False
         return True
+
+    def _out_of_range(self, rule: NumberRule, start: int, end: int) -> None:
+        self.flags.add(FlagReason.NUMBER_OUT_OF_RANGE, start, end, (("rule", int(rule)),))
+
+    def _check_real(self, raw: bytes, start: int, end: int) -> None:
+        """Flag a real whose magnitude or form MuPDF reads otherwise
+        (NumberRule). Exact, in integers: *raw* (real syntax, at most
+        max_number_digits long) is digits / 10^places, never a float."""
+        whole, _, fraction = raw.lstrip(b"+-").partition(b".")
+        if len(raw) - len(fraction) - 1 >= _REAL_LONG:  # sign + integer part
+            self._out_of_range(NumberRule.REAL_LONG, start, end)
+            return
+        digits, scale = int(whole + fraction or b"0"), 10 ** len(fraction)
+        if digits >= _REAL_LARGE * scale:
+            self._out_of_range(NumberRule.REAL_LARGE, start, end)
+        elif digits and digits << _REAL_TINY_BITS < scale:
+            self._out_of_range(NumberRule.REAL_TINY, start, end)
+
+    def _identity(self, num: int, gen: int, start: int, end: int) -> None:
+        """Flag an object number or generation past what both readers read
+        the same way (a reference or an ``N G obj`` header)."""
+        if num > MAX_OBJECT_NUMBER:
+            self._out_of_range(NumberRule.OBJECT_NUMBER, start, end)
+        if gen > MAX_GENERATION:
+            self._out_of_range(NumberRule.GENERATION, start, end)
 
     def _max_digits(self) -> int:
         return min(self.limits.max_number_digits, _INT_DIGITS_CEILING)

@@ -93,6 +93,8 @@ class FlagReason(Enum):
     OBJSTM_MALFORMED = "objstm_malformed"      # an object stream's /N, /First or header table
     OBJSTM_MEMBER_INVALID = "objstm_member_invalid"  # no value, a stream, an object stream
     OBJSTM_ENTRY_MISMATCH = "objstm_entry_mismatch"  # a compressed entry its home does not hold
+    # The owner's pending decisions (3a-6c).
+    COMMENT_LINE = "comment_line"  # a claimed comment line with control bytes or `N G obj`
 
 
 Reason: TypeAlias = NAReason | FlagReason
