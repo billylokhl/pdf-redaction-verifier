@@ -775,7 +775,11 @@ which the raw sweep scanned, so a short value rule matched it about once
 in 20 full scorecard runs (an occasional unlisted `scorecard-diff` on
 `main`). Fixed in today's tool (CHANGELOG, "Binary layer: qpdf's own
 document `/ID`"); the inventory's qpdf cross-check must likewise compare
-only bytes that are in the file.
+only bytes that are in the file. One constructible residual remains: an
+`/ID` element equal to the one qpdf generates for that file, under a key
+spelling the raw parser misses (`/I#44`), is blanked too. Taking the
+input's `/ID` from qpdf's own reading of the trailer instead of a raw
+parse would close it.
 
 Two more silent misses used to have no K-number, because every K-number
 must have a case and these did not; Phase 3a added cases for both

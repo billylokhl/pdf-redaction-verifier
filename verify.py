@@ -2960,10 +2960,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
                 try:
-                    try:
-                        input_ids = _input_document_ids(pdf_path.read_bytes())
-                    except Exception:
-                        input_ids = None    # strip nothing qpdf wrote
+                    input_ids = None    # strip nothing qpdf wrote
+                    if procs["qpdf"] is not None:
+                        try:
+                            input_ids = _input_document_ids(pdf_path.read_bytes())
+                        except Exception:
+                            input_ids = None
                     check_hidden_layers(procs, matcher, patterns, report, input_ids)
                 except Exception as exc:
                     report.warn(

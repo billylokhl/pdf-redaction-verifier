@@ -535,6 +535,43 @@ class TestQpdfGeneratedId:
             assert data[: len(data) - hold].endswith(b"4567"[:cut]), cut  # really straddles
             assert _collect(data, frozenset({ORIGINAL})) == ["REVIEW_BINARY"], cut
 
+    def test_nested_id_arrays_are_read_in_linear_time(self) -> None:
+        # Each /ID key is read once: resuming the search inside an array's
+        # strings made this about 4000 times slower (20 s for 88 KB),
+        # before qpdf's own deadline even starts.
+        import time
+
+        raw = b""
+        for _ in range(8000):
+            raw = b"/ID [(" + raw + b") ()]"
+        start = time.monotonic()
+        ids = verify._input_document_ids(raw)
+        assert time.monotonic() - start < 2
+        assert ids is not None and len(ids) == 2       # the outer array's two strings
+
+    def test_output_of_a_qpdf_that_did_not_finish_is_never_stripped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # qpdf times out after writing what looks like a final trailer (it
+        # could be the inside of a stream): nothing may be blanked, since
+        # the end of qpdf's output was never seen.
+        import subprocess
+        import sys
+
+        monkeypatch.setattr(verify, "SUBPROCESS_TIMEOUT_S", 1)
+        written = tmp_path / "partial.qdf"
+        written.write_bytes(b"%PDF-1.7\n" + _qdf_tail(LUCKY, LUCKY))
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time; sys.stdout.buffer.write(open(sys.argv[1], 'rb').read()); "
+             "sys.stdout.flush(); time.sleep(30)", str(written)],
+            stdout=subprocess.PIPE,
+        )
+        report = ScanReport()
+        verify._collect_qpdf(proc, SecretMatcher([Secret("short", "4567")]), report, frozenset())
+        assert sorted(w.code for w in report.warnings) == [
+            "REVIEW_BINARY", "TOOL_EXIT_NONZERO", "TOOL_TIMEOUT"]
+
     @requires_qpdf
     @pytest.mark.parametrize("new_id", [False, True], ids=["no-input-id", "mupdf-literal-id"])
     def test_qpdf_s_own_id_does_not_reach_the_report(self, tmp_path: Path, new_id: bool) -> None:
