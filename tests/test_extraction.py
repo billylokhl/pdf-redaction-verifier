@@ -5,7 +5,10 @@ Each test pins a previously confirmed detection-gap bug.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pymupdf as fitz
+import pytest
 
 import verify
 
@@ -13,7 +16,7 @@ from redaction_verifier.matching import SecretMatcher, normalize_string
 from redaction_verifier.model import ScanReport, Secret
 from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text
 
-from .conftest import SSN
+from .conftest import HAS_OCR, SSN
 
 
 def _dom_finds(page: fitz.Page, normalized_secret: str) -> bool:
@@ -379,3 +382,54 @@ class TestPageBreaksOcr:
         report = self._ocr([["nothing", "ref 123\n45-"], ["page two", "6789 end"]])
         assert report.findings == []
         assert report.warnings == [crossing(2, layer="OCR")]
+
+
+@pytest.mark.skipif(not HAS_OCR, reason="needs the PyObjC Vision bridge (macOS)")
+class TestVisionBridge:
+    """The Apple Vision bridge's image-handler options."""
+
+    def test_options_survive_vision_removing_a_consumed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # From macOS 27, VNImageRequestHandler's init mutable-copies its
+        # options and removes the keys it consumes from the copy. A Python
+        # {} bridges as a proxy that raises on removing an absent key, so
+        # every OCR page failed (PAGE_FAILED, never exit 0). The isinstance
+        # check is the guard on any macOS version (a Python dict is never
+        # an NSDictionary); the replay documents what macOS 27 does.
+        import Vision
+        from Foundation import NSDictionary
+
+        from redaction_verifier.views import ocr
+
+        seen: list[Any] = []
+        real_handler = Vision.VNImageRequestHandler
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> _Handler:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> Any:
+                seen.append(options)
+                return real_handler.alloc().initWithData_options_(data, options)
+
+        class _Vision:
+            VNImageRequestHandler = _Handler
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(Vision, name)
+
+        monkeypatch.setattr(ocr, "Vision", _Vision())
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 144), f"SSN {SSN}", fontsize=28)
+
+        readings = ocr.extract_ocr_text(page)
+
+        (options,) = seen
+        assert isinstance(options, NSDictionary)  # native, not a Python dict
+        copied = options.mutableCopy()
+        copied.removeObjectForKey_(Vision.VNImageOptionProperties)
+        copied.removeObjectForKey_(Vision.VNImageOptionCameraIntrinsics)
+        assert all(normalize_string(SSN) in normalize_string(text) for text in readings)
