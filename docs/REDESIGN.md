@@ -528,8 +528,8 @@ Generators are portable: built-in or vendored OFL fonts, tools from
 
 Run only through the CLI's `--json` output, one subprocess per file,
 with a timeout — and by default at most one concurrent subprocess per
-core, since the timeout is wall-clock and would otherwise measure
-contention.
+core (and per GiB of RAM), since the timeout is wall-clock and would
+otherwise measure contention.
 Compared **per case** against a pinned reference (a git tag, checked
 out in a worktree — never the live code) on the normalised key {exit,
 set of (rule, tier, storage class), set of warning codes}.

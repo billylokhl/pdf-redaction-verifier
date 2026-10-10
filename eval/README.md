@@ -392,8 +392,10 @@ reads as a crash rather than a deliberate skip.
 
 `--timeout` is wall-clock, so it measures a file's own runtime only while
 each scan has a core and its memory to itself: `--workers` defaults to
-one per usable core, and no more than one per GiB of RAM (a scan peaks at
-0.3–0.5 GB). Do not raise it past that — extra workers do not finish
+one per usable core (the CPU-affinity mask, where Python exposes it), and
+no more than one per GiB of physical RAM (a scan peaks at 0.3–0.5 GB).
+Neither a container's CPU quota nor its memory limit is seen: pass
+`--workers` there. Do not raise it past that — extra workers do not finish
 sooner, they only stretch each file's wall time toward the timeout. On
 the weekly macOS runner (3 cores, 7 GB, OCR on the CPU at about 1–2 s a
 page), 12 workers turned four-page cases that take about 9 s alone into

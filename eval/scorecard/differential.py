@@ -43,8 +43,9 @@ SCAN_MEMORY_BYTES = 1 << 30
 
 
 def _usable_cores() -> int:
-    """Cores this process may run on: the affinity mask / cgroup-aware
-    count where Python offers one, else the machine's."""
+    """Cores this process may run on: its CPU-affinity mask (which a
+    cgroup cpuset narrows) where Python exposes one, else the machine's
+    count. A cgroup CPU *quota* (`docker --cpus`) is not seen."""
     process_cpu_count = getattr(os, "process_cpu_count", None)  # Python 3.13+
     if process_cpu_count is not None:
         return process_cpu_count() or 1
@@ -55,10 +56,13 @@ def _usable_cores() -> int:
 
 
 def _physical_memory() -> int | None:
+    """Total physical RAM in bytes, or None if unknown. Not a container's
+    memory limit."""
     try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (AttributeError, ValueError, OSError):
         return None
+    return total if total > 0 else None  # sysconf returns -1 when indeterminate
 
 
 def default_workers() -> int:

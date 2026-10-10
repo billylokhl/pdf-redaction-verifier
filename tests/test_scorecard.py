@@ -1016,7 +1016,7 @@ def test_default_workers_is_one_per_core_within_memory(monkeypatch, cores, memor
 
 
 def test_usable_cores_prefers_the_process_view(monkeypatch):
-    """An affinity mask or cgroup quota (os.process_cpu_count, else
+    """The CPU-affinity mask (os.process_cpu_count, else
     os.sched_getaffinity) wins over the machine's core count."""
     import scorecard.differential as differential
 
@@ -1028,6 +1028,15 @@ def test_usable_cores_prefers_the_process_view(monkeypatch):
     assert differential._usable_cores() == 3
     monkeypatch.delattr(differential.os, "sched_getaffinity")
     assert differential._usable_cores() == 64
+
+
+def test_physical_memory_on_this_host_is_known_or_none():
+    """The real sysconf lookup, unpatched: a positive byte count or None,
+    never a negative or zero product."""
+    import scorecard.differential as differential
+
+    memory = differential._physical_memory()
+    assert memory is None or memory > 0
 
 
 @pytest.mark.parametrize("runner", [run_candidate, run_differential])
