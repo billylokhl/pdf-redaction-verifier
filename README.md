@@ -183,17 +183,22 @@ still there: invisible on screen, but selectable and copyable.
   genuine reading of the visible text (a visible line read on across the
   visible edge included) or of the off-page text, is hard. Any other
   match crossing the break — needing other lines, across a blank or
-  unreadable page, or from text wholly off the page (a slug below or
-  beside it) onto the next page's first line — is a manual-review warning
-  at the page it crosses into.
+  unreadable page, or from text wholly off the page (a slug below the
+  page, or beside visible text across a column break) onto the next
+  page's first line — is a manual-review warning at the page it crosses
+  into. The limit: a slug only a word space from visible text on its
+  baseline ('Page 7' then 'Job 123-45' just past the edge) reads as one
+  line with it, exactly like a value running past the edge, so if it and
+  the next page's first line together form a value, that is a (false)
+  finding.
 - **Tier:** a known value is hard on one line of a genuine reading, or at
   a page seam as above. A pattern is hard only on one line of a genuine
   reading, the readings across the visible edge included. On a line read
   across the edge, a wide gap (a column break) keeps a visible line and
-  an off-page slug on its baseline apart; a narrower gap does not. Either
-  way, if the two together read as a value, the page's joined text gives
-  a manual-review warning. Everything that needs text joined is
-  manual-review.
+  an off-page slug on its baseline apart: the slug is left to the
+  off-page reading. A narrower gap does not: the two read as one line,
+  like a value running past the edge. Everything that needs text joined
+  is manual-review.
 
 ### 2. Objects — everything the file stores
 

@@ -315,9 +315,13 @@ a page never becomes that page's last line, and the same three
 directions are read again across the visible edge, visible and off-page
 glyphs together, so a value that runs off the page, or is written
 vertically off it, is read whole: seven genuine readings in all. The
-horizontal one keeps only the lines holding a visible glyph, so its last
-line is the visible text's last line read on past the edge, and it feeds
-the hard page seam; the vertical ones also read columns wholly off the
+horizontal one keeps only the stretches of a line between column breaks
+that hold a visible glyph, so its last line is the visible text's last
+line read on past the edge, and it feeds the hard page seam; an off-page
+slug a column break away from a page number is left to the off-page
+reading, but one a mere word space away cannot be told from a value
+running past the edge, and is read with it (a known false alarm). The
+vertical ones also read columns wholly off the
 page, whose last column may be a slug that does not run on into the next
 page, so they feed the seam only at the manual-review tier. Text wholly
 off the page joined with the next page's first line is manual review

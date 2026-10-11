@@ -296,6 +296,39 @@
   cell: match.page-break-off-page-half
   pr: '#68'
   weaker: true
+- case: page.raw-font-coded-split-at-break-off-page-rotated-180
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-10: a font-coded value split at a page break
+    whose first half lies wholly off the page (past the media box''s right edge on page 1,
+    turned with /Rotate 180 under a crop box reaching past that edge) and whose second half
+    opens page 2 is manual review (exit 2), never a finding and never silent. Root cause of
+    the reference''s 1: its visible area was misplaced on rotated pages with an overhanging
+    crop box (derotating page.rect used the unclipped crop box), so it filed the off-page
+    half as page 1''s last visible line and its hard page seam joined it to page 2. With the
+    visible area correct, the half is off-page text, which reads like a slug below or beside
+    a page and does not run on into the next page; the manual-review net joins it with page
+    2''s first line instead. The same layout at /Rotate 0 goes 0 -> 2.'
+  cell: match.page-break-off-page-half
+  pr: '#68'
+  weaker: true
 - case: page.raw-font-coded-split-at-break-past-edge
   old:
     exit: 0
@@ -439,6 +472,30 @@
     (eval-ref-0) exited 0, or 2 where the scrambled reading happened to join the value across
     lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
   cell: off-page.font.vertical
+  pr: '#68'
+- case: page.raw-slug-beside-page-number
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68, a known false alarm on a clean file (the case''s known_gap, false-alarm.slug-beside-visible-line):
+    the Text layer reads the visible text across the visible edge and feeds that reading''s
+    last line to the hard page seam. A print slug just past the right edge, only a word space
+    from the page number on its baseline, reads as one line with it (''Page7Job123-45''),
+    exactly like a value running past the edge, and with page 2''s first line (''6789 ...'')
+    forms the SSN. The reference (eval-ref-0) never read across the edge and exited 0; a slug
+    a column break away is left to the off-page reading and gives manual review at most.'
+  cell: false-alarm.slug-beside-visible-line
   pr: '#68'
 - case: page.runs-off-right-edge
   old:

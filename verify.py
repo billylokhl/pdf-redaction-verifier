@@ -351,8 +351,9 @@ def scan_page_layer(
     Each page break is checked on its own, so every place a value crosses
     one is reported where it happens. Every reading, genuine or not,
     keeps its own tail for that manual-review net. For Text, reading 4
-    (the visible lines, each read across the visible edge) feeds the hard
-    seam; readings 5-6 feed only the net: their last column may be
+    (the visible text, each stretch of a line between column breaks read
+    on across the visible edge) feeds the hard seam; readings 5-6 feed
+    only the net: their last column may be
     off-page text, which does not run on into the next page. The tails of
     the off-page reading (3) and of reading 4 also meet the next page's
     visible horizontal reading (0) in the net, so a value whose first

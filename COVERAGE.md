@@ -140,6 +140,15 @@ because the old visible area misplaced the half onto the page; it is
 exit `2` now, an owner-approved exception (2026-10-10) to "stricter
 only".
 
+One known false alarm comes with it (`false-alarm.slug-beside-visible-line`):
+a slug just past the page edge, only a word space from visible text on
+its baseline ('Page 7' then 'Job 123-45'), reads as one line with that
+text, exactly like a value running past the edge. If that line and the
+next page's first line together form a value, the page seam makes it a
+finding (`1`) on a clean document. A slug a column break away from
+visible text (a page number at the margin, the slug well past the edge)
+is read only as off-page text and gives manual review at most.
+
 ## What ⚑ costs, and what comes next
 
 A flag is the honest answer to "found it, could not read it", but it means

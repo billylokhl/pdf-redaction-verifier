@@ -560,9 +560,10 @@ class TestReadingsAcrossTheVisibleEdge:
 
     def test_visible_line_and_off_page_slug_on_one_baseline(self, tmp_path) -> None:
         # Clean control: a visible line ending '123-45' and an off-page slug
-        # starting '-6789' on the same baseline, far apart. Reading 4 holds
-        # both, but the gap is a column break, so neither a value rule nor
-        # the SSN pattern rule finds a hard match.
+        # starting '-6789' on the same baseline, far apart. The gap is a
+        # column break, and the slug's segment holds no visible glyph, so
+        # reading 4 leaves it to reading 3: neither a value rule nor the SSN
+        # pattern rule finds a match, hard or joined.
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
         page.insert_text((72, 300), "Invoice 123-45")
@@ -570,10 +571,10 @@ class TestReadingsAcrossTheVisibleEdge:
         rules = tmp_path / "rules.json"
         rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
         readings = extract_visual_text(page)
-        assert "Invoice123-45\n-6789slug" in readings[4], readings
+        assert readings[4] == readings[0] == "Invoice123-45", readings
+        assert readings[3] == "-6789slug", readings
         report = _scan(doc, patterns=load_rules(rules).patterns)
-        assert report.findings == []
-
+        assert report.findings == [] and report.warnings == []
 
     @pytest.mark.parametrize("banner_at", [(640, 200), (50, 900)])   # right of, below the page
     def test_large_off_page_text_does_not_merge_visible_fine_print(
@@ -618,6 +619,73 @@ class TestPageBreakAtTheVisibleEdge:
         else:
             assert report.findings == []
             assert report.warnings == [crossing(2)]
+
+
+
+def _slug_beside_visible_text(visible: str, visible_x: float, slug_x: float,
+                              rotate: int = 0) -> fitz.Document:
+    """Page 1: a visible line, and a page number or footer *visible* at
+    *visible_x* on a baseline it shares with an off-page slug 'Job 123-45'
+    at *slug_x* (past the 595 pt right edge); page 2 opens with '6789'."""
+    doc = fitz.open()
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((72, 300), "Quarterly report, page one.")
+    p1.insert_text((visible_x, 830), visible)
+    p1.insert_text((slug_x, 830), "Job 123-45")
+    doc.new_page(width=595, height=842).insert_text((72, 60), "6789 units shipped in March.")
+    if rotate:
+        doc[0].set_rotation(rotate)
+    return fitz.open("pdf", doc.tobytes())
+
+
+# (visible text, its x, the slug's x, /Rotate): the slug is a column-break
+# segment of its own, holding no visible glyph.
+SLUG_BESIDE_VISIBLE = {
+    "page-number": ("7", 560, 640, 0),
+    "page-number-rotated-90": ("7", 560, 640, 90),
+    "footer": ("Confidential - internal use", 300, 700, 0),
+    "page-number-far-away": ("7", 300, 2000, 0),
+}
+
+
+class TestSlugBesideVisibleText:
+    """A slug wholly off the page on a baseline it shares with visible
+    text (a page number, a footer). Reading 4 keeps only the column-break
+    segments that hold a visible glyph, so the slug is reading 3's alone:
+    it never meets the next page's first line at a hard seam, only in the
+    manual-review net."""
+
+    @pytest.mark.parametrize("layout", sorted(SLUG_BESIDE_VISIBLE))
+    def test_no_hard_seam(self, layout: str) -> None:
+        visible, visible_x, slug_x, rotate = SLUG_BESIDE_VISIBLE[layout]
+        doc = _slug_beside_visible_text(visible, visible_x, slug_x, rotate)
+        readings = extract_visual_text(doc[0])
+        assert "Job" not in readings[4] and "Job123-45" in readings[3], readings
+        report = _scan(doc)
+        assert report.findings == []
+        assert report.warnings == [crossing(2)]
+
+    def test_no_hard_seam_end_to_end(self, tmp_path) -> None:
+        pdf = tmp_path / "slug.pdf"
+        doc = _slug_beside_visible_text(*SLUG_BESIDE_VISIBLE["page-number"])
+        doc.save(pdf)
+        doc.close()
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "SSN", "value": SSN}]))
+        result = run_verify(pdf, rules)
+        assert result.returncode == 2, result.stdout
+        assert report_lines(result.stdout) == []
+
+    def test_slug_at_a_normal_gap_is_read_as_one_line(self) -> None:
+        # The limit: with no column break between them ('Page 7' and the
+        # slug a word space apart), the line reads 'Page7Job123-45', which
+        # nothing tells apart from a value running past the edge, so its
+        # seam with the next page is hard (the case library pins it as a
+        # false alarm, false-alarm.slug-beside-visible-line).
+        doc = _slug_beside_visible_text("Page 7", 560, 603)
+        readings = extract_visual_text(doc[0])
+        assert readings[4].endswith("Page7Job123-45"), readings
+        assert _where(_scan(doc)) == [seam(1, 2)]
 
 
 class TestPageBreaksOcr:

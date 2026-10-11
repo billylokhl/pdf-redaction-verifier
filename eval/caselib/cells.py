@@ -139,6 +139,9 @@ def _cells() -> dict[str, Cell]:
         # false alarms on clean documents
         "false-alarm.binary-value-collision": Cell(
             "false-alarm", "a value's digits occurring by chance in binary data"),
+        "false-alarm.slug-beside-visible-line": Cell(
+            "false-alarm", "an off-page slug a word space from visible text on its baseline, "
+                           "read as one line onto the next page's first line"),
     }
 
 

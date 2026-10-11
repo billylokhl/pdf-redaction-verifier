@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from ..model import SSN, case, expect
+from ..model import SSN, KnownGap, case, expect
 from ..pdfkit import FILLER, compressed, png_of, zipbytes
 from ..rawpdf import (CATALOG, HELVETICA, build, build_objstm, incremental_update, one_page,
                       page, stream, text)
@@ -257,19 +257,54 @@ def _break_cases() -> None:
 _break_cases()
 
 
-@leak("page.raw-font-coded-split-at-break-off-page-rotated", "match.page-break-off-page-half",
-      "The SSN in font codes split across a page break: its first half lies wholly past "
-      "the media box's right edge on page 1, turned with /Rotate 270 under a crop box "
-      "reaching past that edge; its second half opens page 2. A half wholly off the page "
-      "reads like a slug, which does not run on into the next page, so the join is "
-      "manual review rather than a finding.",
-      expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
-      mistake="Nobody redacted it; half the value sits past the margin, the rest over the "
-              "page break.",
-      recovery="Enlarge the page box, read both pages' text through the font's Encoding "
-               "/Differences, and join the halves.")
-def split_off_page_rotated(path: Path) -> None:
-    page_break_at_edge(path, "off-page", 270)
+def _split_off_page_cases() -> None:
+    for rotate, suffix in ((270, ""), (180, "-180")):
+        @leak(f"page.raw-font-coded-split-at-break-off-page-rotated{suffix}",
+              "match.page-break-off-page-half",
+              "The SSN in font codes split across a page break: its first half lies wholly "
+              f"past the media box's right edge on page 1, turned with /Rotate {rotate} "
+              "under a crop box reaching past that edge; its second half opens page 2. A "
+              "half wholly off the page reads like a slug, which does not run on into the "
+              "next page, so the join is manual review rather than a finding.",
+              expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+              mistake="Nobody redacted it; half the value sits past the margin, the rest "
+                      "over the page break.",
+              recovery="Enlarge the page box, read both pages' text through the font's "
+                       "Encoding /Differences, and join the halves.")
+        def split_off_page_rotated(path: Path, rotate: int = rotate) -> None:
+            page_break_at_edge(path, "off-page", rotate)
+
+
+_split_off_page_cases()
+
+
+# ── false-alarm.slug-beside-visible-line ────────────────────────────────
+# Reading 4 keeps a line's column-break segments that hold a visible
+# glyph. A slug wholly off the page, a word space from visible text on
+# its baseline, is no separate segment: 'Page 7' and 'Job 123-45' read
+# 'Page7Job123-45', just as a value running past the edge would, and the
+# line meets the next page's first line at the hard seam.
+
+@case(
+    "page.raw-slug-beside-page-number", truth="clean",
+    features=("live.plain", "off-page.plain"), writer="raw",
+    expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+    story="Page 1's page number, 'Page 7', sits at the right margin, and a print slug "
+          "'Job 123-45' just past the media box's right edge on the same baseline, a "
+          "word space away; page 2 opens with '6789 units shipped'. Nothing tells the "
+          "line apart from a value running past the edge, so the Text layer joins it "
+          "with page 2's first line at the hard page seam: a false finding, where the "
+          "coincidence deserves a manual-review warning at most.",
+    known_gap=KnownGap("false-alarm.slug-beside-visible-line",
+                       expect(1, findings=(("SSN", "live"),))),
+)
+def slug_beside_page_number(path: Path) -> None:
+    first = (text("Quarterly report", 700)
+             + b"\nBT /F1 12 Tf 570 20 Td (Page 7) Tj ET\nBT /F1 12 Tf 614 20 Td (Job 123-45) Tj ET")
+    objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+               3: page(), 4: stream(b"", first), 6: HELVETICA,
+               8: page(b"9 0 R"), 9: stream(b"", text("6789 units shipped in March.", 770))}
+    _write(path, objects)
 
 
 # ── Document-level live content ─────────────────────────────────────────
