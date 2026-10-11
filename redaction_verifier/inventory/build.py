@@ -34,7 +34,8 @@ from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
-from .objects import IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull, PdfRef
+from .objects import (IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull,
+                      PdfRef, PdfValue)
 from .tiling import check_tiling, tile
 from .types import Inventory, ObjectStream, Region
 from .xref import (COMPRESSED, IN_USE, Chain, Entry, _int, _name, _predictor, no_object,
@@ -78,7 +79,9 @@ _CHECK_WORK: Final = 64
 class _Member:
     ref: UnitRef
     number: int
-    catalog: bool  # a clean dictionary with /Type /Catalog
+    dictionary: bool  # a clean dictionary
+    catalog: bool  # ... with /Type /Catalog
+    pages: PdfValue | None  # a catalog's /Pages
 
 
 def build_inventory(data: bytes, limits: Limits | None = None, *,
@@ -457,16 +460,21 @@ class _Builder:
                            obj=member, gen=0)
             claims.append((unit, parsed.span))
             self.units.append(Unit(unit, (parsed.span,), flags))
-            catalog = (not flags and not invalid and isinstance(value, PdfDict)
+            dictionary = not flags and not invalid and isinstance(value, PdfDict)
+            catalog = (dictionary and isinstance(value, PdfDict)
                        and _name(value.get(b"Type")) == b"Catalog")
-            members.append(None if invalid else _Member(unit, member, catalog))
+            pages = value.get(b"Pages") if catalog and isinstance(value, PdfDict) else None
+            members.append(None if invalid else _Member(unit, member, dictionary, catalog,
+                                                        pages))
         return members, claims
 
     def _home(self, entry: Entry, revision: int) -> _Member | None:
         """The member a compressed *entry* names in *revision*: its home
-        in use there, an object stream we read, listing it at the index."""
+        in use there with generation 0 (qpdf reads no other), an object
+        stream we read, listing it at the index."""
         home = self._entry(entry.a, revision)
-        members = self.members.get(home.a) if home and home.kind == IN_USE else None
+        members = (self.members.get(home.a) if home and home.kind == IN_USE and home.b == 0
+                   else None)
         return members[entry.b] if members and entry.b < len(members) else None
 
     def _compressed(self, chain: Chain) -> None:
@@ -477,7 +485,9 @@ class _Builder:
         member still living in it is checked again (charged to the work
         budget: members x replacements can be quadratic, so a hostile file
         exhausts the budget instead). Every revision's /Root, when
-        compressed, must be a clean /Type /Catalog dictionary."""
+        compressed, must be a clean /Type /Catalog dictionary; and its
+        /Pages a dictionary (xref._page_tree) when the catalog or the
+        /Pages is compressed -- the chain checks the rest."""
         live: dict[int, set[int]] = {}
         current: dict[int, Entry] = {}
         for revision in reversed(range(len(self.changes))):
@@ -510,11 +520,47 @@ class _Builder:
             trailer = chain.sections[chain.revisions[revision][0]].trailer
             root = trailer.get(b"Root") if trailer is not None else None
             entry = self._entry(root.num, revision) if isinstance(root, PdfRef) else None
+            pages: PdfValue | None = None
             if isinstance(root, PdfRef) and entry is not None and entry.kind == COMPRESSED:
                 member = self._home(entry, revision)
                 if (root.gen != 0 or member is None or member.number != root.num
                         or not member.catalog):
                     self.flags.add(FlagReason.MISSING_ROOT, None, (("revision", revision),))
+                    continue
+                pages = member.pages
+            elif isinstance(root, PdfRef) and entry is not None and entry.kind == IN_USE:
+                obj = self.parsed.get(entry.a)
+                held = obj.value if obj is not None else None
+                pages = held.get(b"Pages") if isinstance(held, PdfDict) else None
+                target = (self._entry(pages.num, revision) if isinstance(pages, PdfRef)
+                          else None)
+                if (target is None or target.kind != COMPRESSED
+                        or not isinstance(pages, PdfRef) or pages.gen != 0):
+                    continue  # the chain's to check (xref._page_tree)
+            else:
+                continue
+            if not self._page_tree(pages, revision):
+                self.flags.add(FlagReason.MISSING_PAGE_TREE, None, (("revision", revision),))
+
+    def _page_tree(self, pages: PdfValue | None, revision: int) -> bool:
+        """xref._page_tree's rule, with object streams read: is *pages* a
+        dictionary, direct or by reference in *revision*?"""
+        if isinstance(pages, PdfDict):
+            return True
+        if not isinstance(pages, PdfRef) or pages.num == 0:
+            return False
+        entry = self._entry(pages.num, revision)
+        if entry is not None and entry.kind == COMPRESSED:
+            member = self._home(entry, revision)
+            return (pages.gen == 0 and member is not None and member.number == pages.num
+                    and member.dictionary)
+        if (entry is None or entry.kind != IN_USE or no_object(pages.num, entry)
+                or entry.b != pages.gen):
+            return False
+        obj = self.parsed.get(entry.a)
+        return (obj is not None and not obj.flags and obj.span.start == entry.a
+                and obj.num == pages.num and obj.stream is None
+                and isinstance(obj.value, PdfDict))
 
     # ── the gaps ──────────────────────────────────────────────────────
     def _dead_bodies(self, regions: Iterable[Region]) -> None:

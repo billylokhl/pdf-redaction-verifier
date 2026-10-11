@@ -100,6 +100,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         classic().replace(b"/Size 4", b"/Size 5", 1)).flags,
     FlagReason.MISSING_ROOT: lambda: chain_of(
         classic().replace(b"/Root 1 0 R", b"/Rook 1 0 R", 1)).flags,
+    FlagReason.MISSING_PAGE_TREE: lambda: chain_of(
+        classic().replace(b"/Pages 2 0 R", b"/Pages 9 0 R", 1)).flags,
     FlagReason.FLAGS_TRUNCATED: lambda: _parsed(
         b"1 0 obj [foo foo] endobj", Limits(max_flags_per_object=1)),
     FlagReason.XREF_EPILOGUE_MISMATCH: lambda: _inventoried(re.sub(  # names 208, not 209

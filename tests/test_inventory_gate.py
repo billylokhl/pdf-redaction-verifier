@@ -471,12 +471,14 @@ def test_qpdf_check_errors_are_gated(tmp_path: Path) -> None:
     from scorecard.pdfgen import Writer
     w = Writer()
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
-    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages null >>"), 0)
-    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
-    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
-                          b" /Resources << >> >>"), 0)
-    w.epilogue(w.table(table, b"/Size 4 /Root 1 0 R"))
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [] /Count 0 >>"), 0)
+    w.epilogue(w.table(table, b"/Size 3 /Root 1 0 R"))
     found = compare(bytes(w.out), tmp_path)
-    # qpdf 12 already fails --show-xref on this page tree (OBJECT_SET); an
-    # older qpdf reads the map and stops --check with an ERROR (QPDF_CHECK).
-    assert found.disagrees and found.check in (Check.OBJECT_SET, Check.QPDF_CHECK)
+    # A page tree with no pages: qpdf opens it, but --check stops with an
+    # ERROR line no allowlist covers -- "file does not contain any pages"
+    # in 12.4; in 12.3, the out-of-range error of reading page 1's outlines.
+    # (A /Pages that is no dictionary, this test's fixture until qpdf 12
+    # refused to open it, is now flagged MISSING_PAGE_TREE.)
+    assert found.disagrees and found.check is Check.QPDF_CHECK, found
+    assert found.qpdf_check_errors == 1, found
