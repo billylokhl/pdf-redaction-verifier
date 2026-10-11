@@ -324,6 +324,18 @@ class TestWhichTrailers:
         assert verify._table_subsections(b"4 1 0000000009 n n") is None
         # A header number too long for an object number: unknown, not a crash.
         assert verify._table_subsections(b"9" * 5000 + b"\n1 0000000009 00000 n") is None
+        assert verify._table_subsections(b"4 " + b"9" * 5000 + b" 0000000009 00000 n") is None
+        assert verify._table_subsections(b"4 1 + 0000000617 00000 n") is None    # stray sign
+        assert verify._table_subsections(b"4 1 0000000009 -1 n") == [range(4, 5)]
+
+    @pytest.mark.parametrize("table", [
+        b"xref\r0 1\r0000000000 65535 F\rtrailer\r<<",          # CR only, upper-case type
+        b"xref\n0 1\n-000000001 +0000 f\ntrailer\n<<",            # signed entry numbers
+        b"xref\t0 1\f0000000000 65535 f\x0btrailer<<",            # tab, form feed, VT
+    ])
+    def test_table_layouts_reach_the_keyword(self, table: bytes) -> None:
+        raw = table + b" /Size 1 >>"
+        assert verify._section_trailer(raw, 0) == (raw.index(b"trailer"), raw.index(b"<<"))
 
     def test_a_large_table_is_read_in_constant_memory(self) -> None:
         # The table scan once held ~100 bytes of regex state per token:

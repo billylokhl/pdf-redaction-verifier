@@ -2382,7 +2382,10 @@ def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
 # a star held ~100 bytes per token: gigabytes on a large table) — and
 # comments, skipped one by one.
 _TABLE_FLAT_RE = re.compile(rb"[\s\x00\d+\-nNfF]*")
-_TABLE_TOKEN_RE = re.compile(rb"%[^\r\n]*|([+-]?\d+|[nNfF])")
+# Every token of a table, a stray sign included (so it breaks the shape
+# rather than vanishing); comments match without a group and are dropped.
+_TABLE_TOKEN_RE = re.compile(rb"%[^\r\n]*|([+-]?\d+|[nNfF]|[+-])")
+_SIGNED_INT_RE = re.compile(rb"[+-]?\d+")
 _ENTRY_TYPES = frozenset({b"n", b"N", b"f", b"F"})
 _MAX_NUMBER_DIGITS = 10                  # object numbers, counts: 32-bit
 
@@ -2413,25 +2416,21 @@ def _table_subsections(table: bytes) -> list[range] | None:
     header (first number, count) then count entries of offset, generation
     and n/f, whatever the line layout and with comments skipped. None when
     the tokens do not have that shape (callers then treat every object as
-    possibly changed)."""
-    tokens = [t for t in _TABLE_TOKEN_RE.findall(table) if t]
+    possibly changed). Tokens are read one at a time, so memory stays
+    constant however long the table."""
+    tokens = (m.group(1) for m in _TABLE_TOKEN_RE.finditer(table) if m.group(1))
     ranges: list[range] = []
-    i, n = 0, len(tokens)
-    while i < n:
-        if (i + 1 >= n or not tokens[i].isdigit() or not tokens[i + 1].isdigit()
-                or len(tokens[i]) > _MAX_NUMBER_DIGITS
-                or len(tokens[i + 1]) > _MAX_NUMBER_DIGITS):
+    for first in tokens:
+        count = next(tokens, None)
+        if (count is None or not first.isdigit() or not count.isdigit()
+                or len(first) > _MAX_NUMBER_DIGITS or len(count) > _MAX_NUMBER_DIGITS):
             return None
-        first, count = int(tokens[i]), int(tokens[i + 1])
-        i += 2
-        if i + 3 * count > n:
-            return None
-        for j in range(i, i + 3 * count, 3):
-            if (tokens[j] in _ENTRY_TYPES or tokens[j + 1] in _ENTRY_TYPES
-                    or tokens[j + 2] not in _ENTRY_TYPES):
+        for _ in range(int(count)):
+            entry = (next(tokens, None), next(tokens, None), next(tokens, None))
+            if (entry[2] not in _ENTRY_TYPES or not _SIGNED_INT_RE.fullmatch(entry[0] or b"")
+                    or not _SIGNED_INT_RE.fullmatch(entry[1] or b"")):
                 return None
-        ranges.append(range(first, first + count))
-        i += 3 * count
+        ranges.append(range(int(first), int(first) + int(count)))
     return ranges
 
 
