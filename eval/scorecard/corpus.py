@@ -197,7 +197,7 @@ def scan_corpus(
     return runs
 
 
-def _row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
+def metric_row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
     report = run.result.report
     has_hard = bool(report and any(f.get("tier") == "hard" for f in report.get("findings", [])))
     actual_exit = None if run.result.crashed else effective_exit(report, have)  # type: ignore[arg-type]
@@ -230,5 +230,5 @@ def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[
         ).append(run)
         strata.setdefault(f"producer:{run.entry.producer_family}", []).append(run)
     return {
-        name: compute_metrics([_row(r, have) for r in group]) for name, group in strata.items()
+        name: compute_metrics([metric_row(r, have) for r in group]) for name, group in strata.items()
     }

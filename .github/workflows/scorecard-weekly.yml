@@ -59,6 +59,7 @@ jobs:
           PYTHONPATH=eval:. uv run python -m scorecard diff
           --json scorecard-diff-full.json --verbose
       - name: Run the scorecard metrics table
+        # Fails on any crashed or timed-out case (still writing its JSON).
         if: always()
         run: >-
           PYTHONPATH=eval:. uv run python -m scorecard metrics

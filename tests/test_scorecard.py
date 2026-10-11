@@ -1153,3 +1153,80 @@ def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeyp
     differential.run_differential(["page.memo"], out_dir=tmp_path / "out")
 
     assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}
+
+
+# ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
+
+
+def _metric_row(case_id, *, crashed=False, timed_out=False):
+    return CaseMetricRow(
+        case_id=case_id, truth="clean", expected_exit=0,
+        actual_exit=None if (crashed or timed_out) else 0, has_hard_finding=False,
+        crashed=crashed or timed_out, timed_out=timed_out, elapsed=1.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "rows, code, mentions",
+    [
+        ([_metric_row("a"), _metric_row("b")], 0, []),
+        ([_metric_row("a"), _metric_row("b", timed_out=True)], 1, ["timed out  b"]),
+        ([_metric_row("a", crashed=True), _metric_row("b")], 1, ["crashed    a"]),
+        ([], 1, ["zero cases measured"]),
+    ],
+)
+def test_metrics_exits_nonzero_on_any_unmeasured_case(monkeypatch, tmp_path, capsys, rows, code, mentions):
+    """A crashed or timed-out case has no verdict and drops out of every
+    rate, so a run with one reads like a complete run over fewer cases.
+    The weekly job's metrics step printed "timeouts 10" and passed; it
+    must fail instead (and still write its JSON for the artifact)."""
+    import scorecard.cli as cli
+
+    monkeypatch.setattr(cli, "run_candidate", lambda *a, **k: rows)
+    out = tmp_path / "metrics.json"
+    args = cli.build_parser().parse_args(["metrics", "--out", str(tmp_path / "o"), "--json", str(out)])
+    assert args.func(args) == code
+    assert json.loads(out.read_text())["total"] == len(rows)
+    err = capsys.readouterr().err
+    for text in mentions:
+        assert text in err
+
+
+@pytest.mark.parametrize(
+    "missing, timed_out, code",
+    [([], False, 0), (["gone.pdf"], False, 1), ([], True, 1)],
+)
+def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
+    monkeypatch, tmp_path, capsys, missing, timed_out, code
+):
+    """`corpus run` scans only the files still present and unchanged: a
+    missing or changed manifest file, or a scan that crashed or timed
+    out, leaves the clean-side rates describing fewer files than the
+    manifest — the run must say so with its exit code."""
+    import scorecard.cli as cli
+    import scorecard.corpus as corpus_mod
+
+    entry = corpus_mod.CorpusEntry("ab" * 32, "kept.pdf", True, False, "other")
+    result = CliResult(
+        returncode=None if timed_out else 0,
+        report=None if timed_out else _report(0),
+        elapsed=1.0, timed_out=timed_out, stderr_tail="",
+    )
+    monkeypatch.setattr(corpus_mod, "ensure_local_only", lambda p, allow_outside=False: p)
+    monkeypatch.setattr(corpus_mod, "load_manifest", lambda p: [entry])
+    monkeypatch.setattr(
+        corpus_mod, "check_manifest",
+        lambda entries, root: corpus_mod.CorpusCheck(missing=tuple(missing), changed=()),
+    )
+    monkeypatch.setattr(corpus_mod, "scan_corpus", lambda *a, **k: [corpus_mod.CorpusRun(entry, result)])
+    secrets = tmp_path / "rules.json"
+    secrets.write_text("[]")
+    args = cli.build_parser().parse_args(
+        ["corpus", "run", "--root", str(tmp_path), "--secrets", str(secrets), "--allow-outside"]
+    )
+    assert args.func(args) == code
+    err = capsys.readouterr().err
+    if missing:
+        assert "1 missing and 0 changed" in err
+    if timed_out:
+        assert "timed out  " + entry.sha256[:16] in err

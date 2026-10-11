@@ -449,6 +449,12 @@ labels, so a documented `known_gap` still counts as a miss here (that is
 the point: it tracks how many gaps are left, not just whether they are
 labelled).
 
+A crashed or timed-out case has no verdict, so it drops out of every rate
+above; `metrics` therefore exits 1 when any case crashed or timed out
+(listing them on stderr), or when zero cases ran, and still prints the
+table and writes `--json`. A known gap or any other labelled miss does
+not fail it — those are what it measures.
+
 **Reference result caching**: `--cache-dir DIR` skips the reference
 worktree and subprocess runs entirely for any case whose result is
 already cached under today's key: the reference commit, a hash of
@@ -501,6 +507,12 @@ PYTHONPATH=eval:. python -m scorecard corpus check --root ~/corpus
 PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
     --secrets secrets.json --json /tmp/corpus.json
 ```
+
+`corpus run` exits 1 when a manifest file is missing or changed (it scans
+only the rest), when any scan crashed or timed out (listed by SHA-256
+prefix, never by path), or when nothing was scanned — each would leave
+the clean-side rates describing fewer files than the manifest. It still
+prints the table and writes `--json`.
 
 `corpus run` also writes a **plaintext copy of `--secrets`** into `--out`
 per file scanned (`<sha256-prefix>.rules.json` — the same scratch file the

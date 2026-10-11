@@ -24,7 +24,7 @@ from . import corpus as corpus_mod
 from . import report
 from .accepted import DEFAULT_PATH as DEFAULT_ACCEPTED_DIFFS_PATH
 from .differential import DEFAULT_TIMEOUT, run_candidate, run_differential
-from .metrics import compute_metrics
+from .metrics import CaseMetricRow, compute_metrics
 from .refs import REFERENCE_REF
 
 
@@ -57,6 +57,26 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0 if all(d.ok for d in run.diffs) and not run.stale else 1
 
 
+def _unmeasured(rows: list[CaseMetricRow], noun: str) -> str | None:
+    """Why this metrics run cannot pass, or None if every file was measured.
+
+    A crashed or timed-out file has no verdict, so it is left out of every
+    rate (silent miss, review rate, ...): those rates would then describe
+    fewer files than were asked for while reading exactly like a complete
+    run. Zero files is refused for the same reason `diff` refuses it."""
+    if not rows:
+        return (f"ERROR: zero {noun}s measured — a silent 0/0 would look identical to "
+                "a clean pass; refusing to report it as one.")
+    crashed = sorted(r.case_id for r in rows if r.crashed and not r.timed_out)
+    timed_out = sorted(r.case_id for r in rows if r.timed_out)
+    if not crashed and not timed_out:
+        return None
+    lines = [f"ERROR: {len(crashed)} crashed and {len(timed_out)} timed-out {noun}(s) "
+             "were not measured, so the rates above leave them out:"]
+    lines += [f"  crashed    {i}" for i in crashed] + [f"  timed out  {i}" for i in timed_out]
+    return "\n".join(lines)
+
+
 def _cmd_metrics(args: argparse.Namespace) -> int:
     rows = run_candidate(
         args.case_id or None, out_dir=args.out, timeout=args.timeout, max_workers=args.workers
@@ -65,6 +85,10 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     print(report.render_metrics_table(scorecard))
     if args.json:
         args.json.write_text(report.dump_json(scorecard.to_jsonable()) + "\n")
+    error = _unmeasured(rows, "case")
+    if error is not None:
+        print(error, file=sys.stderr)
+        return 1
     return 0
 
 
@@ -114,12 +138,21 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         workdir=out,
         timeout=args.timeout,
     )
-    strata = corpus_mod.stratify(runs, have=normalization_have(available()))
+    have = normalization_have(available())
+    strata = corpus_mod.stratify(runs, have=have)
     print(report.render_stratified_table(strata))
     if args.json:
         payload = {name: sc.to_jsonable() for name, sc in strata.items()}
         args.json.write_text(report.dump_json(payload) + "\n")
-    return 0
+    failed = not check.ok
+    if failed:
+        print(f"ERROR: {len(check.missing)} missing and {len(check.changed)} changed "
+              "manifest file(s) were not scanned (listed above).", file=sys.stderr)
+    error = _unmeasured([corpus_mod.metric_row(r, have) for r in runs], "file")
+    if error is not None:
+        print(error, file=sys.stderr)
+        failed = True
+    return 1 if failed else 0
 
 
 def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,
