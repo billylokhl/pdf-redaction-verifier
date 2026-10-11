@@ -127,9 +127,9 @@ def error_code(result: CliResult) -> str | None:
     saying the scan could not be completed, else None."""
     if result.crashed or result.report is None:
         return None
+    if "error" in result.report and result.report["error"] is None:
+        return None  # the schema's "no error"; anything else (missing included) is one
     error = result.report.get("error")
-    if error is None:  # the schema's "no error"; anything else is one
-        return None
     return str(error.get("code")) if isinstance(error, dict) else str(error)
 
 

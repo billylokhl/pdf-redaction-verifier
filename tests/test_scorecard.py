@@ -1221,6 +1221,9 @@ def test_to_metric_row_carries_the_reports_error_code():
     malformed = CliResult(returncode=2, report=_report(2, error={}), elapsed=1.0,
                           timed_out=False, stderr_tail="")
     assert to_metric_row(case, malformed).error_code is not None
+    no_key = {k: v for k, v in _report(0).items() if k != "error"}
+    missing = CliResult(returncode=0, report=no_key, elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, missing).error_code is not None
 
 
 def _corpus_result(outcome):
