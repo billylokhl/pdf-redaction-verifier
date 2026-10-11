@@ -720,9 +720,11 @@ raised from 45 to 60 minutes (a run now takes 34.6); the reference's
 passes it itself), after an intermittent unlisted `SHORT` review warning
 was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
 (owner's decision, over re-tagging the reference); `scorecard metrics`
-and `corpus run` exiting 1 when any file crashed, timed out or (for the
-corpus) was missing or changed, or when nothing ran, since an unmeasured
-file drops out of every rate. Not yet done, left for a later PR:
+and `corpus run` exiting 1 when any file has no verdict (crashed, timed
+out, or an error report saying nothing was scanned — except, in the real
+corpus only, an encrypted or corrupt file, whose exit 2 is the tool's
+real answer: owner's decision), when a corpus file is missing, changed
+or vanishes, or when nothing ran. Not yet done, left for a later PR:
 qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
 file) still swept by the Binary layer, so a 4-character all-hex value
 rule matches it on about 0.05% of files and a 3-character one (`Abe`,

@@ -449,11 +449,14 @@ labels, so a documented `known_gap` still counts as a miss here (that is
 the point: it tracks how many gaps are left, not just whether they are
 labelled).
 
-A crashed or timed-out case has no verdict, so it drops out of every rate
-above; `metrics` therefore exits 1 when any case crashed or timed out
-(listing them on stderr), or when zero cases ran, and still prints the
-table and writes `--json`. A known gap or any other labelled miss does
-not fail it — those are what it measures.
+A case with no verdict — the CLI crashed (bad exit code, no or invalid
+report, or a report whose exit disagrees with the process's), timed out,
+or reported an `error` saying it scanned nothing — is either left out of
+every rate above or counted with a verdict it never earned. `metrics`
+therefore exits 1 when any case has no verdict (each listed on stderr),
+or when zero cases ran, and still prints the table and writes `--json`.
+A known gap or any other labelled miss does not fail it — those are what
+it measures.
 
 **Reference result caching**: `--cache-dir DIR` skips the reference
 worktree and subprocess runs entirely for any case whose result is
@@ -508,11 +511,16 @@ PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
     --secrets secrets.json --json /tmp/corpus.json
 ```
 
-`corpus run` exits 1 when a manifest file is missing or changed (it scans
-only the rest), when any scan crashed or timed out (listed by SHA-256
-prefix, never by path), or when nothing was scanned — each would leave
-the clean-side rates describing fewer files than the manifest. It still
-prints the table and writes `--json`.
+`corpus run` exits 1 when a manifest file is missing, changed or vanishes
+mid-run (it scans only the rest), when any scan has no verdict as above,
+or when nothing was scanned — each would leave the clean-side rates
+describing something other than the manifest. Those lines name a file by
+its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
+manifest path, since that is what you fix. One exception (owner's
+decision): a file the CLI cannot open — `PDF_PASSWORD` (encrypted) or
+`PDF_UNREADABLE` (corrupt) — gets exit 2, which is the tool's real,
+fail-closed answer for that file, so it counts as a review verdict and is
+only noted on stderr. It still prints the table and writes `--json`.
 
 `corpus run` also writes a **plaintext copy of `--secrets`** into `--out`
 per file scanned (`<sha256-prefix>.rules.json` — the same scratch file the

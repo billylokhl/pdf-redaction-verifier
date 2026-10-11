@@ -29,7 +29,7 @@ from typing import Mapping
 
 from .keys import effective_exit
 from .metrics import CaseMetricRow, Scorecard, compute_metrics
-from .runner import CliResult, current_python, run_cli
+from .runner import CliResult, current_python, error_code, run_cli
 
 REAL_CORPUS_DIR = Path(__file__).resolve().parent / "real_corpus"
 DEFAULT_MANIFEST = REAL_CORPUS_DIR / "manifest.json"
@@ -210,6 +210,7 @@ def metric_row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
         crashed=run.result.crashed,
         timed_out=run.result.timed_out,
         elapsed=run.result.elapsed,
+        error_code=error_code(run.result),
     )
 
 

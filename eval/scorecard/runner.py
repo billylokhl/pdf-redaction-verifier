@@ -122,6 +122,15 @@ def run_cli(
     )
 
 
+def error_code(result: CliResult) -> str | None:
+    """The report's `error.code` for a run that produced a judgeable report
+    saying the file could not be scanned, else None."""
+    if result.crashed or result.report is None:
+        return None
+    error = result.report.get("error")
+    return str(error.get("code")) if isinstance(error, dict) else None
+
+
 def current_python() -> str:
     """The interpreter running this process — used to launch the CLI so
     the same environment (installed deps) is used for every ref."""
