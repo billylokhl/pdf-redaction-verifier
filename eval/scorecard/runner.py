@@ -128,7 +128,7 @@ def error_code(result: CliResult) -> str | None:
     if result.crashed or result.report is None:
         return None
     error = result.report.get("error")
-    if not error:
+    if error is None:  # the schema's "no error"; anything else is one
         return None
     return str(error.get("code")) if isinstance(error, dict) else str(error)
 

@@ -1216,6 +1216,11 @@ def test_to_metric_row_carries_the_reports_error_code():
     assert to_metric_row(case, ok).error_code is None
     crashed = CliResult(returncode=3, report=None, elapsed=1.0, timed_out=False, stderr_tail="")
     assert to_metric_row(case, crashed).error_code is None
+    # Fail-closed: only an explicit null means "no error"; a malformed one
+    # (an empty object, no code) still marks the scan as incomplete.
+    malformed = CliResult(returncode=2, report=_report(2, error={}), elapsed=1.0,
+                          timed_out=False, stderr_tail="")
+    assert to_metric_row(case, malformed).error_code is not None
 
 
 def _corpus_result(outcome):
