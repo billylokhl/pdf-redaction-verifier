@@ -451,8 +451,8 @@ labelled).
 
 A case with no verdict — the CLI crashed (bad exit code, no or invalid
 report, or a report whose exit disagrees with the process's), timed out,
-or reported an `error` saying it scanned nothing — is either left out of
-every rate above or counted with a verdict it never earned. `metrics`
+or reported an `error` saying it could not complete the scan — is either
+left out of every rate above or counted with a verdict it never earned. `metrics`
 therefore exits 1 when any case has no verdict (each listed on stderr),
 or when zero cases ran, and still prints the table and writes `--json`.
 A known gap or any other labelled miss does not fail it — those are what
@@ -514,8 +514,8 @@ PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
 `corpus run` exits 1 when a manifest file is missing, changed or vanishes
 mid-run (it scans only the rest), when any scan has no verdict as above,
 or when nothing was scanned — each would leave the clean-side rates
-describing something other than the manifest. Those lines name a file by
-its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
+describing something other than the manifest. The per-file lines name a
+file by its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
 manifest path, since that is what you fix. One exception (owner's
 decision): a file the CLI cannot open — `PDF_PASSWORD` (encrypted) or
 `PDF_UNREADABLE` (corrupt) — gets exit 2, which is the tool's real,

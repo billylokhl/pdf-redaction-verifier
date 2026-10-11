@@ -721,7 +721,7 @@ passes it itself), after an intermittent unlisted `SHORT` review warning
 was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
 (owner's decision, over re-tagging the reference); `scorecard metrics`
 and `corpus run` exiting 1 when any file has no verdict (crashed, timed
-out, or an error report saying nothing was scanned — except, in the real
+out, or an error report saying the scan could not be completed — except, in the real
 corpus only, an encrypted or corrupt file, whose exit 2 is the tool's
 real answer: owner's decision), when a corpus file is missing, changed
 or vanishes, or when nothing ran. Not yet done, left for a later PR:

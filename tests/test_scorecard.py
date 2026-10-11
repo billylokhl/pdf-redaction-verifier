@@ -31,6 +31,7 @@ from scorecard.differential import (
     normalization_have,
     run_candidate,
     run_differential,
+    to_metric_row,
     save_reference_cache,
     select_cases,
     stale_accepted_diffs,
@@ -772,6 +773,7 @@ def _row(case_id, truth, expected_exit, actual_exit, has_hard_finding=False, cra
     return CaseMetricRow(
         case_id=case_id, truth=truth, expected_exit=expected_exit, actual_exit=actual_exit,
         has_hard_finding=has_hard_finding, crashed=crashed, timed_out=timed_out, elapsed=elapsed,
+        error_code=None,
     )
 
 
@@ -1195,6 +1197,25 @@ def test_metrics_exits_nonzero_on_any_unmeasured_case(monkeypatch, tmp_path, cap
     err = capsys.readouterr().err
     for text in mentions:
         assert text in err
+
+
+def test_to_metric_row_carries_the_reports_error_code():
+    """The metrics path (what the weekly job runs) must carry an error
+    report's code onto its row, or `metrics` would count a scan the CLI
+    could not complete as a verdict. A crashed run carries none (it is
+    already a crash)."""
+    import types
+
+    case = types.SimpleNamespace(id="c", truth="clean", expected=types.SimpleNamespace(exit=0))
+    errored = CliResult(
+        returncode=2, report=_report(2, error={"code": "RULES_INVALID", "message": "x"}),
+        elapsed=1.0, timed_out=False, stderr_tail="",
+    )
+    assert to_metric_row(case, errored).error_code == "RULES_INVALID"
+    ok = CliResult(returncode=0, report=_report(0), elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, ok).error_code is None
+    crashed = CliResult(returncode=3, report=None, elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, crashed).error_code is None
 
 
 def _corpus_result(outcome):

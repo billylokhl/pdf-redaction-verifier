@@ -72,7 +72,7 @@ def _unmeasured(rows: list[CaseMetricRow], noun: str,
 
     A file with no verdict — the CLI crashed (bad exit code, no or invalid
     report, or a report whose exit disagrees with the process's), timed
-    out, or reported an error saying it scanned nothing — is either left
+    out, or reported an error saying it could not complete the scan — is either left
     out of every rate or counted with a verdict it never earned; either
     way the rates would describe something other than what was asked for
     while reading exactly like a complete run. Zero files is refused for
@@ -87,7 +87,7 @@ def _unmeasured(rows: list[CaseMetricRow], noun: str,
     if not crashed and not timed_out and not errored:
         return None
     lines = [f"ERROR: {len(crashed)} crashed, {len(timed_out)} timed-out and "
-             f"{len(errored)} unscanned {noun}(s) have no verdict:"]
+             f"{len(errored)} incompletely scanned {noun}(s) have no verdict:"]
     lines += [f"  crashed    {i}" for i in crashed] + [f"  timed out  {i}" for i in timed_out]
     lines += [f"  error      {i} ({code})" for i, code in errored]
     return "\n".join(lines)
