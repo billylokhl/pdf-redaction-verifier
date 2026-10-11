@@ -226,6 +226,7 @@ try:
     from redaction_verifier.views import OCR_DPI as OCR_DPI
     from redaction_verifier.views import TEXT_GENUINE_READINGS as TEXT_GENUINE_READINGS
     from redaction_verifier.views import TEXT_SEAM_READINGS as TEXT_SEAM_READINGS
+    from redaction_verifier.views import TEXT_TAILS_INTO_NEXT_PAGE as TEXT_TAILS_INTO_NEXT_PAGE
     from redaction_verifier.views import _OCR_IMPORTS_OK as _OCR_IMPORTS_OK
     from redaction_verifier.views import _join_cluster as _join_cluster
     from redaction_verifier.views import _reconstruct as _reconstruct
@@ -291,10 +292,11 @@ EXIFTOOL_FILESYSTEM_FIELDS: frozenset[str] = frozenset({
 # ──────────────────────────────────────────────────────────────────────────
 # docs/REDESIGN.md §4, §6: the layout-aware visual text extractor
 # (_reconstruct, _join_cluster, extract_visual_text, TEXT_GENUINE_READINGS,
-# TEXT_SEAM_READINGS and the line-clustering tolerance constants) and the
-# Apple Vision OCR bridge (_vision_recognize_batch, extract_ocr_text,
-# OCR_DPI, _OCR_IMPORTS_OK) now live in redaction_verifier.views,
-# re-exported above in the single guarded block.
+# TEXT_SEAM_READINGS, TEXT_TAILS_INTO_NEXT_PAGE and the line-clustering
+# tolerance constants) and the Apple Vision OCR bridge
+# (_vision_recognize_batch, extract_ocr_text, OCR_DPI, _OCR_IMPORTS_OK) now
+# live in redaction_verifier.views, re-exported above in the single
+# guarded block.
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -325,6 +327,7 @@ def scan_page_layer(
     patterns: Sequence[PatternRule] = (),
     hard_variants: int = 1,
     seam_variants: int | None = None,
+    tails_into_next: Sequence[int] = (),
     fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
@@ -334,7 +337,9 @@ def scan_page_layer(
     reconstructions. Callers set it to the number of genuine readings:
     TEXT_GENUINE_READINGS for Text, all of them for OCR. The first
     *seam_variants* of those (default: all of them) also feed the hard
-    page seam; for Text, TEXT_SEAM_READINGS.
+    page seam; for Text, TEXT_SEAM_READINGS. The tail of each reading in
+    *tails_into_next* also meets the next page's first reading in the
+    manual-review net; for Text, TEXT_TAILS_INTO_NEXT_PAGE.
 
     Known values:
     - hard: on one line of a genuine reading; or running from the last
@@ -345,10 +350,14 @@ def scan_page_layer(
       (other lines, blank or unreadable pages in between).
     Each page break is checked on its own, so every place a value crosses
     one is reported where it happens. Every reading, genuine or not,
-    keeps its own tail for that manual-review net. For Text, the readings
-    across the visible edge (4-6) feed the net but not the hard seam:
-    their last line may be off-page text, a slug or stamp below the page,
-    which does not run on into the next page's first line.
+    keeps its own tail for that manual-review net. For Text, reading 4
+    (the visible lines, each read across the visible edge) feeds the hard
+    seam; readings 5-6 feed only the net: their last column may be
+    off-page text, which does not run on into the next page. The tails of
+    the off-page reading (3) and of reading 4 also meet the next page's
+    visible horizontal reading (0) in the net, so a value whose first
+    half lies off the page, below or beside its last line, and whose
+    second half opens the next page is reported for review.
 
     Pattern rules match per visual line of every genuine reading for hard
     findings (for Text, the readings across the visible edge included),
@@ -365,6 +374,7 @@ def scan_page_layer(
     # only — the page number and end of the last line, for the seam.
     seams = hard_variants if seam_variants is None else min(seam_variants, hard_variants)
     tails: dict[int, str] = {}
+    tail_page: dict[int, int] = {}       # the page that last fed each tail
     last_line: dict[int, tuple[int, str]] = {}
     cross_page_patterns = PatternScanner(patterns, collapse_separators=True)
     layer_hard: dict[str, tuple[list[int], str]] = {}
@@ -432,10 +442,16 @@ def scan_page_layer(
         # Manual review: anything else crossing into this page from the text
         # before it, in any reading — the net that keeps every page-break
         # split, however joined, from being silent.
+        # Each reading's tail meets its own head; the tails_into_next
+        # readings' tails, when the previous page fed them, also meet the
+        # first reading's head.
+        fulls = ["".join(lines) for lines in norm_lines]
+        joins = [(tails.get(vi, ""), full) for vi, full in enumerate(fulls)]
+        if fulls:
+            joins += [(tails[vi], fulls[0]) for vi in tails_into_next
+                      if tail_page.get(vi) == page_no - 1]
         crossing_warned: set[str] = set()
-        for vi, lines in enumerate(norm_lines):
-            full = "".join(lines)
-            tail = tails.get(vi, "")
+        for tail, full in joins:
             if keep and tail and full:
                 for name in matcher.crossing(tail, full[:keep]):
                     if name in seam_here or name in crossing_warned:
@@ -450,8 +466,10 @@ def scan_page_layer(
                         rule=name,
                         adjacency="JOINED_PAGES",
                     )
-            if keep and full:
-                tails[vi] = (tail + full)[-keep:]
+        for vi, lines in enumerate(norm_lines):
+            if keep and fulls[vi]:
+                tails[vi] = (tails.get(vi, "") + fulls[vi])[-keep:]
+                tail_page[vi] = page_no
             if vi < seams and keep and lines:
                 last_line[vi] = (page_no, lines[-1][-keep:])
 
@@ -2763,6 +2781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         layer="Text", extractor=extract_visual_text, note="visual text layer",
                         hard_variants=TEXT_GENUINE_READINGS,
                         seam_variants=TEXT_SEAM_READINGS,
+                        tails_into_next=TEXT_TAILS_INTO_NEXT_PAGE,
                         patterns=patterns, fail_fast=args.fail_fast,
                     )
                 except Exception as exc:

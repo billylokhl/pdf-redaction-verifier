@@ -194,6 +194,69 @@ def _edge_cases() -> None:
 _edge_cases()
 
 
+# ── A value split at a page break, its first half at the visible edge ───
+# Page 1's last line holds 'SSN 123-45' in font codes, running past the
+# media box's right edge (or wholly past it); page 2 opens with '6789
+# continues'. Read across the edge, a line holding a visible glyph is the
+# visible text's last line, so the split is a hard page seam; a first half
+# wholly off the page is read only off the page, and its join with the
+# next page's first line is manual review (a slug below a page is not the
+# start of the next page's text). With /Rotate 270, page 1 also has a crop
+# box reaching 200 pt past its media box's right edge.
+BREAK_LAYOUTS = ("straddling", "straddling-slug", "off-page", "off-page-slug",
+                 "off-page-both-turned")
+_BREAK_CHARS = "".join(dict.fromkeys("SSN 123-45" + "6789 continues"))
+
+
+def _break_coded(text: str) -> bytes:
+    return b"<" + b"".join(b"%02X" % (_BREAK_CHARS.index(c) + 1) for c in text) + b">"
+
+
+def page_break_at_edge(path: Path, layout: str, rotate: int) -> None:
+    """Two pages: *layout* is one of BREAK_LAYOUTS ('-slug': page 2 also
+    has a slug above its top edge; 'off-page-both-turned': page 2 is
+    turned like page 1, with a slug past its right edge)."""
+    x = 560 if layout.startswith("straddling") else 650
+    first = (text("Quarterly report", 700)
+             + b"\nBT /F2 12 Tf %d 20 Td " % x + _break_coded("SSN 123-45") + b" Tj ET")
+    second_at = b"300 770" if layout == "off-page-both-turned" else b"72 770"
+    second = b"BT /F2 12 Tf " + second_at + b" Td " + _break_coded("6789 continues") + b" Tj ET"
+    if layout.endswith("-slug"):
+        second = text("Job 0002 printed", 810) + b"\n" + second
+    elif layout == "off-page-both-turned":
+        second = b"BT /F1 12 Tf 650 780 Td (Job 0002 printed) Tj ET\n" + second
+    turned = b"/Rotate %d /CropBox [0 0 812 792]" % rotate if rotate else b"/Rotate 0"
+    fonts = b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>"
+    objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+               3: page(resources=fonts, extra=turned), 4: stream(b"", first),
+               6: HELVETICA, 7: differences_font(_BREAK_CHARS),
+               8: page(b"9 0 R", fonts, turned if layout == "off-page-both-turned" else b""),
+               9: stream(b"", second)}
+    _write(path, objects)
+
+
+def _break_cases() -> None:
+    for rotate, suffix in ((0, ""), (270, "-rotated")):
+        turned = " Page 1 is turned with /Rotate 270." if rotate else ""
+        for layout, id_part, slug in (
+                ("straddling", "", ""),
+                ("straddling-slug", "-with-slug", " Page 2 has a slug above its top edge.")):
+            @leak(f"page.raw-font-coded-split-at-break-past-edge{id_part}{suffix}",
+                  ("off-page.font.straddling", "match.page-break"),
+                  "The SSN in font codes split across a page break: its first half, page 1's "
+                  "last line, runs past the media box's right edge; its second half opens "
+                  "page 2." + slug + turned,
+                  mistake="Nobody redacted it; the value runs past the margin and over the "
+                          "page break.",
+                  recovery="Enlarge the page box, read both pages' text through the font's "
+                           "Encoding /Differences, and join the halves.")
+            def split_past_edge(path: Path, layout: str = layout, rotate: int = rotate) -> None:
+                page_break_at_edge(path, layout, rotate)
+
+
+_break_cases()
+
+
 # ── Document-level live content ─────────────────────────────────────────
 
 @leak("document.raw-title", "metadata.plain",

@@ -263,6 +263,52 @@
     only.'
   cell: off-page.font.straddling
   pr: '#68'
+- case: page.raw-font-coded-split-at-break-past-edge
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer''s reading of the visible lines across the visible edge
+    (reading 4) feeds the hard page seam. A font-coded value split at a page break, whose
+    first half is page 1''s last line running past the media box''s right edge, is now read
+    whole from that line onto page 2''s first line and found hard; the visible reading held
+    only part of the line, and the font codes keep the Objects layer from reading it, so the
+    reference (eval-ref-0) exited 0. Stricter only.'
+  cell: match.page-break
+  pr: '#68'
+- case: page.raw-font-coded-split-at-break-past-edge-with-slug
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'PR #68: the Text layer''s reading of the visible lines across the visible edge
+    (reading 4) feeds the hard page seam. A font-coded value split at a page break, whose
+    first half is page 1''s last line running past the media box''s right edge, is now read
+    whole from that line onto page 2''s first line and found hard; the visible reading held
+    only part of the line, and the font codes keep the Objects layer from reading it, so the
+    reference (eval-ref-0) exited 0. Stricter only.'
+  cell: match.page-break
+  pr: '#68'
 - case: page.raw-font-coded-vertical-off-page-down
   old:
     exit: 2

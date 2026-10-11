@@ -17,6 +17,7 @@ out now that the code that needs it lives in the package.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pymupdf as fitz
@@ -34,14 +35,25 @@ MAX_LINE_TOLERANCE_PT: float = 12.0
 # (hard-finding eligible); the rest are reconstructions (manual review).
 TEXT_GENUINE_READINGS = 7
 # How many of them feed the hard page seam (a value running from one
-# page's last line onto the next page's first line). Not the readings
-# across the visible edge: their last line may be off-page text.
-TEXT_SEAM_READINGS = 4
+# page's last line onto the next page's first line): the visible
+# readings, the off-page one, and the visible lines read across the edge
+# (reading 4). Not readings 5-6, whose last column may be off-page text.
+TEXT_SEAM_READINGS = 5
+# Readings whose tail the manual-review net also joins with the next
+# page's horizontal visible reading (0): the off-page text (3) and the
+# visible lines read across the edge (4), so a value whose first half is
+# off the page and whose second half opens the next page is never silent.
+TEXT_TAILS_INTO_NEXT_PAGE = (3, 4)
+
+Glyph = tuple[float, float, float, float, str]
 
 
 def _reconstruct(
-    glyphs: list[tuple[float, float, float, float, str]],
+    glyphs: list[Glyph],
     cluster_axis: int,
+    *,
+    tolerance_from: list[Glyph] | None = None,
+    keep: Callable[[list[Glyph]], bool] | None = None,
 ) -> str:
     """Cluster glyphs into visual lines along one axis, sort along the other.
 
@@ -51,17 +63,20 @@ def _reconstruct(
     The clustering tolerance scales with the median glyph extent along the
     cluster axis, so 30pt form-box digits with 6pt baseline jitter still
     land in one line while 8pt fine print keeps its lines separate.
+    *tolerance_from* (default: *glyphs*) are the glyphs whose extents set
+    it; *keep*, if given, drops every line it returns False for.
     """
     if not glyphs:
         return ""
 
-    extents = sorted(g[3] if cluster_axis == 1 else g[2] for g in glyphs)
+    extents = sorted(g[3] if cluster_axis == 1 else g[2]
+                     for g in (tolerance_from or glyphs))
     median_extent = extents[len(extents) // 2]
     tolerance = max(MIN_LINE_TOLERANCE_PT, min(MAX_LINE_TOLERANCE_PT, 0.5 * median_extent))
     order_axis = 1 - cluster_axis
 
     ordered = sorted(glyphs, key=lambda g: g[cluster_axis])
-    clusters: list[list[tuple[float, float, float, float, str]]] = []
+    clusters: list[list[Glyph]] = []
     current = [ordered[0]]
     center = ordered[0][cluster_axis]
     for glyph in ordered[1:]:
@@ -81,14 +96,14 @@ def _reconstruct(
 
     lines: list[str] = []
     for cluster in clusters:
+        if keep is not None and not keep(cluster):
+            continue
         cluster.sort(key=lambda g: g[order_axis])
         lines.append(_join_cluster(cluster, order_axis))
     return "\n".join(lines)
 
 
-def _join_cluster(
-    cluster: list[tuple[float, float, float, float, str]], order_axis: int
-) -> str:
+def _join_cluster(cluster: list[Glyph], order_axis: int) -> str:
     """Join one visual line's glyphs, breaking it at column gaps.
 
     Whitespace glyphs are dropped during extraction, so without this a
@@ -138,8 +153,8 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
        vertically (a rotated matrix), read along its own direction;
     3. off-page — text placed outside the visible area (crop or media box),
        read horizontally on its own;
-    4. across the visible edge, horizontal — every horizontally written
-       glyph, visible or not, read as lines;
+    4. the visible lines across the edge, horizontal — every horizontal
+       line holding a visible glyph, read with its off-page glyphs too;
     5-6. across the visible edge, rotated — every vertically written
        glyph, visible or not, read along its own direction;
     7-8. every visible glyph read in vertical columns, top-to-bottom and
@@ -153,17 +168,26 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     break. Readings 4-6 read across the visible edge, so a value that
     starts on the page and runs off it, or vertically written text off
     the page (which reading 3, horizontal only, scrambles), is read
-    whole. They add to 0-3 and replace none of them. Across a page
-    break, readings 0-3 (TEXT_SEAM_READINGS) feed the hard seam, so 0-2
-    still give the visible text's true last line; 4-6 feed only the
-    caller's manual-review net, because their last line may be an
-    off-page slug, which does not run on into the next page. When a page
-    has no off-page glyph of a direction, the matching across-the-edge
-    reading repeats the visible one, so that net always joins the same
-    reading on adjacent pages. A visible line and an off-page slug on one
-    baseline meet in reading 4 only across a gap; one wider than one and
-    a half characters and three times the line's median gap is a column
-    break (_join_cluster), which no match crosses.
+    whole. Reading 4 leaves out the lines wholly off the page (reading 3
+    reads them), so its last and first lines are the visible text's,
+    carried across the edge: with 0-3 it feeds the hard page seam
+    (TEXT_SEAM_READINGS). Readings 5-6 keep columns wholly off the page,
+    since no other reading reads them vertically, so they feed only the
+    caller's manual-review net: their last column may be an off-page
+    slug, which does not run on into the next page. That net also joins
+    the tails of readings 3 and 4 with the next page's reading 0
+    (TEXT_TAILS_INTO_NEXT_PAGE), so a first half wholly off the page is
+    reviewed, never silent. When a page has no off-page glyph of a
+    direction, the matching across-the-edge reading repeats the visible
+    one, so a seam always joins the same reading on adjacent pages.
+    Across the edge, the line tolerance is the visible glyphs': a block
+    of large off-page text would otherwise widen it until two lines of
+    visible fine print merged into one. A visible line and an off-page
+    slug on one baseline meet in reading 4 only across a gap; one wider
+    than one and a half characters and three times the line's median gap
+    is a column break (_join_cluster), which no match crosses, though the
+    page's joined text still gives a manual-review warning if the two
+    happen to form a value.
 
     Readings 7-8 are reconstructions: a column of an ordinary horizontal
     page stacks one glyph from each of many lines (a ledger's last
@@ -171,7 +195,6 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     accident — yet they are also the only reading of a value written one
     character per line. Callers treat them as manual-review only.
     """
-    Glyph = tuple[float, float, float, float, str]
     flat: list[Glyph] = []
     rotated: list[Glyph] = []
     off_page: list[Glyph] = []      # in drawing order, both directions
@@ -222,18 +245,29 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     if not (flat or rotated or off_page):
         return []
 
-    def columns(glyphs: list[Glyph]) -> tuple[str, str]:
+    def columns(glyphs: list[Glyph],
+                tolerance_from: list[Glyph] | None = None) -> tuple[str, str]:
         if not glyphs:
             return "", ""
-        down = _reconstruct(glyphs, cluster_axis=0)
+        down = _reconstruct(glyphs, cluster_axis=0, tolerance_from=tolerance_from)
         return down, "\n".join(line[::-1] for line in down.split("\n"))
 
     horizontal = _reconstruct(flat, cluster_axis=1) if flat else ""
     rotated_down, rotated_up = columns(rotated)
     outside = _reconstruct(off_page, cluster_axis=1) if off_page else ""
-    across = _reconstruct(flat + off_flat, cluster_axis=1) if off_flat else horizontal
-    across_down, across_up = (columns(rotated + off_rotated) if off_rotated
-                              else (rotated_down, rotated_up))
+    # Across the edge, the line tolerance is the visible text's: a block of
+    # large off-page text must not widen it until two lines of visible
+    # fine print merge. Reading 4 keeps only the lines holding a visible
+    # glyph (reading 3 reads the rest), so its last and first lines are
+    # the visible text's, carried across the edge, and it can feed the
+    # hard page seam. (Glyph tuples are compared by identity: two equal
+    # glyphs are still two glyphs.)
+    visible_flat = {id(g) for g in flat}
+    across = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat,
+                           keep=lambda line: any(id(g) in visible_flat for g in line))
+              if off_flat else horizontal)
+    across_down, across_up = (columns(rotated + off_rotated, tolerance_from=rotated)
+                              if off_rotated else (rotated_down, rotated_up))
     all_down, all_up = columns(flat + rotated)
     return [horizontal, rotated_down, rotated_up, outside,
             across, across_down, across_up, all_down, all_up]

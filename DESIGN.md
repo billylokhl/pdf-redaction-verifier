@@ -312,9 +312,15 @@ a page never becomes that page's last line, and the same three
 directions are read again across the visible edge, visible and off-page
 glyphs together, so a value that runs off the page, or is written
 vertically off it, is read whole: seven genuine readings in all. The
-readings across the edge feed the page-break seam only at the
-manual-review tier, since their last line may be off-page text that
-does not run on into the next page. Two more readings stack *every*
+horizontal one keeps only the lines holding a visible glyph, so its last
+line is the visible text's last line read on past the edge, and it feeds
+the hard page seam; the vertical ones also read columns wholly off the
+page, whose last column may be a slug that does not run on into the next
+page, so they feed the seam only at the manual-review tier. Text wholly
+off the page joined with the next page's first line is manual review
+too. Across the edge, lines are told apart with the visible text's
+tolerance, so a large off-page banner cannot merge two lines of visible
+fine print. Two more readings stack *every*
 visible glyph into vertical columns. They are *reconstructions*: the only
 way to read a value written one character per line, but on an ordinary
 page a column stacks one glyph from each of many lines — a ledger's last

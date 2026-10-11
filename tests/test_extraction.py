@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 import caselib
+from caselib.families.raw_cells import BREAK_LAYOUTS, page_break_at_edge
 import pymupdf as fitz
 import pytest
 
@@ -18,7 +19,7 @@ from redaction_verifier.matching import SecretMatcher, normalize_string
 from redaction_verifier.model import ScanReport, Secret
 from redaction_verifier.rules import load_rules
 from redaction_verifier.views import (TEXT_GENUINE_READINGS, TEXT_SEAM_READINGS,
-                                      extract_visual_text)
+                                      TEXT_TAILS_INTO_NEXT_PAGE, extract_visual_text)
 
 from .conftest import HAS_OCR, SSN, report_lines, run_verify
 
@@ -214,9 +215,10 @@ def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
 def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
           hard_variants: int = TEXT_GENUINE_READINGS,
           seam_variants: int | None = TEXT_SEAM_READINGS,
+          tails_into_next: tuple[int, ...] = TEXT_TAILS_INTO_NEXT_PAGE,
           secrets=(("SSN", SSN),), patterns=(), fail_fast: bool = False) -> ScanReport:
-    """scan_page_layer as the CLI runs the Text layer (pass hard_variants
-    and seam_variants=None for OCR)."""
+    """scan_page_layer as the CLI runs the Text layer (pass hard_variants,
+    seam_variants=None and tails_into_next=() for OCR)."""
     report = ScanReport()
     matcher = SecretMatcher(
         [Secret(name, normalize_string(v)) for name, v in secrets])
@@ -225,7 +227,7 @@ def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
                                extractor=extractor or extract_visual_text,
                                note="visual text layer", patterns=patterns,
                                hard_variants=hard_variants, seam_variants=seam_variants,
-                               fail_fast=fail_fast)
+                               tails_into_next=tails_into_next, fail_fast=fail_fast)
     finally:
         doc.close()
     return report
@@ -475,9 +477,10 @@ NO_ACROSS_READINGS = 4    # readings 0-3, as before the readings across the edge
 class TestReadingsAcrossTheVisibleEdge:
     """Readings 4-6 read every glyph of one writing direction, visible or
     not, so a value running across the edge of the visible area, or
-    written vertically outside it, is read whole and found hard. They feed
-    no hard page seam, and a column gap keeps an off-page slug apart from
-    a visible line on its baseline."""
+    written vertically outside it, is read whole and found hard. Text
+    wholly off the page never makes a hard page seam, a column gap keeps
+    an off-page slug apart from a visible line on its baseline, and the
+    line tolerance across the edge is the visible text's."""
 
     def test_the_layouts_are_in_the_case_library(self) -> None:
         assert len(ACROSS_THE_EDGE) == 8, ACROSS_THE_EDGE
@@ -523,10 +526,11 @@ class TestReadingsAcrossTheVisibleEdge:
 
     def test_off_page_slug_at_a_page_break_is_not_a_hard_seam(self) -> None:
         # Clean control: a slug below page 1 ends with '123-45' and the
-        # unrelated first line of page 2 starts with '6789'. Reading 4's
-        # last line on page 1 is the slug, but readings 4-6 feed no hard
-        # seam: the slug does not run on into the next page. The join is
-        # still a page-break crossing, so the manual-review net reports it.
+        # unrelated first line of page 2 starts with '6789'. The slug is
+        # wholly off the page, so it is the last line of reading 3 only,
+        # and page 2 has no off-page text to seam it with. The join is
+        # still a page-break crossing (reading 3's tail into page 2's
+        # reading 0), so the manual-review net reports it.
         report = _scan(self._slug_then_unrelated_first_line())
         assert report.findings == []
         assert report.warnings == [crossing(2)]
@@ -571,6 +575,51 @@ class TestReadingsAcrossTheVisibleEdge:
         assert report.findings == []
 
 
+    @pytest.mark.parametrize("banner_at", [(640, 200), (50, 900)])   # right of, below the page
+    def test_large_off_page_text_does_not_merge_visible_fine_print(
+            self, banner_at, tmp_path) -> None:
+        # Clean control: two visible 6 pt lines 7 pt apart, their glyphs
+        # interleaved ('1 3 5 7 9' / '2 4 6 8'), beside four 30 pt lines
+        # off the page. Taken from every glyph of reading 4, the line
+        # tolerance would merge the two fine-print lines into '123-45-6789';
+        # it is the visible text's own.
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Clean schedule of parts", fontsize=10)
+        for i, char in enumerate(SSN):
+            page.insert_text((200 + i * 3.6, 400 if i % 2 == 0 else 407), char, fontsize=6)
+        for k in range(4):
+            page.insert_text((banner_at[0], banner_at[1] + 40 * k), "ARCHIVE COPY", fontsize=30)
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        readings = extract_visual_text(page)
+        assert readings[4] == readings[0], readings       # no visible line gains a glyph
+        report = _scan(doc, patterns=load_rules(rules).patterns)
+        assert report.findings == []
+
+
+class TestPageBreakAtTheVisibleEdge:
+    """A value split at a page break whose first half lies at the visible
+    edge: page 1's last line runs past the right edge of the media box
+    (hard: it is the visible text's last line, read across the edge) or
+    lies wholly past it (manual review: a slug beside or below a page is
+    not the start of the next page's text). Never silent, with or without
+    a slug opening page 2, at /Rotate 0 and 270."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", BREAK_LAYOUTS)
+    def test_never_silent(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "break.pdf"
+        page_break_at_edge(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        if layout.startswith("straddling"):
+            assert _where(report) == [seam(1, 2)]
+            assert report.warnings == []
+        else:
+            assert report.findings == []
+            assert report.warnings == [crossing(2)]
+
+
 class TestPageBreaksOcr:
     """The same rules on the OCR path: two genuine readings that can differ."""
 
@@ -581,7 +630,7 @@ class TestPageBreaksOcr:
             doc.new_page()
         by_page = dict(enumerate(readings))
         return _scan(doc, layer="OCR", hard_variants=2, seam_variants=None,
-                     extractor=lambda page: by_page[page.number])
+                     tails_into_next=(), extractor=lambda page: by_page[page.number])
 
     def test_seam_in_the_second_reading_only(self) -> None:
         report = self._ocr([["", "x\nSSN 123-45-"], ["", "6789 end"]])

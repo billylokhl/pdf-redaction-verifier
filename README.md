@@ -180,16 +180,20 @@ still there: invisible on screen, but selectable and copyable.
   manual-review warnings.
 - **Across pages:** each page break is checked on its own. A value running
   from the last line of one page onto the first line of the next, in a
-  genuine reading of the visible or the off-page text, is hard. Any other
+  genuine reading of the visible text (a visible line read on across the
+  visible edge included) or of the off-page text, is hard. Any other
   match crossing the break — needing other lines, across a blank or
-  unreadable page, or in a reading across the visible edge, whose last
-  line may be a slug below the page — is a manual-review warning at the
-  page it crosses into.
+  unreadable page, or from text wholly off the page (a slug below or
+  beside it) onto the next page's first line — is a manual-review warning
+  at the page it crosses into.
 - **Tier:** a known value is hard on one line of a genuine reading, or at
   a page seam as above. A pattern is hard only on one line of a genuine
-  reading, the readings across the visible edge included. A wide gap on
-  a line (a column break) keeps a visible line and an off-page slug on
-  its baseline apart. Everything that needs text joined is manual-review.
+  reading, the readings across the visible edge included. On a line read
+  across the edge, a wide gap (a column break) keeps a visible line and
+  an off-page slug on its baseline apart; a narrower gap does not. Either
+  way, if the two together read as a value, the page's joined text gives
+  a manual-review warning. Everything that needs text joined is
+  manual-review.
 
 ### 2. Objects — everything the file stores
 
