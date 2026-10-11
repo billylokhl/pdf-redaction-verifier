@@ -1328,7 +1328,7 @@ def _id_element_spans(buf: str, spans: list[tuple[int, int]]) -> frozenset[tuple
     i, n = 0, len(buf)
     while i < n:
         if i in ends:                          # a string token
-            if id_depth is not None and array_depth == id_depth:
+            if id_depth is not None and array_depth == id_depth and dict_depth == 1:
                 pending.append((i, ends[i]))
             expect_array, i = False, ends[i]
             continue
@@ -2377,6 +2377,24 @@ def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
     return bytes(out), comments
 
 
+def _section_trailer(raw: bytes, offset: int) -> int | None:
+    """Where the trailer dictionary of the classic section at *offset*
+    opens: the first ``trailer`` keyword after it that a dictionary
+    follows (one inside a comment, or followed by anything else, is
+    skipped). Each keyword is tried once, and keywords inside the gap
+    after a failed one (a comment) are skipped, so this is linear."""
+    pos = offset
+    while True:
+        trailer = raw.find(b"trailer", pos)
+        if trailer < 0:
+            return None
+        opening = _trailer_opening(raw, trailer)
+        if opening is not None:
+            return opening
+        gap = _GAP_RE.match(raw, trailer + len(b"trailer"))
+        pos = max(trailer + len(b"trailer"), gap.end() if gap else 0)
+
+
 def _trailer_opening(raw: bytes, trailer: int) -> int | None:
     """Where the dictionary after the ``trailer`` keyword at *trailer*
     opens, skipping whitespace and comments (a '<<' inside a comment is not
@@ -2398,11 +2416,11 @@ def _xref_section(
     if not 0 <= offset < len(raw):
         return None
     if raw.startswith(b"xref", offset):
-        trailer = raw.find(b"trailer", offset)
-        opening = _trailer_opening(raw, trailer) if trailer >= 0 else None
+        opening = _section_trailer(raw, offset)
         end = _dict_end(raw, opening) if opening is not None else None
         if opening is None or end is None:
             return None
+        trailer = raw.rfind(b"trailer", offset, opening)
         dictionary = raw[opening:end]
         # Subsection headers are the lines holding exactly two integers.
         objects: list[range] | None = [
@@ -2435,7 +2453,8 @@ def _xref_section(
     return end, (int(prev.group(1)) if prev else None), objects
 
 
-def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
+@functools.lru_cache(maxsize=1)
+def _earlier_revisions(raw: bytes) -> tuple[tuple[int, int, frozenset[int] | None], ...]:
     """(xref offset, section end, changed later) for every revision before
     the current one, oldest first. *changed later* is the set of object
     numbers some newer section redefines or frees — the only objects whose
@@ -2480,11 +2499,10 @@ def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
                 break
             for numbers in objects:
                 changed.update(numbers)
-        earlier.append((offset, end, changed))
-    return earlier
+        earlier.append((offset, end, None if changed is None else frozenset(changed)))
+    return tuple(earlier)
 
 
-_TRAILER_RE = re.compile(rb"trailer(?:[\s\x00]|%[^\r\n]*[\r\n])*<<")
 _XREFSTM_RE = re.compile(rb"/XRefStm\s+(\d+)")
 _OBJ_NUMBER_RE = re.compile(rb"\s*(\d+)\s+\d+\s+obj\b")
 
@@ -2502,7 +2520,7 @@ class _TrailerDict:
     revision: int | None         # the earlier-revision scan's number, if any
 
 
-def _revision_numbers(earlier: list[tuple[int, int, set[int] | None]]) -> dict[int, int]:
+def _revision_numbers(earlier: Sequence[tuple[int, int, frozenset[int] | None]]) -> dict[int, int]:
     """Section offset -> the number scan_earlier_revisions gives that
     revision (it keeps the original and the latest 49 past the cap)."""
     if len(earlier) > MAX_EARLIER_REVISIONS:
@@ -2542,7 +2560,7 @@ def _chain_trailers(raw: bytes) -> tuple[tuple[_TrailerDict, ...], tuple[int, ..
         storage = "superseded" if section in superseded else "live"
         revision = numbers.get(section)
         if raw.startswith(b"xref", offset):
-            opening = _trailer_opening(raw, raw.find(b"trailer", offset))
+            opening = _section_trailer(raw, offset)
             end = _dict_end(raw, opening) if opening is not None else None
             if opening is None or end is None:
                 unreadable.append(offset)
@@ -2625,10 +2643,16 @@ def scan_trailers(
     # repaired file) or one inside an uncompressed stream. Each match is
     # read once, and a match inside a dictionary already read is skipped,
     # so the search stays linear.
-    resume = 0
-    for match in _TRAILER_RE.finditer(raw):
-        opening = match.end() - 2
-        if opening < resume:
+    resume = pos = 0
+    while (keyword := raw.find(b"trailer", pos)) >= 0:
+        after = keyword + len(b"trailer")
+        gap = _GAP_RE.match(raw, after)
+        gap_end = gap.end() if gap else after
+        # A keyword inside the gap is comment text: skipping past the gap
+        # keeps this linear (a regex over the gap restarted at each one).
+        pos = max(after, gap_end)
+        opening = gap_end if raw.startswith(b"<<", gap_end) else None
+        if opening is None or opening < resume:
             continue
         if opening in chain:
             resume = chain[opening].end

@@ -97,6 +97,9 @@ class TestIdElements:
         assert verify._id_element_spans(buf, spans) == frozenset()
 
     @pytest.mark.parametrize("buf", [
+        "<< /ID [<aa> [(a)]] >>",               # an array inside /ID
+        "<< /ID [<aa> << /K (a) >>] >>",         # a dictionary inside /ID
+        "<< /A 1 >> << /ID [(a)] >>",           # a second dictionary after the first
         "<< /Priv << /ID [(a)] >> >>",          # a nested dictionary's key
         "<< /K [/ID [(a)]] >>",                 # inside an array
         "<< /Priv %/ID\n[(a)] >>",              # a key inside a comment
@@ -104,7 +107,8 @@ class TestIdElements:
     ])
     def test_only_the_dictionary_s_own_id_key(self, buf: str) -> None:
         spans, _ = verify._pdf_string_spans(buf)
-        assert verify._id_element_spans(buf, spans) == frozenset()
+        got = {buf[s:e] for s, e in verify._id_element_spans(buf, spans)}
+        assert "(a)" not in got
 
     def test_a_comment_between_key_and_array(self) -> None:
         buf = "<< /ID % generated\n[(a)] >>"
@@ -226,11 +230,54 @@ class TestWhichTrailers:
         assert _warned(report) == [("REVIEW_OBJECT_TEXT", "live")] * 2   # value and pattern
 
     def test_an_unreadable_chain_trailer_is_reported(self, tmp_path: Path) -> None:
-        raw = build(one_page(PAGE)).replace(b"trailer\n<<", b"trailer\n<< /X (", 1)
+        # The chain reaches this section, but no dictionary follows its
+        # keyword: the off-chain search cannot see it either, so only the
+        # chain's own warning keeps it from passing silently.
+        raw = build(one_page(PAGE)).replace(b"trailer\n<<", b"trailer x\n<<", 1)
         path = tmp_path / "t.pdf"
         path.write_bytes(raw)
-        codes = [w.code for w in _trailers(path).warnings]
-        assert "TRAILER_UNREADABLE" in codes
+        warned = [w for w in _trailers(path).warnings if w.code == "TRAILER_UNREADABLE"]
+        assert warned and all("cross-reference section at byte" in w for w in warned)
+
+    def test_a_comment_naming_trailer_before_the_real_one(self, tmp_path: Path) -> None:
+        # '% trailer note' ahead of the section's real keyword: the earlier
+        # revision must still be found, and its trailer read.
+        first = _with_trailer(b"/ID [<44556677> (SSN 123-45-6789)]")
+        first = first.replace(b"\ntrailer\n", b"\n% trailer note\ntrailer\n", 1)
+        updated = incremental_update(first, {4: stream(b"", text("Revised"))})
+        path = tmp_path / "t.pdf"
+        path.write_bytes(updated)
+        report = _trailers(path)
+        assert ("Target SSN", "superseded", "earlier revision 1, trailer") in _found(report)
+        assert [w.code for w in report.warnings] == []
+
+    @pytest.mark.parametrize("gap", [b"% note\n", b"\x00"])
+    def test_an_off_chain_trailer_after_a_comment_or_nul(self, tmp_path: Path, gap: bytes) -> None:
+        raw = build(one_page(PAGE)) + b"\ntrailer" + gap + b"<< /Note (SSN 123-45-6789) >>\n"
+        path = tmp_path / "t.pdf"
+        path.write_bytes(raw)
+        assert any(loc.startswith("trailer at byte") for _, _, loc in _found(_trailers(path)))
+
+    @pytest.mark.parametrize("unit", [b"%trailer\n", b"trailer%"])
+    def test_keywords_in_comments_stay_linear(self, tmp_path: Path, unit: bytes) -> None:
+        def cost(k: int) -> float:
+            path = tmp_path / f"c{k}.pdf"
+            path.write_bytes(build(one_page(PAGE)) + b"trailer\n" + unit * k)
+            start = time.monotonic()
+            _trailers(path)
+            return time.monotonic() - start
+        small, big = cost(2000), cost(40000)
+        assert big < max(small, 0.01) * 60, (small, big)
+
+    @pytest.mark.parametrize("note", [
+        b"(50% of SSN 123-45-6789)",          # '%' inside a string is not a comment
+        b"(a\\) 50% SSN 123-45-6789)",        # nor after an escaped parenthesis
+    ])
+    def test_percent_inside_a_string_is_not_a_comment(self, tmp_path: Path, note: bytes) -> None:
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(b"/Note " + note))
+        report = _trailers(path, NO_VALUES)
+        assert _found(report) == [("Any SSN", "live", "trailer")]
 
     def test_many_startxrefs_to_one_bad_section_stay_linear(self, tmp_path: Path) -> None:
         def cost(k: int) -> float:
