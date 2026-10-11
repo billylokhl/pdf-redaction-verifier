@@ -317,6 +317,31 @@ class TestWhichTrailers:
         assert verify._table_subsections(b"\n4 1\n0000000009 00000 n \n") == [range(4, 5)]
         assert verify._table_subsections(b"\n4 2\n0000000009 00000 n \n") is None
         assert verify._table_subsections(b"\n4 1\n0000000009 n 00000\n") is None
+        assert verify._table_subsections(b"4 1 0000000009 00000 N") == [range(4, 5)]
+        assert verify._table_subsections(b"+4 1 0000000009 00000 n") is None     # signed header
+        assert verify._table_subsections(b"4 1 0000000009 00000 n 7") is None   # odd token
+        assert verify._table_subsections(b"4 1 n 00000 n") is None
+        assert verify._table_subsections(b"4 1 0000000009 n n") is None
+        # A header number too long for an object number: unknown, not a crash.
+        assert verify._table_subsections(b"9" * 5000 + b"\n1 0000000009 00000 n") is None
+
+    def test_a_large_table_is_read_in_constant_memory(self) -> None:
+        # The table scan once held ~100 bytes of regex state per token:
+        # gigabytes for a large table. Measured in a fresh process.
+        code = (
+            "import resource, sys\n"
+            "sys.path.insert(0, '.')\n"
+            "import verify\n"
+            "raw = b'xref\\n0 1\\n' + b'n n n n n n n n n n ' * 1_000_000 + b'trailer<<>>'\n"
+            "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+            "assert verify._section_trailer(raw, 0) is not None\n"
+            "after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+            "scale = 1 if sys.platform == 'darwin' else 1024\n"
+            "print((after - before) * scale)\n"
+        )
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             cwd=Path(verify.__file__).parent, check=True)
+        assert int(out.stdout) < 100 * 1024 * 1024, out.stdout     # 20 MB of tokens
 
     def test_many_sections_stay_linear(self) -> None:
         def cost(k: int) -> float:

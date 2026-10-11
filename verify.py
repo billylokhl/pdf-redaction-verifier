@@ -2377,12 +2377,14 @@ def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
 
 
 # A classic cross-reference table after its ``xref`` keyword: integers,
-# n/f entry types, whitespace (NUL included) and comments, laid out in any
-# lines. One regex match, so a long table is read at C speed; nothing after
-# the star can fail, so it never backtracks.
-_TABLE_BODY_RE = re.compile(rb"(?:[\s\x00]+|%[^\r\n]*|[+-]?\d+|[nNfF](?![A-Za-z0-9]))*")
+# n/f entry types and whitespace (NUL included) — one flat character
+# class, so the regex engine keeps no per-token state (an alternation under
+# a star held ~100 bytes per token: gigabytes on a large table) — and
+# comments, skipped one by one.
+_TABLE_FLAT_RE = re.compile(rb"[\s\x00\d+\-nNfF]*")
 _TABLE_TOKEN_RE = re.compile(rb"%[^\r\n]*|([+-]?\d+|[nNfF])")
 _ENTRY_TYPES = frozenset({b"n", b"N", b"f", b"F"})
+_MAX_NUMBER_DIGITS = 10                  # object numbers, counts: 32-bit
 
 
 def _section_trailer(raw: bytes, offset: int) -> tuple[int, int] | None:
@@ -2391,13 +2393,19 @@ def _section_trailer(raw: bytes, offset: int) -> tuple[int, int] | None:
     (a comment naming it is part of the table), and where the dictionary
     after it opens. None when anything else follows the table, or no
     dictionary follows the keyword: the section's trailer cannot be
-    read. Reads only the section's own table."""
-    body = _TABLE_BODY_RE.match(raw, offset + len(b"xref"))
-    keyword = body.end() if body else offset + len(b"xref")
-    if not raw.startswith(b"trailer", keyword):
+    read. Reads only the section's own table, in linear time and constant
+    memory."""
+    pos = offset + len(b"xref")
+    while True:
+        pos = _TABLE_FLAT_RE.match(raw, pos).end()   # type: ignore[union-attr]
+        if not raw.startswith(b"%", pos):
+            break
+        eol = _EOL_RE.search(raw, pos)
+        pos = len(raw) if eol is None else eol.start()
+    if not raw.startswith(b"trailer", pos):
         return None
-    opening = _trailer_opening(raw, keyword)
-    return None if opening is None else (keyword, opening)
+    opening = _trailer_opening(raw, pos)
+    return None if opening is None else (pos, opening)
 
 
 def _table_subsections(table: bytes) -> list[range] | None:
@@ -2410,7 +2418,9 @@ def _table_subsections(table: bytes) -> list[range] | None:
     ranges: list[range] = []
     i, n = 0, len(tokens)
     while i < n:
-        if i + 1 >= n or not tokens[i].isdigit() or not tokens[i + 1].isdigit():
+        if (i + 1 >= n or not tokens[i].isdigit() or not tokens[i + 1].isdigit()
+                or len(tokens[i]) > _MAX_NUMBER_DIGITS
+                or len(tokens[i + 1]) > _MAX_NUMBER_DIGITS):
             return None
         first, count = int(tokens[i]), int(tokens[i + 1])
         i += 2
