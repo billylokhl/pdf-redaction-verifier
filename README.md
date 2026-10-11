@@ -39,6 +39,27 @@ certifying the document clean; the severity order is `0 < 2 < 1`, so a
 crash can only ever push the verdict *up* from a clean-so-far `2`, never
 down from a confirmed `1`.
 
+The report printed on the terminal says the same thing in plain words.
+A leak opens with **`[FAIL]  SECRETS ARE STILL IN THIS FILE`** and how
+many of your rules matched; each finding is one line —
+`✖ STILL PRESENT | rule | layer | where | location` — meaning that text
+matching that rule is still in the file, so a redaction did not remove
+it. The rule is named by its place in your rules file (`exact value #2
+(exact_values[1])`, `pattern #5 (patterns[4]) ****5916`, `built-in type:
+SSN`, or the `name` you gave it): an exact value's characters are never
+shown, a pattern's match at most its last four. *Where* says what kind of
+problem it is — `on a page` (the page's text or what it shows), `stored`
+(in the file's objects), `left over` (no page shows it but the file still
+stores it — see ORPHANED in the [Glossary](#glossary); `left over?` when
+that could not be confirmed), `earlier version`
+(an older save inside the file), `properties` (metadata), or the hidden
+part it is in (`comment or note`, `form field`, `link`, `attachment`,
+`script`, `layer name`). A "What this means" section after the findings
+explains, once each, every kind that occurred, with the usual fix. A run
+that found nothing but cannot certify (exit `2`) opens with
+**`[NOT CERTIFIED]`** and says why — including when the `--json` report
+could not be written; only exit `0` prints `[PASS]`.
+
 For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
 a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
@@ -238,9 +259,11 @@ flattened to images, text converted to vector outlines.
   itself unavailable and the run never exits `0`. A page where Vision
   raises an error is a `PAGE_FAILED` warning, so the run never exits `0`
   (`2`, or `1` if another layer found a leak). (Before the fix in the
-  CHANGELOG, this happened to every page on macOS 27.) A page Vision
-  reads without error but with text missing is not detected; see
-  DESIGN's known limitations.
+  CHANGELOG, this happened to every page on macOS 27.) A page where
+  Vision reports success without delivering both readings is also
+  `PAGE_FAILED`: a reading counts only once its request's completion
+  handler has run to the end. A page Vision reads without error but
+  with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
@@ -253,8 +276,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable` rewrites the objects
-  reachable from the file's root, decompressing their streams (image
+- **Method:** qpdf (`qpdf --qdf --object-streams=disable
+  --deterministic-id`) rewrites the objects reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
   are not run here — raw bytes produce too many coincidental matches.
@@ -262,7 +285,11 @@ damaged cross-reference table, and it decompresses attachment contents.
   **not** in qpdf's output; the Objects layer covers those.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
-  Binary warning on a clean document.
+  Binary warning on a clean document. qpdf also writes a trailer `/ID`
+  (32 hex digits) of its own; `--deterministic-id` derives it from the
+  file rather than the clock, so a short value made only of hex
+  characters (`4567`, `Abe`) can match it — but the same file always gets
+  the same answer with a given qpdf version.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction
@@ -447,8 +474,9 @@ evaluation harness — `eval/caselib`, `eval/scorecard`, `eval/gallery`,
 coverage on the Linux Python 3.12 job; the commands above run the same
 checks locally. Property tests use Hypothesis: with `CI` set (as on
 GitHub Actions) they run the derandomized `ci` profile, locally the `dev`
-profile explores fresh examples each run; `HYPOTHESIS_PROFILE=ci`
-reproduces CI exactly. Two suites go further and test robustness directly:
+profile explores fresh examples each run and replays any failure it
+found from `.hypothesis/` until it passes (each one root-caused, then
+pinned as an explicit test); `HYPOTHESIS_PROFILE=ci` reproduces CI exactly. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
@@ -474,7 +502,9 @@ certified → leak) must be listed under **Verdict changes** in
 The **scorecard** (`PYTHONPATH=eval:. python -m scorecard diff`) runs
 this same case library through the real CLI as a subprocess and diffs it
 against a pinned reference version, so every intended verdict change is
-reviewed explicitly in `eval/accepted_diffs.yaml` — see
+reviewed explicitly in `eval/accepted_diffs.yaml`. It runs one scan per
+usable core by default (fewer if RAM is short), so its per-file timeout
+measures the file rather than contention — see
 [eval/README.md](eval/README.md#the-scorecard-scorecard).
 
 The **gallery** (`PYTHONPATH=eval:. python -m gallery build --out DIR`) is
@@ -537,7 +567,7 @@ and what the file stores.
 | **OCR** | Optical character recognition: reading text from pixels. |
 | **Octal coercion** | YAML gotcha: an unquoted `00123456` is read as a base-8 number, changing its value. |
 | **Optional-content group** | A PDF "layer" that can be switched on or off; its name alone can leak data. |
-| **ORPHANED** | Label for a finding in an object nothing references — present in the file, never displayed. |
+| **ORPHANED** | Label for a finding in an object nothing references — present in the file, never displayed. The terminal report tags it `left over`. |
 | **Outlined vector text** | Letters converted into drawn shapes: looks like text, isn't text data. |
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |

@@ -104,6 +104,28 @@ def _make_class_rule(
     return PatternRule(name, re.compile(regex_src), validator)
 
 
+# Plain names for the redactor's mapped entity types, for the report.
+ENTITY_TYPE_DISPLAY: dict[str, str] = {
+    "ssn": "SSN",
+    "email": "email address",
+    "phone": "phone number",
+    "credit_card": "card number",
+}
+
+
+@dataclass(frozen=True)
+class RuleLabel:
+    """How the human report names a rule: *kind* is the rule's source
+    section ("exact_values", "patterns", "entity_types" in the redactor's
+    config; "value", "pattern", "class" in this tool's own format) and
+    *text* the plain label shown for it. Never holds any part of a value
+    or a pattern: the report must not reveal more than the masked samples
+    it already shows."""
+
+    kind: str
+    text: str
+
+
 @dataclass
 class RuleSet:
     """Rules to scan for, plus what the source config asked for that
@@ -118,6 +140,13 @@ class RuleSet:
     # Problems with the rules file that do not stop the scan but make a
     # clean result untrustworthy (surfaced as warnings -> exit 2).
     warnings: list[str] = field(default_factory=WarnList)
+    # The report's plain label for each rule, keyed by rule name (a side
+    # table: the rule types themselves are frozen and compared by value).
+    labels: dict[str, RuleLabel] = field(default_factory=dict)
+    # True when a redactor config left out entity_types, so the built-in
+    # types were checked by default rather than because the user listed
+    # them.
+    entity_types_by_default: bool = False
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
@@ -285,6 +314,8 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
                 "config.",
             )
         rules.secrets.append(_make_value_rule(f"exact_values[{i}]", spec))
+        rules.labels[f"exact_values[{i}]"] = RuleLabel(
+            "exact_values", f"exact value #{i + 1} (exact_values[{i}])")
 
     for i, value in enumerate(_yaml_section(raw, "patterns")):
         spec = literal("patterns", i, value)
@@ -308,6 +339,8 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
                 "than it removed; manual review recommended",
             )
         rules.patterns.append(rule)
+        rules.labels[f"patterns[{i}]"] = RuleLabel(
+            "patterns", f"pattern #{i + 1} (patterns[{i}])")
 
     # Upstream defaults entity_types to the FULL roster when the key is
     # absent, so treating absent as empty would certify clean a document
@@ -316,6 +349,7 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
         entity_types = _yaml_section(raw, "entity_types")
     else:
         entity_types = sorted(UPSTREAM_ENTITY_TYPES)
+        rules.entity_types_by_default = True
     for i, entity in enumerate(dict.fromkeys(str(e) for e in entity_types)):
         if entity not in UPSTREAM_ENTITY_TYPES:
             # Not echoed: a value pasted under the wrong key is a secret.
@@ -328,6 +362,8 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
             rules.unverifiable.append(entity)
             continue
         rules.patterns.append(_make_class_rule(f"entity_types:{entity}", mapped))
+        rules.labels[f"entity_types:{entity}"] = RuleLabel(
+            "entity_types", f"built-in type: {ENTITY_TYPE_DISPLAY.get(entity, entity)}")
         if entity in PARTIAL_ENTITY_COVERAGE:
             rules.warn(
                 "SCOPE_PARTIAL_ENTITY",
@@ -365,6 +401,7 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
 
     secrets: list[Secret] = []
     patterns: list[PatternRule] = []
+    labels: dict[str, RuleLabel] = {}
     seen_names: set[str] = set()
     for i, entry in enumerate(payload):
         if not isinstance(entry, dict) or "name" not in entry:
@@ -389,6 +426,7 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
                 f"got {type(spec).__name__}"
             )
 
+        labels[name] = RuleLabel(kind, repr(name))
         if kind == "value":
             secrets.append(_make_value_rule(name, spec, f"secret {name!r}"))
         elif kind == "pattern":
@@ -402,4 +440,4 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
 
     if not secrets and not patterns:
         raise VerifyError("the rules file contains no rules")
-    return RuleSet(secrets=secrets, patterns=patterns)
+    return RuleSet(secrets=secrets, patterns=patterns, labels=labels)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pymupdf as fitz
@@ -24,8 +25,11 @@ from redaction_verifier.matching import PatternRule, SecretMatcher, normalize_st
 from redaction_verifier.model import ScanReport, Secret
 
 from .conftest import (
+    EXIT_BANNER,
     REPO_ROOT,
     SSN,
+    report_banner,
+    report_layers,
     requires_exiftool,
     requires_full_env,
     requires_qpdf,
@@ -50,10 +54,11 @@ class TestProcessExit:
         assert "[*] Scanning" in result.stdout          # head intact
         # Assert the marker before indexing, so a regressed verdict fails
         # readably instead of raising ValueError from str.index.
-        assert "[PASS]" in result.stdout, result.stdout
+        banner = f"[{EXIT_BANNER[result.returncode]}]"
+        assert report_banner(result.stdout) == EXIT_BANNER[result.returncode], result.stdout
         # The closing rule is printed after the verdict, so finding it
         # later in the stream proves the tail was flushed, not truncated.
-        assert result.stdout.rindex("=" * 70) > result.stdout.index("[PASS]")
+        assert result.stdout.rindex("=" * 70) > result.stdout.index(banner)
 
     def test_exit_code_survives_for_each_verdict(
         self, clean_pdf, leaky_pdf, secrets_file, tmp_path
@@ -370,8 +375,8 @@ class TestBaselines:
         # backstop, which can only raise manual-review warnings.
         result = run_verify(leaky_pdf, secrets_file)
         assert result.returncode == 1
-        for layer in ("LAYER: Text", "LAYER: OCR", "LAYER: Metadata", "LAYER: Objects"):
-            assert layer in result.stdout, f"expected a Finding for {layer}"
+        for layer in ("Text", "OCR", "Metadata", "Objects"):
+            assert layer in report_layers(result.stdout), f"expected a Finding for {layer}"
 
     def test_clean_pdf_certified(self, clean_pdf, secrets_file) -> None:
         result = run_verify(clean_pdf, secrets_file)
@@ -435,7 +440,7 @@ class TestFalsePositives:
 
         result = run_verify(path2, secrets_file)
         assert result.returncode == 2
-        assert "[PASS]" in result.stdout
+        assert report_banner(result.stdout) == "NOT CERTIFIED"
         assert "manual review" in result.stdout
 
 
@@ -680,6 +685,9 @@ class TestSubprocessHardening:
             qpdf_argv, qpdf_env, qpdf_cwd = captured["/opt/tools/qpdf"]
             assert qpdf_argv[-2:] == [str(target.resolve()), "-"]
             assert qpdf_argv[-2].startswith("/")
+            # The output's trailer /ID must come from the file, not the
+            # clock (see test_qpdf_output_does_not_depend_on_the_clock).
+            assert "--deterministic-id" in qpdf_argv[1:-2]
 
             for env in (exif_env, qpdf_env):
                 assert set(env) <= {"PATH", "LANG", "LC_ALL"}
@@ -738,6 +746,41 @@ class TestSubprocessHardening:
             scratch.cleanup()
 
     @requires_qpdf
+    def test_qpdf_output_does_not_depend_on_the_clock(self, tmp_path) -> None:
+        """The Binary layer sweeps qpdf's output, so it must be a function
+        of the file alone. Without --deterministic-id qpdf writes a trailer
+        /ID seeded by the current second, and a short all-hex value rule
+        matched it about once in 2,000 runs (a clean file then exited 2,
+        at random). Two runs in different seconds must agree byte for
+        byte."""
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing sensitive here")
+        doc.save(pdf, no_new_id=True)   # no /ID of its own: qpdf writes both
+        doc.close()
+
+        def qpdf_output() -> bytes:
+            procs, scratch = verify.start_hidden_tools(pdf, ScanReport())
+            try:
+                for name, proc in procs.items():
+                    if name != "qpdf" and proc is not None:
+                        proc.kill()
+                        proc.communicate()
+                proc = procs["qpdf"]
+                assert proc is not None
+                out, _ = proc.communicate(timeout=60)
+                assert proc.returncode == 0
+                return out
+            finally:
+                scratch.cleanup()
+
+        first = qpdf_output()
+        second = int(time.time())
+        while int(time.time()) == second:
+            time.sleep(0.05)
+        assert qpdf_output() == first
+
+    @requires_qpdf
     def test_dash_prefixed_target_is_scanned_not_parsed_as_an_option(
         self, secrets_file, tmp_path
     ) -> None:
@@ -767,7 +810,7 @@ class TestSubprocessHardening:
         doc.close()
         result = run_verify(path, secrets_file)
         assert result.returncode == 1, result.stdout
-        assert "LAYER: Metadata" in result.stdout
+        assert "Metadata" in report_layers(result.stdout)
 
 
 # A config file with an OBSERVABLE effect when exiftool actually loads it:
@@ -914,7 +957,7 @@ class TestCleanupIsBestEffort:
         )
         out, err = capsys.readouterr()
         assert code == baseline
-        assert "[PASS]" in out or "[FAIL]" in out
+        assert report_banner(out) == EXIT_BANNER[code]
         assert "simulated cleanup failure" in err
 
     def test_scratch_cleanup_failure_never_overrides_the_verdict(
@@ -934,5 +977,5 @@ class TestCleanupIsBestEffort:
         )
         out, err = capsys.readouterr()
         assert code == baseline
-        assert "[PASS]" in out or "[FAIL]" in out
+        assert report_banner(out) == EXIT_BANNER[code]
         assert "simulated scratch cleanup failure" in err

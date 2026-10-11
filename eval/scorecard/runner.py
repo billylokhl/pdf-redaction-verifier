@@ -61,11 +61,13 @@ def run_cli(
     case_id: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    env: Mapping[str, str] | None = None,
 ) -> CliResult:
     """Run `python verify_path --target target --secrets ... --json ...`
     as a subprocess and return its outcome. *workdir* holds the scratch
     rules/report files, named after *case_id* so parallel runs (and runs
-    against different refs) never collide."""
+    against different refs) never collide. *env*, if given, replaces the
+    child's environment (default: inherit this process's)."""
     workdir.mkdir(parents=True, exist_ok=True)
     rules_path = workdir / f"{case_id}.rules.json"
     rules_path.write_text(json.dumps(list(rules)))
@@ -92,6 +94,7 @@ def run_cli(
             argv,
             capture_output=True,
             timeout=timeout,
+            env=dict(env) if env is not None else None,
             text=True,
         )
         returncode = proc.returncode
@@ -117,6 +120,17 @@ def run_cli(
         timed_out=timed_out,
         stderr_tail=stderr_tail,
     )
+
+
+def error_code(result: CliResult) -> str | None:
+    """The report's `error.code` for a run that produced a judgeable report
+    saying the scan could not be completed, else None."""
+    if result.crashed or result.report is None:
+        return None
+    if "error" in result.report and result.report["error"] is None:
+        return None  # the schema's "no error"; anything else (missing included) is one
+    error = result.report.get("error")
+    return str(error.get("code")) if isinstance(error, dict) else str(error)
 
 
 def current_python() -> str:

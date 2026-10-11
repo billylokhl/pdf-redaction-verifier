@@ -29,7 +29,7 @@ from typing import Mapping
 
 from .keys import effective_exit
 from .metrics import CaseMetricRow, Scorecard, compute_metrics
-from .runner import CliResult, current_python, run_cli
+from .runner import CliResult, current_python, error_code, run_cli
 
 REAL_CORPUS_DIR = Path(__file__).resolve().parent / "real_corpus"
 DEFAULT_MANIFEST = REAL_CORPUS_DIR / "manifest.json"
@@ -197,7 +197,7 @@ def scan_corpus(
     return runs
 
 
-def _row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
+def metric_row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
     report = run.result.report
     has_hard = bool(report and any(f.get("tier") == "hard" for f in report.get("findings", [])))
     actual_exit = None if run.result.crashed else effective_exit(report, have)  # type: ignore[arg-type]
@@ -210,6 +210,7 @@ def _row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
         crashed=run.result.crashed,
         timed_out=run.result.timed_out,
         elapsed=run.result.elapsed,
+        error_code=error_code(run.result),
     )
 
 
@@ -230,5 +231,5 @@ def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[
         ).append(run)
         strata.setdefault(f"producer:{run.entry.producer_family}", []).append(run)
     return {
-        name: compute_metrics([_row(r, have) for r in group]) for name, group in strata.items()
+        name: compute_metrics([metric_row(r, have) for r in group]) for name, group in strata.items()
     }

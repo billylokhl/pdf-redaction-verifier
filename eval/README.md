@@ -350,6 +350,13 @@ findings as (rule, tier, storage), review warnings as (rule, "review",
 storage, adjacency), other warnings as (code, layer, tool) — each as a
 *multiset*, so losing one of two otherwise-identical findings (the same
 rule in two separate orphaned streams) is a real, visible difference.
+The reference runs with a `qpdf` shim first on its `PATH` that adds
+`--deterministic-id` (`scorecard.differential.deterministic_qpdf_env`):
+`eval-ref-0` predates that flag, so its qpdf output carried a trailer
+`/ID` seeded by the current second, which the case library's `SHORT`
+rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
+that came and went with the clock. The shim removes only that input; the
+candidate passes the flag itself.
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -390,6 +397,18 @@ generator such as a 300-page scan) unless you name it explicitly — it
 would very likely time out at `--timeout` (default 60s) otherwise, which
 reads as a crash rather than a deliberate skip.
 
+`--timeout` is wall-clock, so it measures a file's own runtime only while
+each scan has a core and its memory to itself: `--workers` defaults to
+one per usable core (the CPU-affinity mask, where Python exposes it), and
+no more than one per GiB of physical RAM (a scan peaks at 0.3–0.5 GB).
+Neither a container's CPU quota nor its memory limit is seen: pass
+`--workers` there. Do not raise it past that — extra workers do not finish
+sooner, they only stretch each file's wall time toward the timeout. On
+the weekly macOS runner (3 cores, 7 GB, OCR on the CPU at about 1–2 s a
+page), 12 workers turned four-page cases that take about 9 s alone into
+45–68 s, sent the VM into swap, timed eight cases out, and made a pass
+over the library take 11.4 minutes instead of 6.7.
+
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
 key ("old"), the candidate's ("new"), a reason, the COVERAGE.md cell, and
@@ -429,6 +448,15 @@ exit 2), crashes, timeouts, and runtime p50/p95 — all against `expected`
 labels, so a documented `known_gap` still counts as a miss here (that is
 the point: it tracks how many gaps are left, not just whether they are
 labelled).
+
+A case with no verdict — the CLI crashed (bad exit code, no or invalid
+report, or a report whose exit disagrees with the process's), timed out,
+or reported an `error` saying it could not complete the scan — is either
+left out of every rate above or counted with a verdict it never earned. `metrics`
+therefore exits 1 when any case has no verdict (each listed on stderr),
+or when zero cases ran, and still prints the table and writes `--json`.
+A known gap or any other labelled miss does not fail it — those are what
+it measures.
 
 **Reference result caching**: `--cache-dir DIR` skips the reference
 worktree and subprocess runs entirely for any case whose result is
@@ -482,6 +510,17 @@ PYTHONPATH=eval:. python -m scorecard corpus check --root ~/corpus
 PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
     --secrets secrets.json --json /tmp/corpus.json
 ```
+
+`corpus run` exits 1 when a manifest file is missing, changed or vanishes
+mid-run (it scans only the rest), when any scan has no verdict as above,
+or when nothing was scanned — each would leave the clean-side rates
+describing something other than the manifest. The per-file lines name a
+file by its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
+manifest path, since that is what you fix. One exception (owner's
+decision): a file the CLI cannot open — `PDF_PASSWORD` (encrypted) or
+`PDF_UNREADABLE` (corrupt) — gets exit 2, which is the tool's real,
+fail-closed answer for that file, so it counts as a review verdict and is
+only noted on stderr. It still prints the table and writes `--json`.
 
 `corpus run` also writes a **plaintext copy of `--secrets`** into `--out`
 per file scanned (`<sha256-prefix>.rules.json` — the same scratch file the
@@ -541,7 +580,8 @@ PYTHONPATH=eval:. python -m scorecard inventory fuzz --count 2000 --seed 0 \
 What each part of the output means:
 
 - `gate`: `passed`, and the gating counts: `unflagged_disagree` (by
-  failed check in `unflagged_disagree_by_check`: `object_set`,
+  failed check in `unflagged_disagree_by_check`: `object_set` (qpdf
+  could not open a revision at all, "qpdf exit 2", counts here too),
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
@@ -633,7 +673,8 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`).
+  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
+  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

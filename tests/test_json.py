@@ -35,7 +35,7 @@ from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
 from redaction_verifier.rules import RuleSet
 from redaction_verifier.views import OCR_DPI, _OCR_IMPORTS_OK
 
-from .conftest import REPO_ROOT, SSN, requires_full_env, run_verify
+from .conftest import REPO_ROOT, SSN, report_banner, requires_full_env, run_verify
 
 # verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
 # live in redaction_verifier/ — the static checks below must still see
@@ -108,7 +108,7 @@ class TestVerdict:
         out = tmp_path / "r.json"
         result = run_verify(leaky_pdf, secrets_file, "--json", str(out))
         assert result.returncode == json.loads(out.read_text())["exit_code"] == 1
-        assert "[FAIL]" in result.stdout          # the human report is unchanged
+        assert report_banner(result.stdout) == "FAIL"  # the human report still prints
 
     def test_deterministic(self, leaky_pdf, secrets_file, tmp_path) -> None:
         _, first = _run(leaky_pdf, secrets_file, tmp_path)
@@ -158,7 +158,10 @@ class TestReportFile:
         target = tmp_path / "missing-dir" / "r.json"
         args = ["--secrets", str(secrets_file), "--json", str(target)]
         assert verify.main(["--target", str(clean_pdf), *args]) == 2
-        assert "NOT a certified clean result" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert report_banner(out) == "NOT CERTIFIED", out  # never a [PASS] first
+        if "ATTENTION" not in out:  # else the run is already 2 for its warnings
+            assert "JSON report could not be written" in " ".join(out.split())
         assert verify.main(["--target", str(leaky_pdf), *args]) == 1
 
     def _seed_pass(self, path: Path) -> None:
@@ -175,7 +178,7 @@ class TestReportFile:
         # consumer polling the file never reads the stale pass as this
         # run's verdict.
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         target = _pdf(tmp_path / "doc.pdf", "hello")
         code = verify.main(["--target", str(target), "--secrets", str(secrets_file),
                             "--json", str(out)])
@@ -209,7 +212,7 @@ class TestReportFile:
         # — the secret was still found, crash or no crash.
         out = tmp_path / "r.json"
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         code = verify.main(["--target", str(leaky_pdf), "--secrets", str(secrets_file),
                             "--json", str(out)])
         assert code == 1
@@ -224,7 +227,7 @@ class TestReportFile:
     ) -> None:
         out = tmp_path / "r.json"
         monkeypatch.setattr(verify, "print_report",
-                            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         code = verify.main(["--target", str(clean_pdf), "--secrets", str(secrets_file),
                             "--json", str(out)])
         assert code == 2
@@ -317,6 +320,99 @@ class TestOcrFailureFailsClosed:
         code, data = _run(pdf, rules, tmp_path)
         assert code == 2
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+
+    def test_vision_reporting_success_without_running_exits_2(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Vision says the requests succeeded but never ran them: both
+        # readings would be empty, so the page would pass as read with
+        # nothing on it. The bridge must refuse (PAGE_FAILED, exit 2).
+        from typing import Any
+
+        import Vision
+
+        from redaction_verifier.views import ocr
+
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
+
+        class _NeverRuns:
+            def performRequests_error_(self, requests: Any, error: Any) -> Any:
+                return True, None
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> Any:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> _NeverRuns:
+                return _NeverRuns()
+
+        class _Vision:
+            VNImageRequestHandler = _Handler
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(Vision, name)
+
+        monkeypatch.setattr(ocr, "Vision", _Vision())
+        code, data = _run(pdf, rules, tmp_path)
+        assert code == 2
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "never completed" in data["warnings"][0]["message"]
+
+    def test_a_handler_raising_on_a_vision_thread_exits_2(self, tmp_path) -> None:
+        # Real Vision runs the two completion handlers on its own worker
+        # threads; an exception escaping one there aborts the process
+        # (no verdict, no report). The handler must catch it so the page
+        # is PAGE_FAILED. Run in a child process: a regression kills the
+        # child, not this test run.
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        out = tmp_path / "report.json"
+        script = tmp_path / "raising_handler.py"
+        script.write_text(
+            "import sys\n"
+            "import Vision\n"
+            "import verify\n"
+            "from redaction_verifier.views import ocr\n"
+            "\n"
+            "class _Broken:\n"
+            "    def results(self):\n"
+            "        raise ValueError('results() failed')\n"
+            "\n"
+            "class _Alloc:\n"
+            "    def initWithCompletionHandler_(self, handler):\n"
+            "        return Vision.VNRecognizeTextRequest.alloc()"
+            ".initWithCompletionHandler_(lambda request, error: handler(_Broken(), error))\n"
+            "\n"
+            "class _Request:\n"
+            "    @staticmethod\n"
+            "    def alloc():\n"
+            "        return _Alloc()\n"
+            "\n"
+            "class _Vision:\n"
+            "    VNRecognizeTextRequest = _Request\n"
+            "    def __getattr__(self, name):\n"
+            "        return getattr(Vision, name)\n"
+            "\n"
+            "ocr.Vision = _Vision()\n"
+            # run_cli, like every child-process test: it leaves via
+            # os._exit, so Vision's native teardown cannot SIGKILL the
+            # child after the report is written (seen on CI's macOS VMs).
+            "verify.run_cli(sys.argv[1:])\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(script), "--target", str(pdf), "--secrets", str(rules),
+             "--json", str(out)],
+            capture_output=True, text=True, timeout=300, cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        assert result.returncode == 2, result.stderr[-2000:]
+        data = json.loads(out.read_text())
+        assert data["exit_code"] == 2 and data["verdict"] == VERDICTS[2]
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "completion handler raised" in data["warnings"][0]["message"]
 
 
 class TestEnvironmentField:
