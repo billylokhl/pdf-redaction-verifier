@@ -89,7 +89,6 @@ def _cells() -> dict[str, Cell]:
         # superseded — rewritten by an incremental update
         "superseded.plain": Cell(read, "plain strings an incremental update rewrote"),
         "superseded.plain.revision-cap": Cell(flagged, "more earlier revisions than are scanned"),
-        "superseded.plain.trailer": Cell(gap, "strings in an earlier revision's trailer dictionary"),
         "superseded.font": Cell(flagged, "font-coded text an incremental update rewrote"),
         "superseded.font.compact-syntax": Cell(flagged, "rewritten font-coded text without spaces"),
         "superseded.pixels": Cell(flagged, "an image an incremental update replaced"),
@@ -101,7 +100,7 @@ def _cells() -> dict[str, Cell]:
         "leftover-xmp.pixels": Cell(gap, "thumbnails in leftover XMP"),
         "thumbnail.pixels": Cell(gap, "page thumbnails (/Thumb)"),
         # trailer — the document trailer dictionary (not an object)
-        "trailer.plain": Cell(gap, "the trailer's /ID and other trailer strings"),
+        "trailer.plain": Cell(read, "the trailer's /ID and other trailer strings"),
         # attachments
         "attachment.plain": Cell(read, "an attachment that is text", tier="review"),
         "attachment.pixels": Cell(flagged, "an attached image"),
@@ -139,6 +138,8 @@ def _cells() -> dict[str, Cell]:
         # false alarms on clean documents
         "false-alarm.binary-value-collision": Cell(
             "false-alarm", "a value's digits occurring by chance in binary data"),
+        "false-alarm.generated-id-digits": Cell(
+            "false-alarm", "a digit run in a /ID written as hex text (manual review)"),
     }
 
 
@@ -184,5 +185,5 @@ ROW_STORAGE: dict[str, str] = {
     **{row: "live" for row in ("live", "off-page", "oc-off", "annot-appearance",
                                "unused-resource", "metadata", "attachment",
                                "embedded-other", "annot-fields", "javascript",
-                               "private-data")},
+                               "private-data", "trailer")},
 }

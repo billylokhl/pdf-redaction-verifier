@@ -157,11 +157,27 @@ the key test is still skipped if under 85% of its first 64 KB is
 printable. That catches marker-less binary, but it also skips a content
 stream carrying a large inline image — text and all (see Known
 limitations). Only stream *bodies* are skipped; every object's
-dictionary is scanned. A classic trailer dictionary is not an object, so
-its strings (the document `/ID`, any private key) are not read today, in
-the current trailer or an earlier revision's (COVERAGE.md's `trailer`
-row; K40 and K41 in docs/REDESIGN.md §8). A cross-reference stream's
-dictionary is an object and is read.
+dictionary is scanned.
+
+A classic trailer dictionary is not an object, so the object walk never
+reached it, and qpdf writes only the current trailer, with the file's
+first `/ID` element hex-encoded and the second replaced by its own: a
+secret in the document `/ID`, in a private trailer key, or in an earlier
+revision's trailer was certified clean (K40, K41 in docs/REDESIGN.md
+§8). Trailers are now read from the file's own bytes: every trailer the
+cross-reference chain reaches (the current one, `live`; an earlier
+revision's, `superseded`; a hybrid file's `/XRefStm` stream with its
+section), then any other `trailer << ... >>` in the file (`unreferenced`;
+one that never closes is a warning). A cross-reference stream's
+dictionary is an object the walk reads, but nothing references it, so it
+used to be called `ORPHANED`; the chain now names it as the trailer.
+Each trailer is matched like any object dictionary, with one exception,
+the owner's decision on its tier: a pattern-rule match in a `/ID`
+element made only of hex digits and dashes is manual review. The spec
+expects `/ID` to be generated, and a 32-character hex-text identifier
+holds a run some built-in class accepts about one time in thirteen;
+readable text there (`SSN 123-45-6789`) stays a hard finding, and a
+known value is a hard finding anywhere in a trailer.
 
 Only PDF string tokens are matched, decoded as latin-1 or as UTF-16 when
 they carry a byte-order mark. Text shown through a CID font with

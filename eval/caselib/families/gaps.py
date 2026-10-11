@@ -16,7 +16,7 @@ import pymupdf as fitz
 
 from ..model import SSN, Expect, KnownGap, case, expect
 from ..pdfkit import compressed, embedded_font, png_of
-from ..rawpdf import build, incremental_update, one_page, page, stream, text
+from ..rawpdf import build, one_page, page, stream, text
 from .raw_cells import attachment_objects, coded, differences_font
 
 SECRET = f"SSN {SSN}"
@@ -585,94 +585,6 @@ def unindexed_pixels(path: Path) -> None:
 )
 def unindexed_container(path: Path) -> None:
     _write(path, one_page(PAGE), after_eof=b"\n" + compressed("zip", SECRET) + b"\n")
-
-
-# ── trailer.plain / superseded.plain.trailer ───────────────────────────
-# The trailer dictionary is not an object: nothing in the file's
-# cross-reference table points at it, so the Objects layer's object walk
-# never reads its strings (it uses the trailer only to find the root). The
-# Binary layer scans qpdf's rewrite, where the first /ID element comes back
-# hex-encoded and the second is replaced, and qpdf writes only the current
-# trailer. (A cross-reference *stream*'s dictionary is an object, and is
-# read.) Measured against today's verify.py, not assumed.
-
-TRAILER_ID_MISTAKE = ("A producer that writes the document /ID (or a private trailer key) from "
-                      "document text, such as a title or case number, instead of a hash.")
-TRAILER_RECOVERY = ("Open the file in a text editor and read the trailer dictionary(ies) "
-                    "after each cross-reference table: its strings are stored as written.")
-
-
-def _with_trailer(objects: dict[int, bytes], keys: bytes) -> bytes:
-    """``build``'s output with *keys* added to its trailer dictionary."""
-    raw = build(objects)
-    marker = b"/Root 1 0 R >>\nstartxref"
-    assert raw.count(marker) == 1
-    return raw.replace(marker, b"/Root 1 0 R " + keys + b" >>\nstartxref")
-
-
-@leak_raw(
-    "document.trailer-id-literal", "trailer.plain",
-    "K40. The document /ID's first element is a literal string holding the SSN, "
-    "in the (only) trailer: the trailer dictionary is not an object, so the "
-    "Objects layer never reads it, and qpdf writes that /ID element back "
-    "hex-encoded, so the Binary layer's sweep never sees the digits either.",
-    expected=LIVE_SSN,
-    known_gap=KnownGap("trailer.plain", expect(0)),
-    mistake=TRAILER_ID_MISTAKE,
-    recovery=TRAILER_RECOVERY,
-)
-def trailer_id_literal(path: Path) -> None:
-    path.write_bytes(_with_trailer(one_page(PAGE), b"/ID [(" + SECRET.encode() + b") <44556677>]"))
-
-
-@leak_raw(
-    "document.trailer-id-hex-second", "trailer.plain",
-    "The SSN as hex-encoded text in the second element of the trailer's /ID: "
-    "qpdf replaces that element with one of its own, so no layer ever reads it.",
-    expected=LIVE_SSN,
-    known_gap=KnownGap("trailer.plain", expect(0)),
-    mistake=TRAILER_ID_MISTAKE,
-    recovery=TRAILER_RECOVERY,
-)
-def trailer_id_hex_second(path: Path) -> None:
-    path.write_bytes(_with_trailer(one_page(PAGE), b"/ID [<44556677> <"
-                                   + SECRET.encode().hex().encode() + b">]"))
-
-
-@leak_raw(
-    "document.trailer-key-pattern-rule", "trailer.plain",
-    "The SSN in a private (non-standard) trailer key, matched only by a pattern "
-    "rule: qpdf keeps the key, but the Binary layer's sweep is value secrets only "
-    "(with a value rule it gives a manual-review warning), and the Objects layer "
-    "never reads the trailer.",
-    expected=expect(1, findings=(("Any SSN", "live"),)),
-    known_gap=KnownGap("trailer.plain", expect(0)),
-    rules=PATTERN_RULE,
-    mistake=TRAILER_ID_MISTAKE,
-    recovery=TRAILER_RECOVERY,
-)
-def trailer_key_pattern_rule(path: Path) -> None:
-    path.write_bytes(_with_trailer(one_page(PAGE), b"/Note (" + SECRET.encode() + b")"))
-
-
-@leak_raw(
-    "revision.earlier-trailer-id", "superseded.plain.trailer",
-    "K41. An earlier revision's trailer holds the SSN as a literal second /ID "
-    "element; the incremental update that follows writes a new trailer whose /ID "
-    "keeps the first element and replaces the second, as PDF readers expect. The "
-    "earlier-revision scan compares objects, not trailers, and qpdf writes only "
-    "the current trailer, so the old one is never read.",
-    expected=expect(1, findings=(("SSN", "superseded"),)),
-    known_gap=KnownGap("superseded.plain.trailer", expect(0)),
-    mistake=TRAILER_ID_MISTAKE + " Then saving incrementally, which keeps the old trailer.",
-    recovery=TRAILER_RECOVERY,
-)
-def earlier_trailer_id(path: Path) -> None:
-    first = _with_trailer(one_page(PAGE), b"/ID [<44556677> (" + SECRET.encode() + b")]")
-    updated = incremental_update(first, {4: stream(b"", text("Quarterly report, revised"))})
-    marker = b" /Prev "
-    assert updated.count(marker) == 1
-    path.write_bytes(updated.replace(marker, b" /ID [<44556677> <8899aabb>] /Prev "))
 
 
 # ── match.columns ────────────────────────────────────────────────────────

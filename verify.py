@@ -68,6 +68,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import bisect
 import contextlib
 import functools
 import io
@@ -1297,11 +1298,49 @@ def _decode_pdf_string(token: str) -> str | None:
     return data.decode("latin-1")
 
 
+# The text shape of a generated document /ID written as text rather than
+# bytes: hex digits, with or without dashes (UUID form). About one such
+# 32-character string in thirteen holds a run the built-in pattern classes
+# accept, so a pattern match in one is manual review (owner decision D);
+# anything else in /ID is held to the hard tier like any PDF string.
+_GENERATED_ID_RE = re.compile(r"[0-9A-Fa-f-]+")
+_ID_ARRAY_RE = re.compile(r"/ID\s*\[")
+
+
+def _id_element_spans(buf: str, spans: list[tuple[int, int]]) -> frozenset[tuple[int, int]]:
+    """The string spans (from *spans*, sorted) that are elements of an
+    ``/ID [...]`` array in *buf*. Linear: each array is walked once, and an
+    ``/ID`` key inside a string or inside an array already walked is
+    skipped. A key this misses (a name spelled with ``#`` escapes) only
+    leaves its strings at the hard tier."""
+    starts = [start for start, _ in spans]
+    elements: set[tuple[int, int]] = set()
+    walked = 0
+    for match in _ID_ARRAY_RE.finditer(buf):
+        key = match.start()
+        if key < walked:
+            continue
+        i = bisect.bisect_right(starts, key) - 1
+        if i >= 0 and spans[i][1] > key:
+            continue                                # inside a string
+        pos, i = match.end(), i + 1
+        while True:
+            nxt = spans[i][0] if i < len(spans) else len(buf)
+            close = buf.find("]", pos, nxt)
+            if close >= 0 or i >= len(spans):
+                walked = close + 1 if close >= 0 else len(buf)
+                break
+            elements.add(spans[i])
+            pos, i = spans[i][1], i + 1
+    return frozenset(elements)
+
+
 def _feed_pdf_strings(
     buf: str,
     scanner: RollingScanner,
     hard_patterns: PatternScanner,
     soft_patterns: PatternScanner,
+    id_patterns: PatternScanner | None = None,
 ) -> bool:
     """Extract PDF string/hex literals from buf and feed all scanners.
 
@@ -1311,16 +1350,27 @@ def _feed_pdf_strings(
     literals — a single [-\\s.] separator slot cannot cross it — so a
     hard pattern finding can never be a fusion of unrelated tokens.
 
+    With *id_patterns*, buf is a trailer dictionary: an element of its
+    document /ID whose text is only hex digits and dashes (a generated
+    identifier written as text) feeds *id_patterns*, the manual-review
+    tier, instead of the two pattern scanners (owner decision, option D).
+    Known values are matched there like anywhere else.
+
     Returns True when the buffer ended inside an unterminated literal, so
     the caller can degrade the verdict rather than silently drop whatever
     followed the unclosed "(".
     """
     spans, truncated = _pdf_string_spans(buf)
+    id_elements = _id_element_spans(buf, spans) if id_patterns is not None else frozenset()
     for start, end in spans:
         decoded = _decode_pdf_string(buf[start:end])
         if decoded is None:
             continue
         scanner.feed(normalize_string(decoded))
+        if id_patterns is not None and (start, end) in id_elements \
+                and _GENERATED_ID_RE.fullmatch(decoded):
+            id_patterns.feed(decoded + "\n\n")
+            continue
         if _PDF_DATE_RE.match(decoded):
             # A PDF timestamp (D:YYYYMMDDHHmmSS±HH'mm'): machine-written,
             # never user data, and its digit run passes the card checksum
@@ -1813,6 +1863,8 @@ def scan_pdf_objects(
     matcher: SecretMatcher,
     patterns: Sequence[PatternRule],
     report: ScanReport,
+    *,
+    pdf_path: Path | None = None,
 ) -> None:
     """Decode PDF string literals object by object.
 
@@ -1830,6 +1882,12 @@ def scan_pdf_objects(
 
     Each object's source is read once into *sources*; reachability is
     computed from that same map, so no object is decompressed twice.
+
+    A cross-reference stream is an object nothing references, but its
+    dictionary is the trailer: given *pdf_path*, each one the chain
+    reaches is labelled as the (current or an earlier revision's) trailer
+    rather than ORPHANED, and its /ID read as a trailer's (see
+    _feed_pdf_strings). Without it the plain object label stays.
     """
     unreadable = 0
     try:
@@ -1854,6 +1912,13 @@ def scan_pdf_objects(
     except Exception:
         trailer = ""            # reachability unknown -> no ORPHANED claims
     reachable, trusted = _reachable_from_sources(trailer, sources, xref_count)
+    xref_streams: dict[int, _TrailerDict] = {}
+    if pdf_path is not None:
+        try:
+            raw = Path(pdf_path).read_bytes()
+        except OSError:
+            raw = b""               # the trailer scan reports the read failure
+        xref_streams = {t.number: t for t in _chain_trailers(raw) if t.number is not None}
 
     tally = _ObjectTally(unreadable=unreadable)
     for xref, source in sources.items():
@@ -1867,17 +1932,28 @@ def scan_pdf_objects(
         orphaned = leftover and trusted
         where = f"{'ORPHANED object' if orphaned else 'object'} {xref}"
         storage = "orphaned" if orphaned else "unreferenced" if leftover else "live"
+        revision = None
+        chained = xref_streams.get(xref)
+        is_trailer = chained is not None and _stream_key(doc, xref, "Type")[1] == "/XRef"
+        if is_trailer:
+            assert chained is not None
+            storage, revision = chained.storage, chained.revision
+            where = (f"cross-reference stream (trailer), object {xref}" if storage == "live"
+                     else f"earlier revision {revision}, cross-reference stream (trailer), "
+                          f"object {xref}" if revision is not None
+                     else f"earlier revision's cross-reference stream (trailer), object {xref}")
         _scan_object(
             doc,
             xref,
             source,
             where,
             leftover=leftover,
-            origin={"storage": storage, "object": xref},
+            origin={"storage": storage, "object": xref, "revision": revision},
             matcher=matcher,
             patterns=patterns,
             report=report,
             tally=tally,
+            trailer=is_trailer,
         )
     # With an untrusted walk the leftovers were not reached, but cannot be
     # called ORPHANED — the same restraint the per-object label shows.
@@ -2039,6 +2115,7 @@ def _scan_object(
     patterns: Sequence[PatternRule],
     report: ScanReport,
     tally: _ObjectTally,
+    trailer: bool = False,
 ) -> None:
     """Scan one object's dictionary and (text) stream body.
 
@@ -2047,7 +2124,8 @@ def _scan_object(
     storage class, object and revision) is attached to every finding and
     warning this object produces. For leftovers
     the tool also reads attachment and XMP bodies as raw text, and flags
-    text it cannot decode, since no other layer will see them.
+    text it cannot decode, since no other layer will see them. *trailer*
+    marks a cross-reference stream, whose dictionary is a trailer.
     """
     texts = [source]
     try:
@@ -2106,13 +2184,34 @@ def _scan_object(
                     origin=origin,
                 )
 
+    _match_texts(texts, where, origin=origin, trailer=trailer, matcher=matcher,
+                 patterns=patterns, report=report, tally=tally)
+
+
+def _match_texts(
+    texts: Sequence[str],
+    where: str,
+    *,
+    origin: dict[str, Any],
+    trailer: bool,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+    tally: _ObjectTally,
+) -> None:
+    """Match the PDF strings in *texts* (one object's dictionary, then its
+    text body) and report under *where*. *trailer* marks texts[0] as a
+    trailer dictionary, whose generated-looking /ID elements are matched by
+    pattern rules at the manual-review tier only."""
     literals = RollingScanner(matcher)
     hard_patterns = PatternScanner(patterns)
     soft_patterns = PatternScanner(patterns, collapse_separators=True)
+    id_patterns = PatternScanner(patterns) if trailer else None
     truncated = False
-    for text in texts:
+    for i, text in enumerate(texts):
         # Fence so one object's tail cannot fuse with the next.
-        if _feed_pdf_strings(text + "\n\n", literals, hard_patterns, soft_patterns):
+        if _feed_pdf_strings(text + "\n\n", literals, hard_patterns, soft_patterns,
+                             id_patterns if i == 0 else None):
             truncated = True
     hard_patterns.flush()
     soft_patterns.flush()
@@ -2123,8 +2222,24 @@ def _scan_object(
         report.record("Objects", secret.name, where, **origin)
     for name, sample in hard_patterns.hits.items():
         report.record("Objects", name, where, sample, **origin)
+    if id_patterns is not None:
+        id_patterns.flush()
+        for name, sample in id_patterns.hits.items():
+            if name in hard_patterns.hits:
+                continue
+            report.warn(
+                "REVIEW_OBJECT_TEXT",
+                "Objects",
+                f"Objects: {where}: the document /ID (a generated identifier, "
+                f"written as hex digits) contains a sequence matching pattern rule "
+                f"{name!r} (sample {mask(sample)}) — such identifiers hold digit runs "
+                "by coincidence; manual review recommended",
+                rule=name,
+                adjacency="NOISY_SOURCE",
+                **origin,
+            )
     for name, sample in soft_patterns.hits.items():
-        if name in hard_patterns.hits:
+        if name in hard_patterns.hits or (id_patterns is not None and name in id_patterns.hits):
             continue
         report.warn(
             "REVIEW_ADJACENT_LITERALS",
@@ -2274,6 +2389,151 @@ def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
                 changed.update(numbers)
         earlier.append((offset, end, changed))
     return earlier
+
+
+_TRAILER_RE = re.compile(rb"trailer\s*<<")
+_XREFSTM_RE = re.compile(rb"/XRefStm\s+(\d+)")
+_OBJ_NUMBER_RE = re.compile(rb"\s*(\d+)\s+\d+\s+obj\b")
+
+
+@dataclass(frozen=True)
+class _TrailerDict:
+    """One trailer dictionary on the file's cross-reference chain: a
+    classic ``trailer << ... >>`` (*number* None) or a cross-reference
+    stream's dictionary (*number* is that stream's object number)."""
+
+    start: int
+    end: int
+    number: int | None
+    storage: str                 # live, or superseded for an earlier revision
+    revision: int | None         # the earlier-revision scan's number, if any
+
+
+def _revision_numbers(earlier: list[tuple[int, int, set[int] | None]]) -> dict[int, int]:
+    """Section offset -> the number scan_earlier_revisions gives that
+    revision (it keeps the original and the latest 49 past the cap)."""
+    if len(earlier) > MAX_EARLIER_REVISIONS:
+        earlier = earlier[:1] + earlier[-(MAX_EARLIER_REVISIONS - 1):]
+    return {offset: number for number, (offset, _, _) in enumerate(earlier, start=1)}
+
+
+def _chain_trailers(raw: bytes) -> list[_TrailerDict]:
+    """Every trailer dictionary the cross-reference chain reaches — the
+    same walk as _earlier_revisions, plus each classic section's
+    ``/XRefStm`` (a hybrid file's stream half). A section an earlier
+    revision owns is superseded; every other one (the current section, a
+    linearized file's first-page section) is live."""
+    earlier = _earlier_revisions(raw)
+    superseded = {offset for offset, _, _ in earlier}
+    numbers = _revision_numbers(earlier)
+    starts = [int(m.group(1)) for m in _STARTXREF_RE.finditer(raw)]
+    found: dict[int, _TrailerDict] = {}
+    pending = [(offset, None) for offset in starts]
+    while pending:
+        offset, owner = pending.pop()
+        section_read = None if offset in found else _xref_section(raw, offset)
+        if section_read is None:
+            continue
+        _, prev, _ = section_read
+        section = offset if owner is None else owner
+        storage = "superseded" if section in superseded else "live"
+        revision = numbers.get(section)
+        if raw.startswith(b"xref", offset):
+            opening = raw.find(b"<<", raw.find(b"trailer", offset))
+            end = _dict_end(raw, opening)
+            if end is None:
+                continue
+            found[offset] = _TrailerDict(opening, end, None, storage, revision)
+            stm = _XREFSTM_RE.search(raw, opening, end)
+            if stm:
+                pending.append((int(stm.group(1)), section))
+        else:
+            header = _OBJ_NUMBER_RE.match(raw, offset)
+            opening = raw.find(b"<<", offset)
+            end = _dict_end(raw, opening)
+            if header is None or end is None:
+                continue
+            found[offset] = _TrailerDict(opening, end, int(header.group(1)), storage, revision)
+        if prev is not None:
+            pending.append((prev, None))
+    return sorted(found.values(), key=lambda t: t.start)
+
+
+def scan_trailers(
+    pdf_path: Path,
+    doc: fitz.Document,
+    matcher: SecretMatcher,
+    patterns: Sequence[PatternRule],
+    report: ScanReport,
+) -> None:
+    """Match the strings in every classic trailer dictionary.
+
+    A trailer is not an object, so the object walk never reads it, and
+    qpdf rewrites only the current one, with the document /ID re-encoded
+    (first element) or replaced (second). Each is read from the file's
+    bytes: the trailers the cross-reference chain reaches (current or an
+    earlier revision's), then any other ``trailer << ... >>`` in the file.
+    Cross-reference *stream* dictionaries are objects; scan_pdf_objects
+    reads them. Every string is matched at the hard tier, except that a
+    pattern match in a /ID element written as plain hex digits is manual
+    review (see _feed_pdf_strings).
+    """
+    try:
+        raw = Path(pdf_path).read_bytes()
+    except OSError as exc:
+        report.warn(
+            "TRAILER_UNREADABLE",
+            "Objects",
+            f"Objects: file unreadable for the trailer scan ({exc}) — trailers NOT scanned",
+        )
+        return
+    tally = _ObjectTally()
+
+    def scan(start: int, end: int, where: str, origin: dict[str, Any]) -> None:
+        _match_texts([raw[start:end].decode("latin-1")], where, origin=origin, trailer=True,
+                     matcher=matcher, patterns=patterns, report=report, tally=tally)
+
+    chain = {t.start: t for t in _chain_trailers(raw) if t.number is None}
+    for t in chain.values():
+        if t.storage == "live":
+            where = "trailer"
+        elif t.revision is not None:
+            where = f"earlier revision {t.revision}, trailer"
+        else:
+            where = f"earlier revision's trailer at byte {t.start}"
+        scan(t.start, t.end, where, {"storage": t.storage, "revision": t.revision})
+    # Any other trailer: one the chain does not reach (a broken /Prev, a
+    # repaired file) or one inside an uncompressed stream. Each match is
+    # read once, and a match inside a dictionary already read is skipped,
+    # so the search stays linear.
+    resume = 0
+    for match in _TRAILER_RE.finditer(raw):
+        opening = match.end() - 2
+        if opening < resume:
+            continue
+        if opening in chain:
+            resume = chain[opening].end
+            continue
+        end = _dict_end(raw, opening)
+        if end is None:
+            report.warn(
+                "TRAILER_UNREADABLE",
+                "Objects",
+                f"Objects: a trailer dictionary at byte {opening} never closes — it and "
+                "anything after it NOT scanned as a trailer; manual review recommended",
+                storage="unreferenced",
+            )
+            break
+        scan(opening, end, f"trailer at byte {opening} (not on the cross-reference chain)",
+             {"storage": "unreferenced"})
+        resume = end
+    if tally.truncated:
+        report.warn(
+            "UNTERMINATED_STRING",
+            "Objects",
+            f"Objects: {tally.truncated} trailer dictionary(ies) held an unterminated "
+            "string literal — content after it was NOT scanned; manual review recommended",
+        )
 
 
 def scan_earlier_revisions(
@@ -2737,7 +2997,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for layer, scan in (
                     ("Metadata", scan_xmp_metadata),
                     ("Hidden", scan_hidden_objects),
-                    ("Objects", scan_pdf_objects),
+                    ("Objects", functools.partial(scan_pdf_objects, pdf_path=pdf_path)),
+                    ("Objects", functools.partial(scan_trailers, pdf_path)),
                     ("Objects", functools.partial(scan_earlier_revisions, pdf_path)),
                 ):
                     try:
