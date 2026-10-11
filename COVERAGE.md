@@ -108,7 +108,10 @@ the hard tier, except a pattern-rule match in a `/ID` element made only
 of hex digits and dashes — a generated identifier written as text, which
 holds digit runs by coincidence (about one 32-character string in
 thirteen) — which is manual review. A known value is a hard finding
-anywhere in the trailer.
+anywhere in the trailer. Only the dictionary's own top-level `/ID` key
+counts as `/ID`. Comments inside a trailer are skipped when reading its
+strings and read themselves as raw text, at manual review; a trailer the
+chain reaches but this tool cannot parse is a warning (exit `2`).
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the

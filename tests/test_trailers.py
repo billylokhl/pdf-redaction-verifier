@@ -91,17 +91,36 @@ class TestIdElements:
         spans, _ = verify._pdf_string_spans(buf)
         assert verify._id_element_spans(buf, spans) == frozenset()
 
-    def test_an_unclosed_array_takes_the_rest(self) -> None:
-        buf = "/ID [(a) (b)"
+    def test_an_unclosed_array_yields_nothing(self) -> None:
+        buf = "<< /ID [(a) (b) >>"
         spans, _ = verify._pdf_string_spans(buf)
-        assert len(verify._id_element_spans(buf, spans)) == 2
+        assert verify._id_element_spans(buf, spans) == frozenset()
 
-    def test_linear_on_nested_keys(self) -> None:
-        buf = "/ID [" * 40000 + "(a)" + "]" * 40000
+    @pytest.mark.parametrize("buf", [
+        "<< /Priv << /ID [(a)] >> >>",          # a nested dictionary's key
+        "<< /K [/ID [(a)]] >>",                 # inside an array
+        "<< /Priv %/ID\n[(a)] >>",              # a key inside a comment
+        "<< /I#44 [(a)] >>",                    # escaped spelling: stays hard
+    ])
+    def test_only_the_dictionary_s_own_id_key(self, buf: str) -> None:
         spans, _ = verify._pdf_string_spans(buf)
-        start = time.monotonic()
-        verify._id_element_spans(buf, spans)
-        assert time.monotonic() - start < 2
+        assert verify._id_element_spans(buf, spans) == frozenset()
+
+    def test_a_comment_between_key_and_array(self) -> None:
+        buf = "<< /ID % generated\n[(a)] >>"
+        spans, _ = verify._pdf_string_spans(buf)
+        assert {buf[s:e] for s, e in verify._id_element_spans(buf, spans)} == {"(a)"}
+
+    @pytest.mark.parametrize("unit", ["<< /ID [", "% c\n", "<< /X [/ID [(a)] "])
+    def test_linear(self, unit: str) -> None:
+        def cost(k: int) -> float:
+            buf = unit * k
+            spans, _ = verify._pdf_string_spans(buf)
+            start = time.monotonic()
+            verify._id_element_spans(buf, spans)
+            return time.monotonic() - start
+        small, big = cost(20000), cost(200000)
+        assert big < max(small, 0.01) * 30, (small, big)
 
 
 class TestTierByShape:
@@ -139,6 +158,24 @@ class TestTierByShape:
         assert _found(report) == [("Any SSN", "live", "trailer")]
         assert report.warnings == []
 
+    @pytest.mark.parametrize("keys", [
+        b"/Priv << /ID [(123-45-6789)] >>",      # not the trailer's own /ID
+        b"/Priv %/ID\n[(123-45-6789)]",
+    ])
+    def test_a_nested_or_commented_id_key_is_not_downgraded(self, tmp_path: Path,
+                                                             keys: bytes) -> None:
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(keys))
+        report = _trailers(path, NO_VALUES)
+        assert _found(report) == [("Any SSN", "live", "trailer")]
+
+    def test_a_value_split_across_id_elements_is_reviewed(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(b"/ID [(123-45-) (6789)]"))
+        report = _trailers(path, NO_VALUES)
+        assert report.findings == []
+        assert _warned(report) == [("REVIEW_ADJACENT_LITERALS", "live")]
+
     def test_a_clean_hex_id_is_quiet(self, tmp_path: Path) -> None:
         path = tmp_path / "t.pdf"
         path.write_bytes(_with_trailer(b"/ID [<0a1b2c3d4e5f60718293a4b5c6d7e8f9> "
@@ -167,6 +204,62 @@ class TestWhichTrailers:
         assert _found(report) == [
             (rule, "unreferenced", f"trailer at byte {pos} (not on the cross-reference chain)")
             for rule in ("Any SSN", "Target SSN")]
+
+    @pytest.mark.parametrize("keys", [
+        b"% >>\n/ID [(SSN 123-45-6789) <00112233>]",        # '>>' inside a comment
+        b"% note (\n/ID [(SSN 123-45-6789) <00112233>]",    # '(' inside a comment
+    ])
+    def test_comments_do_not_cut_a_trailer_short(self, tmp_path: Path, keys: bytes) -> None:
+        raw = _with_trailer(keys).replace(b"trailer\n<<", b"trailer % x <<\n<<", 1)
+        path = tmp_path / "t.pdf"
+        path.write_bytes(raw)
+        doc = fitz.open(path)
+        assert not doc.is_repaired and "SSN" in doc.xref_get_key(-1, "ID")[1]
+        doc.close()
+        assert ("Target SSN", "live", "trailer") in _found(_trailers(path))
+
+    def test_a_comment_in_a_trailer_is_read_for_review(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(b"% SSN 123-45-6789\n"))
+        report = _trailers(path)
+        assert report.findings == []
+        assert _warned(report) == [("REVIEW_OBJECT_TEXT", "live")] * 2   # value and pattern
+
+    def test_an_unreadable_chain_trailer_is_reported(self, tmp_path: Path) -> None:
+        raw = build(one_page(PAGE)).replace(b"trailer\n<<", b"trailer\n<< /X (", 1)
+        path = tmp_path / "t.pdf"
+        path.write_bytes(raw)
+        codes = [w.code for w in _trailers(path).warnings]
+        assert "TRAILER_UNREADABLE" in codes
+
+    def test_many_startxrefs_to_one_bad_section_stay_linear(self, tmp_path: Path) -> None:
+        def cost(k: int) -> float:
+            path = tmp_path / f"t{k}.pdf"
+            good = build(one_page(PAGE))
+            bad = len(good)
+            path.write_bytes(good + b"xref\ntrailer\n<< (" + b"startxref %d\n" % bad * k)
+            start = time.monotonic()
+            _trailers(path)
+            return time.monotonic() - start
+        small, big = cost(1000), cost(10000)
+        assert big < max(small, 0.01) * 30, (small, big)
+
+    def test_an_unterminated_string_in_a_trailer_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = build(one_page(PAGE)) + b"<< /X (abc >>"
+        path = tmp_path / "t.pdf"
+        path.write_bytes(raw)
+        start = raw.rindex(b"<< /X")
+        monkeypatch.setattr(verify, "_chain_trailers", lambda _raw: (
+            (verify._TrailerDict(start, len(raw), None, "live", None),), ()))
+        assert "UNTERMINATED_STRING" in [w.code for w in _trailers(path).warnings]
+
+    def test_revision_numbers_follow_the_earlier_revision_cap(self) -> None:
+        earlier = [(i, i + 1, None) for i in range(60)]
+        numbers = verify._revision_numbers(earlier)
+        assert numbers[0] == 1 and numbers[11] == 2 and numbers[59] == 50
+        assert 5 not in numbers
 
     def test_an_unclosed_trailer_is_reported(self, tmp_path: Path) -> None:
         path = tmp_path / "t.pdf"
@@ -263,6 +356,28 @@ class TestCrossReferenceStreams:
         assert _found(_objects(path)) == [
             (rule, "superseded", "earlier revision 1, cross-reference stream (trailer), object 8")
             for rule in ("Any SSN", "Target SSN")]
+
+    def test_a_reused_xref_stream_number_is_an_ordinary_object(self, tmp_path: Path) -> None:
+        # The chain says object 8 was a cross-reference stream; a later
+        # revision redefines 8 as an ordinary dictionary. MuPDF's object 8
+        # is that dictionary: it must keep the hard tier, not the /ID one.
+        import struct
+        base = self._xref_stream_file(b"")
+        prev = int(re.findall(rb"startxref\s+(\d+)", base)[-1])
+        out = bytearray(base)
+        off8 = len(out)
+        out += b"8 0 obj\n<< /ID [(123-45-6789)] >>\nendobj\n"
+        xoff = len(out)
+        entry = struct.Struct(">BIH")
+        entries = entry.pack(1, off8, 0) + entry.pack(1, xoff, 0)
+        dictionary = b"/Type /XRef /W [1 4 2] /Size 10 /Root 1 0 R /Index [8 2] /Prev %d" % prev
+        out += b"9 0 obj\n" + stream(dictionary, entries) + b"\nendobj\n"
+        out += b"startxref\n%d\n%%%%EOF\n" % xoff
+        path = tmp_path / "t.pdf"
+        path.write_bytes(bytes(out))
+        report = _objects(path, NO_VALUES)
+        assert [f.location for f in report.findings] == ["ORPHANED object 8"]
+        assert [w.code for w in report.warnings] == []
 
     def test_a_hybrid_file_s_stream_half_is_the_trailer(self, tmp_path: Path) -> None:
         # A classic table whose trailer names a cross-reference stream

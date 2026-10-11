@@ -168,12 +168,17 @@ revision's trailer was certified clean (K40, K41 in docs/REDESIGN.md
 cross-reference chain reaches (the current one, `live`; an earlier
 revision's, `superseded`; a hybrid file's `/XRefStm` stream with its
 section), then any other `trailer << ... >>` in the file (`unreferenced`;
-one that never closes is a warning). A cross-reference stream's
+one that never closes is a warning, and so is a chain section whose
+trailer cannot be read). Comments are skipped when reading a trailer's
+strings — a `>>` or `(` inside one cannot cut the dictionary short —
+and read themselves as raw text at manual review. A cross-reference stream's
 dictionary is an object the walk reads, but nothing references it, so it
 used to be called `ORPHANED`; the chain now names it as the trailer.
 Each trailer is matched like any object dictionary, with one exception,
-the owner's decision on its tier: a pattern-rule match in a `/ID`
-element made only of hex digits and dashes is manual review. The spec
+the owner's decision on its tier: a pattern-rule match in an element
+of the dictionary's own top-level `/ID` made only of hex digits and
+dashes is manual review (a value split across its elements still gets
+the adjacent-literals review). The spec
 expects `/ID` to be generated, and a 32-character hex-text identifier
 holds a run some built-in class accepts about one time in thirteen;
 readable text there (`SSN 123-45-6789`) stays a hard finding, and a

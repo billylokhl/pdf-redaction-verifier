@@ -68,7 +68,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import bisect
 import contextlib
 import functools
 import io
@@ -1304,35 +1303,65 @@ def _decode_pdf_string(token: str) -> str | None:
 # accept, so a pattern match in one is manual review (owner decision D);
 # anything else in /ID is held to the hard tier like any PDF string.
 _GENERATED_ID_RE = re.compile(r"[0-9A-Fa-f-]+")
-_ID_ARRAY_RE = re.compile(r"/ID\s*\[")
+_EOL_STR_RE = re.compile(r"[\r\n]")
 
 
 def _id_element_spans(buf: str, spans: list[tuple[int, int]]) -> frozenset[tuple[int, int]]:
-    """The string spans (from *spans*, sorted) that are elements of an
-    ``/ID [...]`` array in *buf*. Linear: each array is walked once, and an
-    ``/ID`` key inside a string or inside an array already walked is
-    skipped. A key this misses (a name spelled with ``#`` escapes) only
-    leaves its strings at the hard tier."""
-    starts = [start for start, _ in spans]
+    """The string spans (from *spans*) that are elements of the ``/ID``
+    array of the dictionary *buf* opens with — its own key, at its top
+    level, not one in a nested dictionary or array, a string or a comment.
+    One linear pass. An array that never closes yields nothing, and a key
+    this misses (a name spelled with ``#`` escapes) only leaves its strings
+    at the hard tier."""
+    ends = dict(spans)
     elements: set[tuple[int, int]] = set()
-    walked = 0
-    for match in _ID_ARRAY_RE.finditer(buf):
-        key = match.start()
-        if key < walked:
+    pending: list[tuple[int, int]] = []       # elements of the open /ID array
+    dict_depth = array_depth = 0
+    id_depth: int | None = None               # array depth of the open /ID array
+    expect_array = False
+    i, n = 0, len(buf)
+    while i < n:
+        if i in ends:                          # a string token
+            if id_depth is not None and array_depth == id_depth:
+                pending.append((i, ends[i]))
+            expect_array, i = False, ends[i]
             continue
-        i = bisect.bisect_right(starts, key) - 1
-        if i >= 0 and spans[i][1] > key:
-            continue                                # inside a string
-        pos, i = match.end(), i + 1
-        while True:
-            nxt = spans[i][0] if i < len(spans) else len(buf)
-            close = buf.find("]", pos, nxt)
-            if close >= 0 or i >= len(spans):
-                walked = close + 1 if close >= 0 else len(buf)
+        c = buf[i]
+        if c == "%":                           # a comment, to the end of its line
+            eol = _EOL_STR_RE.search(buf, i)
+            i = n if eol is None else eol.start()
+        elif buf.startswith("<<", i):
+            dict_depth, expect_array, i = dict_depth + 1, False, i + 2
+        elif buf.startswith(">>", i):
+            dict_depth, expect_array, i = dict_depth - 1, False, i + 2
+            if dict_depth < 1:
                 break
-            elements.add(spans[i])
-            pos, i = spans[i][1], i + 1
+        elif c == "[":
+            array_depth += 1
+            if expect_array:
+                id_depth, pending = array_depth, []
+            expect_array, i = False, i + 1
+        elif c == "]":
+            if id_depth is not None and array_depth == id_depth:
+                elements.update(pending)
+                id_depth, pending = None, []
+            array_depth, expect_array, i = max(array_depth - 1, 0), False, i + 1
+        elif c == "/":
+            j = i + 1
+            while j < n and buf[j] not in _PDF_DELIMITERS_AND_SPACE:
+                j += 1
+            expect_array = (buf[i:j] == "/ID" and dict_depth == 1 and array_depth == 0
+                            and id_depth is None)
+            i = j
+        elif c in _PDF_SPACE:
+            i += 1
+        else:
+            expect_array, i = False, i + 1
     return frozenset(elements)
+
+
+_PDF_SPACE = frozenset(" \t\r\n\f\x00")
+_PDF_DELIMITERS_AND_SPACE = _PDF_SPACE | frozenset("()<>[]{}/%")
 
 
 def _feed_pdf_strings(
@@ -1353,8 +1382,10 @@ def _feed_pdf_strings(
     With *id_patterns*, buf is a trailer dictionary: an element of its
     document /ID whose text is only hex digits and dashes (a generated
     identifier written as text) feeds *id_patterns*, the manual-review
-    tier, instead of the two pattern scanners (owner decision, option D).
-    Known values are matched there like anywhere else.
+    tier, instead of the hard pattern scanner (owner decision, option D);
+    the soft (manual-review) scanner still sees it, so a value split
+    across elements is reviewed. Known values are matched there like
+    anywhere else.
 
     Returns True when the buffer ended inside an unterminated literal, so
     the caller can degrade the verdict rather than silently drop whatever
@@ -1370,6 +1401,7 @@ def _feed_pdf_strings(
         if id_patterns is not None and (start, end) in id_elements \
                 and _GENERATED_ID_RE.fullmatch(decoded):
             id_patterns.feed(decoded + "\n\n")
+            soft_patterns.feed(decoded)        # a split value: adjacency review
             continue
         if _PDF_DATE_RE.match(decoded):
             # A PDF timestamp (D:YYYYMMDDHHmmSS±HH'mm'): machine-written,
@@ -1918,7 +1950,7 @@ def scan_pdf_objects(
             raw = Path(pdf_path).read_bytes()
         except OSError:
             raw = b""               # the trailer scan reports the read failure
-        xref_streams = {t.number: t for t in _chain_trailers(raw) if t.number is not None}
+        xref_streams = {t.number: t for t in _chain_trailers(raw)[0] if t.number is not None}
 
     tally = _ObjectTally(unreadable=unreadable)
     for xref, source in sources.items():
@@ -2265,10 +2297,15 @@ MAX_EARLIER_REVISIONS = 50
 
 def _dict_end(raw: bytes, start: int) -> int | None:
     """Offset just past the PDF dictionary opening at raw[start] ('<<'),
-    skipping nested dictionaries, hex strings and literal strings."""
+    skipping nested dictionaries, hex strings, literal strings and comments
+    (a '%' outside a string runs to the end of its line, so a '>>' inside
+    a comment cannot end the dictionary early)."""
     depth, i, n = 0, start, len(raw)
     while i < n:
-        if raw.startswith(b"<<", i):
+        if raw[i] == 0x25:                           # '%' comment
+            eol = _EOL_RE.search(raw, i)
+            i = n if eol is None else eol.start()
+        elif raw.startswith(b"<<", i):
             depth, i = depth + 1, i + 2
         elif raw.startswith(b">>", i):
             depth, i = depth - 1, i + 2
@@ -2293,6 +2330,54 @@ def _dict_end(raw: bytes, start: int) -> int | None:
 
 
 _INT_PAIR_RE = re.compile(rb"^\s*(\d+)\s+(\d+)\s*$")
+_EOL_RE = re.compile(rb"[\r\n]")
+# Whitespace (NUL included, as PDF counts it) and comments between a
+# keyword and what follows it.
+_GAP_RE = re.compile(rb"(?:[\s\x00]|%[^\r\n]*(?:[\r\n]|$))*")
+
+
+def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
+    """*raw* (a dictionary's bytes) with every comment outside a string
+    blanked to spaces — the same reading as _dict_end — and the comments
+    themselves. Linear."""
+    out = bytearray(raw)
+    comments: list[bytes] = []
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == 0x25:                                # '%' comment
+            eol = _EOL_RE.search(raw, i)
+            end = n if eol is None else eol.start()
+            comments.append(raw[i + 1:end])
+            out[i:end] = b" " * (end - i)
+            i = end
+        elif raw.startswith(b"<<", i) or raw.startswith(b">>", i):
+            i += 2
+        elif c == 0x3C:                              # '<' hex string
+            close = raw.find(b">", i + 1)
+            i = n if close < 0 else close + 1
+        elif c == 0x28:                              # '(' literal string
+            level, i = 1, i + 1
+            while i < n and level:
+                if raw[i] == 0x5C:
+                    i += 1
+                elif raw[i] == 0x28:
+                    level += 1
+                elif raw[i] == 0x29:
+                    level -= 1
+                i += 1
+        else:
+            i += 1
+    return bytes(out), comments
+
+
+def _trailer_opening(raw: bytes, trailer: int) -> int | None:
+    """Where the dictionary after the ``trailer`` keyword at *trailer*
+    opens, skipping whitespace and comments (a '<<' inside a comment is not
+    it); None when no dictionary follows."""
+    after = _GAP_RE.match(raw, trailer + len(b"trailer"))
+    opening = after.end() if after else trailer + len(b"trailer")
+    return opening if raw.startswith(b"<<", opening) else None
 _INDEX_RE = re.compile(rb"/Index\s*\[([\d\s]*)\]")
 _SIZE_RE = re.compile(rb"/Size\s+(\d+)")
 
@@ -2308,9 +2393,9 @@ def _xref_section(
         return None
     if raw.startswith(b"xref", offset):
         trailer = raw.find(b"trailer", offset)
-        opening = raw.find(b"<<", trailer) if trailer >= 0 else -1
-        end = _dict_end(raw, opening) if opening >= 0 else None
-        if end is None:
+        opening = _trailer_opening(raw, trailer) if trailer >= 0 else None
+        end = _dict_end(raw, opening) if opening is not None else None
+        if opening is None or end is None:
             return None
         dictionary = raw[opening:end]
         # Subsection headers are the lines holding exactly two integers.
@@ -2356,11 +2441,13 @@ def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
         return []
     current = starts[-1]
     sections: dict[int, tuple[int, list[range] | None]] = {}
+    tried: set[int] = set()         # parsed or not: each offset is read once
     pending = [current, *starts]
     while pending:
         offset = pending.pop()
-        if offset in sections:
+        if offset in tried:
             continue
+        tried.add(offset)
         found = _xref_section(raw, offset)
         if found is None:
             continue
@@ -2391,7 +2478,7 @@ def _earlier_revisions(raw: bytes) -> list[tuple[int, int, set[int] | None]]:
     return earlier
 
 
-_TRAILER_RE = re.compile(rb"trailer\s*<<")
+_TRAILER_RE = re.compile(rb"trailer(?:[\s\x00]|%[^\r\n]*[\r\n])*<<")
 _XREFSTM_RE = re.compile(rb"/XRefStm\s+(\d+)")
 _OBJ_NUMBER_RE = re.compile(rb"\s*(\d+)\s+\d+\s+obj\b")
 
@@ -2417,31 +2504,42 @@ def _revision_numbers(earlier: list[tuple[int, int, set[int] | None]]) -> dict[i
     return {offset: number for number, (offset, _, _) in enumerate(earlier, start=1)}
 
 
-def _chain_trailers(raw: bytes) -> list[_TrailerDict]:
-    """Every trailer dictionary the cross-reference chain reaches — the
-    same walk as _earlier_revisions, plus each classic section's
-    ``/XRefStm`` (a hybrid file's stream half). A section an earlier
-    revision owns is superseded; every other one (the current section, a
-    linearized file's first-page section) is live."""
+@functools.lru_cache(maxsize=1)
+def _chain_trailers(raw: bytes) -> tuple[tuple[_TrailerDict, ...], tuple[int, ...]]:
+    """(trailers, unreadable): every trailer dictionary the cross-reference
+    chain reaches — the same walk as _earlier_revisions, plus each classic
+    section's ``/XRefStm`` (a hybrid file's stream half) — and the offsets
+    where the chain reaches a classic ``xref`` section whose trailer cannot
+    be read. A section an earlier revision owns is superseded; every other
+    one (the current section, a linearized file's first-page section) is
+    live. Cached: scan_pdf_objects and scan_trailers both need it."""
     earlier = _earlier_revisions(raw)
     superseded = {offset for offset, _, _ in earlier}
     numbers = _revision_numbers(earlier)
     starts = [int(m.group(1)) for m in _STARTXREF_RE.finditer(raw)]
     found: dict[int, _TrailerDict] = {}
-    pending = [(offset, None) for offset in starts]
+    unreadable: list[int] = []
+    tried: set[int] = set()
+    pending: list[tuple[int, int | None]] = [(offset, None) for offset in starts]
     while pending:
         offset, owner = pending.pop()
-        section_read = None if offset in found else _xref_section(raw, offset)
+        if offset in tried:
+            continue
+        tried.add(offset)
+        section_read = _xref_section(raw, offset)
         if section_read is None:
+            if raw.startswith(b"xref", offset):
+                unreadable.append(offset)
             continue
         _, prev, _ = section_read
         section = offset if owner is None else owner
         storage = "superseded" if section in superseded else "live"
         revision = numbers.get(section)
         if raw.startswith(b"xref", offset):
-            opening = raw.find(b"<<", raw.find(b"trailer", offset))
-            end = _dict_end(raw, opening)
-            if end is None:
+            opening = _trailer_opening(raw, raw.find(b"trailer", offset))
+            end = _dict_end(raw, opening) if opening is not None else None
+            if opening is None or end is None:
+                unreadable.append(offset)
                 continue
             found[offset] = _TrailerDict(opening, end, None, storage, revision)
             stm = _XREFSTM_RE.search(raw, opening, end)
@@ -2449,14 +2547,14 @@ def _chain_trailers(raw: bytes) -> list[_TrailerDict]:
                 pending.append((int(stm.group(1)), section))
         else:
             header = _OBJ_NUMBER_RE.match(raw, offset)
-            opening = raw.find(b"<<", offset)
-            end = _dict_end(raw, opening)
+            opening_at = raw.find(b"<<", offset)
+            end = _dict_end(raw, opening_at)
             if header is None or end is None:
                 continue
-            found[offset] = _TrailerDict(opening, end, int(header.group(1)), storage, revision)
+            found[offset] = _TrailerDict(opening_at, end, int(header.group(1)), storage, revision)
         if prev is not None:
             pending.append((prev, None))
-    return sorted(found.values(), key=lambda t: t.start)
+    return tuple(sorted(found.values(), key=lambda t: t.start)), tuple(sorted(unreadable))
 
 
 def scan_trailers(
@@ -2490,10 +2588,25 @@ def scan_trailers(
     tally = _ObjectTally()
 
     def scan(start: int, end: int, where: str, origin: dict[str, Any]) -> None:
-        _match_texts([raw[start:end].decode("latin-1")], where, origin=origin, trailer=True,
+        # Comments are read apart from the dictionary: a '(' or '>>' in one
+        # must not change what the dictionary's own strings are.
+        dictionary, comments = _split_comments(raw[start:end])
+        _match_texts([dictionary.decode("latin-1")], where, origin=origin, trailer=True,
                      matcher=matcher, patterns=patterns, report=report, tally=tally)
+        if comments:
+            _scan_orphaned_payload(b"\n".join(comments), "comment", f"{where} (comment)",
+                                   hard=False, matcher=matcher, patterns=patterns,
+                                   report=report, origin=origin)
 
-    chain = {t.start: t for t in _chain_trailers(raw) if t.number is None}
+    trailers, unreadable = _chain_trailers(raw)
+    for offset in unreadable:
+        report.warn(
+            "TRAILER_UNREADABLE",
+            "Objects",
+            f"Objects: the cross-reference section at byte {offset} has a trailer this tool "
+            "cannot read — NOT scanned; manual review recommended",
+        )
+    chain = {t.start: t for t in trailers if t.number is None}
     for t in chain.values():
         if t.storage == "live":
             where = "trailer"
