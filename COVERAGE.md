@@ -128,6 +128,18 @@ matcher sees it whole. Each is ✗:
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
   PyMuPDF does not return.
 
+One page-break split is read at the manual-review tier only
+(`match.page-break-off-page-half`): a value whose first half lies wholly
+off the page and whose second half opens the next page. Text wholly off
+a page reads like a slug, which does not run on into the next page, so
+the join is exit `2`, never `1` and never `0`. A first half that is the
+visible text's last line, running on past the edge, is a hard page seam.
+On a rotated page whose crop box does not sit on the media box (found at
+`/Rotate` 180 and 270), the off-page case was a finding (`1`) before #68,
+because the old visible area misplaced the half onto the page; it is
+exit `2` now, an owner-approved exception (2026-10-10) to "stricter
+only".
+
 ## What ⚑ costs, and what comes next
 
 A flag is the honest answer to "found it, could not read it", but it means

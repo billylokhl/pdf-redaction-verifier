@@ -257,6 +257,21 @@ def _break_cases() -> None:
 _break_cases()
 
 
+@leak("page.raw-font-coded-split-at-break-off-page-rotated", "match.page-break-off-page-half",
+      "The SSN in font codes split across a page break: its first half lies wholly past "
+      "the media box's right edge on page 1, turned with /Rotate 270 under a crop box "
+      "reaching past that edge; its second half opens page 2. A half wholly off the page "
+      "reads like a slug, which does not run on into the next page, so the join is "
+      "manual review rather than a finding.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+      mistake="Nobody redacted it; half the value sits past the margin, the rest over the "
+              "page break.",
+      recovery="Enlarge the page box, read both pages' text through the font's Encoding "
+               "/Differences, and join the halves.")
+def split_off_page_rotated(path: Path) -> None:
+    page_break_at_edge(path, "off-page", 270)
+
+
 # ── Document-level live content ─────────────────────────────────────────
 
 @leak("document.raw-title", "metadata.plain",

@@ -157,5 +157,6 @@
   "layout.vertical-stack-ssn-pattern": "wrapped",
   "layout.wrap-boxed-lines": "wrapped",
   "layout.wrap-boxed-lines-offpage-label": "wrapped",
-  "page.extreme-coordinates": "none"
+  "page.extreme-coordinates": "none",
+  "page.raw-font-coded-split-at-break-off-page-rotated": "none"
 }
