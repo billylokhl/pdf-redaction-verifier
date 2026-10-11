@@ -397,6 +397,18 @@ generator such as a 300-page scan) unless you name it explicitly — it
 would very likely time out at `--timeout` (default 60s) otherwise, which
 reads as a crash rather than a deliberate skip.
 
+`--timeout` is wall-clock, so it measures a file's own runtime only while
+each scan has a core and its memory to itself: `--workers` defaults to
+one per usable core (the CPU-affinity mask, where Python exposes it), and
+no more than one per GiB of physical RAM (a scan peaks at 0.3–0.5 GB).
+Neither a container's CPU quota nor its memory limit is seen: pass
+`--workers` there. Do not raise it past that — extra workers do not finish
+sooner, they only stretch each file's wall time toward the timeout. On
+the weekly macOS runner (3 cores, 7 GB, OCR on the CPU at about 1–2 s a
+page), 12 workers turned four-page cases that take about 9 s alone into
+45–68 s, sent the VM into swap, timed eight cases out, and made a pass
+over the library take 11.4 minutes instead of 6.7.
+
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
 key ("old"), the candidate's ("new"), a reason, the COVERAGE.md cell, and
@@ -548,7 +560,8 @@ PYTHONPATH=eval:. python -m scorecard inventory fuzz --count 2000 --seed 0 \
 What each part of the output means:
 
 - `gate`: `passed`, and the gating counts: `unflagged_disagree` (by
-  failed check in `unflagged_disagree_by_check`: `object_set`,
+  failed check in `unflagged_disagree_by_check`: `object_set` (qpdf
+  could not open a revision at all, "qpdf exit 2", counts here too),
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
@@ -640,7 +653,8 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`).
+  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
+  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

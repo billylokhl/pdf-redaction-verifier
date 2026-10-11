@@ -260,7 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("case_id", nargs="*", help="restrict to these case ids (default: all)")
         p.add_argument("--out", type=Path, default=Path("/tmp/scorecard"), help="scratch directory")
         p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="per-file timeout (s)")
-        p.add_argument("--workers", type=int, default=None, help="parallel subprocesses")
+        p.add_argument("--workers", type=int, default=None,
+                       help="parallel subprocesses (default: one per usable core, capped "
+                            "by RAM; more makes the per-file timeout measure contention)")
         p.add_argument("--json", type=Path, default=None, help="also write JSON to this path")
 
     diff_p = sub.add_parser("diff", help="differential vs the pinned reference")

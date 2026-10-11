@@ -484,8 +484,9 @@ evaluation harness — `eval/caselib`, `eval/scorecard`, `eval/gallery`,
 coverage on the Linux Python 3.12 job; the commands above run the same
 checks locally. Property tests use Hypothesis: with `CI` set (as on
 GitHub Actions) they run the derandomized `ci` profile, locally the `dev`
-profile explores fresh examples each run; `HYPOTHESIS_PROFILE=ci`
-reproduces CI exactly. Two suites go further and test robustness directly:
+profile explores fresh examples each run and replays any failure it
+found from `.hypothesis/` until it passes (each one root-caused, then
+pinned as an explicit test); `HYPOTHESIS_PROFILE=ci` reproduces CI exactly. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
@@ -511,7 +512,9 @@ certified → leak) must be listed under **Verdict changes** in
 The **scorecard** (`PYTHONPATH=eval:. python -m scorecard diff`) runs
 this same case library through the real CLI as a subprocess and diffs it
 against a pinned reference version, so every intended verdict change is
-reviewed explicitly in `eval/accepted_diffs.yaml` — see
+reviewed explicitly in `eval/accepted_diffs.yaml`. It runs one scan per
+usable core by default (fewer if RAM is short), so its per-file timeout
+measures the file rather than contention — see
 [eval/README.md](eval/README.md#the-scorecard-scorecard).
 
 The **gallery** (`PYTHONPATH=eval:. python -m gallery build --out DIR`) is

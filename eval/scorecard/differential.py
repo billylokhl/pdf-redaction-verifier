@@ -68,6 +68,54 @@ def deterministic_qpdf_env() -> Iterator[dict[str, str] | None]:
         yield env
 
 
+# Memory to budget per concurrent scan. One CLI scan peaks at 0.3-0.5 GB
+# RSS (OCR rasterizes each page at 300 dpi); 1 GiB leaves room for the
+# rest of the machine.
+SCAN_MEMORY_BYTES = 1 << 30
+
+
+def _usable_cores() -> int:
+    """Cores this process may run on: its CPU-affinity mask (which a
+    cgroup cpuset narrows) where Python exposes one, else the machine's
+    count. A cgroup CPU *quota* (`docker --cpus`) is not seen."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)  # Python 3.13+
+    if process_cpu_count is not None:
+        return process_cpu_count() or 1
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)  # Linux
+    if sched_getaffinity is not None:
+        return len(sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def _physical_memory() -> int | None:
+    """Total physical RAM in bytes, or None if unknown. Not a container's
+    memory limit."""
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+    return total if total > 0 else None  # sysconf returns -1 when indeterminate
+
+
+def default_workers() -> int:
+    """Parallel CLI subprocesses when `--workers` is not given: one per
+    usable core, and no more than `SCAN_MEMORY_BYTES` of RAM each allows.
+
+    `DEFAULT_TIMEOUT` is a wall-clock limit per file, so it only measures
+    a file's own runtime while every scan has a core, and the memory it
+    needs, to itself. This used to be `cpu_count() * 4`: on the weekly
+    macOS runner (3 cores, 7 GB, OCR on the CPU at ~1-2 s a page) that
+    meant twelve concurrent scans of 0.3-0.5 GB each, which pushed the
+    VM into memory compression and swap on top of the CPU contention.
+    Four-page cases that take ~9 s alone took 45-68 s, eight cases passed
+    60 s, and a pass over the library took 11.4 min instead of 6.7."""
+    cores = _usable_cores()
+    memory = _physical_memory()
+    if memory is None:
+        return cores
+    return max(1, min(cores, memory // SCAN_MEMORY_BYTES))
+
+
 @dataclass(frozen=True)
 class CaseRun:
     """One side (reference or candidate) of a case's differential.
@@ -381,7 +429,7 @@ def run_differential(
     cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
 
     pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
     input_hashes = {
@@ -544,7 +592,7 @@ def run_candidate(
     candidate_verify = candidate_verify_path(root)
 
     rows: list[CaseMetricRow] = []
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for case in cases:
