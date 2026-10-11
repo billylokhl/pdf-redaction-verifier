@@ -2377,22 +2377,37 @@ def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
     return bytes(out), comments
 
 
-def _section_trailer(raw: bytes, offset: int) -> int | None:
-    """Where the trailer dictionary of the classic section at *offset*
-    opens: the first ``trailer`` keyword after it that a dictionary
-    follows (one inside a comment, or followed by anything else, is
-    skipped). Each keyword is tried once, and keywords inside the gap
-    after a failed one (a comment) are skipped, so this is linear."""
-    pos = offset
-    while True:
-        trailer = raw.find(b"trailer", pos)
-        if trailer < 0:
+# One line of a classic cross-reference section, read up to its comment:
+# the ``xref`` keyword, a subsection header (two integers) or an entry
+# (offset, generation, n/f), or nothing; anything else ends the table.
+_LINE_RE = re.compile(rb"[^\r\n]*(?:\r\n|\r|\n|$)")
+_TABLE_LINE_RE = re.compile(rb"[\s\x00]*(?:xref|\d+[\s\x00]+\d+(?:[\s\x00]+[nf])?)?[\s\x00]*")
+_TRAILER_LINE_RE = re.compile(rb"[\s\x00]*trailer")
+
+
+def _section_trailer(raw: bytes, offset: int) -> tuple[int, int] | None:
+    """(keyword, opening) of the trailer of the classic section at
+    *offset*: the ``trailer`` keyword on the first line after the table
+    that is not a table line (comments cut off each line first, so a
+    comment naming ``trailer`` is not it), and where the dictionary after
+    it opens. None when that line is anything else, or no dictionary
+    follows: the section's trailer cannot be read. Reads only the
+    section's own lines."""
+    for line in _LINE_RE.finditer(raw, offset):
+        start, end = line.span()
+        if start == end:
             return None
-        opening = _trailer_opening(raw, trailer)
-        if opening is not None:
-            return opening
-        gap = _GAP_RE.match(raw, trailer + len(b"trailer"))
-        pos = max(trailer + len(b"trailer"), gap.end() if gap else 0)
+        body = raw[start:end]
+        cut = body.find(b"%")
+        code = body if cut < 0 else body[:cut]
+        keyword = _TRAILER_LINE_RE.match(code)
+        if keyword:
+            at = start + keyword.end() - len(b"trailer")
+            opening = _trailer_opening(raw, at)
+            return None if opening is None else (at, opening)
+        if not _TABLE_LINE_RE.fullmatch(code.rstrip(b"\r\n")):
+            return None
+    return None
 
 
 def _trailer_opening(raw: bytes, trailer: int) -> int | None:
@@ -2416,11 +2431,13 @@ def _xref_section(
     if not 0 <= offset < len(raw):
         return None
     if raw.startswith(b"xref", offset):
-        opening = _section_trailer(raw, offset)
-        end = _dict_end(raw, opening) if opening is not None else None
-        if opening is None or end is None:
+        located = _section_trailer(raw, offset)
+        if located is None:
             return None
-        trailer = raw.rfind(b"trailer", offset, opening)
+        trailer, opening = located
+        end = _dict_end(raw, opening)
+        if end is None:
+            return None
         dictionary = raw[opening:end]
         # Subsection headers are the lines holding exactly two integers.
         objects: list[range] | None = [
@@ -2463,7 +2480,7 @@ def _earlier_revisions(raw: bytes) -> tuple[tuple[int, int, frozenset[int] | Non
     attached PDF) and which an incremental writer may omit."""
     starts = [int(m.group(1)) for m in _STARTXREF_RE.finditer(raw)]
     if not starts:
-        return []
+        return ()
     current = starts[-1]
     sections: dict[int, tuple[int, list[range] | None]] = {}
     tried: set[int] = set()         # parsed or not: each offset is read once
@@ -2560,7 +2577,8 @@ def _chain_trailers(raw: bytes) -> tuple[tuple[_TrailerDict, ...], tuple[int, ..
         storage = "superseded" if section in superseded else "live"
         revision = numbers.get(section)
         if raw.startswith(b"xref", offset):
-            opening = _section_trailer(raw, offset)
+            located = _section_trailer(raw, offset)
+            opening = located[1] if located is not None else None
             end = _dict_end(raw, opening) if opening is not None else None
             if opening is None or end is None:
                 unreadable.append(offset)

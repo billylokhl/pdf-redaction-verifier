@@ -251,6 +251,46 @@ class TestWhichTrailers:
         assert ("Target SSN", "superseded", "earlier revision 1, trailer") in _found(report)
         assert [w.code for w in report.warnings] == []
 
+    def test_junk_after_an_earlier_keyword_is_not_the_next_trailer(self, tmp_path: Path) -> None:
+        # The earlier section's keyword has junk before its dictionary: that
+        # section is unreadable (warned), and the newer trailer stays the
+        # current one rather than being taken for the earlier section's.
+        first = build(one_page(PAGE)).replace(b"trailer\n<<", b"trailer x\n<<", 1)
+        updated = incremental_update(first, {4: stream(b"", text("Revised"))})
+        updated = updated.replace(b" /Prev ", b" /Note (SSN 123-45-6789) /Prev ", 1)
+        path = tmp_path / "t.pdf"
+        path.write_bytes(updated)
+        report = _trailers(path)
+        assert ("Target SSN", "live", "trailer") in _found(report)
+        assert not any(f.storage == "superseded" for f in report.findings)
+        assert any(w.code == "TRAILER_UNREADABLE" and "cross-reference section" in w
+                   for w in report.warnings)
+
+    def test_a_comment_line_inside_a_newer_table(self, tmp_path: Path) -> None:
+        # '% trailer' inside the newer section's table must not end it: the
+        # subsection after it still says object 4 was rewritten.
+        updated = incremental_update(build(one_page(PAGE)), {4: stream(b"", text("Revised"))})
+        updated = updated.replace(b"xref\n4 1\n", b"xref\n% trailer\n4 1\n", 1)
+        assert b"% trailer" in updated
+        earlier = [o for o, _, _ in verify._earlier_revisions(updated)]
+        assert len(earlier) == 1 and verify._earlier_revisions(updated)[0][2] == frozenset({4})
+
+    def test_many_sections_stay_linear(self) -> None:
+        def cost(k: int) -> float:
+            out = bytearray(b"%PDF-1.4\n")
+            for _ in range(k):
+                at = len(out)
+                out += (b"xref\n0 1\n0000000000 65535 f \ntrailer x<< >>\nstartxref\n%d\n%%%%EOF\n"
+                        % at)
+            raw = bytes(out)
+            verify._earlier_revisions.cache_clear()
+            verify._chain_trailers.cache_clear()
+            start = time.monotonic()
+            verify._chain_trailers(raw)
+            return time.monotonic() - start
+        small, big = cost(500), cost(5000)
+        assert big < max(small, 0.01) * 40, (small, big)
+
     @pytest.mark.parametrize("gap", [b"% note\n", b"\x00"])
     def test_an_off_chain_trailer_after_a_comment_or_nul(self, tmp_path: Path, gap: bytes) -> None:
         raw = build(one_page(PAGE)) + b"\ntrailer" + gap + b"<< /Note (SSN 123-45-6789) >>\n"
