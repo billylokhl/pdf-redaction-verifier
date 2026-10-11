@@ -2335,7 +2335,6 @@ def _dict_end(raw: bytes, start: int) -> int | None:
     return None
 
 
-_INT_PAIR_RE = re.compile(rb"^\s*(\d+)\s+(\d+)\s*$")
 _EOL_RE = re.compile(rb"[\r\n]")
 # Whitespace (NUL included, as PDF counts it) and comments between a
 # keyword and what follows it.
@@ -2377,37 +2376,53 @@ def _split_comments(raw: bytes) -> tuple[bytes, list[bytes]]:
     return bytes(out), comments
 
 
-# One line of a classic cross-reference section, read up to its comment:
-# the ``xref`` keyword, a subsection header (two integers) or an entry
-# (offset, generation, n/f), or nothing; anything else ends the table.
-_LINE_RE = re.compile(rb"[^\r\n]*(?:\r\n|\r|\n|$)")
-_TABLE_LINE_RE = re.compile(rb"[\s\x00]*(?:xref|\d+[\s\x00]+\d+(?:[\s\x00]+[nf])?)?[\s\x00]*")
-_TRAILER_LINE_RE = re.compile(rb"[\s\x00]*trailer")
+# A classic cross-reference table after its ``xref`` keyword: integers,
+# n/f entry types, whitespace (NUL included) and comments, laid out in any
+# lines. One regex match, so a long table is read at C speed; nothing after
+# the star can fail, so it never backtracks.
+_TABLE_BODY_RE = re.compile(rb"(?:[\s\x00]+|%[^\r\n]*|[+-]?\d+|[nNfF](?![A-Za-z0-9]))*")
+_TABLE_TOKEN_RE = re.compile(rb"%[^\r\n]*|([+-]?\d+|[nNfF])")
+_ENTRY_TYPES = frozenset({b"n", b"N", b"f", b"F"})
 
 
 def _section_trailer(raw: bytes, offset: int) -> tuple[int, int] | None:
     """(keyword, opening) of the trailer of the classic section at
-    *offset*: the ``trailer`` keyword on the first line after the table
-    that is not a table line (comments cut off each line first, so a
-    comment naming ``trailer`` is not it), and where the dictionary after
-    it opens. None when that line is anything else, or no dictionary
-    follows: the section's trailer cannot be read. Reads only the
-    section's own lines."""
-    for line in _LINE_RE.finditer(raw, offset):
-        start, end = line.span()
-        if start == end:
+    *offset* (``xref``): the ``trailer`` keyword right after the table
+    (a comment naming it is part of the table), and where the dictionary
+    after it opens. None when anything else follows the table, or no
+    dictionary follows the keyword: the section's trailer cannot be
+    read. Reads only the section's own table."""
+    body = _TABLE_BODY_RE.match(raw, offset + len(b"xref"))
+    keyword = body.end() if body else offset + len(b"xref")
+    if not raw.startswith(b"trailer", keyword):
+        return None
+    opening = _trailer_opening(raw, keyword)
+    return None if opening is None else (keyword, opening)
+
+
+def _table_subsections(table: bytes) -> list[range] | None:
+    """The object-number ranges a classic table's subsections define: a
+    header (first number, count) then count entries of offset, generation
+    and n/f, whatever the line layout and with comments skipped. None when
+    the tokens do not have that shape (callers then treat every object as
+    possibly changed)."""
+    tokens = [t for t in _TABLE_TOKEN_RE.findall(table) if t]
+    ranges: list[range] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        if i + 1 >= n or not tokens[i].isdigit() or not tokens[i + 1].isdigit():
             return None
-        body = raw[start:end]
-        cut = body.find(b"%")
-        code = body if cut < 0 else body[:cut]
-        keyword = _TRAILER_LINE_RE.match(code)
-        if keyword:
-            at = start + keyword.end() - len(b"trailer")
-            opening = _trailer_opening(raw, at)
-            return None if opening is None else (at, opening)
-        if not _TABLE_LINE_RE.fullmatch(code.rstrip(b"\r\n")):
+        first, count = int(tokens[i]), int(tokens[i + 1])
+        i += 2
+        if i + 3 * count > n:
             return None
-    return None
+        for j in range(i, i + 3 * count, 3):
+            if (tokens[j] in _ENTRY_TYPES or tokens[j + 1] in _ENTRY_TYPES
+                    or tokens[j + 2] not in _ENTRY_TYPES):
+                return None
+        ranges.append(range(first, first + count))
+        i += 3 * count
+    return ranges
 
 
 def _trailer_opening(raw: bytes, trailer: int) -> int | None:
@@ -2439,12 +2454,7 @@ def _xref_section(
         if end is None:
             return None
         dictionary = raw[opening:end]
-        # Subsection headers are the lines holding exactly two integers.
-        objects: list[range] | None = [
-            range(int(m.group(1)), int(m.group(1)) + int(m.group(2)))
-            for m in map(_INT_PAIR_RE.match, raw[offset + 4:trailer].splitlines())
-            if m
-        ]
+        objects: list[range] | None = _table_subsections(raw[offset + 4:trailer])
     elif _OBJ_HEADER_RE.match(raw, offset):
         opening = raw.find(b"<<", offset)
         dict_end = _dict_end(raw, opening) if opening >= 0 else None

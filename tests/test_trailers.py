@@ -275,6 +275,49 @@ class TestWhichTrailers:
         earlier = [o for o, _, _ in verify._earlier_revisions(updated)]
         assert len(earlier) == 1 and verify._earlier_revisions(updated)[0][2] == frozenset({4})
 
+    def test_a_section_with_no_trailer_does_not_adopt_the_next(self, tmp_path: Path) -> None:
+        # The earlier section's table runs straight into other bytes: no
+        # trailer of its own. It must be unreadable, and the newer trailer
+        # must stay the current one.
+        first = build(one_page(PAGE))
+        cut = first.index(b"trailer\n<<")
+        first = first[:cut] + b"junk\n" + first[cut:].replace(b"trailer\n<<", b"<<", 1)
+        updated = incremental_update(first, {4: stream(b"", text("Revised"))})
+        updated = updated.replace(b" /Prev ", b" /Note (SSN 123-45-6789) /Prev ", 1)
+        trailers, unreadable = verify._chain_trailers(updated)
+        assert len(unreadable) == 1
+        assert [t.storage for t in trailers if t.number is None] == ["live"]
+
+    @pytest.mark.parametrize("layout", [
+        (b"xref\n0 7\n", b"xref 0 7\n"),                       # subsection on the xref line
+        (b"\ntrailer\n<<", b"trailer\n<<"),                     # trailer on the last entry's line
+        (b"trailer\n<<", b"\x00 trailer\n<<"),                   # NUL and space before the keyword
+        (b"0 7\n0000000000 65535 f \n", b"0 7\n0000000000\x0065535 f % free\n"),  # NUL, comment
+    ])
+    def test_table_layouts_main_accepted_still_read(self, tmp_path: Path, layout) -> None:
+        old, new = layout
+        first = _with_trailer(b"/ID [<44556677> (SSN 123-45-6789)]")
+        assert first.count(old) == 1
+        first = first.replace(old, new, 1)
+        updated = incremental_update(first, {4: stream(b"", text("Revised"))})
+        trailers, unreadable = verify._chain_trailers(updated)
+        assert unreadable == ()
+        path = tmp_path / "t.pdf"
+        path.write_bytes(updated)
+        assert ("Target SSN", "superseded", "earlier revision 1, trailer") in _found(_trailers(path))
+
+    @pytest.mark.parametrize("header", [b"4 1 % note\n", b"4\x001\n", b"\x004 1\n", b"4 1 "])
+    def test_subsection_headers_in_any_layout(self, header: bytes) -> None:
+        updated = incremental_update(build(one_page(PAGE)), {4: stream(b"", text("Revised"))})
+        assert updated.count(b"xref\n4 1\n") == 1
+        updated = updated.replace(b"xref\n4 1\n", b"xref\n" + header, 1)
+        assert verify._earlier_revisions(updated)[0][2] == frozenset({4})
+
+    def test_a_table_of_the_wrong_shape_is_unknown(self) -> None:
+        assert verify._table_subsections(b"\n4 1\n0000000009 00000 n \n") == [range(4, 5)]
+        assert verify._table_subsections(b"\n4 2\n0000000009 00000 n \n") is None
+        assert verify._table_subsections(b"\n4 1\n0000000009 n 00000\n") is None
+
     def test_many_sections_stay_linear(self) -> None:
         def cost(k: int) -> float:
             out = bytearray(b"%PDF-1.4\n")
