@@ -205,7 +205,10 @@ attachment streams. It is *not* an orphan backstop — `qpdf --qdf`
 rewrites only objects reachable from the trailer, so unreferenced objects
 and earlier revisions of an incrementally saved file are absent from its
 output. Its matches stay manual-review warnings, because a byte-level
-match can be coincidence.
+match can be coincidence. It runs with `--deterministic-id`: otherwise
+qpdf writes a trailer `/ID` hashed from the current second into the
+output being swept, and a short all-hex value matched it at random — a
+verdict that depended on the clock, not the file.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode

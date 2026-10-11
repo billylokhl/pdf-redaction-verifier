@@ -23,7 +23,14 @@ permissions:
 jobs:
   full-environment-scorecard:
     runs-on: macos-latest
-    timeout-minutes: 45
+    # The job-level limit only stops a runaway run; the per-file timeout
+    # (60 s) is what gates. Measured on this runner (3 cores, 7 GB, OCR
+    # on the CPU) at one scan per core (`--workers`' default): 34.6 min
+    # in all — pytest 12.4, scorecard diff (reference + candidate) 14.9,
+    # metrics 6.8. The two runs before that default were cancelled at
+    # the old 45-minute limit, their scorecard steps slowed by
+    # oversubscription.
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -52,6 +59,8 @@ jobs:
           PYTHONPATH=eval:. uv run python -m scorecard diff
           --json scorecard-diff-full.json --verbose
       - name: Run the scorecard metrics table
+        # Fails on any case with no verdict: crash, timeout or error report
+        # (it still writes its JSON).
         if: always()
         run: >-
           PYTHONPATH=eval:. uv run python -m scorecard metrics

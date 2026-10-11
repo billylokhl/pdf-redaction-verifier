@@ -613,9 +613,15 @@ def start_hidden_tools(
 
     procs = {
         "exiftool": launch("exiftool", "Metadata", ["-config", "", "-json", "--", target]),
+        # --deterministic-id: without it qpdf writes a fresh trailer /ID,
+        # an MD5 of the current second, into the output the Binary layer
+        # sweeps — so a short all-hex value rule (e.g. "45-67" -> "4567")
+        # matched it about once in 2,000 runs, and the same file's verdict
+        # depended on the clock. With it, the /ID qpdf writes is derived
+        # from the file alone.
         "qpdf": launch(
             "qpdf", "Binary",
-            ["--qdf", "--object-streams=disable", target, "-"],
+            ["--qdf", "--object-streams=disable", "--deterministic-id", target, "-"],
         ),
     }
     return procs, scratch

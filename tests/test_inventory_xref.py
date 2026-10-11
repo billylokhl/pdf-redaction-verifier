@@ -589,3 +589,75 @@ def test_free_entries_past_mupdfs_object_limit_are_flagged() -> None:
 @requires_qpdf
 def test_a_high_number_below_the_cap_agrees_with_the_readers(tmp_path: Path) -> None:
     _agree(_at_cap(200, 1), tmp_path)
+
+
+# ── A catalog qpdf can open (found by the mutation fuzz) ──────────────────
+# qpdf 12 refuses to open a file whose /Root is not a dictionary ("unable
+# to find /Root dictionary") or whose catalog's /Pages is not one ("unable
+# to find page tree"; QPDF_objects.cc, Objects::parse) -- while MuPDF
+# opens it, sometimes with its pages. Neither is a canonical chain.
+PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+
+
+def _with(bodies: dict[int, bytes]) -> bytes:
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = _objects(bodies, out)
+    xref = len(out)
+    out += _table(offsets, max(bodies) + 1) + b"startxref\n%d\n%%%%EOF\n" % xref
+    return bytes(out)
+
+
+def _catalog(pages: bytes, two: bytes = PAGES, **more: bytes) -> bytes:
+    bodies = {1: b"<< /Type /Catalog /Pages %s >>" % pages, 2: two, 3: BODIES[3]}
+    return _with(bodies | {int(k[1:]): v for k, v in more.items()})
+
+
+# The fuzz's own example: the incremental file's object 2 marked free.
+FREED = _mutate(incremental(), b"0000000064 00000 n", b"0000000064 00000 f")
+UNOPENABLE = [
+    pytest.param(_catalog(b"2 0 R", PAGES[:-2] + b"/Length 1 >>\nstream\nx\nendstream"),
+                 "MISSING_PAGE_TREE", id="pages-a-stream"),
+    pytest.param(_catalog(b"2 1 R"), "MISSING_PAGE_TREE", id="other-generation"),
+    pytest.param(_with({1: b"<< /Type /Catalog >>", 2: PAGES, 3: BODIES[3]}),
+                 "MISSING_PAGE_TREE", id="no-pages"),
+    pytest.param(_catalog(b"null"), "MISSING_PAGE_TREE", id="direct-null"),
+    pytest.param(_catalog(b"2 0 R", b"null"), "MISSING_PAGE_TREE", id="pages-null"),
+    pytest.param(_catalog(b"2 0 R", b"[3 0 R]"), "MISSING_PAGE_TREE", id="pages-an-array"),
+    pytest.param(_catalog(b"2 0 R", b"4 0 R", n4=PAGES), "MISSING_PAGE_TREE",
+                 id="a-reference-to-a-reference"),
+    pytest.param(_catalog(b"9 0 R"), "MISSING_PAGE_TREE", id="past-the-table"),
+    pytest.param(_catalog(b"0 0 R"), "MISSING_PAGE_TREE", id="object-zero"),
+    pytest.param(FREED, "MISSING_PAGE_TREE", id="pages-freed"),
+    pytest.param(_with({1: b"<< /Type /Catalog /Pages 2 0 R /Length 1 >>\nstream\nx\nendstream",
+                        2: PAGES, 3: BODIES[3]}), "MISSING_ROOT", id="catalog-a-stream"),
+]
+
+
+@pytest.mark.parametrize(("data", "reason"), UNOPENABLE)
+def test_a_catalog_qpdf_cannot_open_is_flagged(data: bytes, reason: str) -> None:
+    assert reason in _reasons(data)
+
+
+def test_a_freed_page_tree_is_flagged_in_each_revision() -> None:
+    assert sorted(dict(f.params)["revision"] for f in chain_of(FREED).flags) == [0, 1]
+
+
+def _direct() -> bytes:
+    return _catalog(PAGES, b"null", n3=BODIES[3].replace(b"/Parent 2 0 R ", b""))
+
+
+def test_a_direct_page_tree_is_canonical() -> None:
+    assert _reasons(_direct()) == []
+
+
+@requires_qpdf
+@pytest.mark.parametrize(("data", "reason"), UNOPENABLE)
+def test_qpdf_cannot_open_what_is_flagged(data: bytes, reason: str, tmp_path: Path) -> None:
+    path = tmp_path / "in.pdf"
+    path.write_bytes(data)
+    assert _qpdf_map(path) == ({}, 2)
+
+
+@requires_qpdf
+def test_a_direct_page_tree_agrees_with_the_readers(tmp_path: Path) -> None:
+    _agree(_direct(), tmp_path)

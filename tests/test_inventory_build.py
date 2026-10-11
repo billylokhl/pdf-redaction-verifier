@@ -650,3 +650,111 @@ def test_the_dev_cli_prints_counts_and_no_document_bytes(tmp_path: Path) -> None
     bad = subprocess.run([sys.executable, "-m", "redaction_verifier.inventory"],
                          cwd=REPO_ROOT, capture_output=True, timeout=60)
     assert bad.returncode == 2
+
+
+# ── A /Pages qpdf can open, in object streams (xref._page_tree) ───────────
+PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+COMPRESSED_PAGE_TREES = [
+    pytest.param([(2, PAGES)], {2: (2, 4, 0)}, None, id="pages-compressed"),
+    pytest.param([(1, CATALOG), (2, PAGES)], {1: (2, 4, 0), 2: (2, 4, 1)}, None,
+                 id="both-compressed"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 9 0 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-pages-missing"),
+    pytest.param([(1, b"<< /Type /Catalog >>")], {1: (2, 4, 0)}, "MISSING_PAGE_TREE",
+                 id="catalog-compressed-no-pages"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-other-generation"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 4 0 R >>")], {1: (2, 4, 0)},
+                 "MISSING_PAGE_TREE", id="catalog-compressed-pages-a-stream"),
+    pytest.param([(2, b"[3 0 R]")], {2: (2, 4, 0)}, "MISSING_PAGE_TREE",
+                 id="pages-compressed-an-array"),
+    pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>"), (2, PAGES)],
+                 {1: (2, 4, 0), 2: (2, 4, 1)}, "MISSING_PAGE_TREE",
+                 id="both-compressed-other-generation"),
+    pytest.param([(1, CATALOG), (2, b"(x)")], {1: (2, 4, 0), 2: (2, 4, 1)},
+                 "MISSING_PAGE_TREE", id="both-compressed-a-string"),
+]
+
+
+@pytest.mark.parametrize(("members", "entries", "expected"), COMPRESSED_PAGE_TREES)
+def test_a_compressed_catalog_or_page_tree_is_checked(
+        members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
+        expected: str | None) -> None:
+    found = reasons(_objstm_file(members, entries))
+    assert found == ([expected] if expected else []), found
+
+
+@requires_qpdf
+@pytest.mark.parametrize(("members", "entries", "expected"), COMPRESSED_PAGE_TREES)
+def test_a_compressed_catalog_or_page_tree_agrees_or_qpdf_cannot_open_it(
+        members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
+        expected: str | None, tmp_path: Path) -> None:
+    data = _objstm_file(members, entries)
+    path = tmp_path / "in.pdf"
+    path.write_bytes(data)
+    refused = subprocess.run(["qpdf", "--show-xref", str(path)], capture_output=True,
+                             timeout=60).returncode == 2
+    assert refused == (expected is not None)
+    assert inventory_agrees(data, tmp_path) == (expected is None)
+
+
+# ── An object stream's own generation is 0 (found in review) ──────────────
+def _objstm_generation(generation: int, member: int) -> bytes:
+    """Object stream 4, written `4 <generation> obj`, holding *member*: 1
+    (the catalog), 2 (the page tree) or 5 (a string)."""
+    bodies = {1: CATALOG, 2: PAGES,
+              3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << >> >>",
+              5: b"(x)"}
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    for n in (1, 2, 3):
+        if n != member:
+            table[n] = (1, w.obj(n, bodies[n]), 0)
+    at = w.objstm(4, [(member, bodies[member])])
+    w.out[at:at + 7] = b"4 %d obj" % generation  # same length: offsets stay put
+    table[4] = (1, at, generation)
+    table[member] = (2, 4, 0)
+    w.epilogue(w.xref_stream(6, table, b"/Size 7 /Root 1 0 R"))
+    return bytes(w.out)
+
+
+@pytest.mark.parametrize("member", [1, 2, 5])
+def test_an_object_stream_with_another_generation_is_flagged(member: int) -> None:
+    # qpdf reads an object stream as `N 0 R` only ("supposed object stream 4
+    # is not a stream"): every member then reads null -- a catalog or page
+    # tree among them, and qpdf cannot open the file.
+    assert reasons(_objstm_generation(0, member)) == []
+    assert "XREF_OFFSET_MISMATCH" in reasons(_objstm_generation(1, member))
+
+
+def test_an_object_stream_replaced_with_another_generation_is_flagged() -> None:
+    # Revision 1 replaces object stream 4 (holding 5) with `4 1 obj`: the
+    # inherited member 5 now names a home qpdf does not read.
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, CATALOG), 0)
+    table[2] = (1, w.obj(2, PAGES), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> >>"), 0)
+    table[4] = (1, w.objstm(4, [(5, b"(x)")]), 0)
+    table[5] = (2, 4, 0)
+    first = w.xref_stream(6, table, b"/Size 7 /Root 1 0 R")
+    w.epilogue(first)
+    at = w.objstm(4, [(5, b"(x)")])
+    w.out[at:at + 7] = b"4 1 obj"
+    w.epilogue(w.xref_stream(7, {4: (1, at, 1)}, b"/Size 8 /Root 1 0 R /Prev %d" % first))
+    data = bytes(w.out)
+    assert ("XREF_OFFSET_MISMATCH", {"stream": 4, "members": 1, "revision": 0}) in [
+        (f.reason.name, dict(f.params)) for f in chain_of(data).flags]
+    assert "OBJSTM_ENTRY_MISMATCH" in reasons(data)
+
+
+@requires_qpdf
+@pytest.mark.parametrize("member", [1, 2, 5])
+def test_qpdf_reads_no_object_stream_with_another_generation(member: int,
+                                                              tmp_path: Path) -> None:
+    path = tmp_path / "in.pdf"
+    path.write_bytes(_objstm_generation(1, member))
+    check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True, timeout=60)
+    assert b"supposed object stream 4 is not a stream" in check.stdout + check.stderr
+    assert inventory_agrees(_objstm_generation(0, member), tmp_path)
