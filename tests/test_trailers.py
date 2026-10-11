@@ -326,6 +326,8 @@ class TestWhichTrailers:
         assert verify._table_subsections(b"9" * 5000 + b"\n1 0000000009 00000 n") is None
         assert verify._table_subsections(b"4 " + b"9" * 5000 + b" 0000000009 00000 n") is None
         assert verify._table_subsections(b"4 1 + 0000000617 00000 n") is None    # stray sign
+        assert verify._table_subsections(b"4 1 + 5 n") is None                    # sign as offset
+        assert verify._table_subsections(b"0 2 1 2 3 4 5 n") is None              # no n/f type
         assert verify._table_subsections(b"4 1 0000000009 -1 n") == [range(4, 5)]
 
     @pytest.mark.parametrize("table", [
