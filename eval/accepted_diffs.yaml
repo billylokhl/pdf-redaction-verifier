@@ -18,7 +18,7 @@
     run the SSN class accepts gets a manual-review warning under that pattern rule (REVIEW_OBJECT_TEXT,
     NOISY_SOURCE), exit 2 (was 0): a known false alarm by design (false-alarm.generated-id-digits).'
   cell: false-alarm.generated-id-digits
-  pr: '#TBD'
+  pr: '#73'
 - case: document.trailer-id-digits-pattern-rule
   old:
     exit: 0
@@ -42,7 +42,7 @@
     of hex digits and dashes is manual review (REVIEW_OBJECT_TEXT, NOISY_SOURCE), exit 2 (was
     0).'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: document.trailer-id-hex-second
   old:
     exit: 0
@@ -64,7 +64,7 @@
     from the file''s bytes. Hex-encoded text in the second /ID element is now a hard finding
     (was exit 0).'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: document.trailer-id-literal
   old:
     exit: 0
@@ -86,7 +86,7 @@
     from the file''s bytes. A literal /ID element holding the SSN is now a hard finding (was
     exit 0).'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: document.trailer-key-pattern-rule
   old:
     exit: 0
@@ -108,7 +108,7 @@
     from the file''s bytes. A pattern rule over a private trailer key is now a hard finding
     (was exit 0; Binary sweeps value rules only).'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: document.trailer-key-value-rule
   old:
     exit: 2
@@ -135,7 +135,7 @@
     from the file''s bytes. A known value in a private trailer key is now a hard finding;
     the Binary layer''s REVIEW_BINARY for the same rule is suppressed by it (already found).'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: document.xref-stream-id
   old:
     exit: 1
@@ -159,7 +159,7 @@
     it was always read but labelled ORPHANED (storage orphaned). It is now labelled as the
     trailer, storage live. Exit unchanged.'
   cell: trailer.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: leftover.deleted-page-embedded-font-compact
   old:
     exit: 0
@@ -377,7 +377,7 @@
     from the file''s bytes. An earlier revision''s trailer is now read; its /ID holding the
     SSN is a hard finding, storage superseded (was exit 0).'
   cell: superseded.plain
-  pr: '#TBD'
+  pr: '#73'
 - case: revision.raw-rewritten-font-compact
   old:
     exit: 0
