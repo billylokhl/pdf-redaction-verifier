@@ -34,6 +34,10 @@ class CaseMetricRow:
     crashed: bool
     timed_out: bool
     elapsed: float
+    # report["error"]["code"] when the CLI reported that it could not
+    # complete the scan, else None. Required, so no producer of rows can
+    # leave it out and silently count such a file as a verdict.
+    error_code: str | None
 
 
 def _percentile(sorted_values: Sequence[float], q: float) -> float:

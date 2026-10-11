@@ -34,7 +34,7 @@ from .accepted import AcceptedDiff, find_accepted, load_accepted_diffs
 from .keys import NormalizedKey, effective_exit, normalize
 from .metrics import CaseMetricRow
 from .refs import REFERENCE_REF, candidate_verify_path, repo_root, resolve_commit, worktree_for_ref
-from .runner import CliResult, current_python, run_cli
+from .runner import CliResult, current_python, error_code, run_cli
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -569,6 +569,7 @@ def to_metric_row(
         crashed=result.crashed,
         timed_out=result.timed_out,
         elapsed=result.elapsed,
+        error_code=error_code(result),
     )
 
 

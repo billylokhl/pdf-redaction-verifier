@@ -24,7 +24,7 @@ from . import corpus as corpus_mod
 from . import report
 from .accepted import DEFAULT_PATH as DEFAULT_ACCEPTED_DIFFS_PATH
 from .differential import DEFAULT_TIMEOUT, run_candidate, run_differential
-from .metrics import compute_metrics
+from .metrics import CaseMetricRow, compute_metrics
 from .refs import REFERENCE_REF
 
 
@@ -57,6 +57,42 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0 if all(d.ok for d in run.diffs) and not run.stale else 1
 
 
+# Error codes that describe the *file* rather than the run: an encrypted or
+# corrupt real file gets exit 2 from the CLI, which is the tool's actual,
+# fail-closed answer for it (owner's decision, 2026-10-10). In the real
+# corpus they count as review verdicts; every other error code means the
+# run itself could not measure the file. The case library has no such
+# exemption: its judge fails any error report (caselib.run.judge).
+FILE_VERDICT_ERRORS = frozenset({"PDF_PASSWORD", "PDF_UNREADABLE"})
+
+
+def _unmeasured(rows: list[CaseMetricRow], noun: str,
+                file_verdict_errors: frozenset[str] = frozenset()) -> str | None:
+    """Why this metrics run cannot pass, or None if every file was measured.
+
+    A file with no verdict — the CLI crashed (bad exit code, no or invalid
+    report, or a report whose exit disagrees with the process's), timed
+    out, or reported an error saying it could not complete the scan — is either left
+    out of every rate or counted with a verdict it never earned; either
+    way the rates would describe something other than what was asked for
+    while reading exactly like a complete run. Zero files is refused for
+    the same reason `diff` refuses it."""
+    if not rows:
+        return (f"ERROR: zero {noun}s measured — a silent 0/0 would look identical to "
+                "a clean pass; refusing to report it as one.")
+    crashed = sorted(r.case_id for r in rows if r.crashed and not r.timed_out)
+    timed_out = sorted(r.case_id for r in rows if r.timed_out)
+    errored = sorted((r.case_id, r.error_code) for r in rows
+                     if r.error_code is not None and r.error_code not in file_verdict_errors)
+    if not crashed and not timed_out and not errored:
+        return None
+    lines = [f"ERROR: {len(crashed)} crashed, {len(timed_out)} timed-out and "
+             f"{len(errored)} incompletely scanned {noun}(s) have no verdict:"]
+    lines += [f"  crashed    {i}" for i in crashed] + [f"  timed out  {i}" for i in timed_out]
+    lines += [f"  error      {i} ({code})" for i, code in errored]
+    return "\n".join(lines)
+
+
 def _cmd_metrics(args: argparse.Namespace) -> int:
     rows = run_candidate(
         args.case_id or None, out_dir=args.out, timeout=args.timeout, max_workers=args.workers
@@ -65,6 +101,10 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     print(report.render_metrics_table(scorecard))
     if args.json:
         args.json.write_text(report.dump_json(scorecard.to_jsonable()) + "\n")
+    error = _unmeasured(rows, "case")
+    if error is not None:
+        print(error, file=sys.stderr)
+        return 1
     return 0
 
 
@@ -114,12 +154,30 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         workdir=out,
         timeout=args.timeout,
     )
-    strata = corpus_mod.stratify(runs, have=normalization_have(available()))
+    have = normalization_have(available())
+    strata = corpus_mod.stratify(runs, have=have)
     print(report.render_stratified_table(strata))
     if args.json:
         payload = {name: sc.to_jsonable() for name, sc in strata.items()}
         args.json.write_text(report.dump_json(payload) + "\n")
-    return 0
+    failed = not check.ok
+    if failed:
+        print(f"ERROR: {len(check.missing)} missing and {len(check.changed)} changed "
+              "manifest file(s) were not scanned (listed above).", file=sys.stderr)
+    if len(runs) != len(usable):
+        print(f"ERROR: {len(usable) - len(runs)} manifest file(s) disappeared during the run "
+              "and were not scanned.", file=sys.stderr)
+        failed = True
+    rows = [corpus_mod.metric_row(r, have) for r in runs]
+    for row in rows:
+        if row.error_code in FILE_VERDICT_ERRORS:
+            print(f"note: {row.case_id} could not be opened ({row.error_code}); "
+                  "counted as a review verdict (exit 2)", file=sys.stderr)
+    error = _unmeasured(rows, "file", FILE_VERDICT_ERRORS)
+    if error is not None:
+        print(error, file=sys.stderr)
+        failed = True
+    return 1 if failed else 0
 
 
 def _inventory_gate(args: argparse.Namespace, jobs: list[Any], workdir: Path,

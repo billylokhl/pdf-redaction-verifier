@@ -31,6 +31,7 @@ from scorecard.differential import (
     normalization_have,
     run_candidate,
     run_differential,
+    to_metric_row,
     save_reference_cache,
     select_cases,
     stale_accepted_diffs,
@@ -772,6 +773,7 @@ def _row(case_id, truth, expected_exit, actual_exit, has_hard_finding=False, cra
     return CaseMetricRow(
         case_id=case_id, truth=truth, expected_exit=expected_exit, actual_exit=actual_exit,
         has_hard_finding=has_hard_finding, crashed=crashed, timed_out=timed_out, elapsed=elapsed,
+        error_code=None,
     )
 
 
@@ -1153,3 +1155,140 @@ def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeyp
     differential.run_differential(["page.memo"], out_dir=tmp_path / "out")
 
     assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}
+
+
+# ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
+
+
+def _metric_row(case_id, *, crashed=False, timed_out=False, error_code=None):
+    unmeasured = crashed or timed_out
+    return CaseMetricRow(
+        case_id=case_id, truth="clean", expected_exit=0,
+        actual_exit=None if unmeasured else (2 if error_code else 0), has_hard_finding=False,
+        crashed=unmeasured, timed_out=timed_out, elapsed=1.0, error_code=error_code,
+    )
+
+
+@pytest.mark.parametrize(
+    "rows, code, mentions",
+    [
+        ([_metric_row("a"), _metric_row("b")], 0, []),
+        ([_metric_row("a"), _metric_row("b", timed_out=True)], 1, ["timed out  b"]),
+        ([_metric_row("a", crashed=True), _metric_row("b")], 1, ["crashed    a"]),
+        ([_metric_row("a", error_code="RULES_INVALID")], 1, ["error      a (RULES_INVALID)"]),
+        # No exemption in the case library: its judge fails any error report.
+        ([_metric_row("a", error_code="PDF_PASSWORD")], 1, ["error      a (PDF_PASSWORD)"]),
+        ([], 1, ["zero cases measured"]),
+    ],
+)
+def test_metrics_exits_nonzero_on_any_unmeasured_case(monkeypatch, tmp_path, capsys, rows, code, mentions):
+    """A case with no verdict (crashed, timed out, or an error report saying
+    nothing was scanned) is either left out of every rate or counted with a
+    verdict it never earned, so the run must not read as complete. The
+    weekly job's metrics step printed "timeouts 10" and passed; it must
+    fail instead, and still write its JSON for the artifact."""
+    import scorecard.cli as cli
+
+    monkeypatch.setattr(cli, "run_candidate", lambda *a, **k: rows)
+    out = tmp_path / "metrics.json"
+    args = cli.build_parser().parse_args(["metrics", "--out", str(tmp_path / "o"), "--json", str(out)])
+    assert args.func(args) == code
+    assert json.loads(out.read_text())["total"] == len(rows)
+    err = capsys.readouterr().err
+    for text in mentions:
+        assert text in err
+
+
+def test_to_metric_row_carries_the_reports_error_code():
+    """The metrics path (what the weekly job runs) must carry an error
+    report's code onto its row, or `metrics` would count a scan the CLI
+    could not complete as a verdict. A crashed run carries none (it is
+    already a crash)."""
+    import types
+
+    case = types.SimpleNamespace(id="c", truth="clean", expected=types.SimpleNamespace(exit=0))
+    errored = CliResult(
+        returncode=2, report=_report(2, error={"code": "RULES_INVALID", "message": "x"}),
+        elapsed=1.0, timed_out=False, stderr_tail="",
+    )
+    assert to_metric_row(case, errored).error_code == "RULES_INVALID"
+    ok = CliResult(returncode=0, report=_report(0), elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, ok).error_code is None
+    crashed = CliResult(returncode=3, report=None, elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, crashed).error_code is None
+    # Fail-closed: only an explicit null means "no error"; a malformed one
+    # (an empty object, no code) still marks the scan as incomplete.
+    malformed = CliResult(returncode=2, report=_report(2, error={}), elapsed=1.0,
+                          timed_out=False, stderr_tail="")
+    assert to_metric_row(case, malformed).error_code is not None
+    no_key = {k: v for k, v in _report(0).items() if k != "error"}
+    missing = CliResult(returncode=0, report=no_key, elapsed=1.0, timed_out=False, stderr_tail="")
+    assert to_metric_row(case, missing).error_code is not None
+
+
+def _corpus_result(outcome):
+    if outcome == "timeout":
+        return CliResult(returncode=None, report=None, elapsed=1.0, timed_out=True, stderr_tail="")
+    if outcome == "crash":
+        return CliResult(returncode=3, report=None, elapsed=1.0, timed_out=False, stderr_tail="")
+    if outcome == "ok":
+        return CliResult(returncode=0, report=_report(0), elapsed=1.0, timed_out=False, stderr_tail="")
+    report = _report(2, error={"code": outcome, "message": "x"})
+    return CliResult(returncode=2, report=report, elapsed=1.0, timed_out=False, stderr_tail="")
+
+
+@pytest.mark.parametrize(
+    "scan, missing, changed, code, mentions",
+    [
+        (["ok"], (), (), 0, []),
+        (["ok"], ("gone.pdf",), (), 1, ["1 missing and 0 changed"]),
+        (["ok"], (), ("edited.pdf",), 1, ["0 missing and 1 changed"]),
+        (["timeout"], (), (), 1, ["timed out  " + "ab" * 8]),
+        (["crash"], (), (), 1, ["crashed    " + "ab" * 8]),
+        (["RULES_INVALID"], (), (), 1, ["error      " + "ab" * 8 + " (RULES_INVALID)"]),
+        (["INTERNAL_ERROR"], (), (), 1, ["(INTERNAL_ERROR)"]),
+        # An encrypted or corrupt real file: exit 2 is the tool's real answer.
+        (["PDF_PASSWORD"], (), (), 0, ["(PDF_PASSWORD); counted as a review verdict"]),
+        (["PDF_UNREADABLE"], (), (), 0, ["(PDF_UNREADABLE); counted as a review verdict"]),
+        ([], (), (), 1, ["disappeared during the run", "zero files measured"]),
+    ],
+)
+def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
+    monkeypatch, tmp_path, capsys, scan, missing, changed, code, mentions
+):
+    """`corpus run` scans only the files still present and unchanged: a
+    missing, changed or vanished manifest file, a scan that crashed, timed
+    out or reported a run-level error, or nothing scanned at all, leaves
+    the clean-side rates describing fewer files than the manifest — the
+    run must say so with its exit code (and still write --json). Files
+    are named by SHA-256 prefix in these lines, never by path."""
+    import scorecard.cli as cli
+    import scorecard.corpus as corpus_mod
+
+    entry = corpus_mod.CorpusEntry("ab" * 32, "private-name.pdf", True, False, "other")
+    monkeypatch.setattr(corpus_mod, "load_manifest", lambda p: [entry])
+    monkeypatch.setattr(
+        corpus_mod, "check_manifest",
+        lambda entries, root: corpus_mod.CorpusCheck(missing=tuple(missing), changed=tuple(changed)),
+    )
+    monkeypatch.setattr(
+        corpus_mod, "scan_corpus",
+        lambda *a, **k: [corpus_mod.CorpusRun(entry, _corpus_result(o)) for o in scan],
+    )
+    secrets = tmp_path / "rules.json"
+    secrets.write_text("[]")
+    out = tmp_path / "corpus.json"
+    args = cli.build_parser().parse_args(
+        ["corpus", "run", "--root", str(tmp_path), "--secrets", str(secrets), "--allow-outside",
+         "--out", str(tmp_path / "work"), "--manifest", str(tmp_path / "manifest.json"),
+         "--json", str(out)]
+    )
+    assert args.func(args) == code
+    assert "all" in json.loads(out.read_text())
+    err = capsys.readouterr().err
+    for text in mentions:
+        assert text in err
+    # The new summary lines never carry the file's path (the MISSING/
+    # CHANGED lines, which name what to fix in the manifest, are separate).
+    summary = [line for line in err.splitlines() if not line.startswith(("MISSING", "CHANGED"))]
+    assert not any("private-name" in line for line in summary)
