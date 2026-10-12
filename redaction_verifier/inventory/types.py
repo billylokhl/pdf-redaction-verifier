@@ -9,6 +9,7 @@ from typing import Final, TypeAlias
 
 from ..ledger import Flag, Span, Unit, UnitKind, UnitRef
 from .graph import Graph
+from .pages import Page
 
 
 class Contested(Enum):
@@ -81,7 +82,8 @@ class Inventory:
     offset to the OBJECT unit read there; ``object_streams`` maps the
     offset of each object stream to its decoded tiling.
     ``revisions`` counts the chain's revisions (0 = current). ``graph``:
-    the reference graph (3a-7), its edges by body and trailer."""
+    the reference graph (3a-7), its edges by body and trailer; ``pages``:
+    each revision's page list (3a-7b), None where the tree is flagged."""
 
     size: int
     tiling: Tiling
@@ -94,6 +96,7 @@ class Inventory:
     object_streams: dict[int, ObjectStream]
     entries: dict[int, History]
     graph: Graph
+    pages: tuple[tuple[Page, ...] | None, ...]
 
     def entry(self, number: int, revision: int = 0) -> tuple[int, int, int] | None:
         """Object *number*'s xref entry (kind, a, b) in *revision*."""

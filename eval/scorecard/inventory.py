@@ -65,6 +65,7 @@ from redaction_verifier.inventory.flate import flate_decode
 from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBool, PdfDict,
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
+from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
 
@@ -128,21 +129,14 @@ def qpdf_map(path: Path) -> tuple[dict[int, tuple[str, int, int]], int]:
     return found, result.returncode
 
 
-# qpdf --check warnings about what a page-tree node means, not how the
-# file parses: the reference graph (3a-7) owns these, not the xref chain.
-# Includes a reference to a free (null) object used as a dictionary: the
-# object maps agree; flagging the dangling reference is 3a-7's job.
-# (Substring matches: issue #44 comment 1 item 3 tracks narrowing them.)
-PAGE_TREE_SEMANTICS = (b"/Type key should be", b"attempted key retrieval",
-                       b"Pages tree includes non-dictionary", b"/Kids",
-                       b"operation for dictionary attempted on object of type null",
-                       b"MediaBox is undefined")
-# qpdf --check warnings the inventory does not own: page-tree semantics
-# (3a-7's) and a page content stream's own syntax, which --check tokenizes
-# ("... stream 5 0 (content, offset 10): unexpected )") -- the content
-# decoder's (Phase 4). The stream's raw bytes are still compared.
-# (Issue #46 item 3 tracks matching the whole template instead.)
-NOT_STRUCTURE = PAGE_TREE_SEMANTICS + (b"(content, offset ",)
+# qpdf --check warnings the inventory does not own: a page content
+# stream's own syntax, which --check tokenizes ("... stream 5 0 (content,
+# offset 10): unexpected )") -- the content decoder's (Phase 4). The
+# stream's raw bytes are still compared. (Issue #46 item 3 tracks matching
+# the whole template instead.) Page-tree semantics were exempt here until
+# 3a-7b, which flags any tree off the canonical shape (PAGE_TREE): any
+# qpdf page-tree message on an unflagged file is now a disagreement.
+NOT_STRUCTURE = (b"(content, offset ",)
 
 # The written allowlist of whole qpdf messages that are not a disagreement
 # (ADR 0010; 3a-6b, root-caused on the 2,073-file corpus and in qpdf's
@@ -275,27 +269,6 @@ def mupdf_encrypted(doc: pymupdf.Document) -> bool:
     authenticated an empty user password (an owner-password-only file):
     the metadata's "encryption" names the handler either way."""
     return bool(doc.needs_pass or (doc.metadata or {}).get("encryption"))
-
-
-def _catalog_retyped(line: bytes, lines: list[bytes], path: Path) -> bool:
-    """qpdf's "catalog /Type entry missing or invalid" when it comes only
-    from qpdf's own page-tree repair: the page tree reaches the catalog, qpdf
-    overrides its /Type to /Page (a page-tree warning, 3a-7's) -- while
-    qpdf's own read of the catalog is a /Type /Catalog dictionary."""
-    if b"catalog /Type entry missing or invalid" not in line:
-        return False
-    trailer = chain_of(path.read_bytes()).sections[0].trailer
-    root = trailer.get(b"Root") if trailer is not None else None
-    if not isinstance(root, PdfRef):
-        return False
-    retyped = re.compile(rb"object %d %d at offset \d+: /Type key should be /Page but is not"
-                         % (root.num, root.gen))
-    shown = subprocess.run(["qpdf", f"--show-object={root.num}", str(path)],
-                           capture_output=True, timeout=QPDF_TIMEOUT)
-    value = ObjectParser(shown.stdout).parse_value_at(0).value
-    return (any(retyped.search(other) for other in lines) and isinstance(value, PdfDict)
-            and isinstance(value.get(b"Type"), PdfName)
-            and getattr(value.get(b"Type"), "raw", None) == b"Catalog")
 
 
 # ── Values in one comparable form: ours, MuPDF's, libqpdf's ───────────────
@@ -468,6 +441,8 @@ class Check(Enum):
     MUPDF_WARNING = "mupdf_warning"    # a MuPDF warning, or MuPDF repaired the file
     NEEDS_PASSWORD = "needs_password"  # a reader cannot open it without a password
     ENCRYPTION = "encryption"          # our trailer, MuPDF and qpdf differ on encryption
+    PAGE_LIST = "page_list"            # a revision's pages, in order (MuPDF or libqpdf)
+    PAGE_ATTRIBUTE = "page_attribute"  # a page's inherited attribute (MuPDF or libqpdf)
     ORACLE_ERROR = "oracle_error"      # the comparison itself failed: nothing verified
 
 
@@ -648,10 +623,8 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
                                 min(set(bodies) ^ set(qmap)))
         lines = qpdf_warnings(path)
         stats.qpdf_errors += any(line.startswith(b"ERROR") for line in lines)
-        found = [line for line in structural(
-                     lines, path, linearized=b"File is linearized" in lines,
-                     undecoded=() if encrypted else undecoded)
-                 if not _catalog_retyped(line, lines, path)]
+        found = structural(lines, path, linearized=b"File is linearized" in lines,
+                           undecoded=() if encrypted else undecoded)
         if found:
             raise _Disagreement(Check.QPDF_CHECK, revision,
                                 templates=tuple(scrub(line) for line in found[:3]))
@@ -711,10 +684,115 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         if not same_as_mupdf(mine, mu) or theirs != mine:
             raise _Disagreement(Check.TRAILER_VALUE, revision)
         stats.values += 1
+        _pages_agree(doc, path, inv.pages[revision], revision, encrypted, stats)
     _dead_bodies_agree(data, inv, listed)
     warnings = _mupdf_templates()
     if warnings:
         raise _Disagreement(Check.MUPDF_WARNING, templates=warnings)
+
+
+def _kind(form: object) -> object:
+    return form[:1] if isinstance(form, tuple) else form
+
+
+def _box(form: object) -> Box | None:
+    """A box in the comparison's form (four numbers) as MuPDF holds it."""
+    if not (isinstance(form, tuple) and form[:1] == ("array",) and len(form[1]) == 4):
+        return None
+    values = [float(v[1]) for v in form[1] if isinstance(v, tuple) and v[0] in ("int", "real")]
+    if len(values) != 4:
+        return None
+    x0, y0, x1, y1 = (f32(v) for v in values)
+    return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _close(ours: Iterable[float], theirs: Iterable[float]) -> bool:
+    """Equal within two 32-bit float steps each (MuPDF computes in floats)."""
+    return all(abs(float32_ordinal(Fraction(a)) - float32_ordinal(Fraction(b))) <= 2
+               for a, b in zip(ours, theirs, strict=True))
+
+
+def _effective_agree(page: pymupdf.Page, inherited: dict[str, object]) -> bool:
+    """MuPDF's page as shown -- its media box, its crop box (flipped
+    against the media box's top), its rotation and its rectangle (the
+    crop box clipped to the media box, rotated) -- against what the
+    canonical attributes say it is (ADR 0011 item 8): a box MuPDF
+    replaced (a 1x1 page, 612x792) or scaled (/UserUnit) disagrees."""
+    media = _box(inherited["MediaBox"])
+    if media is None:
+        return False
+    crop = _box(inherited["CropBox"]) or media
+    rotate = inherited["Rotate"]
+    turns = (rotate[1] if isinstance(rotate, tuple) and rotate[:1] == ("int",) else 0) % 360
+    flipped = (crop[0], f32(media[3] - crop[3]), crop[2], f32(media[3] - crop[1]))
+    clipped = intersect(crop, media)
+    w, h = clipped[2] - clipped[0], clipped[3] - clipped[1]
+    shown = (0.0, 0.0, h, w) if turns in (90, 270) else (0.0, 0.0, w, h)
+    return (_close(media, page.mediabox) and _close(flipped, page.cropbox)
+            and page.rotation == turns and _close(shown, page.rect))
+
+
+def _pages_agree(doc: pymupdf.Document, path: Path, pages: tuple[Page, ...] | None,
+                 revision: int, encrypted: bool, stats: _Stats) -> None:
+    """The revision's page list and each page's inherited attributes
+    (ADR 0011 item 8): as written, ours against MuPDF's own inheritance
+    (pdf_dict_get_inheritable) and libqpdf's, read from a separate
+    instance that pushes the attributes down to each page (owner decision
+    9, P2: pikepdf reads an inherited /Resources no other way), whose
+    warnings are gated like the first's -- the push makes an inherited
+    direct value a new object there, compared by value; and as MuPDF
+    shows the page (_effective_agree). An encrypted revision's direct
+    /Resources holds encrypted strings in our reading: compared by kind
+    there."""
+    if pages is None:  # the inventory flagged the tree: never reached unflagged
+        raise _Disagreement(Check.PAGE_LIST, revision, templates=("no page list",))
+    mine = [(page.number, page.gen) for page in pages]
+    pdf = pymupdf._as_pdf_document(doc)
+    mupdf = pymupdf.mupdf
+    shown = [doc[i] for i in range(doc.page_count)]  # loads the tree first
+    objects = [mupdf.pdf_lookup_page_obj(pdf, i) for i in range(mupdf.pdf_count_pages(pdf))]
+    if [(mupdf.pdf_to_num(o), mupdf.pdf_to_gen(o)) for o in objects] != mine:
+        raise _Disagreement(Check.PAGE_LIST, revision, templates=("mupdf",))
+    with pikepdf.explicit_conversion(), pikepdf.Pdf.open(
+            path, attempt_recovery=False, inherit_page_attributes=True) as pushed:
+        theirs = [page.obj.objgen for page in pushed.pages]
+        warnings = structural([b"WARNING: " + w.encode("utf-8", "surrogateescape")
+                               for w in pushed.get_warnings()], path)
+        if warnings:
+            raise _Disagreement(Check.LIBQPDF_WARNING, revision,
+                                templates=tuple(scrub(line) for line in warnings[:3]))
+        if theirs != mine:
+            raise _Disagreement(Check.PAGE_LIST, revision, templates=("libqpdf",))
+        for page, obj, qpage, view in zip(pages, objects, pushed.pages, shown):
+            resolved: dict[str, object] = {}
+            for key in (k.decode() for k in INHERITED):
+                found = page.attributes.get(key.encode())
+                ours = value_form(found.value, found.text) if found is not None else NULL
+                inherited = mupdf.pdf_dict_get_inheritable(obj, mupdf.pdf_new_name(key))
+                text = mupdf.pdf_sprint_obj(None, 0, inherited, 0, 0)[0]
+                mu = NULL if mupdf.pdf_is_null(inherited) else text_form(
+                    text.encode("latin-1"))
+                value = mupdf.pdf_resolve_indirect(inherited)
+                resolved[key] = text_form(
+                    mupdf.pdf_sprint_obj(None, 0, value, 0, 0)[0].encode("latin-1"))
+                # Pushing makes an inherited direct value a new indirect object
+                # in qpdf's copy: compared by value then. A reference the file
+                # writes stays a reference, compared as one.
+                got = qpage.obj.get("/" + key)
+                direct = not (isinstance(ours, tuple) and ours[:1] == ("ref",))
+                qp = libqpdf_form(got, top=direct)
+                if (encrypted and key == "Resources" and isinstance(ours, tuple)
+                        and ours[:1] == ("dict",)):
+                    agree = _kind(mu) == _kind(qp) == ("dict",)
+                else:
+                    agree = same_as_mupdf(ours, mu) and qp == ours
+                if not agree:
+                    raise _Disagreement(Check.PAGE_ATTRIBUTE, revision, page.number,
+                                        templates=(key,))
+                stats.values += 1
+            if not _effective_agree(view, resolved):
+                raise _Disagreement(Check.PAGE_ATTRIBUTE, revision, page.number,
+                                    templates=("as shown",))
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,

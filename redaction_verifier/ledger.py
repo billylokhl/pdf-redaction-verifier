@@ -99,6 +99,7 @@ class FlagReason(Enum):
     # The reference graph (3a-7, ADR 0011).
     REF_GENERATION = "ref_generation"  # `N G R` naming a live object of another generation
     REF_DANGLING = "ref_dangling"      # `N G R` naming no object (free, missing, object 0)
+    PAGE_TREE = "page_tree"            # a page tree or page attribute off the canonical shape
 
 
 Reason: TypeAlias = NAReason | FlagReason

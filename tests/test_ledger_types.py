@@ -117,6 +117,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         classic().replace(b"/Root 1 0 R", b"/Root 1 0 R /Info 3 5 R", 1)),
     FlagReason.REF_DANGLING: lambda: _inventoried(
         classic().replace(b"/Root 1 0 R", b"/Root 1 0 R /Info 9 0 R", 1)),
+    FlagReason.PAGE_TREE: lambda: _inventoried(  # /Count 2 over one page
+        classic().replace(b"/Count 1", b"/Count 2", 1)),
     FlagReason.COMMENT_LINE: lambda: _inventoried(
         classic().replace(b"%PDF-1.7\n", b"%PDF-1.7\n% 4 0 obj\n", 1)),
 }

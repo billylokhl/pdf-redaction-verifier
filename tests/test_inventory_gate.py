@@ -475,13 +475,19 @@ def test_qpdf_check_errors_are_gated(tmp_path: Path) -> None:
     w = Writer()
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
     table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
-    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [] /Count 0 >>"), 0)
-    w.epilogue(w.table(table, b"/Size 3 /Root 1 0 R"))
-    found = compare(bytes(w.out), tmp_path)
-    # A page tree with no pages: qpdf opens it, but --check stops with an
-    # ERROR line no allowlist covers -- "file does not contain any pages"
-    # in 12.4; in 12.3, the out-of-range error of reading page 1's outlines.
-    # (A /Pages that is no dictionary, this test's fixture until qpdf 12
-    # refused to open it, is now flagged MISSING_PAGE_TREE.)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                          b" /Resources << >> /Contents 4 0 R >>"), 0)
+    table[4] = (1, w.stream(4, b" /Filter /FlateDecode", b"not flate data"), 0)
+    w.epilogue(w.table(table, b"/Size 5 /Root 1 0 R"))
+    data = bytes(w.out)
+    assert oracle.inventory(data).flags == ()  # content is not the inventory's to decode
+    found = compare(data, tmp_path)
+    # A page content stream qpdf cannot decode: --check stops with "ERROR:
+    # page 1: ... errors while decoding content stream", no allowlist covers
+    # it. (A known class of unflagged file the gate rejects until Phase 4
+    # decodes content streams.) (The fixture was a page tree with no pages until 3a-7b flagged that,
+    # NO_PAGES; before that a /Pages that is no dictionary, until qpdf 12
+    # refused to open it.)
     assert found.disagrees and found.check is Check.QPDF_CHECK, found
     assert found.qpdf_check_errors == 1, found

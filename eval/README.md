@@ -585,7 +585,13 @@ What each part of the output means:
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
-  `needs_password`, `encryption`, `oracle_error`, `tiling`),
+  `needs_password`, `encryption`, `page_list` and `page_attribute`
+  (since 3a-7b: each revision's pages in order, and each page's
+  inherited `/Resources`, `/MediaBox`, `/CropBox`, `/Rotate` as written,
+  against MuPDF's own inheritance and a second libqpdf instance that
+  pushes them to the pages, owner decision 9; and the page as MuPDF
+  shows it -- media box, crop box, rotation, rectangle -- against what
+  those attributes say it is), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
@@ -596,8 +602,8 @@ What each part of the output means:
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
   printed an `ERROR` line (exit 2) the allowlists cover (page-tree
-  semantics, the reference graph's until 3a-7b). ERROR lines are gated like
-  WARNING lines since 3a-6b.
+  semantics until 3a-7b, which flags them; now only page content
+  syntax). ERROR lines are gated like WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
   compared with the readers: the inventory said the readers may disagree,
@@ -635,10 +641,11 @@ What each part of the output means:
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
-applied to `--check` lines and to libqpdf's warnings alike: page-tree
-semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
-3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
-them); and since 3a-6b, entries that each match one whole line on
+applied to `--check` lines and to libqpdf's warnings alike: a content
+stream's own syntax (Phase 4's), as in 3a-6 -- a substring of a line, not
+anchored (issue #46 tracks narrowing it; the page-tree substrings went
+with 3a-7b, which flags any tree off the canonical shape, as did the
+retyped-catalog exemption); and since 3a-6b, entries that each match one whole line on
 the exact path, each with a reader-agreement test in
 `tests/test_inventory_values.py`: linearization hint-table lint
 (`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
