@@ -684,8 +684,8 @@ own machine (`sha256sum`) when a number needs explaining.
   `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
   finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
   skips the grids, so only the weekly job runs those cases with OCR. Two
-  sides of that fix are also pinned outside the grids, so `full-macos`
-  runs them on every PR:
+  sides of that fix are also pinned outside the grids. `full-macos` runs
+  both on every PR, but only the second is a real guard there:
   - `page.digit-column`, clean: a lone digit column must not give a hard
     finding. It runs everywhere, OCR or not, but only macOS 27 misreads
     the column, so only a local macOS 27 run catches a regression there;
