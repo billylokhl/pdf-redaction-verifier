@@ -337,6 +337,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tests/test_inventory_decisions.py's offset-0 entry with a /Probe reference (now
     REF_DANGLING; without one it still agrees). Linearity: many revisions, each rewriting a
     target many bodies reference. Expected: +7 corpus files flagged (ADR 0011's measurement).
+    Done (3a-7a PR): graph.py, REF_GENERATION / REF_DANGLING; gate re-run all passing: corpus
+    1,932 agree / 141 flagged / 0 unflagged disagreements (+7, as measured), caselib 407/6/0
+    (413 cases), fuzz 501/1,499/0.
   - 3a-7b The page tree and page attributes (ADR 0011 item 2): FlagReason.PAGE_TREE with a
     closed PageTreeRule (like NumberRule; final members fixed in the PR: the root's shape, a
     kid that is not an indirect reference to a dictionary, a node reached twice, a node's

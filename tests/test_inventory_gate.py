@@ -363,6 +363,9 @@ def _with_encrypt(entry: bytes) -> bytes:
 def test_an_encrypt_entry_the_readers_ignore_is_no_exemption(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: bytes) -> None:
     data = _with_encrypt(entry)
+    if entry.endswith(b" R"):  # a dangling /Encrypt: flagged (3a-7, R1)
+        assert [f.reason for f in oracle.inventory(data).flags] == [FlagReason.REF_DANGLING]
+        return
     assert oracle.inventory(data).flags == ()  # the inventory does not flag it
     assert compare(data, tmp_path).check is Check.ENCRYPTION
     monkeypatch.setattr(pymupdf.Document, "xref_stream_raw", lambda self, n: b"tampered")

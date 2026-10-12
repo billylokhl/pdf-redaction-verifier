@@ -596,7 +596,7 @@ What each part of the output means:
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
   printed an `ERROR` line (exit 2) the allowlists cover (page-tree
-  semantics, the reference graph's, 3a-7). ERROR lines are gated like
+  semantics, the reference graph's until 3a-7b). ERROR lines are gated like
   WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
@@ -629,7 +629,9 @@ What each part of the output means:
   is compared with libqpdf exactly (kinds, string bytes, integers and
   reals as written, references by number and generation) and with MuPDF
   allowing a real one 32-bit float step from ours (MuPDF holds reals in
-  32 bits); a reference to an object number with no body reads as null.
+  32 bits); references are compared as written -- since 3a-7a the
+  inventory flags any that does not resolve (`REF_DANGLING`,
+  `REF_GENERATION`), so none reaches the comparison.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
@@ -643,9 +645,9 @@ the exact path, each with a reader-agreement test in
 linearized; 15 messages of qpdf's linearization checker:
 readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
-stream's data start; content decoding is Phase 4's), and a reference to
-object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
-until 3a-7 flags dangling references); since 3a-6c, qpdf's warning on an
+stream's data start; content decoding is Phase 4's) -- the entry for a
+reference to object 0 (`OBJECT_ZERO_REFERENCE`) went with 3a-7a, which
+flags it `REF_DANGLING`; since 3a-6c, qpdf's warning on an
 in-use entry at offset 0 (`OFFSET_ZERO`, tested in
 `tests/test_inventory_decisions.py`), which the inventory reads as no
 object -- the oracle drops such an entry from qpdf's map only after MuPDF
