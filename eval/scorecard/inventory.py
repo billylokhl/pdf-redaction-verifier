@@ -191,17 +191,20 @@ OFFSET_ZERO = re.compile(
     rb" \(object \d+ \d+\): object has offset 0 - a common error handled correctly by"
     rb" qpdf and most other applications")
 
-# A page content stream's own syntax error at the stream's first byte:
-# qpdf prints no offset when it is 0 (QPDFExc::createWhat), so the line
-# reads "(content): ..." instead of NOT_STRUCTURE's "(content, offset N)"
-# -- "unexpected )", "EOF while reading token" (an unterminated string
-# from the first byte), and the rest of its content tokenizer's messages
-# (QPDFObjectHandle::parseContentStream_data). As for that form, content
-# syntax is the content decoder's (Phase 4) and the stream's raw bytes are
-# still compared. Anchored on the whole line as --check prints it (qpdf's
-# own prefix; no file path). Issue #88.
+# A page content stream's own syntax error in a token that starts at byte
+# 0: qpdf's QPDFExc constructor turns offset 0 into "no offset", so the
+# line reads "(content): ..." instead of NOT_STRUCTURE's "(content, offset
+# N)" -- "unexpected )", "EOF while reading token" (an unterminated
+# string), and the rest of the content parser's messages (QPDFParser.cc
+# Parser::warn, the content description; --check parses page contents
+# only). As for that form, content syntax is the content decoder's (Phase
+# 4) and the stream's raw bytes are still compared; a decode error is a
+# different line, still gated. Anchored on the whole line as --check prints
+# it, qpdf's own prefix: the page and its content streams, one or an array
+# ("stream 4 0, stream 5 0"); no file path. Issue #88.
 CONTENT_AT_ZERO = re.compile(
-    rb"WARNING: page object \d+ \d+ stream \d+ \d+ \(content\): [^\r\n]+")
+    rb"WARNING: page object \d+ \d+ stream \d+ \d+(?:, stream \d+ \d+)* \(content\):"
+    rb" [^\r\n]+")
 
 
 def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
