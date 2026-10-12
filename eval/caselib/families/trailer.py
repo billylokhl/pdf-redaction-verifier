@@ -135,7 +135,7 @@ def generated_id_digits(path: Path) -> None:
 
 AFTER_EOF_MISTAKE = ("A tool appended its own dictionary (a note, a stray trailer) after the "
                      "file's final %%EOF.")
-AFTER_EOF_RECOVERY = "Open the file in a text editor and read past the last %%EOF."
+AFTER_EOF_RECOVERY = "Open the file in a hex editor and read past the last %%EOF."
 
 
 @case("file.dictionary-after-final-eof", truth="leak", cells="unindexed.plain", writer="raw",
