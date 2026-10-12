@@ -352,8 +352,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     comparison, since listing pages runs qpdf's repairs: a copy with a new number or an
     exception disagrees); each page's attributes against MuPDF's effective values
     (pdf_page_resources for /Resources, mediabox, cropbox converted from MuPDF's flipped
-    coordinates, rotation) and against libqpdf -- OWNER DECISION P2 below: pikepdf has no
-    accessor that reads an inherited /Resources without writing it into the page.
+    coordinates, rotation) and against libqpdf's, pushed by pikepdf in the separate instance
+    (opened with inherit_page_attributes=True; its libqpdf warnings gated like the first's)
+    (P2: pikepdf has no accessor that reads an inherited /Resources without writing it into
+    the page; pushing is qpdf's own inheritance, in a throwaway copy).
     Encrypted revisions get the page-list and attribute comparisons too (no strings
     involved). PAGE_TREE_SEMANTICS, the retyped-catalog exemption and
     tests/test_inventory_xref.py `_agree`'s page-tree exemption go: any qpdf page-tree
@@ -396,7 +398,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     chain, /NeedAppearances, /AS) changes from revision to revision while the widget's body
     stays, the normal form-filling update -- starting UNEXAMINED; it claims no bytes (not a
     tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
-    memoized per field node; a /Parent cycle among fields (OWNER DECISION P5) flags. Linearity: many fields deep
+    memoized per field node; a /Parent cycle among fields flags FIELD_TREE (P5). Linearity: many fields deep
     in a /Parent chain over many revisions.
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
@@ -415,10 +417,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     within the linear bound or flagged BUDGET_EXHAUSTED. The oracle's added per-revision
     page loads and pikepdf instances grow its cost (#52 item 4): re-measure the oracle's
     time with each PR.
-  OWNER DECISIONS PENDING for 3a-7 (to be briefed): P1 the annotation gate's method (after
-  7d's spike); P2 how the gate reads libqpdf's inherited page attributes (push attributes
-  in the separate pikepdf instance, against ADR 0011 item 8's "without pushing", or walk
-  /Parent ourselves over libqpdf's objects); P3 amend ADR 0011 item 4: name-tree keys
+  OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
+  pending 7d's spike): P1 the annotation gate's method (after
+  7d's spike); decided (decision 9): P2 how the gate reads libqpdf's inherited page
+  attributes -- pushed in the separate pikepdf instance (amends ADR 0011 item 8's "without
+  pushing"); P3 amend ADR 0011 item 4: name-tree keys
   unique and sorted by bytes and also as text, under both readers' decodings (qpdf compares
   UTF-8 text, MuPDF pdf_to_text_string; measured cost expected 0); P4 a non-empty name tree in an encrypted revision
   flags until 3a-9 (cost 0 on the corpus: no encrypted file); P5 a /Parent cycle among
@@ -468,3 +471,10 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    inside XMP fall under decision D. Measured cost once every kind is enforced (each from its
    decoder's phase; all of it when the shadow verdict ships, Phase 6): about 865 of 2,073
    corpus files (42%), mostly R7, R6 and R3.
+9. (2026-10-11, the 3a-7 plan, P2-P5 as recommended) P2: the gate reads libqpdf's inherited page
+   attributes by letting pikepdf push them in its separate, throwaway instance (amends ADR
+   0011 item 8's "without pushing"); P3: name-tree keys are unique and sorted as text under
+   both readers' decodings as well as by bytes (amends ADR 0011 item 4); P4: a non-empty
+   name tree in an encrypted revision flags NAME_TREE until 3a-9; P5: a /Parent cycle among
+   AcroForm fields flags FIELD_TREE. P1 (the annotation gate's method) waits for 3a-7d's
+   spike.
