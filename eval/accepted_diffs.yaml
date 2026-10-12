@@ -404,6 +404,84 @@
     read past the edge and exited 0 at /Rotate 0. On a clean page this is review-tier noise
     by design.'
   pr: '#68'
+- case: page.raw-font-coded-carried-off-page-second-half-above
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: a value formed by visible and off-page parts
+    is reviewed (exit 2), never a finding and not silent. The Text layer''s reading 9 (review
+    only) reads every horizontal glyph, visible or not, so page 1''s last visible line ''SSN
+    123-45-'' joined with ''6789 continues'' wholly off the page — above page 2''s top edge,
+    or on a line below page 1''s bottom edge — is a manual-review warning.'
+  cell: match.page-break-off-page-half
+  pr: '#68'
+- case: page.raw-font-coded-carried-off-page-second-half-above-rotated
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: a value formed by visible and off-page parts
+    is reviewed (exit 2), never a finding and not silent. The Text layer''s reading 9 (review
+    only) reads every horizontal glyph, visible or not, so page 1''s last visible line ''SSN
+    123-45-'' joined with ''6789 continues'' wholly off the page — above page 2''s top edge,
+    or on a line below page 1''s bottom edge — is a manual-review warning. The reference''s
+    1: on a page turned with /Rotate 270 under a crop box reaching 200 pt past the media box,
+    its visible area was misplaced (derotating page.rect used the unclipped crop box), so
+    it put the off-page half on the page and its hard seam joined the halves; correctly placed,
+    the half is off the page. The same layout at /Rotate 0 goes 0 -> 2.'
+  cell: match.page-break-off-page-half
+  pr: '#68'
+  weaker: true
+- case: page.raw-font-coded-carried-off-page-wrap-below
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: a value formed by visible and off-page parts
+    is reviewed (exit 2), never a finding and not silent. The Text layer''s reading 9 (review
+    only) reads every horizontal glyph, visible or not, so page 1''s last visible line ''SSN
+    123-45-'' joined with ''6789 continues'' wholly off the page — above page 2''s top edge,
+    or on a line below page 1''s bottom edge — is a manual-review warning.'
+  cell: match.line-wrap
+  pr: '#68'
 - case: page.raw-font-coded-runs-off-overhanging-crop
   old:
     exit: 0
@@ -539,6 +617,30 @@
   cell: match.page-break-off-page-half
   pr: '#68'
   weaker: true
+- case: page.raw-font-coded-split-at-break-off-page-slug
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-10: a value split at a page break whose first
+    half lies wholly off the page (past page 1''s right edge) and whose second half opens
+    page 2, below a slug above its top edge, is manual review (exit 2): off-page text reads
+    like a slug, which does not run on into the next page, and the review net joins its tail
+    with page 2''s first visible line. The reference (eval-ref-0) never read off the page
+    here and exited 0.'
+  cell: match.page-break-off-page-half
+  pr: '#68'
 - case: page.raw-font-coded-split-at-break-past-edge
   old:
     exit: 0
