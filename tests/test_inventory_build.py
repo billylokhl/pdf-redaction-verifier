@@ -659,17 +659,17 @@ COMPRESSED_PAGE_TREES = [
     pytest.param([(1, CATALOG), (2, PAGES)], {1: (2, 4, 0), 2: (2, 4, 1)}, None,
                  id="both-compressed"),
     pytest.param([(1, b"<< /Type /Catalog /Pages 9 0 R >>")], {1: (2, 4, 0)},
-                 "MISSING_PAGE_TREE", id="catalog-compressed-pages-missing"),
+                 "MISSING_PAGE_TREE REF_DANGLING", id="catalog-compressed-pages-missing"),
     pytest.param([(1, b"<< /Type /Catalog >>")], {1: (2, 4, 0)}, "MISSING_PAGE_TREE",
                  id="catalog-compressed-no-pages"),
     pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>")], {1: (2, 4, 0)},
-                 "MISSING_PAGE_TREE", id="catalog-compressed-other-generation"),
+                 "MISSING_PAGE_TREE REF_GENERATION", id="catalog-compressed-other-generation"),
     pytest.param([(1, b"<< /Type /Catalog /Pages 4 0 R >>")], {1: (2, 4, 0)},
                  "MISSING_PAGE_TREE", id="catalog-compressed-pages-a-stream"),
     pytest.param([(2, b"[3 0 R]")], {2: (2, 4, 0)}, "MISSING_PAGE_TREE",
                  id="pages-compressed-an-array"),
     pytest.param([(1, b"<< /Type /Catalog /Pages 2 1 R >>"), (2, PAGES)],
-                 {1: (2, 4, 0), 2: (2, 4, 1)}, "MISSING_PAGE_TREE",
+                 {1: (2, 4, 0), 2: (2, 4, 1)}, "MISSING_PAGE_TREE REF_GENERATION",
                  id="both-compressed-other-generation"),
     pytest.param([(1, CATALOG), (2, b"(x)")], {1: (2, 4, 0), 2: (2, 4, 1)},
                  "MISSING_PAGE_TREE", id="both-compressed-a-string"),
@@ -681,7 +681,7 @@ def test_a_compressed_catalog_or_page_tree_is_checked(
         members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
         expected: str | None) -> None:
     found = reasons(_objstm_file(members, entries))
-    assert found == ([expected] if expected else []), found
+    assert found == (expected.split() if expected else []), found
 
 
 @requires_qpdf

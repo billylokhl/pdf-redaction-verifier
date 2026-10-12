@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Final, TypeAlias
 
 from ..ledger import Flag, Span, Unit, UnitKind, UnitRef
+from .graph import Graph
 
 
 class Contested(Enum):
@@ -79,7 +80,8 @@ class Inventory:
     is a stream to its raw data's span. ``objects`` maps each xref
     offset to the OBJECT unit read there; ``object_streams`` maps the
     offset of each object stream to its decoded tiling.
-    ``revisions`` counts the chain's revisions (0 = current)."""
+    ``revisions`` counts the chain's revisions (0 = current). ``graph``:
+    the reference graph (3a-7), its edges by body and trailer."""
 
     size: int
     tiling: Tiling
@@ -91,6 +93,7 @@ class Inventory:
     objects: dict[int, UnitRef]
     object_streams: dict[int, ObjectStream]
     entries: dict[int, History]
+    graph: Graph
 
     def entry(self, number: int, revision: int = 0) -> tuple[int, int, int] | None:
         """Object *number*'s xref entry (kind, a, b) in *revision*."""

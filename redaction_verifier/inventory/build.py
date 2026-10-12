@@ -33,6 +33,7 @@ from typing import Final
 from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
+from .graph import Body, build_graph
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
 from .objects import (IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull,
                       PdfRef, PdfValue)
@@ -82,6 +83,7 @@ class _Member:
     dictionary: bool  # a clean dictionary
     catalog: bool  # ... with /Type /Catalog
     pages: PdfValue | None  # a catalog's /Pages
+    value: PdfValue | None  # the member's value
 
 
 def build_inventory(data: bytes, limits: Limits | None = None, *,
@@ -170,6 +172,12 @@ class _Builder:
         self._dead_bodies(tiling.regions)
         tiling, tile_flags = tile(data, self.claims, self.limits)
         self.flags.extend(tile_flags)
+        # The graph runs before the budget's flags are gathered: one it
+        # leaves unfinished is never an unflagged inventory.
+        graph, graph_flags = build_graph(
+            len(chain.revisions), self.changes, self._body_of, self._home_number,
+            [chain.sections[group[0]].trailer for group in chain.revisions], self.budget)
+        self.flags.extend(graph_flags)
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -179,7 +187,7 @@ class _Builder:
         return Inventory(len(data), tiling, tiles,
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
-                         self.objects, self.streams, entries)
+                         self.objects, self.streams, entries, graph)
 
     def _claim(self, ref: UnitRef, span: Span, flags: tuple[Flag, ...] = ()) -> None:
         self.claims.append((ref, span))
@@ -465,8 +473,32 @@ class _Builder:
                        and _name(value.get(b"Type")) == b"Catalog")
             pages = value.get(b"Pages") if catalog and isinstance(value, PdfDict) else None
             members.append(None if invalid else _Member(unit, member, dictionary, catalog,
-                                                        pages))
+                                                        pages, value))
         return members, claims
+
+    def _body_of(self, number: int, revision: int) -> Body | None:
+        """Object *number*'s body in *revision* (as Inventory.body finds
+        it): an OBJECT parsed at its in-use entry, or the member its
+        compressed entry's home lists at that index under that number."""
+        entry = self._entry(number, revision)
+        if entry is None or number == 0:
+            return None
+        if entry.kind == IN_USE:
+            ref, obj = self.objects.get(entry.a), self.parsed.get(entry.a)
+            if no_object(number, entry) or ref is None or obj is None or obj.num != number:
+                return None
+            return ref, obj.value, entry.b
+        if entry.kind == COMPRESSED:
+            member = self._home(entry, revision)
+            if member is None or member.number != number:
+                return None
+            return member.ref, member.value, 0
+        return None
+
+    def _home_number(self, number: int, revision: int) -> int | None:
+        """The object stream number a compressed *number* names in *revision*."""
+        entry = self._entry(number, revision)
+        return entry.a if entry is not None and entry.kind == COMPRESSED else None
 
     def _home(self, entry: Entry, revision: int) -> _Member | None:
         """The member a compressed *entry* names in *revision*: its home

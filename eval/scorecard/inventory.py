@@ -181,12 +181,6 @@ LINEARIZATION_LINT = tuple(re.compile(pattern) for pattern in (
 # are still compared, and the readers' partial output is the same.
 TRUNCATED_FLATE = re.compile(
     rb" \(offset (\d+)\): input stream is complete but output may still be valid")
-# A reference to object 0 (always free): both readers read null (qpdf
-# 12.3+ warns; MuPDF resolves no object 0). Only object 0: MuPDF resolves
-# `1 5 R` by its number where qpdf reads null. Flagging dangling
-# references is the reference graph's (3a-7), which removes this entry.
-OBJECT_ZERO_REFERENCE = re.compile(
-    rb" \(object \d+ \d+, offset \d+\): treating bad indirect reference \(0 \d+ R\) as null")
 
 
 # An in-use xref entry at offset 0 (xref.no_object): both readers read no
@@ -219,7 +213,7 @@ def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
             truncated = TRUNCATED_FLATE.fullmatch(rest)
             if truncated and int(truncated.group(1)) in undecoded:
                 continue
-            if OBJECT_ZERO_REFERENCE.fullmatch(rest) or OFFSET_ZERO.fullmatch(rest):
+            if OFFSET_ZERO.fullmatch(rest):
                 continue
         found.append(line)
     return found
@@ -290,10 +284,11 @@ def _catalog_retyped(line: bytes, lines: list[bytes], path: Path) -> bool:
 # ── Values in one comparable form: ours, MuPDF's, libqpdf's ───────────────
 # Kinds kept ("int" vs "real"), integers and reals exact (a real is the
 # fraction its text writes, never a float), strings and names as bytes.
-# §7.3.10: a reference to an object number with no body in the revision is
-# null -- by NUMBER only, so a generation mismatch stays a difference (MuPDF
-# resolves `1 5 R` by its number; libqpdf reads null). §7.3.7: a
-# dictionary entry whose value is null is the same as no entry.
+# References as written: since 3a-7 every reference in an unflagged file
+# names a live object of its generation (a dangling one is REF_DANGLING, a
+# generation mismatch REF_GENERATION), so none is read as null here (#52
+# item 1). §7.3.7: a dictionary entry whose value is null is the same as no
+# entry.
 NULL = ("null",)
 
 
@@ -302,7 +297,7 @@ def _dict_form(pairs: Iterable[tuple[bytes, object]]) -> object:
                                  key=lambda kv: kv[0])))
 
 
-def value_form(value: PdfValue | None, text: bytes, live: Collection[int]) -> object:
+def value_form(value: PdfValue | None, text: bytes) -> object:
     """A value we parsed out of *text* in the comparison's form."""
     match value:
         case None | PdfNull():
@@ -318,17 +313,17 @@ def value_form(value: PdfValue | None, text: bytes, live: Collection[int]) -> ob
         case PdfString(raw=raw):
             return ("str", raw)
         case PdfRef(num=num, gen=gen):
-            return ("ref", num, gen) if num in live else NULL
+            return ("ref", num, gen)
         case PdfArray(items=items):
-            return ("array", tuple(value_form(item, text, live) for item in items))
+            return ("array", tuple(value_form(item, text) for item in items))
         case PdfDict(entries=entries):
-            return _dict_form((key.raw, value_form(item, text, live)) for key, item in entries)
+            return _dict_form((key.raw, value_form(item, text)) for key, item in entries)
     return ("other", type(value).__name__)
 
 
-def text_form(text: bytes, live: Collection[int]) -> object:
+def text_form(text: bytes) -> object:
     """A reader's printed value (MuPDF's pretty print) in that form."""
-    return value_form(ObjectParser(text).parse_value_at(0).value, text, live)
+    return value_form(ObjectParser(text).parse_value_at(0).value, text)
 
 
 _PIKE = pikepdf.ObjectType
@@ -647,7 +642,6 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
             raise _Disagreement(Check.MUPDF_WARNING, revision,
                                 templates=_mupdf_templates() or ("repaired",))
         decoded_homes: dict[int, bytes] = {}
-        live = set(qmap)
         parser = ObjectParser(blob)
         for number, (kind, a, b) in sorted(qmap.items()):
             body = bodies[number]
@@ -666,8 +660,8 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
                 if encrypted:
                     continue
                 held = parser.parse_indirect_at(a, max(s.end for s in units[body].spans))
-                mine = value_form(held.value if held is not None else None, blob, live)
-                _values_agree(doc, libqpdf, number, b, mine, live, Check.OBJECT_VALUE, revision)
+                mine = value_form(held.value if held is not None else None, blob)
+                _values_agree(doc, libqpdf, number, b, mine, Check.OBJECT_VALUE, revision)
                 stats.values += 1
                 continue
             home = qmap.get(a)
@@ -689,12 +683,12 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
             stats.members += 1
             span = units[body].spans[0]
             member = ObjectParser(decoded).parse_value_at(span.start, span.end).value
-            _values_agree(doc, libqpdf, number, 0, value_form(member, decoded, live), live,
+            _values_agree(doc, libqpdf, number, 0, value_form(member, decoded),
                           Check.MEMBER_VALUE, revision)
             stats.values += 1
         # The trailer: not encrypted even in an encrypted revision.
-        mine = value_form(trailer, data, live)
-        mu = text_form(doc.pdf_trailer(compressed=False).encode("latin-1"), live)
+        mine = value_form(trailer, data)
+        mu = text_form(doc.pdf_trailer(compressed=False).encode("latin-1"))
         theirs = libqpdf_form(libqpdf.pdf.trailer, top=True)
         _no_libqpdf_warning(libqpdf, revision)
         if not same_as_mupdf(mine, mu) or theirs != mine:
@@ -731,7 +725,7 @@ def _no_libqpdf_warning(libqpdf: _Libqpdf, revision: int, number: int | None = N
 
 
 def _values_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, number: int, gen: int,
-                  mine: object, live: Collection[int], check: Check, revision: int) -> None:
+                  mine: object, check: Check, revision: int) -> None:
     """Object *number*'s value, ours (*mine*) against MuPDF's pretty print
     (its tight printer runs an empty name into the next token: `/ 2.5`
     prints `/2.5`) and libqpdf's. libqpdf answers None for a null, a
@@ -741,7 +735,7 @@ def _values_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, number: int, gen: in
     got = libqpdf.pdf.get_object((number, gen))
     theirs = libqpdf_form(got, top=True)
     _no_libqpdf_warning(libqpdf, revision, number)
-    if not same_as_mupdf(mine, text_form(mu_text, live)) or theirs != mine:
+    if not same_as_mupdf(mine, text_form(mu_text)) or theirs != mine:
         raise _Disagreement(check, revision, number)
 
 
