@@ -73,6 +73,12 @@ jobs:
           - python-version: "3.12"
             qpdf: "12.4.2"
             qpdf-sha256: "db367d897829f22c4198ce1094143c9d467bd6ee7dfabc44ba6f02056b24f8b1"
+          - python-version: "3.13"
+            qpdf: "12.4.2"
+            qpdf-sha256: "db367d897829f22c4198ce1094143c9d467bd6ee7dfabc44ba6f02056b24f8b1"
+          - python-version: "3.14"
+            qpdf: "12.4.2"
+            qpdf-sha256: "db367d897829f22c4198ce1094143c9d467bd6ee7dfabc44ba6f02056b24f8b1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
