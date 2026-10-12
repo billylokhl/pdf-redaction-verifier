@@ -54,6 +54,7 @@ def _reconstruct(
     *,
     tolerance_from: list[Glyph] | None = None,
     keep: Callable[[list[Glyph]], bool] | None = None,
+    keep_line: Callable[[list[Glyph]], bool] | None = None,
 ) -> str:
     """Cluster glyphs into visual lines along one axis, sort along the other.
 
@@ -66,7 +67,8 @@ def _reconstruct(
     *tolerance_from* (default: *glyphs*) are the glyphs whose extents set
     it. *keep*, if given, is asked of each column-break segment of a line
     (see _join_cluster): a segment it returns False for is dropped, and a
-    line left with no segment with it.
+    line left with no segment with it. *keep_line*, if given, is asked of
+    each whole line first: a line it returns False for is dropped.
     """
     if not glyphs:
         return ""
@@ -98,6 +100,8 @@ def _reconstruct(
 
     lines: list[str] = []
     for cluster in clusters:
+        if keep_line is not None and not keep_line(cluster):
+            continue
         cluster.sort(key=lambda g: g[order_axis])
         segments = _column_segments(cluster, order_axis)
         if keep is not None:
@@ -158,7 +162,7 @@ def _column_segments(cluster: list[Glyph], order_axis: int) -> list[list[Glyph]]
 def extract_visual_text(page: fitz.Page) -> list[str]:
     """Reconstruct page text in visual reading orders.
 
-    Returns nine readings, or [] for a page with no glyphs:
+    Returns ten readings, or [] for a page with no glyphs:
 
     0. horizontal — visible, horizontally written text, lines top to bottom;
     1-2. rotated, top-to-bottom and bottom-to-top — visible text written
@@ -171,7 +175,9 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     5-6. across the visible edge, rotated — every vertically written
        glyph, visible or not, read along its own direction;
     7-8. every visible glyph read in vertical columns, top-to-bottom and
-       bottom-to-top.
+       bottom-to-top;
+    9. the visible lines whole, horizontal — every horizontal line holding
+       a visible glyph, with all its stretches, off-page ones included.
 
     Readings 0-6 are genuine: each reads text the way it was written, so
     the caller matches known values and pattern rules on each of their
@@ -208,11 +214,16 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     than one and a half characters and three times the line's median
     gap; no match crosses it.
 
-    Readings 7-8 are reconstructions: a column of an ordinary horizontal
-    page stacks one glyph from each of many lines (a ledger's last
-    digits, a numbered list's numbers), so they can assemble a value by
-    accident — yet they are also the only reading of a value written one
-    character per line. Callers treat them as manual-review only.
+    Readings 7-9 are reconstructions, which callers treat as
+    manual-review only. A column of an ordinary horizontal page stacks
+    one glyph from each of many lines (a ledger's last digits, a numbered
+    list's numbers), so readings 7-8 can assemble a value by accident —
+    yet they are also the only reading of a value written one character
+    per line. Reading 9 joins a visible stretch with an off-page stretch
+    a column break away on its line: a value formed that way is reviewed,
+    never a finding and never silent (owner decision, 2026-10-11), though
+    the join also flags some clean pages whose page number or footer and
+    a slug past the edge happen to form one.
     """
     flat: list[Glyph] = []
     rotated: list[Glyph] = []
@@ -282,11 +293,21 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     # edge, and it can feed the hard page seam. (Glyph tuples are compared
     # by identity: two equal glyphs are still two glyphs.)
     visible_flat = {id(g) for g in flat}
+
+    def holds_visible(glyphs: list[Glyph]) -> bool:
+        return any(id(g) in visible_flat for g in glyphs)
+
     across = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat,
-                           keep=lambda stretch: any(id(g) in visible_flat for g in stretch))
+                           keep=holds_visible)
               if off_flat else horizontal)
     across_down, across_up = (columns(rotated + off_rotated, tolerance_from=rotated)
                               if off_rotated else (rotated_down, rotated_up))
     all_down, all_up = columns(flat + rotated)
+    # Reading 9: every line holding a visible glyph, with all of its
+    # stretches, off-page ones included — so a value formed by a visible
+    # part and a far off-page part on the same line is reviewed.
+    whole_lines = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat,
+                                keep_line=holds_visible)
+                   if off_flat else horizontal)
     return [horizontal, rotated_down, rotated_up, outside,
-            across, across_down, across_up, all_down, all_up]
+            across, across_down, across_up, all_down, all_up, whole_lines]

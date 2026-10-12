@@ -327,13 +327,18 @@ page, so they feed the seam only at the manual-review tier. Text wholly
 off the page joined with the next page's first line is manual review
 too. Across the edge, lines are told apart with the visible text's
 tolerance, so a large off-page banner cannot merge two lines of visible
-fine print. Two more readings stack *every*
-visible glyph into vertical columns. They are *reconstructions*: the only
-way to read a value written one character per line, but on an ordinary
-page a column stacks one glyph from each of many lines — a ledger's last
-digits, a numbered list's numbers — which assembled the README's own
-example value out of a clean numbered list. Their matches are only ever
-manual review, for values and patterns alike.
+fine print. Three more readings are *reconstructions*, whose matches are
+only ever manual review, for values and patterns alike. Two stack
+*every* visible glyph into vertical columns: the only way to read a
+value written one character per line, but on an ordinary page a column
+stacks one glyph from each of many lines — a ledger's last digits, a
+numbered list's numbers — which assembled the README's own example
+value out of a clean numbered list. The third keeps each visible line
+whole, its stretches past the edge included, so a value formed by a
+visible part and an off-page part a column break away on the same line
+is reviewed rather than silent (the owner's decision, 2026-10-11) — at
+the cost, by design, of a review warning on a clean page whose page
+number or footer and an off-page slug happen to form a value.
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,

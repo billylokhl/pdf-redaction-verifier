@@ -173,11 +173,12 @@ still there: invisible on screen, but selectable and copyable.
   horizontally (read left to right) or vertically (rotated, read along its
   own direction both ways); the off-page text; and the same three
   directions across the visible edge, visible and off-page text together —
-  plus two *reconstructed* readings of every visible glyph in vertical
-  columns. The reconstructions are the only reading of a value written
+  plus three *reconstructed* readings: every visible glyph in vertical
+  columns, both ways, and every visible line whole, its stretches past
+  the edge included. The columns are the only reading of a value written
   one character per line, but a column of an ordinary page also stacks
-  unrelated lines (a numbered list's numbers), so they only ever give
-  manual-review warnings.
+  unrelated lines (a numbered list's numbers), so reconstructions only
+  ever give manual-review warnings.
 - **Across pages:** each page break is checked on its own. A value running
   from the last line of one page onto the first line of the next, in a
   genuine reading of the visible text (a visible line read on across the
@@ -196,7 +197,11 @@ still there: invisible on screen, but selectable and copyable.
   reading, the readings across the visible edge included. On a line read
   across the edge, a wide gap (a column break) keeps a visible line and
   an off-page slug on its baseline apart: the slug is left to the
-  off-page reading. A narrower gap does not: the two read as one line,
+  off-page reading. A value the two form across that gap is a
+  manual-review warning (the owner's decision, 2026-10-11): never a
+  finding, never silent, and by design also raised on a clean page whose
+  page number or footer and a slug past the edge happen to form a value.
+  A narrower gap does not keep them apart: the two read as one line,
   like a value running past the edge. Everything that needs text joined
   is manual-review.
 

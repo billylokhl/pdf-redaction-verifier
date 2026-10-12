@@ -149,6 +149,15 @@ finding (`1`) on a clean document. A slug a column break away from
 visible text (a page number at the margin, the slug well past the edge)
 is read only as off-page text and gives manual review at most.
 
+A value formed by a visible part and an off-page part a column break
+away on the same line is a manual-review warning (`REVIEW_CROSS_LINE`,
+exit `2`), never a finding and never silent, at every rotation (owner
+decision, 2026-10-11; pinned by the clean `page.raw-font-coded-baseline-
+off-page-*` cases). The same join flags, by design, a clean page whose
+page number or footer and a slug past the edge happen to form a value:
+review-tier noise, about 35 clean files of a 1,760-file fabricated grid
+of such layouts and none of a 2,072-file corpus.
+
 ## What ⚑ costs, and what comes next
 
 A flag is the honest answer to "found it, could not read it", but it means

@@ -278,6 +278,56 @@ def _split_off_page_cases() -> None:
 _split_off_page_cases()
 
 
+# ── A visible part and a far off-page part on the same line ─────────────
+# 'Acct 123-45' at the right margin and, on its baseline, '6789 Job' past
+# the media box's right edge, a column break away (60 pt, or 12 pt: both
+# wider than one and a half characters). No reading but reading 9 (each
+# visible line whole) joins them, and only its joined text forms the SSN:
+# manual review by the owner's decision of 2026-10-11, never a finding
+# (nothing ties the halves) and never silent. A clean page may show such
+# a coincidence, so it is review-tier noise by design.
+BASELINE_GAPS = {"far": 60, "near": 12}
+
+
+def visible_beside_off_page(path: Path, gap: str, rotate: int) -> None:
+    """One page; *gap* is a key of BASELINE_GAPS; with /Rotate 270 the
+    crop box reaches 200 pt past the media box's right edge."""
+    content = (text("Quarterly report", 700)
+               + b"\nBT /F2 12 Tf 532 400 Td " + _baseline_coded("Acct 123-45") + b" Tj ET"
+               + b"\nBT /F2 12 Tf %d 400 Td " % (612 + BASELINE_GAPS[gap])
+               + _baseline_coded("6789 Job") + b" Tj ET")
+    turned = b"/Rotate %d /CropBox [0 0 812 792]" % rotate if rotate else b""
+    objects = one_page(stream(b"", content), o7=differences_font(_BASELINE_CHARS))
+    objects[3] = page(resources=b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>", extra=turned)
+    _write(path, objects)
+
+
+_BASELINE_CHARS = "".join(dict.fromkeys("Acct 123-45" + "6789 Job"))
+
+
+def _baseline_coded(text_: str) -> bytes:
+    return b"<" + b"".join(b"%02X" % (_BASELINE_CHARS.index(c) + 1) for c in text_) + b">"
+
+
+def _baseline_cases() -> None:
+    for gap in BASELINE_GAPS:
+        for rotate, suffix in ((0, ""), (270, "-rotated")):
+            @case(f"page.raw-font-coded-baseline-off-page-{gap}{suffix}", truth="clean",
+                  features=("live.font", "off-page.font"), writer="raw",
+                  expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+                  story=f"'Acct 123-45' in font codes at the right margin and, "
+                        f"{BASELINE_GAPS[gap]} pt past the media box's right edge on the "
+                        "same baseline, '6789 Job': together they read as the SSN. A visible "
+                        "part and a far off-page part on one line are flagged for review, "
+                        "never a finding and never silent (owner decision, 2026-10-11)."
+                        + (" The page is turned with /Rotate 270." if rotate else ""))
+            def baseline(path: Path, gap: str = gap, rotate: int = rotate) -> None:
+                visible_beside_off_page(path, gap, rotate)
+
+
+_baseline_cases()
+
+
 # ── false-alarm.slug-beside-visible-line ────────────────────────────────
 # Reading 4 keeps a line's column-break segments that hold a visible
 # glyph. A slug wholly off the page, a word space from visible text on

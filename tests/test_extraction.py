@@ -9,7 +9,8 @@ import json
 from typing import Any
 
 import caselib
-from caselib.families.raw_cells import BREAK_LAYOUTS, page_break_at_edge
+from caselib.families.raw_cells import (BASELINE_GAPS, BREAK_LAYOUTS, page_break_at_edge,
+                                        visible_beside_off_page)
 import pymupdf as fitz
 import pytest
 
@@ -506,7 +507,7 @@ class TestReadingsAcrossTheVisibleEdge:
             readings = extract_visual_text(doc[0])
         finally:
             doc.close()
-        assert len(readings) == 9
+        assert len(readings) == 10
         visible, outside, across = readings[0], readings[3], readings[4]
         # 'VISIBLE 123-45-6789' starting at x=450 is cut by the crop box's
         # edge at x=500: its start on the page, its end off it.
@@ -559,11 +560,12 @@ class TestReadingsAcrossTheVisibleEdge:
         assert _where(_scan(doc)) == [seam(1, 2)]
 
     def test_visible_line_and_off_page_slug_on_one_baseline(self, tmp_path) -> None:
-        # Clean control: a visible line ending '123-45' and an off-page slug
-        # starting '-6789' on the same baseline, far apart. The gap is a
-        # column break, and the slug's segment holds no visible glyph, so
-        # reading 4 leaves it to reading 3: neither a value rule nor the SSN
-        # pattern rule finds a match, hard or joined.
+        # A visible line ending '123-45' and an off-page slug starting
+        # '-6789' on the same baseline, far apart. The gap is a column
+        # break, and the slug's segment holds no visible glyph, so reading
+        # 4 leaves it to reading 3: no hard finding for a value rule or the
+        # SSN pattern rule. Reading 9 keeps the line whole, so the value
+        # they form is reviewed (owner decision, 2026-10-11).
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
         page.insert_text((72, 300), "Invoice 123-45")
@@ -573,8 +575,10 @@ class TestReadingsAcrossTheVisibleEdge:
         readings = extract_visual_text(page)
         assert readings[4] == readings[0] == "Invoice123-45", readings
         assert readings[3] == "-6789slug", readings
+        assert readings[9] == "Invoice123-45\n-6789slug", readings
         report = _scan(doc, patterns=load_rules(rules).patterns)
-        assert report.findings == [] and report.warnings == []
+        assert report.findings == []
+        assert [w.code for w in report.warnings] == ["REVIEW_CROSS_LINE", "REVIEW_FUSED_PATTERN"]
 
     @pytest.mark.parametrize("banner_at", [(640, 200), (50, 900)])   # right of, below the page
     def test_large_off_page_text_does_not_merge_visible_fine_print(
@@ -653,7 +657,8 @@ class TestSlugBesideVisibleText:
     text (a page number, a footer). Reading 4 keeps only the column-break
     segments that hold a visible glyph, so the slug is reading 3's alone:
     it never meets the next page's first line at a hard seam, only in the
-    manual-review net."""
+    manual-review net, and a value it forms with that visible text on
+    their line is reviewed too, never a finding."""
 
     @pytest.mark.parametrize("layout", sorted(SLUG_BESIDE_VISIBLE))
     def test_no_hard_seam(self, layout: str) -> None:
@@ -686,6 +691,24 @@ class TestSlugBesideVisibleText:
         readings = extract_visual_text(doc[0])
         assert readings[4].endswith("Page7Job123-45"), readings
         assert _where(_scan(doc)) == [seam(1, 2)]
+
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("gap", sorted(BASELINE_GAPS))
+    def test_visible_and_far_off_page_parts_of_a_line_are_reviewed(
+            self, gap: str, rotate: int, tmp_path) -> None:
+        # The case library's 'Acct 123-45' at the margin and '6789 Job' a
+        # column break past the edge, font-coded: no hard finding (nothing
+        # ties the halves), but reviewed, never silent (owner decision,
+        # 2026-10-11). Reading 9 alone joins them.
+        pdf = tmp_path / "baseline.pdf"
+        visible_beside_off_page(pdf, gap, rotate)
+        doc = fitz.open(pdf)
+        readings = extract_visual_text(doc[0])
+        assert "6789" not in readings[4] and "Acct123-45\n6789Job" in readings[9], readings
+        report = _scan(doc)
+        assert report.findings == []
+        assert report.warnings == [line(1)]
 
 
 class TestPageBreaksOcr:
