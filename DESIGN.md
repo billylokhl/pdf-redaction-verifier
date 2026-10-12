@@ -382,6 +382,10 @@ either: in a further 1,080-page sweep of a slanted SSN line (30–60° in
 each quadrant, 7–14 pt, centred and at the page edges), 10 of the 1,047
 lines Vision read, mostly 7 pt near an edge, were manual review. Lines
 read horizontally, such as a row of form boxes, are not re-read.
+Outside the grids, `page.digit-column` (clean: a lone digit column) and
+`page.scan-image-sideways-90`/`-270` (an SSN that exists only as a turned
+image) pin both sides: no hard finding from a misread column, and a hard
+one from a genuine sideways scan.
 
 ## Bounded resources
 
