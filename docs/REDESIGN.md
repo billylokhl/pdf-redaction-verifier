@@ -721,16 +721,15 @@ passes it itself), after an intermittent unlisted `SHORT` review warning
 was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
 (owner's decision, over re-tagging the reference); `scorecard metrics`
 and `corpus run` exiting 1 when any file has no verdict (crashed, timed
-out, or an error report saying the scan could not be completed — except, in the real
-corpus only, an encrypted or corrupt file, whose exit 2 is the tool's
-real answer: owner's decision), when a corpus file is missing, changed
-or vanishes, or when nothing ran. Not yet done, left for a later PR:
-qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
-file) still swept by the Binary layer, so a 4-character all-hex value
-rule matches it on about 0.05% of files and a 3-character one (`Abe`,
-`Ada`) on about 0.75% — stable and fail-closed, but noise: bytes qpdf
-wrote itself are not file content; the additive
-`--json` fields this phase calls for (a per-layer status block,
+out, or an error report saying the scan could not be completed —
+except, in the real corpus only, an encrypted or corrupt file, whose
+exit 2 is the tool's real answer: owner's decision), when a corpus file
+is missing, changed or vanishes, or when nothing ran; and the Binary
+sweep leaving out the trailer `/ID` elements qpdf generates itself
+(not file content; a short all-hex value rule matched them on ~0.05% /
+~0.75% of files), the file's own first element still swept. Not yet
+done, left for a later PR: the additive `--json` fields this phase calls
+for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
 

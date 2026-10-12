@@ -11,6 +11,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -35,7 +36,7 @@ from redaction_verifier.report import JSON_SCHEMA_VERSION, build_json_report
 from redaction_verifier.rules import RuleSet
 from redaction_verifier.views import OCR_DPI, _OCR_IMPORTS_OK
 
-from .conftest import REPO_ROOT, SSN, report_banner, requires_full_env, run_verify
+from .conftest import REPO_ROOT, SSN, report_banner, requires_full_env, requires_qpdf, run_verify
 
 # verify.py's pure parts (docs/REDESIGN.md §4, §6 "Move, don't wrap") now
 # live in redaction_verifier/ — the static checks below must still see
@@ -701,3 +702,111 @@ class TestNothingSecretLeaks:
         _, data = _run(pdf, rules, tmp_path)
         for f in data["findings"]:
             assert f["rule"].isprintable()
+
+
+# ── qpdf's own trailer /ID is not file content ───────────────────────────
+
+_QDF_HEAD = b"%PDF-1.3\n%QDF-1.0\n\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+
+
+def _qdf_tail(first: bytes, second: bytes) -> bytes:
+    return (b"xref\n0 2\n0000000000 65535 f \n0000000009 00000 n \ntrailer <<\n  /Root 1 0 R\n"
+            b"  /Size 2\n  /ID [<" + first + b"><" + second + b">]\n>>\nstartxref\n42\n%%EOF\n")
+
+
+class TestQpdfGeneratedId:
+    """With --deterministic-id qpdf writes a trailer /ID of its own: the
+    second element always, the first too (as a copy) when the file has no
+    /ID. Those hex digits are an MD5 of qpdf's output, not file content,
+    yet a short all-hex value rule ("45-67" -> "4567") matched them on
+    about 0.05% of files (0.75% for three letters such as "Abe"): a
+    manual-review warning with nothing behind it. They are left out of
+    the Binary sweep; everything else, the file's own first element
+    included, is swept as before."""
+
+    GEN = b"0123456789abcdef4567aaaabbbbcccc"     # "generated", contains 4567
+    OWN = b"fedcba98765432104567ffffeeeedddd"     # "the file's own", contains 4567
+
+    def test_both_elements_blanked_when_the_file_had_no_id(self) -> None:
+        tail = _QDF_HEAD + _qdf_tail(self.GEN, self.GEN)
+        out = verify._without_generated_id(tail)
+        assert len(out) == len(tail)
+        assert self.GEN not in out and b"/ID [<" + b" " * 32 + b"><" + b" " * 32 + b">]" in out
+
+    def test_the_files_own_first_element_is_kept(self) -> None:
+        out = verify._without_generated_id(_QDF_HEAD + _qdf_tail(self.OWN, self.GEN))
+        assert self.OWN in out and self.GEN not in out
+
+    @pytest.mark.parametrize("tail", [
+        _QDF_HEAD + _qdf_tail(GEN, GEN)[:-6],                    # truncated: no %%EOF
+        _QDF_HEAD + _qdf_tail(GEN, GEN) + b"1 0 obj\n",           # trailer not last
+        b"stream\ntrailer << /ID [<" + GEN + b"><" + GEN + b">] >> stuff\nendstream\n",
+    ])
+    def test_anything_but_qpdfs_final_trailer_is_left_alone(self, tail) -> None:
+        assert verify._without_generated_id(tail) == tail
+
+    def test_only_the_final_trailer_is_touched(self) -> None:
+        decoy = b"4 0 obj\n<< /Length 60 >>\nstream\ntrailer << /ID [<" + self.GEN + b"><" + self.GEN + b">] >>\nendstream\nendobj\n"
+        out = verify._without_generated_id(_QDF_HEAD + decoy + _qdf_tail(self.GEN, self.GEN))
+        assert out.count(self.GEN) == 2          # the decoy's two, inside stream data
+
+    @staticmethod
+    def _collect(output: bytes, exit_code: int, rule: str = "45-67") -> ScanReport:
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             f"import sys; sys.stdout.buffer.write({output!r}); sys.exit({exit_code})"],
+            stdout=subprocess.PIPE,
+        )
+        report = ScanReport()
+        verify._collect_qpdf(proc, SecretMatcher([Secret("SHORT", normalize_string(rule))]), report)
+        return report
+
+    @staticmethod
+    def _binary_rules(report: ScanReport) -> set[str]:
+        return {w.fields.get("rule") for w in report.warnings if w.code == "REVIEW_BINARY"}
+
+    def test_generated_id_no_longer_raises_review_binary(self) -> None:
+        report = self._collect(_QDF_HEAD + _qdf_tail(self.GEN, self.GEN), 0)
+        assert self._binary_rules(report) == set()
+
+    def test_the_files_own_id_still_raises_review_binary(self) -> None:
+        report = self._collect(_QDF_HEAD + _qdf_tail(self.OWN, self.GEN), 0)
+        assert self._binary_rules(report) == {"SHORT"}
+
+    def test_nothing_is_blanked_after_a_nonzero_exit(self) -> None:
+        # A qpdf that did not exit 0 may have stopped mid-stream: its last
+        # "trailer" could be a stream's data, so nothing is left out.
+        report = self._collect(_QDF_HEAD + _qdf_tail(self.GEN, self.GEN), 3)
+        assert self._binary_rules(report) == {"SHORT"}
+
+    def test_a_match_spanning_the_held_back_tail_is_still_found(self, monkeypatch) -> None:
+        # The tail is swept separately from the rest: a value split across
+        # that boundary must still match.
+        body = _QDF_HEAD + b"(SSN 123-45-6789)\n" + _qdf_tail(self.GEN, self.GEN)
+        split = body.index(b"123-45") + 4                 # inside the value
+        monkeypatch.setattr(verify, "QPDF_TAIL_BYTES", len(body) - split)
+        report = self._collect(body, 0, rule="123-45-6789")
+        assert self._binary_rules(report) == {"SHORT"}
+
+    @requires_qpdf
+    def test_real_qpdf_generated_id_is_not_swept(self, tmp_path) -> None:
+        """End to end: a value rule equal to four characters of the /ID
+        qpdf generates for this file used to raise REVIEW_BINARY on every
+        run; it must not, and the clean file must certify."""
+        pdf = tmp_path / "clean.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing sensitive here")
+        doc.save(pdf, no_new_id=True)
+        doc.close()
+        qdf = subprocess.run(
+            [shutil.which("qpdf"), "--qdf", "--object-streams=disable", "--deterministic-id",
+             str(pdf), "-"], capture_output=True, check=True,
+        ).stdout
+        generated = re.search(rb"/ID \[<([0-9a-f]{32})>", qdf).group(1).decode()
+        body = normalize_string(qdf[: qdf.rfind(b"trailer")].decode("latin-1"))
+        window = next(generated[i:i + 4] for i in range(29)
+                      if generated[i:i + 4] not in body and generated[i:i + 4].isalnum())
+        rules = _rules(tmp_path / "rules.json", [{"name": "SHORT", "value": window}])
+        code, data = _run(pdf, rules, tmp_path)
+        assert not [w for w in data["warnings"] if w["code"] == "REVIEW_BINARY"], data["warnings"]
+        assert code in (0, 2)   # 2 only where OCR is unavailable (Linux)

@@ -286,10 +286,9 @@ damaged cross-reference table, and it decompresses attachment contents.
   Decompressed font programs *are* in it, and their tables contain byte
   runs such as `123456789`, so a sequential value can raise a coincidental
   Binary warning on a clean document. qpdf also writes a trailer `/ID`
-  (32 hex digits) of its own; `--deterministic-id` derives it from the
-  file rather than the clock, so a short value made only of hex
-  characters (`4567`, `Abe`) can match it — but the same file always gets
-  the same answer with a given qpdf version.
+  (32 hex digits) of its own; those generated digits are left out of the
+  sweep, since they are not file content, while a first `/ID` element
+  that came from the file is swept like everything else.
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction

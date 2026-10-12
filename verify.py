@@ -248,6 +248,10 @@ except BaseException as exc:  # pragma: no cover
 __version__ = "0.1.0"
 SUBPROCESS_TIMEOUT_S: int = 120
 QPDF_CHUNK_BYTES: int = 4 << 20
+# Bytes at the end of qpdf's output held back until it exits, so the
+# trailer /ID qpdf generated itself can be left out of the sweep
+# (_without_generated_id). A trailer longer than this is swept as is.
+QPDF_TAIL_BYTES: int = 64 << 10
 # Image codecs PyMuPDF does not decode to text. Feeding their bytes to a
 # text parser is the category error the structural pass exists to avoid:
 # roughly 1 byte in 256 of a JPEG is "(", which stalls a literal scanner
@@ -2390,6 +2394,48 @@ def _superseded(old: fitz.Document, doc: fitz.Document, xref: int, source: str,
     return False
 
 
+# qpdf's final trailer, matched only from the last "trailer" keyword (one
+# linear pass, whatever the tail holds) to the very end of its output: the /ID
+# array (two hex strings) inside a trailer dictionary that runs straight
+# into startxref and %%EOF. Strings in this array are the only bytes
+# _without_generated_id ever blanks.
+_QPDF_FINAL_TRAILER_ID_RE = re.compile(
+    rb"trailer\s*<<(?:(?!>>\s*startxref).)*?/ID\s*\[\s*<([0-9A-Fa-f]*)>\s*<([0-9A-Fa-f]*)>\s*\]"
+    rb"(?:(?!>>\s*startxref).)*>>\s*startxref\s+\d+\s+%%EOF\s*\Z",
+    re.S,
+)
+
+
+def _without_generated_id(tail: bytes) -> bytes:
+    """*tail* (the end of qpdf's QDF output) with the trailer /ID elements
+    qpdf generated itself blanked out, or *tail* unchanged when its final
+    trailer is not found exactly where qpdf writes it.
+
+    With --deterministic-id qpdf always generates the second /ID element
+    (an MD5 digest of its own output) and keeps the file's own first
+    element, or — when the file has no /ID — writes the generated one
+    twice. Those 32 hex digits are not file content, yet a short all-hex
+    value rule ("45-67" -> "4567", "Abe") matched them on about 0.05% /
+    0.75% of files, a manual-review warning with nothing behind it. So:
+    blank the second element always, the first only when it is that same
+    generated value; a first element that came from the file is kept and
+    swept as before. Only qpdf's last trailer, anchored to the end of its
+    output, is ever touched — the caller passes only output from a qpdf
+    that exited 0, so it cannot be a truncated stream's data."""
+    start = tail.rfind(b"trailer")
+    match = _QPDF_FINAL_TRAILER_ID_RE.match(tail, start) if start >= 0 else None
+    if match is None:
+        return tail
+    first, second = match.span(1), match.span(2)
+    blank = [second]
+    if match.group(1).lower() == match.group(2).lower():
+        blank.append(first)
+    out = bytearray(tail)
+    for start, end in blank:
+        out[start:end] = b" " * (end - start)
+    return bytes(out)
+
+
 def _collect_qpdf(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
@@ -2410,6 +2456,7 @@ def _collect_qpdf(
     """
     raw = RollingScanner(matcher)
     got_output = False
+    pending = b""   # the last QPDF_TAIL_BYTES, swept once qpdf has exited
     deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
     if proc.stdout is None:
         report.warn(
@@ -2443,14 +2490,21 @@ def _collect_qpdf(
         if not chunk:
             break
         got_output = True
-        text = chunk.decode("latin-1")  # 1:1 byte mapping, nothing lost
-        raw.feed(normalize_string(text))
+        pending += chunk
+        if len(pending) > QPDF_TAIL_BYTES:
+            cut = len(pending) - QPDF_TAIL_BYTES
+            # latin-1: a 1:1 byte mapping, nothing lost
+            raw.feed(normalize_string(pending[:cut].decode("latin-1")))
+            pending = pending[cut:]
 
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
+    if proc.returncode == 0:
+        pending = _without_generated_id(pending)
+    raw.feed(normalize_string(pending.decode("latin-1")))
     # Any nonzero exit degrades the scan — including 3. qpdf documents
     # exit 3 as "warnings", but empirically a truncated input PDF exits 3
     # while emitting only a partial QDF stream with tail objects silently

@@ -183,7 +183,14 @@ output. Its matches stay manual-review warnings, because a byte-level
 match can be coincidence. It runs with `--deterministic-id`: otherwise
 qpdf writes a trailer `/ID` hashed from the current second into the
 output being swept, and a short all-hex value matched it at random — a
-verdict that depended on the clock, not the file.
+verdict that depended on the clock, not the file. Even derived from the
+file, those digits are qpdf's, not the document's: once qpdf exits 0, the
+`/ID` elements it generated in its final trailer (the second always, the
+first when it is a copy of the second) are blanked before the sweep, so
+`4567` or `Abe` no longer matches them on ~0.05% / ~0.75% of files. The
+file's own first element stays in. Only that anchored final trailer is
+touched, and nothing after a nonzero exit, when the output may be cut
+short.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode
