@@ -321,11 +321,11 @@ def test_an_unchanged_page_is_kept_once_across_revisions() -> None:
     assert len(distinct) <= 50 + 50  # each page once, plus each rewrite once
 
 
-def _ancestor(pages: int, updates: int) -> bytes:
+def _ancestor(pages: int, updates: int, vary: bool = False) -> bytes:
     """The review's shape: *pages* under a root holding the inherited
     /MediaBox and /Resources, /Kids an indirect array that never changes;
-    each update rewrites only the root (~150 bytes), so every page below
-    it reads a new attribute value."""
+    each update rewrites only the root (~150 bytes) -- with a new
+    /MediaBox each time when *vary*, so every page below reads anew."""
     w = Writer()
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
     root = (b"<< /Type /Pages /Kids 3 0 R /Count %d /MediaBox [0 0 9 9] /Resources << >> >>"
@@ -339,8 +339,9 @@ def _ancestor(pages: int, updates: int) -> bytes:
     size = 10 + pages
     prev = w.table(table, b"/Size %d /Root 1 0 R" % size)
     w.epilogue(prev)
-    for _ in range(updates):
-        xref = w.table({2: (1, w.obj(2, root), 0)},
+    for i in range(updates):
+        again = root.replace(b"[0 0 9 9]", b"[0 0 9 %d]" % (10 + i)) if vary else root
+        xref = w.table({2: (1, w.obj(2, again), 0)},
                        b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
         w.epilogue(xref)
         prev = xref
@@ -352,11 +353,20 @@ def test_rewriting_an_ancestor_pays_for_every_page_it_makes_new() -> None:
     # (pages.PAGE_RECORD_WORK), so memory stays within the work budget --
     # the file is flagged BUDGET_EXHAUSTED long before it grows (review).
     from redaction_verifier.inventory.pages import PAGE_RECORD_WORK
-    data = _ancestor(1000, 1000)
+    data = _ancestor(1000, 1000, vary=True)
     budget = Budget(file_size=len(data))
     inv = build_inventory(data, budget=budget)
     kept = {id(p) for pages in inv.pages if pages for p in pages}
     assert len(kept) * PAGE_RECORD_WORK <= Limits().work_limit(len(data))
     assert {f.reason for f in inv.flags} == {FlagReason.BUDGET_EXHAUSTED}
-    small = _ancestor(20, 20)  # the same shape, small: within the budget, unflagged
+    small = _ancestor(20, 20, vary=True)  # the same shape, small: within the budget
     assert _inventory(small).flags == ()
+
+
+def test_rewriting_an_ancestor_whose_attributes_read_the_same_keeps_every_page() -> None:
+    # A page insertion rewrites the root's /Kids and /Count; its /MediaBox
+    # and /Resources read the same: no page record is made again (review).
+    data = _ancestor(1000, 60)
+    inv = _inventory(data)
+    assert inv.flags == ()
+    assert len({id(p) for pages in inv.pages if pages for p in pages}) == 1000

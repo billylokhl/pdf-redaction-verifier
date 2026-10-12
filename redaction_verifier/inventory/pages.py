@@ -75,11 +75,14 @@ PAGE_RECORD_WORK: Final = 1024
 @dataclass(frozen=True)
 class Attribute:
     """An inherited attribute as found: its value as written (a reference
-    or a direct value), the bytes it indexes, and the object holding it."""
+    or a direct value), the bytes it indexes, the object holding it, and
+    its written bytes' identity (equal bytes, equal number: the same
+    reading, whichever parse of them was read)."""
 
     value: PdfValue
     text: bytes
     source: int
+    content: int
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,7 @@ def build_pages(revisions: int, changes: list[list[int]],
     # with the pages that change, not revisions x pages.
     kept: dict[tuple[object, ...], Page] = {}
     made: set[tuple[int, int]] = set()  # pages with a record already
+    written: dict[bytes, int] = {}  # each attribute's bytes as written, interned
     for revision in reversed(range(revisions)):
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
@@ -115,7 +119,7 @@ def build_pages(revisions: int, changes: list[list[int]],
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]
             continue
-        walk = _Walk(revision, body_of, home_of, budget, kept, made)
+        walk = _Walk(revision, body_of, home_of, budget, kept, made, written)
         pages = walk.run(root)
         if walk.spent:
             return tuple(results), flags
@@ -202,10 +206,11 @@ def intersect(a: Box, b: Box) -> Box:
 class _Walk:
     def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
                  home_of: Callable[[int, int], int | None], budget: Budget,
-                 kept: dict[tuple[object, ...], Page], made: set[tuple[int, int]]) -> None:
+                 kept: dict[tuple[object, ...], Page], made: set[tuple[int, int]],
+                 written: dict[bytes, int]) -> None:
         self.revision, self.body_of, self.home_of, self.budget = (
             revision, body_of, home_of, budget)
-        self.kept, self.made = kept, made
+        self.kept, self.made, self.written = kept, made, written
         self.read: set[int] = set()
         self.flags: list[tuple[PageTreeRule, int]] = []
         self.spent = False
@@ -276,7 +281,11 @@ class _Walk:
                 if found is not None and not isinstance(found, PdfNull):
                     if here is inherited:
                         here = dict(inherited)
-                    here[key] = Attribute(found, text, number)
+                    written = text[found.start:found.end]
+                    if not self.charge(len(written) + 1):
+                        return None
+                    content = self.written.setdefault(written, len(self.written))
+                    here[key] = Attribute(found, text, number, content)
             if kids is not None:  # a /Pages node
                 if not isinstance(kids, PdfArray) or not _name_is(kind, b"Pages"):
                     self.flag(PageTreeRule.NODE_TYPE, number)
@@ -310,9 +319,10 @@ class _Walk:
                 self.flag(PageTreeRule.NODE_TYPE, number)
                 continue
             self.page(number, value, here)
-            # Values are the parsed objects themselves, shared across
-            # revisions: their identity names the reading.
-            ident = (number, gen, body[0], *((k, id(a.value), a.source)
+            # The page's own body and each attribute as written (its bytes,
+            # interned) name the reading: a rewritten ancestor whose
+            # attributes read the same keeps every page's record.
+            ident = (number, gen, body[0], *((k, a.content, a.source)
                                              for k, a in sorted(here.items())))
             if ident not in self.kept:
                 # A page's first record is as big as its own object in the
