@@ -156,8 +156,33 @@ whose bytes are other objects' serialized form. A stream that passes
 the key test is still skipped if under 85% of its first 64 KB is
 printable. That catches marker-less binary, but it also skips a content
 stream carrying a large inline image — text and all (see Known
-limitations). Only stream *bodies* are skipped; every dictionary is
-scanned.
+limitations). Only stream *bodies* are skipped; every object's
+dictionary is scanned.
+
+A classic trailer dictionary is not an object, so the object walk never
+reached it, and qpdf writes only the current trailer, with the file's
+first `/ID` element hex-encoded and the second replaced by its own: a
+secret in the document `/ID`, in a private trailer key, or in an earlier
+revision's trailer was certified clean (K40, K41 in docs/REDESIGN.md
+§8). Trailers are now read from the file's own bytes: every trailer the
+cross-reference chain reaches (the current one, `live`; an earlier
+revision's, `superseded`; a hybrid file's `/XRefStm` stream with its
+section), then any other `trailer << ... >>` in the file (`unreferenced`;
+one that never closes is a warning, and so is a chain section whose
+trailer cannot be read). Comments are skipped when reading a trailer's
+strings — a `>>` or `(` inside one cannot cut the dictionary short —
+and read themselves as raw text at manual review. A cross-reference stream's
+dictionary is an object the walk reads, but nothing references it, so it
+used to be called `ORPHANED`; the chain now names it as the trailer.
+Each trailer is matched like any object dictionary, with one exception,
+the owner's decision on its tier: a pattern-rule match in an element
+of the dictionary's own top-level `/ID` made only of hex digits and
+dashes is manual review (a value split across its elements still gets
+the adjacent-literals review). The spec
+expects `/ID` to be generated, and a 32-character hex-text identifier
+holds a run some built-in class accepts about one time in thirteen;
+readable text there (`SSN 123-45-6789`) stays a hard finding, and a
+known value is a hard finding anywhere in a trailer.
 
 Only PDF string tokens are matched, decoded as latin-1 or as UTF-16 when
 they carry a byte-order mark. Text shown through a CID font with
@@ -188,9 +213,11 @@ file, those digits are qpdf's, not the document's: once qpdf exits 0, the
 `/ID` elements it generated in its final trailer (the second always, the
 first when it is a copy of the second) are blanked before the sweep, so
 `4567` or `Abe` no longer matches them on ~0.05% / ~0.75% of files. The
-file's own first element stays in. Only that anchored final trailer is
-touched, and nothing after a nonzero exit, when the output may be cut
-short.
+file's own first element stays in. Only qpdf's own `/ID` array is
+touched — matched anchored to the very end of its output, where qpdf
+writes it last, so an `/ID` the file nests in the trailer is never the
+one matched — and nothing after a nonzero exit, when the output may be
+cut short.
 
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode

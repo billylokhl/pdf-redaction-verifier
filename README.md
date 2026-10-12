@@ -200,7 +200,12 @@ in this project's real-document case.
   attachment, object stream or cross-reference stream, or when under 85%
   of their first 64 KB is printable; so an inline image making up more
   than about 15% of a content stream also hides the text around it. Every
-  dictionary is always scanned. References are followed from the file's
+  object's dictionary is always scanned, and so is every trailer
+  dictionary — the document `/ID` and any other key, in the current
+  trailer and every earlier revision's — which is not an object (a
+  pattern-rule match in a `/ID` element written as nothing but hex
+  digits is manual review: such generated identifiers hold digit runs by
+  coincidence). References are followed from the file's
   root; any object not reached is reported **ORPHANED** — left behind, not
   displayed.
 - **Leftover content:** orphaned objects, and every object an incremental
@@ -351,7 +356,9 @@ assembled as a hard finding at a page seam (a page number followed by the
 next page's first line); a value assembled down a vertical column or
 through several page-number-only pages is only ever manual review; and
 decompressed font tables can raise coincidental Binary warnings (see
-Binary). Prefer longer, more specific values.
+Binary); a document `/ID` written as hex text whose digits happen to
+form an SSN, card or phone number is manual review under a pattern
+rule. Prefer longer, more specific values.
 
 A rewrite that closes these gaps by accounting for every byte of the
 file, rather than searching the places this tool knows about, is planned

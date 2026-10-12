@@ -356,7 +356,11 @@ The reference runs with a `qpdf` shim first on its `PATH` that adds
 `/ID` seeded by the current second, which the case library's `SHORT`
 rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
 that came and went with the clock. The shim removes only that input; the
-candidate passes the flag itself.
+candidate passes the flag itself. The candidate also leaves qpdf's own
+generated `/ID` out of its Binary sweep, which the reference does not:
+a future case whose short all-hex value rule happens to match that
+`/ID` (about 0.05% of files) would show as a removed review warning, to
+be listed in `accepted_diffs.yaml` like any intended change.
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -744,7 +748,7 @@ from the case's primary cell rather than a hand list:
 
 - A row that never reaches the rendered page (off-page, a switched-off
   layer, an orphaned or superseded object, metadata, an attachment, a
-  script, private data, unindexed bytes, ...): "Nothing visible here: the
+  script, private data, the trailer, unindexed bytes, ...): "Nothing visible here: the
   secret is elsewhere in the file".
 - "live" (drawn on a page): left uncaptioned by design; the value may be
   covered (a box over it, say) — the caption is about where the value
