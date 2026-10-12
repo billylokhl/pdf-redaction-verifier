@@ -128,7 +128,8 @@ def test_a_generation_mismatch_is_flagged(tmp_path: Path, data: bytes, check: Ch
     # 2147483648.5) or only in use (MuPDF's pdf_to_int truncates /Rotate
     # to 90) look alike to the value comparison: the flag is what sees them.
     (b" /BBox [0 0 2147483648.5 1000]", False),
-    (b" /Rotate 4294967386", False),
+    # Since 3a-7b the page-attribute comparison sees /Rotate too.
+    (b" /Rotate 4294967386", True),
 ])
 def test_numbers_the_readers_read_differently_are_flagged(
         tmp_path: Path, entry: bytes, seen: bool) -> None:
@@ -144,7 +145,8 @@ def test_numbers_the_readers_read_differently_are_flagged(
 def test_inherited_page_attributes_are_read_as_written(tmp_path: Path) -> None:
     # pikepdf's default open pushes /Resources and /Rotate from /Pages down
     # to the page (new objects, rewritten page dictionaries); the oracle
-    # opens without it, so libqpdf's values are the file's own.
+    # reads values without it, so libqpdf's values are the file's own, and
+    # reads the inherited attributes from a second, pushed instance (3a-7b).
     data = _file(pages=b" /Resources << /ProcSet [/PDF] >> /Rotate 90")
     found = compare(data, tmp_path)
     assert found.agrees and found.values_compared >= 5, found

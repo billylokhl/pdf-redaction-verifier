@@ -203,7 +203,7 @@ def _value_pdf(body: bytes) -> tuple[bytes, int]:
     objects = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> >>",
         4: body,
     }
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")

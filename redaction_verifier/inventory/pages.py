@@ -1,0 +1,329 @@
+"""The reference graph, part b (Phase 3a-7b, ADR 0011 item 2): each
+revision's page tree, in the one shape both readers read alike, and each
+page's inherited attributes.
+
+The tree starts at the catalog's /Pages and must be canonical: the root
+an indirect reference to a /Type /Pages node with a /Kids array and no
+/Parent; every node a dictionary (not a stream) reached by exactly one
+indirect reference in exactly one /Kids array; a node with /Kids is
+/Type /Pages with an integer /Count equal to the pages below it, a node
+without /Kids is /Type /Page; every /Parent an indirect reference to the
+node that lists it; at most 100 /Pages levels (qpdf's limit). /Kids,
+/Count and /Type may be indirect; a direct null value is an absent key.
+
+Each page's /Resources, /MediaBox, /CropBox and /Rotate come from the
+nearest of the page and its ancestors that has the key; that value must
+not be a reference to null or to nothing. /Resources is a dictionary and
+/MediaBox four numbers, both found; every box is four numbers with
+positive area and /CropBox overlaps /MediaBox; /Rotate is an integer
+multiple of 90; no /Pages node carries /ArtBox, /TrimBox or /BleedBox
+(MuPDF inherits them, qpdf does not). A page's /Contents is absent, a
+reference to a stream, or an array (direct or by reference) of
+references to streams. Anything else is FlagReason.PAGE_TREE with a
+closed PageTreeRule.
+
+Revisions are read oldest first; a revision that changes no object the
+previous walk read (nor the object stream one lives in) reuses its
+result, so updates that leave the tree alone cost nothing here. The walk
+is iterative, never raises, and is charged to the budget."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Final
+
+from ..budget import Budget
+from ..ledger import Flag, FlagReason, UnitRef
+from .graph import Body
+from .objects import PdfArray, PdfDict, PdfInt, PdfName, PdfNull, PdfReal, PdfRef, PdfValue
+
+
+class PageTreeRule(IntEnum):
+    """Why a page tree was flagged PAGE_TREE (its ``rule`` param)."""
+
+    ROOT = 1               # /Pages not a reference to a /Pages root with /Kids, no /Parent
+    KID = 2                # a /Kids item not a reference to a live dictionary
+    REACHED_TWICE = 3      # a node listed twice (a cycle, a page listed twice)
+    NODE_TYPE = 4          # /Type against /Kids, or /Kids not an array
+    COUNT = 5              # /Count not an integer equal to the pages below
+    PARENT = 6             # /Parent not a reference to the node that lists it
+    DEPTH = 7              # more than 100 /Pages levels
+    ATTRIBUTE_MISSING = 8  # no /Resources or /MediaBox on the page or above
+    ATTRIBUTE_NULL = 9     # the nearest value a reference to null or to nothing
+    ATTRIBUTE_INVALID = 10  # not a dictionary, four numbers, positive area, a multiple of 90
+    CROPBOX = 11           # /CropBox does not overlap /MediaBox
+    NODE_BOX = 12          # /ArtBox, /TrimBox or /BleedBox on a /Pages node
+    CONTENTS = 13          # /Contents not absent, a stream, or an array of streams
+
+
+INHERITED: Final = (b"Resources", b"MediaBox", b"CropBox", b"Rotate")
+_PAGE_BOXES: Final = (b"BleedBox", b"TrimBox", b"ArtBox")
+MAX_LEVELS: Final = 100
+
+
+@dataclass(frozen=True)
+class Attribute:
+    """An inherited attribute as found: its value as written (a reference
+    or a direct value), the bytes it indexes, and the object holding it."""
+
+    value: PdfValue
+    text: bytes
+    source: int
+
+
+@dataclass(frozen=True)
+class Page:
+    number: int
+    gen: int
+    unit: UnitRef
+    attributes: dict[bytes, Attribute]
+
+
+_UNRESOLVED: Final = object()
+
+
+def build_pages(revisions: int, changes: list[list[int]],
+                body_of: Callable[[int, int], Body | None],
+                home_of: Callable[[int, int], int | None],
+                trailers: list[PdfDict | None],
+                budget: Budget) -> tuple[tuple[tuple[Page, ...] | None, ...], list[Flag]]:
+    """Each revision's page list (None where the tree is not canonical or
+    the budget ran out), and the PAGE_TREE flags."""
+    results: list[tuple[Page, ...] | None] = [None] * revisions
+    flags: list[Flag] = []
+    seen: set[tuple[int, int]] = set()
+    previous: tuple[set[int], PdfValue | None, tuple[Page, ...] | None] | None = None
+    for revision in reversed(range(revisions)):
+        trailer = trailers[revision]
+        root = trailer.get(b"Root") if trailer is not None else None
+        if (previous is not None and _same_ref(previous[1], root)
+                and not previous[0].intersection(changes[revision])):
+            results[revision] = previous[2]
+            continue
+        walk = _Walk(revision, body_of, home_of, budget)
+        pages = walk.run(root)
+        if walk.spent:
+            return tuple(results), flags
+        for rule, number in walk.flags:
+            if (rule, number) not in seen:
+                seen.add((rule, number))
+                flags.append(Flag(FlagReason.PAGE_TREE, None, (
+                    ("rule", int(rule)), ("object", number), ("revision", revision))))
+        results[revision] = pages
+        previous = (walk.read, root, pages)
+    return tuple(results), flags
+
+
+def _same_ref(a: PdfValue | None, b: PdfValue | None) -> bool:
+    return (isinstance(a, PdfRef) and isinstance(b, PdfRef)
+            and (a.num, a.gen) == (b.num, b.gen))
+
+
+def _number(value: PdfValue | None) -> float | None:
+    if isinstance(value, PdfInt) and value.value is not None:
+        return float(value.value)
+    if isinstance(value, PdfReal) and value.value is not None:
+        return value.value
+    return None
+
+
+def _box(value: PdfValue | None) -> tuple[float, float, float, float] | None:
+    """Four numbers with positive area, normalized (x0 < x1, y0 < y1)."""
+    if not isinstance(value, PdfArray) or len(value.items) != 4:
+        return None
+    n = [_number(item) for item in value.items]
+    if any(v is None for v in n):
+        return None
+    x0, y0, x1, y1 = (v for v in n if v is not None)
+    box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    return box if box[2] > box[0] and box[3] > box[1] else None
+
+
+class _Walk:
+    def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
+                 home_of: Callable[[int, int], int | None], budget: Budget) -> None:
+        self.revision, self.body_of, self.home_of, self.budget = (
+            revision, body_of, home_of, budget)
+        self.read: set[int] = set()
+        self.flags: list[tuple[PageTreeRule, int]] = []
+        self.spent = False
+
+    def flag(self, rule: PageTreeRule, number: int) -> None:
+        self.flags.append((rule, number))
+
+    def body(self, ref: PdfRef) -> Body | None:
+        """The live body *ref* names in this revision (its generation
+        included), recording what was read."""
+        self.read.add(ref.num)
+        home = self.home_of(ref.num, self.revision)
+        if home is not None:
+            self.read.add(home)
+        body = self.body_of(ref.num, self.revision)
+        return body if body is not None and body[2] == ref.gen and ref.num != 0 else None
+
+    def value(self, value: PdfValue | None) -> PdfValue | None | object:
+        """*value* with one reference resolved: _UNRESOLVED for a
+        reference to nothing; None for an absent key or a direct null."""
+        if isinstance(value, PdfRef):
+            body = self.body(value)
+            return _UNRESOLVED if body is None else body[1]
+        return None if isinstance(value, PdfNull) else value
+
+    def charge(self, n: int = 1) -> bool:
+        if not self.budget.charge_work(n):
+            self.spent = True
+        return not self.spent
+
+    def run(self, root: PdfValue | None) -> tuple[Page, ...] | None:
+        before = len(self.flags)
+        catalog = self.body(root) if isinstance(root, PdfRef) else None
+        top = catalog[1].get(b"Pages") if catalog and isinstance(catalog[1], PdfDict) else None
+        node = self.body(top) if isinstance(top, PdfRef) else None
+        if (node is None or node[4] or not isinstance(node[1], PdfDict)
+                or not isinstance(self.value(node[1].get(b"Kids")), PdfArray)
+                or not _name_is(self.value(node[1].get(b"Type")), b"Pages")
+                or self.value(node[1].get(b"Parent")) is not None):
+            self.flag(PageTreeRule.ROOT, top.num if isinstance(top, PdfRef) else -1)
+            return None
+        assert isinstance(top, PdfRef)
+        pages: list[Page] = []
+        visited = {top.num}
+        # (number, gen, body, depth, inherited) to enter; ("exit", number,
+        # expected count, pages before) to check /Count on the way out.
+        stack: list[tuple[object, ...]] = [(top.num, top.gen, node, 1, {})]
+        while stack:
+            if not self.charge():
+                return None
+            item = stack.pop()
+            if item[0] == "exit":
+                _, closing, count, start = item
+                assert isinstance(closing, int) and isinstance(start, int)
+                if count != len(pages) - start:
+                    self.flag(PageTreeRule.COUNT, closing)
+                continue
+            number, gen, body, depth, inherited = item
+            assert isinstance(number, int) and isinstance(gen, int) and isinstance(depth, int)
+            assert isinstance(body, tuple) and isinstance(inherited, dict)
+            value, text = body[1], body[3]
+            assert isinstance(value, PdfDict)
+            kids = self.value(value.get(b"Kids"))
+            kind = self.value(value.get(b"Type"))
+            here = dict(inherited)
+            for key in INHERITED:
+                found = value.get(key)
+                if found is not None and not isinstance(found, PdfNull):
+                    here[key] = Attribute(found, text, number)
+            if kids is not None:  # a /Pages node
+                if not isinstance(kids, PdfArray) or not _name_is(kind, b"Pages"):
+                    self.flag(PageTreeRule.NODE_TYPE, number)
+                    continue
+                if depth > MAX_LEVELS:
+                    self.flag(PageTreeRule.DEPTH, number)
+                    continue
+                if any(self.value(value.get(k)) is not None for k in _PAGE_BOXES):
+                    self.flag(PageTreeRule.NODE_BOX, number)
+                count = self.value(value.get(b"Count"))
+                stack.append(("exit", number,
+                              count.value if isinstance(count, PdfInt) else None, len(pages)))
+                for kid in reversed(kids.items):
+                    if not self.charge():
+                        return None
+                    child = self.body(kid) if isinstance(kid, PdfRef) else None
+                    if child is None or child[4] or not isinstance(child[1], PdfDict):
+                        self.flag(PageTreeRule.KID, number)
+                        continue
+                    assert isinstance(kid, PdfRef)
+                    if kid.num in visited:
+                        self.flag(PageTreeRule.REACHED_TWICE, kid.num)
+                        continue
+                    visited.add(kid.num)
+                    parent = child[1].get(b"Parent")
+                    if not (isinstance(parent, PdfRef) and (parent.num, parent.gen) == (number, gen)):
+                        self.flag(PageTreeRule.PARENT, kid.num)
+                    stack.append((kid.num, kid.gen, child, depth + 1, here))
+                continue
+            if not _name_is(kind, b"Page"):  # a page
+                self.flag(PageTreeRule.NODE_TYPE, number)
+                continue
+            self.page(number, value, here)
+            pages.append(Page(number, gen, body[0], here))
+        # Pages come off the stack in reverse document order of entry: kids
+        # are pushed reversed, so the order is the document's.
+        return tuple(pages) if len(self.flags) == before else None
+
+    def page(self, number: int, value: PdfDict, attributes: dict[bytes, Attribute]) -> None:
+        resolved: dict[bytes, PdfValue | None | object] = {}
+        for key in INHERITED:
+            found = attributes.get(key)
+            if not self.charge():
+                return
+            resolved[key] = self.value(found.value) if found is not None else None
+            if found is not None and (resolved[key] in (_UNRESOLVED, None)
+                                      or isinstance(resolved[key], PdfNull)):
+                self.flag(PageTreeRule.ATTRIBUTE_NULL, number)
+        resources, media = resolved[b"Resources"], resolved[b"MediaBox"]
+        if b"Resources" not in attributes or b"MediaBox" not in attributes:
+            self.flag(PageTreeRule.ATTRIBUTE_MISSING, number)
+        if b"Resources" in attributes and not isinstance(resources, PdfDict):
+            self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+        elif isinstance(resources, PdfDict) and self._is_stream(attributes[b"Resources"].value):
+            self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+        media_box = _box(media) if isinstance(media, PdfArray) else None
+        if b"MediaBox" in attributes and media_box is None:
+            self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+        crop = resolved[b"CropBox"]
+        if b"CropBox" in attributes:
+            crop_box = _box(crop) if isinstance(crop, PdfArray) else None
+            if crop_box is None:
+                self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+            elif media_box is not None and not (
+                    crop_box[0] < media_box[2] and media_box[0] < crop_box[2]
+                    and crop_box[1] < media_box[3] and media_box[1] < crop_box[3]):
+                self.flag(PageTreeRule.CROPBOX, number)
+        rotate = resolved[b"Rotate"]
+        if b"Rotate" in attributes and not (
+                isinstance(rotate, PdfInt) and rotate.value is not None
+                and rotate.value % 90 == 0):
+            self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+        for key in _PAGE_BOXES:
+            box = self.value(value.get(key))
+            if box is not None and (not isinstance(box, PdfArray) or _box(box) is None):
+                self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
+        self.contents(number, value.get(b"Contents"))
+
+    def _is_stream(self, value: PdfValue) -> bool:
+        if not isinstance(value, PdfRef):
+            return False
+        body = self.body(value)
+        return body is not None and body[4]
+
+    def contents(self, number: int, contents: PdfValue | None) -> None:
+        if contents is None or isinstance(contents, PdfNull):
+            return
+        items: tuple[PdfValue, ...]
+        if isinstance(contents, PdfRef):
+            body = self.body(contents)
+            if body is not None and body[4]:
+                return
+            if body is None or not isinstance(body[1], PdfArray):
+                self.flag(PageTreeRule.CONTENTS, number)
+                return
+            items = body[1].items
+        elif isinstance(contents, PdfArray):
+            items = contents.items
+        else:
+            self.flag(PageTreeRule.CONTENTS, number)
+            return
+        for item in items:
+            if not self.charge():
+                return
+            body = self.body(item) if isinstance(item, PdfRef) else None
+            if body is None or not body[4]:
+                self.flag(PageTreeRule.CONTENTS, number)
+                return
+
+
+def _name_is(value: object, name: bytes) -> bool:
+    return isinstance(value, PdfName) and value.raw == name

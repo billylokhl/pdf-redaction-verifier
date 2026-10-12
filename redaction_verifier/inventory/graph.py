@@ -142,8 +142,10 @@ class Graph:
     trailers: tuple[tuple[Edge, ...], ...]
 
 
-# A number's body in a revision: its unit, its value, its generation.
-Body = tuple[UnitRef, PdfValue | None, int]
+# A number's body in a revision: its unit, its value, its generation, the
+# bytes its spans index (the file, or a decoded object stream), and whether
+# it is a stream.
+Body = tuple[UnitRef, PdfValue | None, int, bytes, bool]
 _TRAILER: Final = -1  # a trailer reference's source in a flag
 
 

@@ -555,7 +555,8 @@ def _pages(n: int) -> bytes:
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
     table[1] = (1, w.obj(1, CATALOG), 0)
     kids = b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(n))
-    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [%s] /Count %d >>" % (kids, n)), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [%s] /Count %d /MediaBox [0 0 9 9]"
+                          b" /Resources << >> >>" % (kids, n)), 0)
     for i in range(n):
         page, content = 3 + 2 * i, 4 + 2 * i
         table[content] = (1, w.stream(content, b"", b"BT (page %d) Tj ET" % i), 0)
@@ -681,7 +682,8 @@ def test_a_compressed_catalog_or_page_tree_is_checked(
         members: list[tuple[int, bytes]], entries: dict[int, tuple[int, int, int]],
         expected: str | None) -> None:
     found = reasons(_objstm_file(members, entries))
-    assert found == (expected.split() if expected else []), found
+    # A catalog with no page tree has no canonical page tree either (3a-7b).
+    assert found == (expected.split() + ["PAGE_TREE"] if expected else []), found
 
 
 @requires_qpdf

@@ -34,6 +34,7 @@ from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .graph import Body, build_graph
+from .pages import build_pages
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
 from .objects import (IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull,
                       PdfRef, PdfValue)
@@ -84,6 +85,7 @@ class _Member:
     catalog: bool  # ... with /Type /Catalog
     pages: PdfValue | None  # a catalog's /Pages
     value: PdfValue | None  # the member's value
+    text: bytes  # the decoded stream it was read from (its spans' coordinates)
 
 
 def build_inventory(data: bytes, limits: Limits | None = None, *,
@@ -174,10 +176,13 @@ class _Builder:
         self.flags.extend(tile_flags)
         # The graph runs before the budget's flags are gathered: one it
         # leaves unfinished is never an unflagged inventory.
-        graph, graph_flags = build_graph(
-            len(chain.revisions), self.changes, self._body_of, self._home_number,
-            [chain.sections[group[0]].trailer for group in chain.revisions], self.budget)
+        trailers = [chain.sections[group[0]].trailer for group in chain.revisions]
+        graph, graph_flags = build_graph(len(chain.revisions), self.changes, self._body_of,
+                                         self._home_number, trailers, self.budget)
         self.flags.extend(graph_flags)
+        pages, page_flags = build_pages(len(chain.revisions), self.changes, self._body_of,
+                                        self._home_number, trailers, self.budget)
+        self.flags.extend(page_flags)
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -187,7 +192,7 @@ class _Builder:
         return Inventory(len(data), tiling, tiles,
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
-                         self.objects, self.streams, entries, graph)
+                         self.objects, self.streams, entries, graph, pages)
 
     def _claim(self, ref: UnitRef, span: Span, flags: tuple[Flag, ...] = ()) -> None:
         self.claims.append((ref, span))
@@ -473,7 +478,7 @@ class _Builder:
                        and _name(value.get(b"Type")) == b"Catalog")
             pages = value.get(b"Pages") if catalog and isinstance(value, PdfDict) else None
             members.append(None if invalid else _Member(unit, member, dictionary, catalog,
-                                                        pages, value))
+                                                        pages, value, raw))
         return members, claims
 
     def _body_of(self, number: int, revision: int) -> Body | None:
@@ -487,12 +492,12 @@ class _Builder:
             ref, obj = self.objects.get(entry.a), self.parsed.get(entry.a)
             if no_object(number, entry) or ref is None or obj is None or obj.num != number:
                 return None
-            return ref, obj.value, entry.b
+            return ref, obj.value, entry.b, self.data, obj.stream is not None
         if entry.kind == COMPRESSED:
             member = self._home(entry, revision)
             if member is None or member.number != number:
                 return None
-            return member.ref, member.value, 0
+            return member.ref, member.value, 0, member.text, False
         return None
 
     def _home_number(self, number: int, revision: int) -> int | None:
