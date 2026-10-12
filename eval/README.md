@@ -744,7 +744,7 @@ from the case's primary cell rather than a hand list:
 
 - A row that never reaches the rendered page (off-page, a switched-off
   layer, an orphaned or superseded object, metadata, an attachment, a
-  script, private data, unindexed bytes, ...): "Nothing visible here: the
+  script, private data, the trailer, unindexed bytes, ...): "Nothing visible here: the
   secret is elsewhere in the file".
 - "live" (drawn on a page): left uncaptioned by design; the value may be
   covered (a box over it, say) — the caption is about where the value
