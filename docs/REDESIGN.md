@@ -573,7 +573,16 @@ difference fails the gate.
   handlers ran to the end without error, else the page is
   `PAGE_FAILED`; (c) because (b) does not cover Vision returning less
   text with no error (only OCR tests run on the new OS can catch that),
-  (a)'s versions should gate whether a result counts.
+  (a)'s versions should gate whether a result counts. macOS 27 also
+  changed what Vision reads without any error: a one-character-per-line
+  stack became one sideways line, whose misread made four
+  `layout.vertical-stack-*` pattern-rule grid cases exit `1` instead of
+  `2`. The OCR view now holds a vertical line hard-finding eligible only
+  when an upright re-read confirms it (DESIGN.md, two-tier model),
+  measured on generated pages alone; (d) the 4b OCR view should
+  re-measure it on the real-world corpus's scanned pages, and (e) read a
+  scanned stack character by character (#61: with a value rule it passes
+  as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -779,6 +788,8 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K37 | A referenced, drawn 200×20 DeviceGray image whose declared frame renders blank, but whose stream holds 20 more undeclared rows with an SSN render: MuPDF decodes only the declared `Width`×`Height`×components×bits-per-component byte range, so the extra rows are never drawn, never rendered, and never OCR'd, and MuPDF raises no warning that more data followed |
 | K38 | The strips variant of K21, drawn under a box: a 90×14 SSN render split into two 90×7 images, drawn stacked on the page, with a black box painted over both afterwards — OCR only ever sees the rendered, composited page (the box), not what is under it, the same gap as K12 but for a render stored as two image objects rather than one |
 | K39 | A small JPEG's own EXIF (APP1) thumbnail renders the SSN: a second, fully decodable picture the main image's declared frame never mentions. Only the main picture is ever drawn or OCR'd, and unlike a raw sample byte or a JPEG comment segment, the thumbnail's render is itself DCT/Huffman-compressed pixel data, not literal text bytes, so no raw byte sweep finds it either |
+| K40 | **Fixed** in the current tool (`verify.scan_trailers`, owner decision D on the tier; cases in `eval/caselib/families/trailer.py`): the document `/ID` in a classic trailer holds the secret as a literal string (or as hex-encoded text): the trailer dictionary is not an object, so the Objects layer never read it, and the Binary layer scanned qpdf's rewrite, where the file's first `/ID` element comes back hex-encoded and the second is replaced by qpdf's own. A private (non-standard) trailer key failed the same way for a pattern rule; a known value there got only Binary's manual-review warning. In the new design a trailer is part of its cross-reference unit (§4); its strings must be decoded and matched the same way, under the same tier rule, not only tiled |
+| K41 | **Fixed** with K40. Same, in an earlier revision's trailer: an incremental update writes a new trailer, the earlier-revision scan compared objects, not trailers, and qpdf writes only the current trailer |
 
 K12-K36 are pinned in `eval/caselib/families/gaps.py` (the remaining
 `UNDOCUMENTED_GAPS`, now empty); K37, K38 and K39 are pinned, alongside
@@ -791,7 +802,11 @@ codes for '0'-'9' in order — the literal digits `0123456789` — purely as
 a byproduct of the ramp itself. The Binary (qpdf) layer's raw byte sweep
 cannot distinguish that coincidence from a real leak inside binary data,
 so it warns (exit `2`) on a genuinely clean file
-(`false-alarm.binary-value-collision`).
+(`false-alarm.binary-value-collision`). A third is by the owner's
+design (decision D, with K40's fix): a document `/ID` written as hex
+text whose digits happen to form a run a pattern class accepts is
+manual review (`false-alarm.generated-id-digits`,
+`document.generated-id-digits`), not a hard finding.
 
 Two more silent misses used to have no K-number, because every K-number
 must have a case and these did not; Phase 3a added cases for both

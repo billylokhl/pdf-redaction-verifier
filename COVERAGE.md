@@ -40,10 +40,11 @@ cells).
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
 | `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
 | `orphaned` | **Orphaned objects** — still stored, referenced by nothing | ✓ Objects (`ORPHANED`)³ · ✗ after a stream's end marker⁹, or labelled as a font or image | ⚑ Objects⁴ · ✗ ordinary-looking codes⁴, one glyph per show operator | ⚑ Objects⁵ · ✗ small images⁵, text as outlines | ⚑ Objects |
-| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
+| `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶, trailers¹¹ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
 | `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
 | `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
 | `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
+| `trailer` | **Document trailer** — the `/ID` and any other strings in the trailer dictionary | ✓ Objects (`trailer`)¹¹ | — | — | — |
 | `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ · ✗ encoded as text² |
 | `embedded-other` | **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
 | `orphaned-attachment` | **Orphaned attachments** — typed or untyped | ✓ Objects (manual review) · ✗ untyped text with three stand-alone words that are content operators (`n`, `m`, `q` …) | — | ⚑ Objects | ⚑ Objects⁸ |
@@ -96,6 +97,23 @@ directly, not through the image decoder. A pattern rule (rather than a
 known value) over the same hidden bytes is not — the Binary layer's
 sweep is value secrets only, the same limit as `embedded-other.plain`.
 
+¹¹ Every trailer dictionary is read from the file's own bytes: the
+current one, each earlier revision's (`earlier revision N, trailer`),
+and any other `trailer << ... >>` in the file (`trailer at byte N`). A
+cross-reference stream's dictionary (PDF 1.5+) is the trailer too, and
+is labelled as such. The Binary layer cannot stand in here: qpdf writes
+only the current trailer, with the file's first `/ID` element
+hex-encoded and the second replaced. Every trailer string is matched at
+the hard tier, except a pattern-rule match in a `/ID` element made only
+of hex digits and dashes — a generated identifier written as text, which
+holds digit runs by coincidence (about one 32-character string in
+thirteen) — which is manual review. A known value is a hard finding
+anywhere in the trailer. A section's trailer is the `trailer` keyword
+right after its table, in any line layout. Only the dictionary's own top-level `/ID` key
+counts as `/ID`. Comments inside a trailer are skipped when reading its
+strings and read themselves as raw text, at manual review; a trailer the
+chain reaches but this tool cannot parse is a warning (exit `2`).
+
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
 case library; `docs/REDESIGN.md` §8).
@@ -127,6 +145,13 @@ matcher sees it whole. Each is ✗:
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
   PyMuPDF does not return.
+- A one-character-per-line stack in a scanned page (pixels only),
+  searched with a value rule: exit `0`
+  ([#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)).
+  With text on the page, the Text layer reads the stack (manual review).
+  In pixels only OCR can, and on macOS 27 it reads the stack as one
+  sideways line, usually misread, so the value usually does not match. What
+  macOS 26 returns was not measured.
 
 One page-break split is read at the manual-review tier only
 (`match.page-break-off-page-half`): a value whose first half lies wholly

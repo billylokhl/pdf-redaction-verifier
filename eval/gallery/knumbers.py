@@ -28,6 +28,12 @@ K39 was added the same way, from a PR review rather than from §8's own
 SSN, a second decoded picture the tool never looks at, is a new silent
 miss with no cell-sharing sibling, so it gets its own row and number.
 
+K40 and K41 (a secret in the document trailer's ``/ID``, current or an
+earlier revision's; found while root-causing PR #63) were pinned here and
+then fixed in the same pull request, so, like K8, §8 marks them fixed and
+they have no entry: their cases (``caselib/families/trailer.py``) now
+expect the tool to catch them.
+
 K1-K11's cases (``caselib/families/raw.py``) also write their K-number
 into the story itself ("K7: plain text appended after the file's final
 %%EOF."); that's the source this table was read from for those ids.

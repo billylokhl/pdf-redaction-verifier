@@ -100,6 +100,8 @@ def _cells() -> dict[str, Cell]:
         "leftover-xmp.plain": Cell(read, "orphaned or superseded XMP"),
         "leftover-xmp.pixels": Cell(gap, "thumbnails in leftover XMP"),
         "thumbnail.pixels": Cell(gap, "page thumbnails (/Thumb)"),
+        # trailer — the document trailer dictionary (not an object)
+        "trailer.plain": Cell(read, "the trailer's /ID and other trailer strings"),
         # attachments
         "attachment.plain": Cell(read, "an attachment that is text", tier="review"),
         "attachment.pixels": Cell(flagged, "an attached image"),
@@ -142,6 +144,8 @@ def _cells() -> dict[str, Cell]:
         "false-alarm.slug-beside-visible-line": Cell(
             "false-alarm", "an off-page slug a word space from visible text on its baseline, "
                            "read as one line onto the next page's first line"),
+        "false-alarm.generated-id-digits": Cell(
+            "false-alarm", "a digit run in a /ID written as hex text (manual review)"),
     }
 
 
@@ -187,5 +191,5 @@ ROW_STORAGE: dict[str, str] = {
     **{row: "live" for row in ("live", "off-page", "oc-off", "annot-appearance",
                                "unused-resource", "metadata", "attachment",
                                "embedded-other", "annot-fields", "javascript",
-                               "private-data")},
+                               "private-data", "trailer")},
 }

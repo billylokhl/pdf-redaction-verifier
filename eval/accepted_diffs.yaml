@@ -1,3 +1,165 @@
+- case: document.generated-id-digits
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - NOISY_SOURCE
+      - 1
+  reason: 'Owner decision D (K40 fix): a clean file whose /ID is hex text containing a nine-digit
+    run the SSN class accepts gets a manual-review warning under that pattern rule (REVIEW_OBJECT_TEXT,
+    NOISY_SOURCE), exit 2 (was 0): a known false alarm by design (false-alarm.generated-id-digits).'
+  cell: false-alarm.generated-id-digits
+  pr: '#73'
+- case: document.trailer-id-digits-pattern-rule
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - NOISY_SOURCE
+      - 1
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. Owner decision D: a pattern-rule match in a /ID element made only
+    of hex digits and dashes is manual review (REVIEW_OBJECT_TEXT, NOISY_SOURCE), exit 2 (was
+    0).'
+  cell: trailer.plain
+  pr: '#73'
+- case: document.trailer-id-hex-second
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. Hex-encoded text in the second /ID element is now a hard finding
+    (was exit 0).'
+  cell: trailer.plain
+  pr: '#73'
+- case: document.trailer-id-literal
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. A literal /ID element holding the SSN is now a hard finding (was
+    exit 0).'
+  cell: trailer.plain
+  pr: '#73'
+- case: document.trailer-key-pattern-rule
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. A pattern rule over a private trailer key is now a hard finding
+    (was exit 0; Binary sweeps value rules only).'
+  cell: trailer.plain
+  pr: '#73'
+- case: document.trailer-key-value-rule
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - NOISY_SOURCE
+      - 1
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. A known value in a private trailer key is now a hard finding;
+    the Binary layer''s REVIEW_BINARY for the same rule is suppressed by it (already found).'
+  cell: trailer.plain
+  pr: '#73'
+- case: document.xref-stream-id
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - orphaned
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a cross-reference stream''s dictionary is the trailer;
+    it was always read but labelled ORPHANED (storage orphaned). It is now labelled as the
+    trailer, storage live. Exit unchanged.'
+  cell: trailer.plain
+  pr: '#73'
 - case: leftover.deleted-page-embedded-font-compact
   old:
     exit: 0
@@ -592,6 +754,28 @@
     only.'
   cell: off-page.font.straddling
   pr: '#68'
+- case: revision.earlier-trailer-id
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - superseded
+      - 1
+    warnings: []
+  reason: 'Trailer scan (K40/K41): a classic trailer dictionary is not an object, so the Objects
+    layer never read its strings, and qpdf''s rewrite re-encodes the first /ID element as
+    hex, replaces the second and drops earlier trailers; scan_trailers now reads every trailer
+    from the file''s bytes. An earlier revision''s trailer is now read; its /ID holding the
+    SSN is a hard finding, storage superseded (was exit 0).'
+  cell: superseded.plain
+  pr: '#73'
 - case: revision.raw-rewritten-font-compact
   old:
     exit: 0

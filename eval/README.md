@@ -679,7 +679,11 @@ own machine (`sha256sum`) when a number needs explaining.
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case
   library locally after an OS upgrade: on macOS 27 that is how an OCR
-  failure on every page was found (fixed; see the CHANGELOG).
+  failure on every page was found, and then Vision reading a
+  one-character-per-line stack as one line, which turned four
+  `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
+  finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
+  skips the grids, so only the weekly job runs those cases with OCR.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 
@@ -740,7 +744,7 @@ from the case's primary cell rather than a hand list:
 
 - A row that never reaches the rendered page (off-page, a switched-off
   layer, an orphaned or superseded object, metadata, an attachment, a
-  script, private data, unindexed bytes, ...): "Nothing visible here: the
+  script, private data, the trailer, unindexed bytes, ...): "Nothing visible here: the
   secret is elsewhere in the file".
 - "live" (drawn on a page): left uncaptioned by design; the value may be
   covered (a box over it, say) — the caption is about where the value
