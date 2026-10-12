@@ -180,6 +180,16 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         if row.error_code in FILE_VERDICT_ERRORS:
             print(f"note: {row.case_id} could not be opened ({row.error_code}); "
                   "counted as a review verdict (exit 2)", file=sys.stderr)
+    mismatched = corpus_mod.probe_mismatches(runs)
+    if mismatched:
+        # By SHA-256 prefix only, like the lines above.
+        print(f"ERROR: {len(mismatched)} file(s) whose build-time probe the scan does not "
+              "bear out, so the strata cannot place them; rebuild the manifest with "
+              "`corpus build` (a text-unreadable file stays unplaceable: remove it):",
+              file=sys.stderr)
+        for sha, probe, code in mismatched:
+            print(f"  probe      {sha} ({probe}; CLI error {code or 'none'})", file=sys.stderr)
+        failed = True
     error = _unmeasured(rows, "file", FILE_VERDICT_ERRORS)
     if error is not None:
         print(error, file=sys.stderr)

@@ -505,21 +505,35 @@ below could never be reached. Each entry now carries `probe`: `"ok"`,
 `"password"` (opens but needs a password: the CLI's `PDF_PASSWORD`),
 `"unreadable"` (MuPDF cannot open it: the CLI's `PDF_UNREADABLE`) or
 `"text-unreadable"` (opens, but reading a page's text fails; the CLI has
-no matching error code, so its verdict is whatever the scan reaches).
-Such a file's `text_bearing` is `null`, unknown, and its producer family
-`"unknown"`, since neither was read; multi-revision is still measured
-from the raw bytes. `corpus run` counts it only in `all` (its exit 2 is a
-review verdict, as below), in `text-unknown`, and in `probe:password`,
-`probe:unreadable` or `probe:text-unreadable` — never in a measured
-stratum (text-bearing, text-free, the revision strata or a producer
-family). An error report has no findings, so there it would only add an
+no matching error code and scans it normally). Such a file's
+`text_bearing` is `null`, unknown, and its producer family `"unknown"`,
+since neither was read; multi-revision is still measured from the raw
+bytes. `corpus run` counts a `"password"` or `"unreadable"` file only in
+`all` (its exit 2 is a review verdict, as below), in `text-unknown`, and
+in `probe:password` or `probe:unreadable` — never in a measured stratum
+(text-bearing, text-free, the revision strata or a producer family). The
+CLI's error report on it has no findings, so there it would only add an
 unscanned file to the false-hard denominator: as text-bearing, of the
-stratum the redesign's targets are measured on. The build
+stratum the redesign's targets are measured on. `all` does include them,
+so its false-hard denominator counts files nothing scanned: read false
+hard on a measured stratum.
+
+That placement is decided by the build-time probe, so `corpus run` exits
+1 when the scan does not bear the probe out, listing each such file by
+SHA-256 prefix (`probe` lines): a `"password"` or `"unreadable"` file the
+CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
+upgrade can make a file readable, and its findings would otherwise
+vanish from every measured stratum), an `"ok"` file the CLI could not
+open, and every `"text-unreadable"` file, which the CLI scans but no
+text stratum can hold. Rebuild the manifest for the first two; remove a
+text-unreadable file from the root. The build
 prints only how many there were, never which, and never keeps the
 exception's message (it can name the path). A manifest written before
 the field existed loads with `probe` `"ok"`; one written now does not
 load in older code (it rejects the new field), so rebuild it after
-switching back. An unknown `probe` value is refused, not made a stratum.
+switching back. An unknown `probe` value, or one that disagrees with
+`text_bearing` (known exactly when the probe is `"ok"`), is refused, not
+made a stratum.
 
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):

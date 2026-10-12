@@ -550,7 +550,9 @@ producer family. A file MuPDF cannot read (encrypted or corrupt) is
 recorded rather than aborting the build, with its text layer unknown: it
 is counted only in `all`, `text-unknown` and a `probe:` stratum, never
 padding a measured stratum's denominator, such as the text-bearing one
-the targets are measured on. It needs
+the targets are measured on (`all`'s false-hard denominator does include
+it, so read false hard on a measured stratum). A run whose scan
+contradicts the build's probe fails rather than misplace the file. It needs
 representative files — the current local set is 76% text-free system
 resources — including a ~300-page scan, a ~500-page Word export and an
 image-heavy ~50 MB file.

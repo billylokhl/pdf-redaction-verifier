@@ -977,9 +977,57 @@ def test_load_manifest_refuses_an_unknown_probe_without_naming_the_path(tmp_path
     manifest.write_text(json.dumps({"entries": [{
         "sha256": "ab" * 32, "path": "private-name.pdf", "text_bearing": None,
         "multi_revision": False, "producer_family": "unknown", "probe": "bogus"}]}))
-    with pytest.raises(SystemExit, match="unknown probe 'bogus'") as exc:
+    with pytest.raises(SystemExit, match="ab" * 8 + " has an unknown probe 'bogus'") as exc:
         load_manifest(manifest)
     assert "private-name" not in str(exc.value)
+
+
+@pytest.mark.parametrize("probe, text_bearing", [("ok", None), ("password", True),
+                                                 ("unreadable", False)])
+def test_load_manifest_refuses_a_probe_inconsistent_with_text_bearing(
+    tmp_path, probe, text_bearing
+):
+    """Only a read file has a known text layer; a hand-edited mix would put
+    an unread file in a measured stratum, or a read one in none."""
+    from scorecard.corpus import load_manifest
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"entries": [{
+        "sha256": "ab" * 32, "path": "private-name.pdf", "text_bearing": text_bearing,
+        "multi_revision": False, "producer_family": "unknown", "probe": probe}]}))
+    with pytest.raises(SystemExit, match="ab" * 8) as exc:
+        load_manifest(manifest)
+    assert "private-name" not in str(exc.value)
+
+
+def test_corpus_run_end_to_end_counts_unread_files_as_review_verdicts(tmp_path, capsys):
+    """Build, then run the real CLI: a password-protected and a corrupt file
+    reach the manifest and get the CLI's PDF_PASSWORD / PDF_UNREADABLE,
+    which `corpus run` counts as review verdicts (exit 0), in no measured
+    stratum, naming neither file."""
+    import scorecard.cli as cli
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    for name in ("plain.pdf", "owner-only.pdf", "truncated.pdf", "empty.pdf"):
+        (root / name).unlink()  # keep the CLI runs to the two quick error reports
+    manifest = tmp_path / "m" / "manifest.json"
+    common = ["--root", str(root), "--allow-outside", "--manifest", str(manifest)]
+    build = cli.build_parser().parse_args(["corpus", "build", *common])
+    assert build.func(build) == 0
+    secrets = tmp_path / "rules.json"
+    secrets.write_text(json.dumps([{"name": "ssn", "value": "123-45-6789"}]))
+    out = tmp_path / "strata.json"
+    run = cli.build_parser().parse_args(
+        ["corpus", "run", *common, "--secrets", str(secrets), "--out", str(tmp_path / "work"),
+         "--json", str(out)])
+    assert run.func(run) == 0
+    strata = json.loads(out.read_text())
+    assert strata["all"]["review_rate"] == 2 and strata["all"]["total"] == 2
+    assert set(strata) == {"all", "text-unknown", "probe:password", "probe:unreadable"}
+    captured = capsys.readouterr()
+    for name in ("locked", "not-a-pdf", str(root)):
+        assert name not in captured.err and name not in captured.out
 
 
 def test_stratify_keeps_unread_files_out_of_every_measured_stratum():
@@ -993,16 +1041,20 @@ def test_stratify_keeps_unread_files_out_of_every_measured_stratum():
     blank = CorpusEntry("cc" * 32, "c.pdf", False, False, "office")
     nameless = CorpusEntry("dd" * 32, "d.pdf", True, False, "unknown")
     locked = CorpusEntry("bb" * 32, "b.pdf", None, True, "unknown", probe="password")
+    broken = CorpusEntry("ee" * 32, "e.pdf", None, False, "unknown", probe="unreadable")
     runs = [CorpusRun(plain, _corpus_result("ok")), CorpusRun(blank, _corpus_result("ok")),
-            CorpusRun(nameless, _corpus_result("ok")), CorpusRun(locked, _corpus_result("PDF_PASSWORD"))]
+            CorpusRun(nameless, _corpus_result("ok")),
+            CorpusRun(locked, _corpus_result("PDF_PASSWORD")),
+            CorpusRun(broken, _corpus_result("PDF_UNREADABLE"))]
     strata = stratify(runs)
     assert strata["text-bearing"].total == 2 and strata["text-bearing"].review_rate == 0
     assert strata["text-free"].total == 1 and strata["text-free"].review_rate == 0
-    assert strata["text-unknown"].total == 1 and strata["probe:password"].total == 1
-    assert strata["all"].total == 4 and strata["all"].review_rate == 1
+    assert strata["text-unknown"].total == 2
+    assert strata["probe:password"].total == 1 and strata["probe:unreadable"].total == 1
+    assert strata["all"].total == 5 and strata["all"].review_rate == 2
     assert "multi-revision" not in strata and strata["single-revision"].total == 3
     assert strata["producer:unknown"].total == 1  # the readable file, alone
-    assert not any(k in strata for k in ("probe:ok", "probe:unreadable", "probe:text-unreadable"))
+    assert not any(k in strata for k in ("probe:ok", "probe:text-unreadable"))
 
 
 def test_corpus_build_cli_counts_unread_files_without_naming_them(tmp_path, capsys):
@@ -1396,23 +1448,33 @@ def _corpus_result(outcome):
 
 
 @pytest.mark.parametrize(
-    "scan, missing, changed, code, mentions",
+    "scan, missing, changed, code, mentions, probe",
     [
-        (["ok"], (), (), 0, []),
-        (["ok"], ("gone.pdf",), (), 1, ["1 missing and 0 changed"]),
-        (["ok"], (), ("edited.pdf",), 1, ["0 missing and 1 changed"]),
-        (["timeout"], (), (), 1, ["timed out  " + "ab" * 8]),
-        (["crash"], (), (), 1, ["crashed    " + "ab" * 8]),
-        (["RULES_INVALID"], (), (), 1, ["error      " + "ab" * 8 + " (RULES_INVALID)"]),
-        (["INTERNAL_ERROR"], (), (), 1, ["(INTERNAL_ERROR)"]),
+        (["ok"], (), (), 0, [], "ok"),
+        (["ok"], ("gone.pdf",), (), 1, ["1 missing and 0 changed"], "ok"),
+        (["ok"], (), ("edited.pdf",), 1, ["0 missing and 1 changed"], "ok"),
+        (["timeout"], (), (), 1, ["timed out  " + "ab" * 8], "ok"),
+        (["crash"], (), (), 1, ["crashed    " + "ab" * 8], "ok"),
+        (["RULES_INVALID"], (), (), 1, ["error      " + "ab" * 8 + " (RULES_INVALID)"], "ok"),
+        (["INTERNAL_ERROR"], (), (), 1, ["(INTERNAL_ERROR)"], "ok"),
         # An encrypted or corrupt real file: exit 2 is the tool's real answer.
-        (["PDF_PASSWORD"], (), (), 0, ["(PDF_PASSWORD); counted as a review verdict"]),
-        (["PDF_UNREADABLE"], (), (), 0, ["(PDF_UNREADABLE); counted as a review verdict"]),
-        ([], (), (), 1, ["disappeared during the run", "zero files measured"]),
+        (["PDF_PASSWORD"], (), (), 0, ["(PDF_PASSWORD); counted as a review verdict"],
+         "password"),
+        (["PDF_UNREADABLE"], (), (), 0, ["(PDF_UNREADABLE); counted as a review verdict"],
+         "unreadable"),
+        # The build-time probe and the scan disagree (a PyMuPDF upgrade, say):
+        # stratify would place the file wrongly, so the run cannot pass.
+        (["ok"], (), (), 1, ["probe      " + "ab" * 8 + " (password; CLI error none)"],
+         "password"),
+        (["PDF_PASSWORD"], (), (), 1, ["(unreadable; CLI error PDF_PASSWORD)"], "unreadable"),
+        (["PDF_UNREADABLE"], (), (), 1, ["(ok; CLI error PDF_UNREADABLE)"], "ok"),
+        # Scanned, but its text stratum is unknown: never placeable.
+        (["ok"], (), (), 1, ["(text-unreadable; CLI error none)"], "text-unreadable"),
+        ([], (), (), 1, ["disappeared during the run", "zero files measured"], "ok"),
     ],
 )
 def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
-    monkeypatch, tmp_path, capsys, scan, missing, changed, code, mentions
+    monkeypatch, tmp_path, capsys, scan, missing, changed, code, mentions, probe
 ):
     """`corpus run` scans only the files still present and unchanged: a
     missing, changed or vanished manifest file, a scan that crashed, timed
@@ -1423,7 +1485,8 @@ def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
     import scorecard.cli as cli
     import scorecard.corpus as corpus_mod
 
-    entry = corpus_mod.CorpusEntry("ab" * 32, "private-name.pdf", True, False, "other")
+    entry = corpus_mod.CorpusEntry("ab" * 32, "private-name.pdf",
+                                   True if probe == "ok" else None, False, "other", probe=probe)
     monkeypatch.setattr(corpus_mod, "load_manifest", lambda p: [entry])
     monkeypatch.setattr(
         corpus_mod, "check_manifest",
