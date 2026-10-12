@@ -154,16 +154,22 @@ matcher sees it whole. Each is ✗:
   macOS 26 returns was not measured.
 
 One page-break split is read at the manual-review tier only
-(`match.page-break-off-page-half`): a value whose first half lies wholly
-off the page and whose second half opens the next page. Text wholly off
-a page reads like a slug, which does not run on into the next page, so
-the join is exit `2`, never `1` and never `0`. A first half that is the
-visible text's last line, running on past the edge, is a hard page seam.
-On a rotated page whose crop box does not sit on the media box (found at
-`/Rotate` 180 and 270), the off-page case was a finding (`1`) before #68,
-because the old visible area misplaced the half onto the page; it is
-exit `2` now, an owner-approved exception (2026-10-10) to "stricter
-only".
+(`match.page-break-off-page-half`): a value one of whose halves lies
+wholly off the page — the first half below or beside page 1's last line,
+or the second half above the next page's top edge. Text wholly off a
+page reads like a slug, which does not run on from or into the visible
+text, so the join is a manual-review warning (exit `2`), not a finding.
+A first half that is the visible text's last line, running on past the
+edge, is a hard page seam.
+
+Before #68, on a rotated page whose crop box does not sit on the media
+box, the old visible area misplaced some off-page text onto the page,
+and some of these layouts were findings (`1`) by that accident; they
+are manual review (`2`) now: a page-break split with either half wholly
+off the page (owner decisions, 2026-10-10 and 2026-10-11), a value
+wrapped from a visible line onto a line wholly off the page (2026-10-11),
+and vertically written text split at a page break with a half off the
+page, since the vertical readings across the edge feed no hard seam.
 
 One known false alarm comes with it (`false-alarm.slug-beside-visible-line`):
 a slug just past the page edge, only a word space from visible text on
@@ -174,14 +180,17 @@ finding (`1`) on a clean document. A slug a column break away from
 visible text (a page number at the margin, the slug well past the edge)
 is read only as off-page text and gives manual review at most.
 
-A value formed by a visible part and an off-page part a column break
-away on the same line is a manual-review warning (`REVIEW_CROSS_LINE`,
-exit `2`), never a finding and never silent, at every rotation (owner
-decision, 2026-10-11; pinned by the clean `page.raw-font-coded-baseline-
-off-page-*` cases). The same join flags, by design, a clean page whose
-page number or footer and a slug past the edge happen to form a value:
-review-tier noise, about 35 clean files of a 1,760-file fabricated grid
-of such layouts and none of a 2,072-file corpus.
+A value formed by visible and off-page parts is a manual-review
+warning (exit `2`), never a finding and never silent, at every rotation
+(owner decisions, 2026-10-11): a visible part and an off-page part a
+column break apart on one line (`REVIEW_CROSS_LINE`, pinned by the
+clean `page.raw-font-coded-baseline-off-page-*` cases), a value wrapped
+from the last visible line onto a line wholly below the page
+(`REVIEW_CROSS_LINE`), or carried from a page's last line onto text
+wholly above the next page's top edge (`REVIEW_CROSS_PAGE`; both
+pinned by `page.raw-font-coded-carried-off-page-*`). The same joins
+flag, by design, the odd clean page whose visible text and an off-page
+slug happen to form a value: review-tier noise, 3 of 6,000 files of a fabricated fuzz of clean off-page layouts (0.05%) and none of a 2,072-file corpus of real PDFs, read by the Text layer alone.
 
 ## What ⚑ costs, and what comes next
 

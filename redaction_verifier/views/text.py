@@ -54,7 +54,6 @@ def _reconstruct(
     *,
     tolerance_from: list[Glyph] | None = None,
     keep: Callable[[list[Glyph]], bool] | None = None,
-    keep_line: Callable[[list[Glyph]], bool] | None = None,
 ) -> str:
     """Cluster glyphs into visual lines along one axis, sort along the other.
 
@@ -65,10 +64,10 @@ def _reconstruct(
     cluster axis, so 30pt form-box digits with 6pt baseline jitter still
     land in one line while 8pt fine print keeps its lines separate.
     *tolerance_from* (default: *glyphs*) are the glyphs whose extents set
-    it. *keep*, if given, is asked of each column-break segment of a line
-    (see _join_cluster): a segment it returns False for is dropped, and a
-    line left with no segment with it. *keep_line*, if given, is asked of
-    each whole line first: a line it returns False for is dropped.
+    it, and whose gaps and extents set each line's column breaks
+    (_column_segments). *keep*, if given, is asked of each column-break
+    segment of a line: a segment it returns False for is dropped, and a
+    line left with no segment with it.
     """
     if not glyphs:
         return ""
@@ -98,12 +97,11 @@ def _reconstruct(
             center = glyph[cluster_axis]
     clusters.append(current)
 
+    stats_from = {id(g) for g in tolerance_from} if tolerance_from else None
     lines: list[str] = []
     for cluster in clusters:
-        if keep_line is not None and not keep_line(cluster):
-            continue
         cluster.sort(key=lambda g: g[order_axis])
-        segments = _column_segments(cluster, order_axis)
+        segments = _column_segments(cluster, order_axis, stats_from)
         if keep is not None:
             segments = [segment for segment in segments if keep(segment)]
         if segments:
@@ -118,7 +116,8 @@ def _join_cluster(cluster: list[Glyph], order_axis: int) -> str:
                      for segment in _column_segments(cluster, order_axis))
 
 
-def _column_segments(cluster: list[Glyph], order_axis: int) -> list[list[Glyph]]:
+def _column_segments(cluster: list[Glyph], order_axis: int,
+                     stats_from: set[int] | None = None) -> list[list[Glyph]]:
     """Split one visual line's glyphs, in order, at its column gaps.
 
     Whitespace glyphs are dropped during extraction, so without this a
@@ -131,12 +130,20 @@ def _column_segments(cluster: list[Glyph], order_axis: int) -> list[list[Glyph]]
     widely but *uniformly* (no outlier, so the run stays intact), while
     ordinary word spaces are narrower than a character (so
     'SSN 123 45 6789' stays intact too).
+
+    *stats_from*, if given, holds the ids of the glyphs whose gaps (to a
+    neighbour also in it) and extents set those statistics, when the line
+    has any: read across the visible edge, the visible glyphs', so off-page
+    text on a table row's baseline (a letter-spaced slug, wide cells past
+    the crop) cannot raise the median gap until the row's visible cells
+    fuse into one number.
     """
     if len(cluster) < 2:
         return [cluster]
 
     extent_index = 2 if order_axis == 0 else 3
     gaps: list[float] = []
+    stat_gaps: list[float] = []
     for prev, nxt in zip(cluster, cluster[1:]):
         # order_axis/extent_index (0-3) always index one of the four
         # float fields, never the trailing str field — see the same
@@ -144,10 +151,17 @@ def _column_segments(cluster: list[Glyph], order_axis: int) -> list[list[Glyph]]
         prev_end = prev[order_axis] + prev[extent_index] / 2.0  # type: ignore[operator]
         next_start = nxt[order_axis] - nxt[extent_index] / 2.0  # type: ignore[operator]
         gaps.append(max(0.0, next_start - prev_end))
+        if stats_from is not None and id(prev) in stats_from and id(nxt) in stats_from:
+            stat_gaps.append(gaps[-1])
 
-    ordered_gaps = sorted(gaps)
+    stat_glyphs = [g for g in cluster if id(g) in stats_from] if stats_from else []
+    if stat_glyphs:
+        stat_gaps = stat_gaps or [0.0]
+    else:                       # no statistics glyph on this line: all of it
+        stat_glyphs, stat_gaps = cluster, gaps
+    ordered_gaps = sorted(stat_gaps)
     median_gap = ordered_gaps[len(ordered_gaps) // 2]
-    extents = sorted(g[extent_index] for g in cluster)
+    extents = sorted(g[extent_index] for g in stat_glyphs)
     median_extent = extents[len(extents) // 2]
     threshold = max(3.0 * median_gap, 1.5 * median_extent)  # type: ignore[operator]
 
@@ -176,8 +190,8 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
        glyph, visible or not, read along its own direction;
     7-8. every visible glyph read in vertical columns, top-to-bottom and
        bottom-to-top;
-    9. the visible lines whole, horizontal — every horizontal line holding
-       a visible glyph, with all its stretches, off-page ones included.
+    9. all the horizontal text — every horizontally written glyph,
+       visible or not, read as lines.
 
     Readings 0-6 are genuine: each reads text the way it was written, so
     the caller matches known values and pattern rules on each of their
@@ -208,22 +222,30 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     a direction, the matching across-the-edge reading repeats the
     visible one, so a seam always joins the same reading on adjacent
     pages.
-    Across the edge, the line tolerance is the visible glyphs': a block
-    of large off-page text would otherwise widen it until two lines of
-    visible fine print merged into one. A column break is a gap wider
-    than one and a half characters and three times the line's median
-    gap; no match crosses it.
+
+    Across the edge (readings 4-6 and 9), the line tolerance and each
+    line's column breaks are set by the visible glyphs alone: a block of
+    large off-page text would otherwise widen the tolerance until two
+    lines of visible fine print merged, and off-page text on a table
+    row's baseline (a letter-spaced slug, wide cells past the crop) would
+    raise the line's median gap until its visible cells fused into one
+    number. A column break is a gap wider than one and a half characters
+    and three times the line's median gap; no match crosses it.
 
     Readings 7-9 are reconstructions, which callers treat as
     manual-review only. A column of an ordinary horizontal page stacks
     one glyph from each of many lines (a ledger's last digits, a numbered
     list's numbers), so readings 7-8 can assemble a value by accident —
     yet they are also the only reading of a value written one character
-    per line. Reading 9 joins a visible stretch with an off-page stretch
-    a column break away on its line: a value formed that way is reviewed,
-    never a finding and never silent (owner decision, 2026-10-11), though
-    the join also flags some clean pages whose page number or footer and
-    a slug past the edge happen to form one.
+    per line. Reading 9 reads every horizontal glyph, visible or not, so
+    the caller's manual-review net sees a value formed from visible and
+    off-page parts however they lie: on one line a column break apart,
+    wrapped from the last visible line onto an off-page line below it,
+    or carried from a page's last line onto off-page text above the next
+    page's top edge (its tail meets the next page's reading 9). Such a
+    value is reviewed, never a finding and never silent (owner decisions,
+    2026-10-11), though the same joins also flag the odd clean page whose
+    visible text and an off-page slug happen to form one.
     """
     flat: list[Glyph] = []
     rotated: list[Glyph] = []
@@ -297,17 +319,19 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     def holds_visible(glyphs: list[Glyph]) -> bool:
         return any(id(g) in visible_flat for g in glyphs)
 
+
     across = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat,
                            keep=holds_visible)
               if off_flat else horizontal)
     across_down, across_up = (columns(rotated + off_rotated, tolerance_from=rotated)
                               if off_rotated else (rotated_down, rotated_up))
     all_down, all_up = columns(flat + rotated)
-    # Reading 9: every line holding a visible glyph, with all of its
-    # stretches, off-page ones included — so a value formed by a visible
-    # part and a far off-page part on the same line is reviewed.
-    whole_lines = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat,
-                                keep_line=holds_visible)
+    # Reading 9: every horizontally written glyph, visible or not, whole —
+    # for review only, so a value one line or one page break forms from
+    # visible and off-page parts (on one line, wrapped onto an off-page
+    # line, or carried over to an off-page line above the next page) is
+    # reviewed, never silent.
+    whole_lines = (_reconstruct(flat + off_flat, cluster_axis=1, tolerance_from=flat)
                    if off_flat else horizontal)
     return [horizontal, rotated_down, rotated_up, outside,
             across, across_down, across_up, all_down, all_up, whole_lines]

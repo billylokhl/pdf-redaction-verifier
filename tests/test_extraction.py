@@ -10,7 +10,9 @@ import math
 from typing import Any
 
 import caselib
-from caselib.families.raw_cells import (BASELINE_GAPS, BREAK_LAYOUTS, page_break_at_edge,
+from caselib.families.raw_cells import (BASELINE_GAPS, BREAK_LAYOUTS, OFF_PAGE_CARRY,
+                                        TABLE_ROW_OFF_PAGE, page_break_at_edge,
+                                        table_row_beside_off_page, value_carried_off_page,
                                         visible_beside_off_page)
 import pymupdf as fitz
 import pytest
@@ -711,6 +713,44 @@ class TestSlugBesideVisibleText:
         report = _scan(doc)
         assert report.findings == []
         assert report.warnings == [line(1)]
+
+
+
+class TestValueCarriedOffThePage:
+    """A value whose second half is wholly off the page: above the next
+    page's top edge, or on a line below the page's bottom edge. Reading 9
+    reads every horizontal glyph, visible or not, so it is reviewed, never
+    silent and never a finding (owner decision, 2026-10-11)."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", OFF_PAGE_CARRY)
+    def test_reviewed(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "carry.pdf"
+        value_carried_off_page(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        assert report.findings == []
+        assert report.warnings == [crossing(2) if layout == "second-half-above" else line(1)]
+
+
+class TestTableRowBesideOffPageText:
+    """Clean controls: a font-coded table row 'Item | 123 | 45 | 6789'
+    inside the crop box, beside wide single-digit cells or a letter-spaced
+    slug past it on the same baseline. The column breaks of a line read
+    across the edge are set by its visible glyphs, so the off-page text's
+    wide gaps cannot fuse the cells into a hard value."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", TABLE_ROW_OFF_PAGE)
+    def test_no_hard_finding(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "row.pdf"
+        table_row_beside_off_page(pdf, layout, rotate)
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        doc = fitz.open(pdf)
+        readings = extract_visual_text(doc[0])
+        assert "123\n45\n6789" in readings[4], readings
+        report = _scan(doc, patterns=load_rules(rules).patterns)
+        assert report.findings == []
 
 
 class TestPageBreaksOcr:

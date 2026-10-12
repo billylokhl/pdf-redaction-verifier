@@ -358,12 +358,16 @@ only ever manual review, for values and patterns alike. Two stack
 value written one character per line, but on an ordinary page a column
 stacks one glyph from each of many lines — a ledger's last digits, a
 numbered list's numbers — which assembled the README's own example
-value out of a clean numbered list. The third keeps each visible line
-whole, its stretches past the edge included, so a value formed by a
-visible part and an off-page part a column break away on the same line
-is reviewed rather than silent (the owner's decision, 2026-10-11) — at
-the cost, by design, of a review warning on a clean page whose page
-number or footer and an off-page slug happen to form a value.
+value out of a clean numbered list. The third reads all the horizontal
+text, visible or not, so a value formed by visible and off-page parts —
+a column break apart on one line, wrapped onto an off-page line, or
+carried over a page break onto off-page text above the next page — is
+reviewed rather than silent (the owner's decisions, 2026-10-11), at the
+cost, by design, of a review warning on the odd clean page whose
+visible text and an off-page slug happen to form a value. Across the
+edge, a line's column breaks, like its tolerance, are measured on the
+visible glyphs alone, so off-page text on a table row's baseline cannot
+fuse the row's visible cells into one number.
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,

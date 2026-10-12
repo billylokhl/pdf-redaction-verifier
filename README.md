@@ -174,8 +174,8 @@ still there: invisible on screen, but selectable and copyable.
   own direction both ways); the off-page text; and the same three
   directions across the visible edge, visible and off-page text together —
   plus three *reconstructed* readings: every visible glyph in vertical
-  columns, both ways, and every visible line whole, its stretches past
-  the edge included. The columns are the only reading of a value written
+  columns, both ways, and all the horizontal text, visible or not. The
+  columns are the only reading of a value written
   one character per line, but a column of an ordinary page also stacks
   unrelated lines (a numbered list's numbers), so reconstructions only
   ever give manual-review warnings.
@@ -186,8 +186,10 @@ still there: invisible on screen, but selectable and copyable.
   match crossing the break — needing other lines, across a blank or
   unreadable page, or from text wholly off the page (a slug below the
   page, or beside visible text across a column break) onto the next
-  page's first line — is a manual-review warning at the page it crosses
-  into. The limit: a slug only a word space from visible text on its
+  page's first line, or onto text wholly off the next page, above its
+  top edge — is a manual-review warning at the page it crosses into. A
+  value wrapped from a page's last visible line onto a line wholly below
+  the page is a manual-review warning too. The limit: a slug only a word space from visible text on its
   baseline ('Page 7' then 'Job 123-45' just past the edge) reads as one
   line with it, exactly like a value running past the edge, so if it and
   the next page's first line together form a value, that is a (false)

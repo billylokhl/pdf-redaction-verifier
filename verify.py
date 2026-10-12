@@ -358,12 +358,14 @@ def scan_page_layer(
     keeps its own tail for that manual-review net. For Text, reading 4
     (the visible text, each stretch of a line between column breaks read
     on across the visible edge) feeds the hard seam; readings 5-6 feed
-    only the net: their last column may be
-    off-page text, which does not run on into the next page. The tails of
-    the off-page reading (3) and of reading 4 also meet the next page's
-    visible horizontal reading (0) in the net, so a value whose first
-    half lies off the page, below or beside its last line, and whose
-    second half opens the next page is reported for review.
+    only the net: their last column may be off-page text, which does not
+    run on into the next page. The tails of the off-page reading (3) and
+    of reading 4 also meet the next page's visible horizontal reading (0)
+    in the net, so a value whose first half lies off the page, below or
+    beside its last line, and whose second half opens the next page is
+    reported for review; reading 9 (all horizontal text, visible or not)
+    meets itself across the break, so one whose second half lies off the
+    next page, above its top edge, is too.
 
     Pattern rules match per visual line of every genuine reading for hard
     findings (for Text, the readings across the visible edge included),

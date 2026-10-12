@@ -278,6 +278,140 @@ def _split_off_page_cases() -> None:
 _split_off_page_cases()
 
 
+def _more_off_page_half_cases() -> None:
+    # The other off-page-half layouts, at /Rotate 0: a slug above page 2,
+    # and both pages turned with a slug past page 2's right edge.
+    for layout in ("off-page-slug", "off-page-both-turned"):
+        turned = layout == "off-page-both-turned"
+        @leak(f"page.raw-font-coded-split-at-break-{layout}",
+              "match.page-break-off-page-half",
+              "The SSN in font codes split across a page break: its first half lies wholly "
+              "past the media box's right edge on page 1; its second half opens page 2"
+              + (", which is turned like page 1 with a slug past its right edge."
+                 if turned else ", below a slug above its top edge.")
+              + " A half wholly off the page reads like a slug, so the join is manual "
+                "review rather than a finding.",
+              expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+              mistake="Nobody redacted it; half the value sits past the margin, the rest "
+                      "over the page break.",
+              recovery="Enlarge the page box, read both pages' text through the font's "
+                       "Encoding /Differences, and join the halves.")
+        def split(path: Path, layout: str = layout, rotate: int = 270 if turned else 0) -> None:
+            page_break_at_edge(path, layout, rotate)
+
+
+_more_off_page_half_cases()
+
+
+# ── A value carried onto text wholly off the page ───────────────────────
+# Page 1's last visible line ends 'SSN 123-45-'; the rest, '6789
+# continues', is wholly off the page: above page 2's top edge
+# ('second-half-above'), or on a line just below page 1's bottom edge
+# ('wrap-below'). Reading 9 reads every horizontal glyph, visible or not,
+# so the join is reviewed (owner decision, 2026-10-11): never a finding,
+# since off-page text does not run on from the visible text, and never
+# silent.
+OFF_PAGE_CARRY = ("second-half-above", "wrap-below")
+
+
+def value_carried_off_page(path: Path, layout: str, rotate: int) -> None:
+    """*layout* is one of OFF_PAGE_CARRY; with /Rotate 270 every page
+    also has a crop box reaching 200 pt past its media box's right edge."""
+    first_y, second_y = (40, 810) if layout == "second-half-above" else (20, -10)
+    first = (text("Quarterly report", 700) + b"\nBT /F2 12 Tf 72 %d Td " % first_y
+             + _break_coded("SSN 123-45-") + b" Tj ET")
+    second = b"BT /F2 12 Tf 72 %d Td " % second_y + _break_coded("6789 continues") + b" Tj ET"
+    turned = b"/Rotate %d /CropBox [0 0 812 792]" % rotate if rotate else b""
+    fonts = b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>"
+    if layout == "wrap-below":
+        objects = one_page(stream(b"", first + b"\n" + second), o7=differences_font(_BREAK_CHARS))
+        objects[3] = page(resources=fonts, extra=turned)
+    else:
+        objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+                   3: page(resources=fonts, extra=turned), 4: stream(b"", first),
+                   6: HELVETICA, 7: differences_font(_BREAK_CHARS),
+                   8: page(b"9 0 R", fonts, turned),
+                   9: stream(b"", second + b"\n" + text("Quarterly report", 700))}
+    _write(path, objects)
+
+
+def _carry_cases() -> None:
+    for layout, cell, code, where in (
+            ("second-half-above", "match.page-break-off-page-half", "REVIEW_CROSS_PAGE",
+             "its second half, '6789 continues', lies wholly above page 2's top edge"),
+            ("wrap-below", "match.line-wrap", "REVIEW_CROSS_LINE",
+             "its second half, '6789 continues', is on a line wholly below the page's "
+             "bottom edge")):
+        for rotate, suffix in ((0, ""), (270, "-rotated")):
+            @leak(f"page.raw-font-coded-carried-off-page-{layout}{suffix}", (cell, "off-page.font"),
+                  "The SSN in font codes: page 1's last visible line ends 'SSN 123-45-', and "
+                  + where + ". Off-page text does not run on from the visible text, so the "
+                  "join is manual review rather than a finding."
+                  + (" The pages are turned with /Rotate 270." if rotate else ""),
+                  expected=expect(2, warnings=((code, "live"),)),
+                  mistake="Nobody redacted it; half the value sits past the page edge.",
+                  recovery="Enlarge the page box, read the text through the font's Encoding "
+                           "/Differences, and join the halves.")
+            def carried(path: Path, layout: str = layout, rotate: int = rotate) -> None:
+                value_carried_off_page(path, layout, rotate)
+
+
+_carry_cases()
+
+
+# ── Clean controls: a table row beside off-page text on its baseline ────
+# 'Item' | '123' | '45' | '6789' in cells inside a crop box ending at
+# x=400, and on the same baseline past it either wide single-digit cells
+# or a letter-spaced slug (25 pt character spacing). Read across the edge,
+# the row's column breaks are set by its visible glyphs alone, so the
+# off-page text's wide gaps cannot fuse the visible cells into a value.
+TABLE_ROW_OFF_PAGE = ("wide-cells", "letterspaced-slug")
+
+
+_ROW_CHARS = "".join(dict.fromkeys("Item0123456789JOBREF-"))
+
+
+def _row_coded(text_: str) -> bytes:
+    return b"<" + b"".join(b"%02X" % (_ROW_CHARS.index(c) + 1) for c in text_) + b">"
+
+
+def table_row_beside_off_page(path: Path, layout: str, rotate: int) -> None:
+    """Font-coded, so the Objects layer's literal scan, which joins the
+    strings of one content stream, cannot read the cells as one value."""
+    cells = b"".join(b"BT /F2 12 Tf %d 500 Td %s Tj ET\n" % (x, _row_coded(t))
+                     for x, t in ((30, "Item"), (100, "123"), (150, "45"), (200, "6789")))
+    if layout == "wide-cells":
+        off = b"".join(b"BT /F2 12 Tf %d 500 Td %s Tj ET\n" % (430 + 40 * i, _row_coded(d))
+                       for i, d in enumerate("31415926"))
+    else:
+        off = b"BT /F2 12 Tf 25 Tc 440 500 Td " + _row_coded("JOB-REF-2291") + b" Tj ET\n"
+    content = text("Quarterly report", 760) + b"\n" + cells + off
+    extra = b"/CropBox [0 0 400 792]" + (b" /Rotate %d" % rotate if rotate else b"")
+    objects = one_page(stream(b"", content), o7=differences_font(_ROW_CHARS))
+    objects[3] = page(resources=b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>", extra=extra)
+    _write(path, objects)
+
+
+def _table_row_cases() -> None:
+    for layout in TABLE_ROW_OFF_PAGE:
+        for rotate, suffix in ((0, ""), (270, "-rotated")):
+            @case(f"page.raw-table-row-beside-off-page-{layout}{suffix}", truth="clean",
+                  features=("live.font", "off-page.font"), writer="raw",
+                  expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+                  story="A font-coded table row 'Item | 123 | 45 | 6789' inside the crop box, and on "
+                        "its baseline past the crop box's right edge "
+                        + ("wide single-digit cells" if layout == "wide-cells"
+                           else "a letter-spaced slug")
+                        + ". The cells are read apart, never as one number; joining the "
+                          "page's lines gives the usual manual-review warning."
+                        + (" The page is turned with /Rotate 270." if rotate else ""))
+            def row(path: Path, layout: str = layout, rotate: int = rotate) -> None:
+                table_row_beside_off_page(path, layout, rotate)
+
+
+_table_row_cases()
+
+
 # ── A visible part and a far off-page part on the same line ─────────────
 # 'Acct 123-45' at the right margin and, on its baseline, '6789 Job' past
 # the media box's right edge, a column break away (60 pt, or 12 pt: both
