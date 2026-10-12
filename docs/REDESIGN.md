@@ -888,8 +888,9 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   what the running Python exposes, and a test fails when the running
   Python exposes a name the union lacks. CI runs 3.10, 3.12, 3.13 and
   3.14 (#79), so a name first exposed by a later Python is caught only
-  once someone runs the suite on it, and a name a module binds only on first use
-  (3.14's `collections.heapq`) only once something has used it. It is a
+  once someone runs the suite on it, and a name a module binds only on
+  first use (3.14's `collections.heapq`) only once something has used
+  it. It is a
   mistake-catcher, frozen by ADR 0010: plain routes past it remain
   (issue #38) and are closed by the Phase 3b child process, which never
   receives secrets; the OS sandbox follows in 3d. Loosen it
