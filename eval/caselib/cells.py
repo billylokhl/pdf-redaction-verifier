@@ -57,7 +57,8 @@ def _cells() -> dict[str, Cell]:
         "live.pixels.exif-thumbnail": Cell(
             gap, "a JPEG's EXIF/APP1 thumbnail, beyond the main decoded picture"),
         "live.pixels.char-stack": Cell(
-            gap, "a value one character per line in a scanned page, searched with a value rule"),
+            read, "a value one character per line in a scanned page, which Vision reads as one "
+                  "vertical line: OCR unstacks it (a reconstruction)", tier="review"),
         "live.pixels.ocr-dropped-line": Cell(
             gap, "a line of pixels OCR reports reading but leaves out of its result"),
         # off-page — outside the visible crop/media box

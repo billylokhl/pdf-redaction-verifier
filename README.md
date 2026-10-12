@@ -280,15 +280,18 @@ flattened to images, text converted to vector outlines.
   readings, a match in an unconfirmed line is only ever a manual-review
   warning. A page gets at most 64 re-reads, retries included; vertical
   lines past that are manual review, and so, sometimes, is small slanted
-  text near a page edge whose re-read does not match.
+  text near a page edge whose re-read does not match. A page with any
+  vertical line is also read turned 90° and 270° (Vision drops lines of
+  sideways text), and each unconfirmed vertical line is unstacked into
+  one line and read; both only ever give manual-review warnings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
   area is not rendered, so OCR does not see it either. A scanned value
-  written one character per line is not read as a stack, so with a value
-  rule it passes as clean (#61); a scanned page Vision reads with lines
-  missing passes too (#67: on macOS 27, a dense page of sideways text).
-  Both are pinned in the case library (`docs/REDESIGN.md` §8, K42 and K43).
+  written one character per line that Vision does not report as a line
+  at all passes as clean with a value rule (#81); a page Vision reads
+  with lines missing passes too, unless a line on it is read vertically
+  (#67, #82).
 
 ### 6. Binary — the raw decompressed file
 

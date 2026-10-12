@@ -36,7 +36,10 @@ expect the tool to catch them.
 
 K42 and K43 (OCR's silent misses on scanned pages, #61 and #67;
 ``caselib/families/ocr_misses.py``) are new rows, each with its own
-case, and their stories carry the K-number prefix.
+case, and their stories carry the K-number prefix. K42 was fixed in the
+pull request that pinned it, so, like K40 and K41, §8 marks it fixed and
+it has no entry; K43 is now manual review rather than silent, still short
+of its target.
 
 K1-K11's cases (``caselib/families/raw.py``) also write their K-number
 into the story itself ("K7: plain text appended after the file's final
@@ -97,7 +100,6 @@ CASE_TO_K: dict[str, int] = {
     "page.image-extra-rows": 37,
     "page.ssn-strips-under-box": 38,
     "page.jpeg-exif-thumbnail": 39,
-    "layout.scanned-vertical-stack": 42,
     "page.dense-sideways-scan": 43,
 }
 

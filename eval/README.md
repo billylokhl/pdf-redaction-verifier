@@ -684,11 +684,11 @@ own machine (`sha256sum`) when a number needs explaining.
   `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
   finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
   skips the grids, so only the weekly job runs those cases with OCR. Two
-  OCR known gaps, `layout.scanned-vertical-stack` and
-  `page.dense-sideways-scan` (`families/ocr_misses.py`, K42 and K43),
-  pin what Vision on macOS 27 returns; they are not grid cases, so
-  `full-macos` runs them on macOS 26 too, and fails if Vision there reads
-  those pages differently.
+  OCR cases on scanned pages, `layout.scanned-vertical-stack` (K42,
+  fixed) and the known gap `page.dense-sideways-scan` (K43)
+  (`families/ocr_misses.py`), pin what Vision on macOS 27 returns; they
+  are not grid cases, so `full-macos` runs them on macOS 26 too, and
+  fails if Vision there reads those pages differently.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

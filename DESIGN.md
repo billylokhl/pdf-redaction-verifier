@@ -381,6 +381,20 @@ each quadrant, 7–14 pt, centred and at the page edges), 10 of the 1,047
 lines Vision read, mostly 7 pt near an edge, were manual review. Lines
 read horizontally, such as a row of form boxes, are not re-read.
 
+A page with any line read vertically gets two more reconstructed
+readings, so whatever Vision misses there is at least manual review.
+The page is read again turned 90° and 270°: on macOS 27 Vision reads
+sideways text in a page image only in part (30 of a dense page's 40
+lines; the same page at 200 or 400 dpi, none) and reads it whole turned
+upright (#67). Turning also makes a one-character-per-line stack a row
+of sideways glyphs, which Vision misread as a number in 13 of 48 stack
+pages, so a turned reading is never hard. And each vertical line no
+re-read confirmed is unstacked: the runs of inked pixel rows in its box
+are laid out left to right as one line and read (#61). In a stack
+Vision reports as a line, that reads the value as written (21 of 23
+generated stacks); in 25 of 48 stack pages Vision reported no vertical
+line at all, and those are not read (#81).
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
@@ -399,6 +413,8 @@ text costs about 8–11 s and one of text slanted near 45°, whose crops
 are squares around whole lines, about a minute, instead of under half a
 second (measured on macOS 27), so a long sideways scan is slow, not
 unbounded.
+A page with a vertical line also costs two Vision calls on the whole
+page turned, and up to 16 on unstacked lines (the #67 page: about 11 s).
 Vision calls themselves have no deadline (as before the re-reads).
 
 The subprocesses themselves are launched defensively, not just bounded:
@@ -468,8 +484,10 @@ the gap is stated rather than implied away.
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
   as clean (#67: on macOS 27, a dense sideways scan whose SSN line
-  Vision drops exits `0`; pinned as `page.dense-sideways-scan`, K43 in
-  docs/REDESIGN.md §8). Today only running OCR tests (the case
+  Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
+  docs/REDESIGN.md §8, now manual review through the turned readings
+  above, which only a page with a vertical line gets; a raster check is
+  #82). Today only running OCR tests (the case
   library, the OCR unit tests) on that OS can catch it, and only for the
   content they cover. A change in *how* Vision reads can also move
   verdicts: on macOS 27 Vision reads a one-character-per-line stack as
