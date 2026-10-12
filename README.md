@@ -284,7 +284,11 @@ flattened to images, text converted to vector outlines.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
-  area is not rendered, so OCR does not see it either.
+  area is not rendered, so OCR does not see it either. A scanned value
+  written one character per line is not read as a stack, so with a value
+  rule it passes as clean (#61); a scanned page Vision reads with lines
+  missing passes too (#67: on macOS 27, a dense page of sideways text).
+  Both are pinned in the case library (`docs/REDESIGN.md` §8, K42 and K43).
 
 ### 6. Binary — the raw decompressed file
 

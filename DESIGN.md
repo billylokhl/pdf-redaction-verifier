@@ -468,7 +468,8 @@ the gap is stated rather than implied away.
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
   as clean (#67: on macOS 27, a dense sideways scan whose SSN line
-  Vision drops exits `0`). Today only running OCR tests (the case
+  Vision drops exits `0`; pinned as `page.dense-sideways-scan`, K43 in
+  docs/REDESIGN.md §8). Today only running OCR tests (the case
   library, the OCR unit tests) on that OS can catch it, and only for the
   content they cover. A change in *how* Vision reads can also move
   verdicts: on macOS 27 Vision reads a one-character-per-line stack as

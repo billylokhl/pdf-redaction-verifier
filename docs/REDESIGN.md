@@ -581,8 +581,8 @@ difference fails the gate.
   when an upright re-read confirms it (DESIGN.md, two-tier model),
   measured on generated pages alone; (d) the 4b OCR view should
   re-measure it on the real-world corpus's scanned pages, and (e) read a
-  scanned stack character by character (#61: with a value rule it passes
-  as clean).
+  scanned stack character by character (#61, K42: with a value rule it
+  passes as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -790,11 +790,17 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K39 | A small JPEG's own EXIF (APP1) thumbnail renders the SSN: a second, fully decodable picture the main image's declared frame never mentions. Only the main picture is ever drawn or OCR'd, and unlike a raw sample byte or a JPEG comment segment, the thumbnail's render is itself DCT/Huffman-compressed pixel data, not literal text bytes, so no raw byte sweep finds it either |
 | K40 | **Fixed** in the current tool (`verify.scan_trailers`, owner decision D on the tier; cases in `eval/caselib/families/trailer.py`): the document `/ID` in a classic trailer holds the secret as a literal string (or as hex-encoded text): the trailer dictionary is not an object, so the Objects layer never read it, and the Binary layer scanned qpdf's rewrite, where the file's first `/ID` element comes back hex-encoded and the second is replaced by qpdf's own. A private (non-standard) trailer key failed the same way for a pattern rule; a known value there got only Binary's manual-review warning. In the new design a trailer is part of its cross-reference unit (§4); its strings must be decoded and matched the same way, under the same tier rule, not only tiled |
 | K41 | **Fixed** with K40. Same, in an earlier revision's trailer: an incremental update writes a new trailer, the earlier-revision scan compared objects, not trailers, and qpdf writes only the current trailer |
+| K42 | A value one character per line (the SSN's digits, as in the `layout.vertical-stack` cases) in a scanned page, searched with a value rule ([#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)): there is no text for the Text layer's stack reading, and Vision on macOS 27 reads the stack as one sideways line and misreads it (`199140190`, `1994090`), so neither its raw line nor the one-character-per-line genuine readings hold the value. The Text layer gives a stack in text manual review; OCR should read a scanned stack the same way |
+| K43 | A dense sideways scan ([#67](https://github.com/billylokhl/pdf-redaction-verifier/issues/67)): 40 lines of 8 pt text turned 90°, the middle one holding the SSN whole, as an image-only page. Vision on macOS 27 reports success but returns 36 lines and leaves out lines 14–21, the SSN's among them, and nothing compares its reading with the page's ink (DESIGN.md's known limitations: Vision reading less does not fail closed). With 20 or 30 lines the page is read whole |
 
 K12-K36 are pinned in `eval/caselib/families/gaps.py` (the remaining
 `UNDOCUMENTED_GAPS`, now empty); K37, K38 and K39 are pinned, alongside
 the rest of ADR 0003/0004's scheduled image cases, in
-`eval/caselib/families/image_bytes.py`. One more case in `gaps.py` is the
+`eval/caselib/families/image_bytes.py`; K40 and K41 (both fixed) in
+`eval/caselib/families/trailer.py`; K42 and K43, OCR's silent misses
+on scanned pages, in `eval/caselib/families/ocr_misses.py`
+(`layout.scanned-vertical-stack`, `page.dense-sideways-scan`; each
+`known_gap` is what macOS 27's Vision gives). One more case in `gaps.py` is the
 opposite problem — a **false alarm**, not a silent miss: a clean document whose
 only planted content is a live (referenced), correctly sized image
 XObject whose byte ramp (0..255, repeated) happens to contain the ASCII

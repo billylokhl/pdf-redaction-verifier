@@ -56,6 +56,10 @@ def _cells() -> dict[str, Cell]:
             gap, "pixel rows beyond a drawn image's declared height, never drawn or OCR'd"),
         "live.pixels.exif-thumbnail": Cell(
             gap, "a JPEG's EXIF/APP1 thumbnail, beyond the main decoded picture"),
+        "live.pixels.char-stack": Cell(
+            gap, "a value one character per line in a scanned page, searched with a value rule"),
+        "live.pixels.ocr-dropped-line": Cell(
+            gap, "a line of pixels OCR reports reading but leaves out of its result"),
         # off-page — outside the visible crop/media box
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),
