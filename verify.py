@@ -224,6 +224,7 @@ try:
     from redaction_verifier.views import MAX_LINE_TOLERANCE_PT as MAX_LINE_TOLERANCE_PT
     from redaction_verifier.views import MIN_LINE_TOLERANCE_PT as MIN_LINE_TOLERANCE_PT
     from redaction_verifier.views import OCR_DPI as OCR_DPI
+    from redaction_verifier.views import OCR_GENUINE_READINGS as OCR_GENUINE_READINGS
     from redaction_verifier.views import TEXT_GENUINE_READINGS as TEXT_GENUINE_READINGS
     from redaction_verifier.views import _OCR_IMPORTS_OK as _OCR_IMPORTS_OK
     from redaction_verifier.views import _join_cluster as _join_cluster
@@ -327,6 +328,7 @@ def scan_page_layer(
     note: str,
     patterns: Sequence[PatternRule] = (),
     hard_variants: int = 1,
+    cross_page_reading: int = 0,
     fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
@@ -334,7 +336,10 @@ def scan_page_layer(
     The extractor returns several readings per page. The first
     *hard_variants* are genuine reading orders; any others are
     reconstructions. Callers set it to the number of genuine readings:
-    TEXT_GENUINE_READINGS for Text, all of them for OCR.
+    TEXT_GENUINE_READINGS for Text, OCR_GENUINE_READINGS for OCR.
+    *cross_page_reading* is the reading the cross-page pattern scan reads
+    (manual review only): OCR's raw Vision reading, whose lines hold a
+    vertical line no upright re-read confirmed whole.
 
     Known values:
     - hard: on one line of a genuine reading; or running from the last
@@ -461,13 +466,20 @@ def scan_page_layer(
             for text in variants[:hard_variants]:
                 for line in text.split("\n"):
                     page_hard.update(match_patterns(line, patterns, page_hard))
-            for text in variants:
+            for vi, text in enumerate(variants):
                 seen = set(page_hard) | set(page_soft)
                 if len(seen) == len(patterns):
                     break
                 page_soft.update(
                     match_patterns(text, patterns, seen, collapse_separators=True)
                 )
+                # A reconstruction's own lines, as written: collapsing
+                # separators can stop a rule that needs a run of them
+                # ('REF--\d{6}') from matching anywhere above.
+                if vi >= hard_variants:
+                    for line in text.split("\n"):
+                        page_soft.update(match_patterns(
+                            line, patterns, set(page_hard) | set(page_soft)))
         for name, sample in page_hard.items():
             hard_pages, _ = layer_hard.setdefault(name, ([], sample))
             hard_pages.append(page_index + 1)
@@ -475,7 +487,8 @@ def scan_page_layer(
             soft_pages, _ = layer_soft.setdefault(name, ([], sample))
             soft_pages.append(page_index + 1)
         if patterns:
-            cross_page_patterns.feed("\n" + (variants[0] if variants else ""))
+            cross_page_patterns.feed(
+                "\n" + (variants[cross_page_reading] if len(variants) > cross_page_reading else ""))
         if fail_fast and (report.leaked or layer_hard):
             break
 
@@ -2841,8 +2854,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             # are independent natural-order reads of the same
                             # pixels, not reconstructions — correction-off is in
                             # fact the more reliable read for digit strings — so
-                            # both are eligible for hard findings.
-                            hard_variants=2,
+                            # both are eligible for hard findings, except a
+                            # vertical line no upright re-read confirms: that is
+                            # whole only in the two raw readings after them
+                            # (extract_ocr_text), reconstructions.
+                            hard_variants=OCR_GENUINE_READINGS,
+                            cross_page_reading=OCR_GENUINE_READINGS,
                             fail_fast=args.fail_fast,
                         )
                     except Exception as exc:

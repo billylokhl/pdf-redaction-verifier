@@ -314,7 +314,7 @@ class TestOcrFailureFailsClosed:
         pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
         assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
 
-        def _raise(png_bytes: bytes) -> tuple[str, str]:
+        def _raise(png_bytes: bytes) -> tuple[list[ocr.Observation], list[ocr.Observation]]:
             raise ValueError("NSInvalidArgumentException - key does not exist")
 
         monkeypatch.setattr(ocr, "_vision_recognize_batch", _raise)

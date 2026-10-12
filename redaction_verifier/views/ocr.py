@@ -4,11 +4,14 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged. Two changes
-since the move, both in _vision_recognize_batch: the image handler's
-options are a native NSDictionary, not a Python {} (macOS 27
-compatibility), and a reading counts only once its completion handler
-ran to the end, with nothing allowed to escape a handler.
+`verify.X` references and the CLI keep working unchanged. Three changes
+since the move. In _vision_recognize_batch: the image handler's options
+are a native NSDictionary, not a Python {} (macOS 27 compatibility), and
+a reading counts only once its completion handler ran to the end, with
+nothing allowed to escape a handler. And a line Vision reads vertically
+is hard-finding eligible only when an upright re-read confirms it, since
+Vision on macOS 27 returns a stack of upright characters as one line
+read sideways (see _confirm_vertical).
 
 The Vision/Foundation import below keeps its original degrade semantics:
 an ORDINARY failure (missing package, corrupt pyobjc install) sets
@@ -33,11 +36,35 @@ and this module's own value never drift apart.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import pymupdf as fitz
 
+from redaction_verifier.matching import normalize_string
+
 OCR_DPI: int = 300
+
+# How many of extract_ocr_text's readings are genuine reading orders
+# (hard-finding eligible): Vision's reading with language correction on
+# and off. The rest are reconstructions (manual review).
+OCR_GENUINE_READINGS = 2
+
+# Upright re-reads of vertical lines (_confirm_vertical), at most this
+# many per page, retries included; a vertical line past the cap stays
+# unconfirmed (manual review), so a page of sideways text cannot make
+# the run unbounded.
+# Each re-read is two Vision calls, both passes each, on a crop around
+# the line: 70-150 ms for a vertical line, more for a slanted one, whose
+# crop is a square around the whole line. Measured per page: sideways
+# text about 8-11 s, text slanted near 45 degrees about a minute, against
+# under half a second.
+MAX_UPRIGHT_REREADS = 64
+# The margin around a re-read box, in multiples of the line's thickness:
+# a second, wider crop for a line the first did not confirm (Vision
+# sometimes misreads a crop's last glyph, and not at every margin).
+REREAD_PADS = (1.0, 3.0)
 
 try:
     import Vision
@@ -57,16 +84,32 @@ except Exception:  # pragma: no cover
     _OCR_IMPORTS_OK = False
 
 
-def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
+@dataclass(frozen=True)
+class Observation:
+    """One line Vision recognized: its top candidate's string and three
+    corners of its quadrilateral, as (x, y) in Vision's normalized image
+    coordinates (0 to 1, origin bottom-left). top_left -> top_right runs
+    along the reading direction, bottom_left -> top_left across the line."""
+
+    text: str
+    top_left: tuple[float, float]
+    top_right: tuple[float, float]
+    bottom_left: tuple[float, float]
+
+
+def _vision_recognize_batch(
+    png_bytes: bytes,
+) -> tuple[list[Observation], list[Observation]]:
     """OCR a PNG with Apple Vision in one pass: correction on AND off.
 
     Both requests share a single VNImageRequestHandler so the image is
     decoded once instead of twice.  Raises on any Vision-level failure,
     and unless both completion handlers ran to the end: a reading is
-    only returned once Vision has demonstrably delivered it.
+    only returned once Vision has demonstrably delivered it. Returns each
+    pass's observations in Vision's order.
     """
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
-    results: dict[bool, list[str]] = {True: [], False: []}
+    results: dict[bool, list[Observation]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
     # Set only as a handler's last step: if performRequests ever reported
     # success without having run a request's handler to the end, that
@@ -95,7 +138,12 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
                 for observation in observations:
                     candidates = observation.topCandidates_(1)
                     if candidates:
-                        results[correction].append(candidates[0].string())
+                        tl, tr, bl = (observation.topLeft(), observation.topRight(),
+                                      observation.bottomLeft())
+                        results[correction].append(Observation(
+                            candidates[0].string(),
+                            (tl.x, tl.y), (tr.x, tr.y), (bl.x, bl.y),
+                        ))
                 completed[correction] = True
             except BaseException as exc:  # even SystemExit: it would abort
                 try:
@@ -141,7 +189,121 @@ def _vision_recognize_batch(png_bytes: bytes) -> tuple[str, str]:
                 f"{'on' if correction else 'off'} never completed"
             )
 
-    return ("\n".join(results[True]), "\n".join(results[False]))
+    return (results[True], results[False])
+
+
+def _is_vertical(observation: Observation, width: int, height: int,
+                 steeper_than: float = 45.0) -> bool:
+    """Whether Vision read the observation more than *steeper_than*
+    degrees from the image's horizontal axis, measured in pixels of the
+    *width* x *height* image so its aspect ratio cannot skew it."""
+    (tlx, tly), (trx, tr_y) = observation.top_left, observation.top_right
+    rise, run = abs((tr_y - tly) * height), abs((trx - tlx) * width)
+    return rise > run * math.tan(math.radians(steeper_than))
+
+
+def _box(observation: Observation, width: int, height: int, pad: float) -> fitz.IRect:
+    """The observation's quadrilateral in image pixels (origin top-left),
+    padded by *pad* times its thickness plus a margin, clipped to the image."""
+    corners = [(x * width, (1 - y) * height) for x, y in (
+        observation.top_left, observation.top_right, observation.bottom_left,
+        (observation.top_right[0] + observation.bottom_left[0] - observation.top_left[0],
+         observation.top_right[1] + observation.bottom_left[1] - observation.top_left[1]))]
+    rect = fitz.Rect(min(x for x, _ in corners), min(y for _, y in corners),
+                     max(x for x, _ in corners), max(y for _, y in corners))
+    # The line's own thickness, not the box's short side: for a slanted
+    # line the two differ by up to the line's length.
+    (tlx, tly), (blx, bly) = corners[0], corners[2]
+    margin = pad * math.hypot(tlx - blx, tly - bly) + 2 * OCR_DPI / 72
+    rect = fitz.Rect(rect.x0 - margin, rect.y0 - margin, rect.x1 + margin, rect.y1 + margin)
+    return (rect & fitz.Rect(0, 0, width, height)).round()
+
+
+def _upright_reads(image: fitz.Page, box: fitz.IRect) -> tuple[list[str], list[str]]:
+    """Vision's horizontal lines in *box* of the rendered page *image*
+    turned 90 and 270 degrees, per pass (correction on, off)."""
+    reads: tuple[list[str], list[str]] = ([], [])
+    for degrees in (90, 270):
+        pix = image.get_pixmap(matrix=fitz.Matrix(1, 1).prerotate(degrees), clip=box,
+                               colorspace=fitz.csGRAY)
+        width, height = pix.width, pix.height
+        passes = _vision_recognize_batch(pix.tobytes("png"))
+        for read, observations in zip(reads, passes):
+            # A stack turned upright may be read sideways again (near
+            # vertical), which confirms nothing. A line near 45 degrees
+            # stays near 45 turned, so only steep lines are left out: with
+            # a 45-degree cut, a 10 pt line at 135 degrees near the page's
+            # right edge was never confirmed.
+            read.extend(o.text for o in observations
+                        if not _is_vertical(o, width, height, steeper_than=60.0))
+    return reads
+
+
+def _confirm_vertical(
+    png_bytes: bytes, width: int, height: int,
+    passes: tuple[list[Observation], list[Observation]],
+) -> list[list[bool]]:
+    """Per pass, per observation: whether it is a line of the page. A
+    line read horizontally is. A vertical one only if an upright re-read
+    of its box, in the same pass, contains its text.
+
+    On macOS 27 (CI's macOS 26 never made a hard finding of it), Vision
+    returns a one-character-per-line stack as one vertical observation,
+    the orientation it gives rotated text, and reads the upright glyphs
+    sideways, often wrongly ('199140190' for the digits 1 to 9). Turned
+    upright, rotated text is an ordinary line and reads back the same; a
+    stack becomes a row of sideways glyphs and usually does not. Glyphs
+    that look alike turned sideways (0, 1, 8, O, I, H) can read back the
+    same misread, which then stays hard-eligible (#65). No geometric cut
+    separates the two: letter-spaced rotated text is as sparse as a
+    stack. Unconfirmed is never clean: the caller keeps such a line only
+    as a reconstruction (manual review).
+    """
+    confirmed = [[not _is_vertical(o, width, height) for o in obs] for obs in passes]
+    budget = MAX_UPRIGHT_REREADS
+    doc = fitz.open()
+    try:
+        image: fitz.Page | None = None
+        for pad in REREAD_PADS:
+            boxes: dict[tuple[int, int, int, int], list[tuple[int, int]]] = {}
+            for p, observations in enumerate(passes):
+                for i, observation in enumerate(observations):
+                    if not confirmed[p][i] and normalize_string(observation.text):
+                        box = _box(observation, width, height, pad)
+                        boxes.setdefault((box.x0, box.y0, box.x1, box.y1), []).append((p, i))
+            for corners, members in list(boxes.items())[:budget]:
+                if image is None:
+                    image = doc.new_page(width=width, height=height)   # one point per pixel
+                    image.insert_image(image.rect, stream=png_bytes)
+                try:
+                    reads = _upright_reads(image, fitz.IRect(*corners))
+                except RuntimeError:
+                    # A re-read that fails (Vision: _vision_recognize_batch
+                    # raises RuntimeError; MuPDF's errors subclass it too)
+                    # confirms nothing: its lines stay manual review, and the
+                    # page's other lines still count. Any other exception,
+                    # such as a bug, fails the page (PAGE_FAILED).
+                    continue
+                for p, i in members:
+                    text = normalize_string(passes[p][i].text)
+                    confirmed[p][i] = any(text in normalize_string(r) for r in reads[p])
+            budget -= min(budget, len(boxes))
+    finally:
+        doc.close()
+    return confirmed
+
+
+def _reading(observations: list[Observation], lines_of_page: list[bool] | None) -> str:
+    """One reading, one observation per line. With *lines_of_page*, an
+    observation that is not a line of the page contributes one character
+    per line instead, as the Text layer reads a stack."""
+    lines: list[str] = []
+    for i, observation in enumerate(observations):
+        if lines_of_page is None or lines_of_page[i]:
+            lines.append(observation.text)
+        else:
+            lines.extend(observation.text)
+    return "\n".join(lines)
 
 
 def extract_ocr_text(page: fitz.Page) -> list[str]:
@@ -154,9 +316,19 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
 
     Both recognition passes share one image handler so the PNG is decoded
     once (see _vision_recognize_batch).
+
+    Four readings, the first OCR_GENUINE_READINGS genuine: each pass with
+    a vertical line no upright re-read confirms (_confirm_vertical) split
+    one character per line, as the Text layer reads a stack, so nothing
+    in it is a hard finding; then each pass exactly as Vision returned
+    it, a reconstruction, so a value or pattern in such a line is still
+    manual review.
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
+    width, height = pix.width, pix.height
     png_bytes: bytes = pix.tobytes("png")
     del pix  # release the raster before Vision runs
-    text_on, text_off = _vision_recognize_batch(png_bytes)
-    return [text_on, text_off]
+    passes = _vision_recognize_batch(png_bytes)
+    confirmed = _confirm_vertical(png_bytes, width, height, passes)
+    return [_reading(obs, ok) for obs, ok in zip(passes, confirmed)] + [
+        _reading(obs, None) for obs in passes]
