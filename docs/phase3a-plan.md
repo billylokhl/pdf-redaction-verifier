@@ -366,8 +366,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     whose pages lack /Resources or /MediaBox. Closes #77, #52 item 5, #44 comment 1 item 3;
     part of #52 item 2 (the unanchored content-stream substring stays, Phase 4's).
     Linearity: wide and deep trees over many revisions. Expected corpus cost: 0 (ADR 0011).
-    Done (3a-7b PR): pages.py, PAGE_TREE with 13 PageTreeRules; the gate compares page lists
-    and inherited attributes; exemptions removed. Gate: corpus 1,932/141/0, caselib 407/6/0,
+    Done (3a-7b PR): pages.py, PAGE_TREE with 14 PageTreeRules (review added NO_PAGES, boxes
+    in 32-bit floats at least one unit wide and tall, no /UserUnit but 1: what MuPDF shows
+    otherwise differs from qpdf); the gate compares page lists, inherited attributes as
+    written and the page as MuPDF shows it; exemptions removed. Gate: corpus 1,932/141/0, caselib 407/6/0,
     fuzz 501/1,499/0 -- no verdict change (cost 0, as measured).
   - 3a-7c Resource scopes and name/number trees (ADR 0011 items 3 and 4). RESOURCE_SCOPE: a
     form XObject, a tiling pattern, a Type3 font or an annotation appearance stream without

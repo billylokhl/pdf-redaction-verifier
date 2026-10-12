@@ -65,7 +65,7 @@ from redaction_verifier.inventory.flate import flate_decode
 from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBool, PdfDict,
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
-from redaction_verifier.inventory.pages import Page
+from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
 
@@ -691,31 +691,66 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         raise _Disagreement(Check.MUPDF_WARNING, templates=warnings)
 
 
-_INHERITED = ("Resources", "MediaBox", "CropBox", "Rotate")
-
-
 def _kind(form: object) -> object:
     return form[:1] if isinstance(form, tuple) else form
+
+
+def _box(form: object) -> Box | None:
+    """A box in the comparison's form (four numbers) as MuPDF holds it."""
+    if not (isinstance(form, tuple) and form[:1] == ("array",) and len(form[1]) == 4):
+        return None
+    values = [float(v[1]) for v in form[1] if isinstance(v, tuple) and v[0] in ("int", "real")]
+    if len(values) != 4:
+        return None
+    x0, y0, x1, y1 = (f32(v) for v in values)
+    return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _close(ours: Iterable[float], theirs: Iterable[float]) -> bool:
+    """Equal within two 32-bit float steps each (MuPDF computes in floats)."""
+    return all(abs(float32_ordinal(Fraction(a)) - float32_ordinal(Fraction(b))) <= 2
+               for a, b in zip(ours, theirs, strict=True))
+
+
+def _effective_agree(page: pymupdf.Page, inherited: dict[str, object]) -> bool:
+    """MuPDF's page as shown -- its media box, its crop box (flipped
+    against the media box's top), its rotation and its rectangle (the
+    crop box clipped to the media box, rotated) -- against what the
+    canonical attributes say it is (ADR 0011 item 8): a box MuPDF
+    replaced (a 1x1 page, 612x792) or scaled (/UserUnit) disagrees."""
+    media = _box(inherited["MediaBox"])
+    if media is None:
+        return False
+    crop = _box(inherited["CropBox"]) or media
+    rotate = inherited["Rotate"]
+    turns = (rotate[1] if isinstance(rotate, tuple) and rotate[:1] == ("int",) else 0) % 360
+    flipped = (crop[0], f32(media[3] - crop[3]), crop[2], f32(media[3] - crop[1]))
+    clipped = intersect(crop, media)
+    w, h = clipped[2] - clipped[0], clipped[3] - clipped[1]
+    shown = (0.0, 0.0, h, w) if turns in (90, 270) else (0.0, 0.0, w, h)
+    return (_close(media, page.mediabox) and _close(flipped, page.cropbox)
+            and page.rotation == turns and _close(shown, page.rect))
 
 
 def _pages_agree(doc: pymupdf.Document, path: Path, pages: tuple[Page, ...] | None,
                  revision: int, encrypted: bool, stats: _Stats) -> None:
     """The revision's page list and each page's inherited attributes
-    (ADR 0011 item 8), ours against MuPDF's -- its page tree loaded, its
-    own inheritance (pdf_dict_get_inheritable) -- and libqpdf's, read
-    from a separate instance that pushes the attributes down to each page
-    (owner decision 9, P2: pikepdf reads an inherited /Resources no other
-    way), whose warnings are gated like the first's; the push makes an
-    inherited direct value a new object there, compared by value. An encrypted
-    revision's direct /Resources holds encrypted strings in our reading:
-    it is compared by kind only there."""
+    (ADR 0011 item 8): as written, ours against MuPDF's own inheritance
+    (pdf_dict_get_inheritable) and libqpdf's, read from a separate
+    instance that pushes the attributes down to each page (owner decision
+    9, P2: pikepdf reads an inherited /Resources no other way), whose
+    warnings are gated like the first's -- the push makes an inherited
+    direct value a new object there, compared by value; and as MuPDF
+    shows the page (_effective_agree). An encrypted revision's direct
+    /Resources holds encrypted strings in our reading: compared by kind
+    there."""
     if pages is None:  # the inventory flagged the tree: never reached unflagged
         raise _Disagreement(Check.PAGE_LIST, revision, templates=("no page list",))
     mine = [(page.number, page.gen) for page in pages]
     pdf = pymupdf._as_pdf_document(doc)
     mupdf = pymupdf.mupdf
-    count = mupdf.pdf_count_pages(pdf)
-    objects = [mupdf.pdf_lookup_page_obj(pdf, i) for i in range(count)]
+    shown = [doc[i] for i in range(doc.page_count)]  # loads the tree first
+    objects = [mupdf.pdf_lookup_page_obj(pdf, i) for i in range(mupdf.pdf_count_pages(pdf))]
     if [(mupdf.pdf_to_num(o), mupdf.pdf_to_gen(o)) for o in objects] != mine:
         raise _Disagreement(Check.PAGE_LIST, revision, templates=("mupdf",))
     with pikepdf.explicit_conversion(), pikepdf.Pdf.open(
@@ -728,14 +763,18 @@ def _pages_agree(doc: pymupdf.Document, path: Path, pages: tuple[Page, ...] | No
                                 templates=tuple(scrub(line) for line in warnings[:3]))
         if theirs != mine:
             raise _Disagreement(Check.PAGE_LIST, revision, templates=("libqpdf",))
-        for page, obj, qpage in zip(pages, objects, pushed.pages):
-            for key in _INHERITED:
+        for page, obj, qpage, view in zip(pages, objects, pushed.pages, shown):
+            resolved: dict[str, object] = {}
+            for key in (k.decode() for k in INHERITED):
                 found = page.attributes.get(key.encode())
                 ours = value_form(found.value, found.text) if found is not None else NULL
                 inherited = mupdf.pdf_dict_get_inheritable(obj, mupdf.pdf_new_name(key))
                 text = mupdf.pdf_sprint_obj(None, 0, inherited, 0, 0)[0]
                 mu = NULL if mupdf.pdf_is_null(inherited) else text_form(
                     text.encode("latin-1"))
+                value = mupdf.pdf_resolve_indirect(inherited)
+                resolved[key] = text_form(
+                    mupdf.pdf_sprint_obj(None, 0, value, 0, 0)[0].encode("latin-1"))
                 # Pushing makes an inherited direct value a new indirect object
                 # in qpdf's copy: compared by value then. A reference the file
                 # writes stays a reference, compared as one.
@@ -744,11 +783,16 @@ def _pages_agree(doc: pymupdf.Document, path: Path, pages: tuple[Page, ...] | No
                 qp = libqpdf_form(got, top=direct)
                 if (encrypted and key == "Resources" and isinstance(ours, tuple)
                         and ours[:1] == ("dict",)):
-                    ours, mu, qp = ("dict",), _kind(mu), _kind(qp)
-                if not same_as_mupdf(ours, mu) or qp != ours:
+                    agree = _kind(mu) == _kind(qp) == ("dict",)
+                else:
+                    agree = same_as_mupdf(ours, mu) and qp == ours
+                if not agree:
                     raise _Disagreement(Check.PAGE_ATTRIBUTE, revision, page.number,
                                         templates=(key,))
                 stats.values += 1
+            if not _effective_agree(view, resolved):
+                raise _Disagreement(Check.PAGE_ATTRIBUTE, revision, page.number,
+                                    templates=("as shown",))
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,

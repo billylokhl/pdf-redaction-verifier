@@ -587,9 +587,11 @@ What each part of the output means:
   line outside the written allowlist below), `mupdf_warning`,
   `needs_password`, `encryption`, `page_list` and `page_attribute`
   (since 3a-7b: each revision's pages in order, and each page's
-  inherited `/Resources`, `/MediaBox`, `/CropBox`, `/Rotate`, against
-  MuPDF's own inheritance and a second libqpdf instance that pushes them
-  to the pages, owner decision 9), `oracle_error`, `tiling`),
+  inherited `/Resources`, `/MediaBox`, `/CropBox`, `/Rotate` as written,
+  against MuPDF's own inheritance and a second libqpdf instance that
+  pushes them to the pages, owner decision 9; and the page as MuPDF
+  shows it -- media box, crop box, rotation, rectangle -- against what
+  those attributes say it is), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared

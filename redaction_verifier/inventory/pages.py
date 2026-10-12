@@ -15,8 +15,13 @@ Each page's /Resources, /MediaBox, /CropBox and /Rotate come from the
 nearest of the page and its ancestors that has the key; that value must
 not be a reference to null or to nothing. /Resources is a dictionary and
 /MediaBox four numbers, both found; every box is four numbers with
-positive area and /CropBox overlaps /MediaBox; /Rotate is an integer
-multiple of 90; no /Pages node carries /ArtBox, /TrimBox or /BleedBox
+positive area -- in MuPDF's 32-bit floats, and for /MediaBox and its
+intersection with /CropBox (the page MuPDF shows) at least one unit wide
+and tall: MuPDF replaces a smaller one with a 1x1 page and an empty one
+with 612x792, where qpdf keeps the box as written; /Rotate is an integer
+multiple of 90; no /UserUnit other than 1 (MuPDF scales the page by it,
+qpdf does not); the tree holds at least one page (qpdf --check fails on
+none); no /Pages node carries /ArtBox, /TrimBox or /BleedBox
 (MuPDF inherits them, qpdf does not). A page's /Contents is absent, a
 reference to a stream, or an array (direct or by reference) of
 references to streams. Anything else is FlagReason.PAGE_TREE with a
@@ -56,6 +61,7 @@ class PageTreeRule(IntEnum):
     CROPBOX = 11           # /CropBox does not overlap /MediaBox
     NODE_BOX = 12          # /ArtBox, /TrimBox or /BleedBox on a /Pages node
     CONTENTS = 13          # /Contents not absent, a stream, or an array of streams
+    NO_PAGES = 14          # a tree with no page (qpdf --check: an error)
 
 
 INHERITED: Final = (b"Resources", b"MediaBox", b"CropBox", b"Rotate")
@@ -95,6 +101,9 @@ def build_pages(revisions: int, changes: list[list[int]],
     flags: list[Flag] = []
     seen: set[tuple[int, int]] = set()
     previous: tuple[set[int], PdfValue | None, tuple[Page, ...] | None] | None = None
+    # A page read again unchanged is the same Page: retained memory grows
+    # with the pages that change, not revisions x pages.
+    kept: dict[tuple[object, ...], Page] = {}
     for revision in reversed(range(revisions)):
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
@@ -102,7 +111,7 @@ def build_pages(revisions: int, changes: list[list[int]],
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]
             continue
-        walk = _Walk(revision, body_of, home_of, budget)
+        walk = _Walk(revision, body_of, home_of, budget, kept)
         pages = walk.run(root)
         if walk.spent:
             return tuple(results), flags
@@ -129,23 +138,70 @@ def _number(value: PdfValue | None) -> float | None:
     return None
 
 
-def _box(value: PdfValue | None) -> tuple[float, float, float, float] | None:
-    """Four numbers with positive area, normalized (x0 < x1, y0 < y1)."""
+_INF: Final = float("inf")
+
+
+def f32(value: float) -> float:
+    """*value* as MuPDF holds it: rounded once, to nearest with ties to
+    even, to a 32-bit float (infinite past its range) -- in exact integer
+    arithmetic: the child process imports no math library."""
+    if value != value or value - value != 0 or value == 0:  # NaN, infinite, zero
+        return value
+    sign = -1.0 if value < 0 else 1.0
+    num, den = abs(value).as_integer_ratio()
+    exponent = num.bit_length() - den.bit_length()
+    if (num << max(0, -exponent)) < (den << max(0, exponent)):
+        exponent -= 1  # now 2**exponent <= |value| < 2**(exponent + 1)
+    if exponent > 127:
+        return sign * _INF
+    shift = 23 - max(exponent, -126)  # 24 significant bits; subnormals below 2**-126
+    if shift >= 0:
+        mantissa, rest = divmod(num << shift, den)
+        half = den
+    else:
+        mantissa, rest = divmod(num, den << -shift)
+        half = den << -shift
+    if 2 * rest > half or (2 * rest == half and mantissa & 1):
+        mantissa += 1
+    result = mantissa / (1 << shift) if shift >= 0 else float(mantissa << -shift)
+    return sign * (_INF if result >= 2.0 ** 128 else result)
+
+
+Box = tuple[float, float, float, float]
+
+
+def box_of(value: PdfValue | None, least: float = 0.0) -> Box | None:
+    """Four finite numbers, in 32-bit floats, normalized (x0 <= x1,
+    y0 <= y1), more than *least* wide and tall (at least 1 when *least*
+    is 1: MuPDF's own threshold)."""
     if not isinstance(value, PdfArray) or len(value.items) != 4:
         return None
     n = [_number(item) for item in value.items]
     if any(v is None for v in n):
         return None
-    x0, y0, x1, y1 = (v for v in n if v is not None)
+    x0, y0, x1, y1 = (f32(v) for v in n if v is not None)
     box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
-    return box if box[2] > box[0] and box[3] > box[1] else None
+    if not all(v - v == 0 for v in box):  # finite
+        return None
+    return box if _sized(box, least) else None
+
+
+def _sized(box: Box, least: float) -> bool:
+    w, h = box[2] - box[0], box[3] - box[1]
+    return (w >= least and h >= least) if least else (w > 0 and h > 0)
+
+
+def intersect(a: Box, b: Box) -> Box:
+    return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
 
 
 class _Walk:
     def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
-                 home_of: Callable[[int, int], int | None], budget: Budget) -> None:
+                 home_of: Callable[[int, int], int | None], budget: Budget,
+                 kept: dict[tuple[object, ...], Page]) -> None:
         self.revision, self.body_of, self.home_of, self.budget = (
             revision, body_of, home_of, budget)
+        self.kept = kept
         self.read: set[int] = set()
         self.flags: list[tuple[PageTreeRule, int]] = []
         self.spent = False
@@ -248,9 +304,16 @@ class _Walk:
                 self.flag(PageTreeRule.NODE_TYPE, number)
                 continue
             self.page(number, value, here)
-            pages.append(Page(number, gen, body[0], here))
-        # Pages come off the stack in reverse document order of entry: kids
-        # are pushed reversed, so the order is the document's.
+            # Values are the parsed objects themselves, shared across
+            # revisions: their identity names the reading.
+            ident = (number, gen, body[0], *((k, id(a.value), a.source)
+                                             for k, a in sorted(here.items())))
+            if ident not in self.kept:
+                self.kept[ident] = Page(number, gen, body[0], here)
+            pages.append(self.kept[ident])
+        # Kids are pushed reversed: pages come off the stack in document order.
+        if not pages:
+            self.flag(PageTreeRule.NO_PAGES, top.num)
         return tuple(pages) if len(self.flags) == before else None
 
     def page(self, number: int, value: PdfDict, attributes: dict[bytes, Attribute]) -> None:
@@ -270,18 +333,20 @@ class _Walk:
             self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
         elif isinstance(resources, PdfDict) and self._is_stream(attributes[b"Resources"].value):
             self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
-        media_box = _box(media) if isinstance(media, PdfArray) else None
+        media_box = box_of(media, least=1.0) if isinstance(media, PdfArray) else None
         if b"MediaBox" in attributes and media_box is None:
             self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
         crop = resolved[b"CropBox"]
         if b"CropBox" in attributes:
-            crop_box = _box(crop) if isinstance(crop, PdfArray) else None
+            crop_box = box_of(crop) if isinstance(crop, PdfArray) else None
             if crop_box is None:
                 self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
-            elif media_box is not None and not (
-                    crop_box[0] < media_box[2] and media_box[0] < crop_box[2]
-                    and crop_box[1] < media_box[3] and media_box[1] < crop_box[3]):
+            elif media_box is not None and not _sized(intersect(crop_box, media_box), 1.0):
                 self.flag(PageTreeRule.CROPBOX, number)
+        unit = self.value(value.get(b"UserUnit"))
+        if unit is not None and not (isinstance(unit, (PdfInt, PdfReal))
+                                     and _number(unit) == 1.0):
+            self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
         rotate = resolved[b"Rotate"]
         if b"Rotate" in attributes and not (
                 isinstance(rotate, PdfInt) and rotate.value is not None
@@ -289,7 +354,7 @@ class _Walk:
             self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
         for key in _PAGE_BOXES:
             box = self.value(value.get(key))
-            if box is not None and (not isinstance(box, PdfArray) or _box(box) is None):
+            if box is not None and (not isinstance(box, PdfArray) or box_of(box) is None):
                 self.flag(PageTreeRule.ATTRIBUTE_INVALID, number)
         self.contents(number, value.get(b"Contents"))
 

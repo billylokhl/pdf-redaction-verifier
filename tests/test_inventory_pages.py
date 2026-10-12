@@ -7,6 +7,7 @@ is generated here; fabricated content only."""
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -102,7 +103,23 @@ CASES = [
     (_one(pages=PAGES.replace(b"/Count 1", b"/Count 1 /TrimBox [0 0 9 9]")), R.NODE_BOX),
     (_one(page=PAGE.replace(b"/Contents 9 0 R", b"/Contents (x)")), R.CONTENTS),
     (_one(page=PAGE.replace(b"/Contents 9 0 R", b"/Contents [9 0 R 3 0 R]")), R.CONTENTS),
+    (_tree({2: b"<< /Type /Pages /Kids [] /Count 0 >>"}), R.NO_PAGES),
 ]
+# What MuPDF shows differently from what qpdf keeps (found in review): boxes
+# in 32-bit floats; a media box, or its intersection with the crop box,
+# under one unit (MuPDF: a 1x1 page) or empty (612x792); /UserUnit.
+SHOWN = [
+    (_one(pages=PAGES.replace(b"[0 0 200 200]", b"[100.00000001 0 100.00000002 200]")),
+     R.ATTRIBUTE_INVALID),
+    (_one(pages=PAGES.replace(b"[0 0 200 200]", b"[0 0 0.99 200]")), R.ATTRIBUTE_INVALID),
+    (_one(page=PAGE.replace(b"/Contents", b"/CropBox [199.5 0 400 200] /Contents")),
+     R.CROPBOX),
+    (_one(pages=PAGES.replace(b"[0 0 200 200]", b"[100 0 200 200]"),
+          page=PAGE.replace(b"/Contents", b"/CropBox [0 0 100.000001 200] /Contents")),
+     R.CROPBOX),
+    (_one(page=PAGE.replace(b"/Contents", b"/UserUnit 10 /Contents")), R.ATTRIBUTE_INVALID),
+]
+CASES += SHOWN
 
 
 @pytest.mark.parametrize(("data", "rule"), CASES, ids=[f"{c[1].name}-{i}" for i, c in
@@ -156,14 +173,6 @@ def test_a_nested_tree_inherits_nearest_first() -> None:
 def test_a_canonical_tree_agrees_with_the_readers(tmp_path: Path, build) -> None:  # type: ignore[no-untyped-def]
     found = compare(build(), tmp_path)
     assert found.agrees, found
-
-
-@requires_qpdf
-@pytest.mark.parametrize(("data", "rule"), CASES, ids=[f"{c[1].name}-{i}" for i, c in
-                                                        enumerate(CASES)])
-def test_a_flagged_tree_is_never_compared(tmp_path: Path, data: bytes,
-                                          rule: PageTreeRule) -> None:
-    assert compare(data, tmp_path).flagged
 
 
 # ── Revisions ─────────────────────────────────────────────────────────────
@@ -238,3 +247,74 @@ def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
     (w_s, t_s), (w_l, t_l) = work
     assert w_l >= 32 * w_s or w_l >= 0.99 * Limits().work_limit(len(large))
     assert t_l / w_l < 3 * max(t_s, 0.01) / w_s  # time per charged unit: no hidden work
+
+
+@requires_qpdf
+@pytest.mark.parametrize(("data", "rule"), SHOWN, ids=[r.name for _, r in SHOWN])
+def test_what_mupdf_shows_differently_is_seen_by_the_gate_too(
+        tmp_path: Path, data: bytes, rule: PageTreeRule) -> None:
+    # Flagged; and were it not, the gate's comparison of the page as MuPDF
+    # shows it would disagree (not only the inventory's rule sees it).
+    inv = _inventory(data)
+    assert rule in _rules(data)
+    stripped = replace(inv, flags=(), pages=tuple(_unflagged(data, rev)
+                                                  for rev in range(inv.revisions)))
+    found = compare(data, tmp_path, inv=stripped)
+    assert found.disagrees, found
+
+
+def _unflagged(data: bytes, revision: int):  # type: ignore[no-untyped-def]
+    """The page list a walk that ignores its own flags would return."""
+    from redaction_verifier.inventory import pages as module
+    real = module._Walk.flag
+    try:
+        module._Walk.flag = lambda self, rule, number: None  # type: ignore[method-assign]
+        return _inventory(data).pages[revision]
+    finally:
+        module._Walk.flag = real  # type: ignore[method-assign]
+
+
+@requires_qpdf
+def test_a_hundred_levels_agree_and_a_hundred_and_one_are_flagged(tmp_path: Path) -> None:
+    def chain(levels: int) -> bytes:
+        objects: dict[int, bytes] = {}
+        for i in range(levels):
+            parent = b" /Parent %d 0 R" % (1 + i) if i else b""
+            objects[2 + i] = (b"<< /Type /Pages /Kids [%d 0 R] /Count 1%s"
+                              b" /MediaBox [0 0 9 9] /Resources << >> >>" % (3 + i, parent))
+        objects[2 + levels] = b"<< /Type /Page /Parent %d 0 R >>" % (1 + levels)
+        return _tree(objects)
+    assert _inventory(chain(100)).flags == ()
+    assert compare(chain(100), tmp_path).agrees
+    assert R.DEPTH in _rules(chain(101))
+
+
+@requires_qpdf
+def test_indirect_type_and_count_agree_with_the_readers(tmp_path: Path) -> None:
+    data = _one(pages=PAGES.replace(b"/Type /Pages", b"/Type 5 0 R").replace(
+        b"/Count 1", b"/Count 6 0 R"), n5=b"/Pages", n6=b"1")
+    assert _inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees, found
+
+
+@requires_qpdf
+def test_an_encrypted_tree_with_direct_resources_agrees(tmp_path: Path) -> None:
+    import pikepdf
+    plain = tmp_path / "plain.pdf"
+    plain.write_bytes(_nested())
+    with pikepdf.open(plain) as pdf:
+        pdf.save(tmp_path / "enc.pdf", encryption=pikepdf.Encryption(owner="o", user="", R=6),
+                 object_stream_mode=pikepdf.ObjectStreamMode.disable)
+    data = (tmp_path / "enc.pdf").read_bytes()
+    assert _inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees and found.encrypted, found
+
+
+def test_an_unchanged_page_is_kept_once_across_revisions() -> None:
+    data = _wide(50, 50)
+    inv = _inventory(data)
+    assert inv.flags == ()
+    distinct = {id(p) for pages in inv.pages if pages for p in pages}
+    assert len(distinct) <= 50 + 50  # each page once, plus each rewrite once
