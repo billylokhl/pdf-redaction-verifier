@@ -128,12 +128,14 @@ def _cells() -> dict[str, Cell]:
         "unindexed.container": Cell(gap, "containers outside any indexed object"),
         # matching limits
         "match.page-break": Cell(read, "a value split across a page break, halves adjacent"),
-        "match.page-break-furniture": Cell(gap, "a page-break split with a header/footer between"),
+        "match.page-break-furniture": Cell(
+            read, "a page-break split with a header/footer between", tier="review"),
         "match.page-break-off-page-half": Cell(
             read, "a page-break split one of whose halves lies wholly off the page",
             tier="review"),
         "match.line-wrap": Cell(read, "a value wrapped across lines", tier="review"),
-        "match.columns": Cell(gap, "a value wrapped inside one column of a multi-column page"),
+        "match.columns": Cell(
+            read, "a value wrapped inside one column of a multi-column page", tier="review"),
         "match.undashed-wrap": Cell(gap, "a pattern number without dashes, wrapped"),
         "match.pattern-split": Cell(
             gap, "a pattern-rule value split at a page break in form boxes, a stack, rotated "

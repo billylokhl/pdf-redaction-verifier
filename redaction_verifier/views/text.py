@@ -44,6 +44,10 @@ TEXT_SEAM_READINGS = 5
 # visible lines read across the edge (4), so a value whose first half is
 # off the page and whose second half opens the next page is never silent.
 TEXT_TAILS_INTO_NEXT_PAGE = (3, 4)
+# Readings in which the review net looks for a value scattered over
+# nearby lines (SecretMatcher.scattered): all the horizontal text (9) and
+# all the vertical text read top-down (5), visible or not.
+TEXT_SCATTER_READINGS = (9, 5)
 
 Glyph = tuple[float, float, float, float, str]
 

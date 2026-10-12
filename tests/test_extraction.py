@@ -11,8 +11,9 @@ from typing import Any
 
 import caselib
 from caselib.families.raw_cells import (BASELINE_GAPS, BREAK_LAYOUTS, OFF_PAGE_CARRY,
-                                        TABLE_ROW_OFF_PAGE, page_break_at_edge,
+                                        SCATTERED, TABLE_ROW_OFF_PAGE, page_break_at_edge,
                                         table_row_beside_off_page, value_carried_off_page,
+                                        value_scattered,
                                         visible_beside_off_page)
 import pymupdf as fitz
 import pytest
@@ -23,7 +24,8 @@ from redaction_verifier.matching import SecretMatcher, normalize_string
 from redaction_verifier.model import ScanReport, Secret
 from redaction_verifier.rules import load_rules
 from redaction_verifier.views import (TEXT_GENUINE_READINGS, TEXT_SEAM_READINGS,
-                                      TEXT_TAILS_INTO_NEXT_PAGE, extract_visual_text,
+                                      TEXT_SCATTER_READINGS, TEXT_TAILS_INTO_NEXT_PAGE,
+                                      extract_visual_text,
                                       ocr)
 
 from .conftest import HAS_OCR, SSN, report_lines, run_verify
@@ -221,9 +223,11 @@ def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
           hard_variants: int = TEXT_GENUINE_READINGS,
           seam_variants: int | None = TEXT_SEAM_READINGS,
           tails_into_next: tuple[int, ...] = TEXT_TAILS_INTO_NEXT_PAGE,
+          scatter_readings: tuple[int, ...] = TEXT_SCATTER_READINGS,
           secrets=(("SSN", SSN),), patterns=(), fail_fast: bool = False) -> ScanReport:
     """scan_page_layer as the CLI runs the Text layer (pass hard_variants,
-    seam_variants=None and tails_into_next=() for OCR)."""
+    seam_variants=None, tails_into_next=() and scatter_readings=() for
+    OCR)."""
     report = ScanReport()
     matcher = SecretMatcher(
         [Secret(name, normalize_string(v)) for name, v in secrets])
@@ -232,7 +236,8 @@ def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
                                extractor=extractor or extract_visual_text,
                                note="visual text layer", patterns=patterns,
                                hard_variants=hard_variants, seam_variants=seam_variants,
-                               tails_into_next=tails_into_next, fail_fast=fail_fast)
+                               tails_into_next=tails_into_next,
+                               scatter_readings=scatter_readings, fail_fast=fail_fast)
     finally:
         doc.close()
     return report
@@ -285,7 +290,10 @@ class TestSamePageTiers:
 
     def test_each_page_gets_its_own_cross_line_warning(self) -> None:
         report = _scan_pages([["a 123-45-", "6789 x"], ["b 123-45-", "6789 y"]])
-        assert report.warnings == [line(1), line(2)]
+        # Page 2 also draws a page-break review: page 1's '6789 x' and
+        # page 2's 'b 123-45-' form the value in reverse order, a few lines
+        # apart (SecretMatcher.scattered).
+        assert report.warnings == [line(1), line(2), crossing(2)]
 
     def test_confirmed_leak_draws_no_coincidence_warning(self) -> None:
         # Regression: vertical readings called a secret found hard on one
@@ -456,7 +464,9 @@ class TestPageBreakBackstop:
         # muted the page-break warning for the real split on pages 2-4.
         report = _scan_pages([["Qty 123-45", "6789 units"],
                               ["Employee SSN 123-45"], [], ["6789 end of record"]])
-        assert report.warnings == [line(1), crossing(4)]
+        # crossing(2): page 2's '...123-45' and page 1's '6789 units' form
+        # the value in reverse order across the first break, also reviewed.
+        assert report.warnings == [line(1), crossing(2), crossing(4)]
 
     def test_a_confirmed_leak_does_not_hide_another_location(self) -> None:
         report = _scan_pages([["SSN 123-45-6789", "id 123", "45-"], ["6789 x"]])
@@ -475,7 +485,7 @@ class TestPageBreakBackstop:
 # and text written vertically off the page, each at /Rotate 0 and 270.
 ACROSS_THE_EDGE = sorted(
     case_id for case_id in caselib.load()
-    if case_id.startswith(("page.raw-font-coded-runs-", "page.raw-font-coded-vertical-")))
+    if case_id.startswith(("page.raw-font-coded-runs-", "page.raw-font-coded-vertical-off-page-")))
 NO_ACROSS_READINGS = 4    # readings 0-3, as before the readings across the edge
 
 
@@ -753,6 +763,36 @@ class TestTableRowBesideOffPageText:
         assert report.findings == []
 
 
+
+class TestScatteredValues:
+    """The review net assembles a value from two or three pieces of nearby
+    lines, in any order (SecretMatcher.scattered): around a header or
+    footer, within a page or across a page break, or with its halves in
+    reverse order. Review only, never a finding (owner decision,
+    2026-10-11); Phase 5's geometry matching is the hard-tier fix."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", SCATTERED)
+    def test_reviewed(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "scattered.pdf"
+        value_scattered(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        assert report.findings == []
+        assert report.warnings == [crossing(2) if layout == "furniture-at-break" else line(1)]
+
+    def test_matcher_bounds(self) -> None:
+        m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
+        assert m.scattered(["ssn12345", "header", "6789end"], 5) == ["SSN"]
+        assert m.scattered(["6789end", "ssn12345"], 5) == ["SSN"]           # reversed
+        assert m.scattered(["x123", "45", "6789y"], 5) == ["SSN"]           # three pieces
+        # Too far apart for the window, or needing four pieces: not found.
+        assert m.scattered(["x12345", "a", "b", "c", "d", "6789y"], 5) == []
+        assert m.scattered(["x12", "34", "56", "789y"], 5) == []
+        # Across a page break, a piece must come from each side.
+        assert m.scattered(["x12345", "6789y", "next page"], 5, across=2) == []
+        assert m.scattered(["x12345", "next page", "6789y"], 5, across=1) == ["SSN"]
+
+
 class TestPageBreaksOcr:
     """The same rules on the OCR path: two genuine readings that can differ."""
 
@@ -763,7 +803,7 @@ class TestPageBreaksOcr:
             doc.new_page()
         by_page = dict(enumerate(readings))
         return _scan(doc, layer="OCR", hard_variants=ocr.OCR_GENUINE_READINGS,
-                     seam_variants=None, tails_into_next=(),
+                     seam_variants=None, tails_into_next=(), scatter_readings=(),
                      extractor=lambda page: by_page[page.number])
 
     def test_seam_in_the_second_reading_only(self) -> None:

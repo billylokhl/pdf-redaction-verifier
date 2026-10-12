@@ -359,6 +359,120 @@ def _carry_cases() -> None:
 _carry_cases()
 
 
+# ── A value scattered around other text (owner decision, 2026-10-11) ────
+# The parts of a value lie a few lines apart, with other text between
+# them, or in reverse order: across a page break with page 2's header
+# between ('furniture-at-break'), within a page with a footer line
+# between ('furniture-in-page'), or with the second half on the line
+# above the first ('reversed'). No reading holds the value whole; the
+# review net assembles it from two or three pieces of nearby lines
+# (SecretMatcher.scattered), so it is reviewed, never a finding.
+SCATTERED = ("furniture-at-break", "furniture-in-page", "reversed")
+
+
+def value_scattered(path: Path, layout: str, rotate: int) -> None:
+    first_half, second_half = _break_coded("SSN 123-45-"), _break_coded("6789 continues")
+    turned = b"/Rotate %d /CropBox [0 0 812 792]" % rotate if rotate else b""
+    fonts = b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>"
+    if layout == "furniture-at-break":
+        first = text("Quarterly report", 700) + b"\nBT /F2 12 Tf 72 40 Td " + first_half + b" Tj ET"
+        second = (text("Quarterly report, page 2", 770) + b"\nBT /F2 12 Tf 72 740 Td "
+                  + second_half + b" Tj ET")
+        objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+                   3: page(resources=fonts, extra=turned), 4: stream(b"", first),
+                   6: HELVETICA, 7: differences_font(_BREAK_CHARS),
+                   8: page(b"9 0 R", fonts, turned), 9: stream(b"", second)}
+    else:
+        top, bottom = ((first_half, second_half) if layout == "furniture-in-page"
+                       else (second_half, first_half))
+        between = text("Internal use only", 385) + b"\n" if layout == "furniture-in-page" else b""
+        content = (text("Quarterly report", 700) + b"\nBT /F2 12 Tf 72 400 Td " + top
+                   + b" Tj ET\n" + between + b"BT /F2 12 Tf 72 370 Td " + bottom + b" Tj ET")
+        objects = one_page(stream(b"", content), o7=differences_font(_BREAK_CHARS))
+        objects[3] = page(resources=fonts, extra=turned)
+    _write(path, objects)
+
+
+def _scattered_cases() -> None:
+    for layout in SCATTERED:
+        at_break = layout == "furniture-at-break"
+        story = {
+            "furniture-at-break": "page 1's last line ends 'SSN 123-45-' and page 2 opens with "
+                                  "its header, then '6789 continues'",
+            "furniture-in-page": "a line ends 'SSN 123-45-', a footer line 'Internal use "
+                                 "only' follows, then '6789 continues'",
+            "reversed": "'6789 continues' sits on the line above 'SSN 123-45-'",
+        }[layout]
+        for rotate, suffix in ((0, ""), (270, "-rotated")):
+            @leak(f"page.raw-font-coded-scattered-{layout}{suffix}",
+                  "match.page-break-furniture" if at_break else "match.line-wrap",
+                  "The SSN in font codes: " + story + ". No reading holds it whole; the "
+                  "review net assembles it from nearby lines, so it is manual review."
+                  + (" The pages are turned with /Rotate 270." if rotate else ""),
+                  expected=expect(2, warnings=(
+                      ("REVIEW_CROSS_PAGE" if at_break else "REVIEW_CROSS_LINE", "live"),)),
+                  mistake="Nobody redacted it; the value is split around other text.",
+                  recovery="Read the text through the font's Encoding /Differences and join "
+                           "the parts.")
+            def scattered(path: Path, layout: str = layout, rotate: int = rotate) -> None:
+                value_scattered(path, layout, rotate)
+
+
+_scattered_cases()
+
+
+@leak("layout.raw-font-coded-two-column-wrap", "match.columns",
+      "The SSN in font codes wrapped across two lines of a two-column page's left column, "
+      "with a line of the right column between them at the same height: joining the "
+      "page's lines top to bottom puts that line between the halves, so only the review "
+      "net, which assembles a value from nearby lines, finds it.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+      mistake="Nobody redacted the value; it wraps inside one column of a two-column layout.",
+      recovery="Read the page column by column, through the font's Encoding /Differences.")
+def two_column_wrap(path: Path) -> None:
+    content = (text("Left column heading", 692) + b"\nBT /F2 12 Tf 72 662 Td "
+               + _break_coded("SSN 123-45-") + b" Tj ET\n"
+               + b"BT /F1 12 Tf 320 644 Td (Right column: unrelated filler text.) Tj ET\n"
+               + b"BT /F2 12 Tf 72 626 Td " + _break_coded("6789 continues") + b" Tj ET")
+    objects = one_page(stream(b"", content), o7=differences_font(_BREAK_CHARS))
+    objects[3] = page(resources=b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>")
+    _write(path, objects)
+
+
+# ── Vertical text split at a page break, one half off the page ──────────
+# Owner decisions of 2026-10-10 and 2026-10-11: like the horizontal
+# off-page-half split, vertically written text whose second half lies
+# wholly off the next page is manual review, not a finding: the vertical
+# readings across the edge feed no hard seam (their last column may be an
+# off-page slug). /Rotate 270 under a crop box reaching 200 pt past the
+# media box's right edge, where the old visible area put that half on
+# the page and made it a finding by accident.
+
+@leak("page.raw-font-coded-vertical-split-at-break-off-page-rotated",
+      "match.page-break-off-page-half",
+      "The SSN in font codes written vertically, top to bottom: 'SSN 123-45-' on page 1 "
+      "and '6789 continues' on page 2, wholly past the media box's right edge, on pages "
+      "turned with /Rotate 270 under a crop box reaching past that edge. A half wholly "
+      "off the page is manual review rather than a finding.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+      mistake="Nobody redacted it; half the value sits past the margin, the rest over the "
+              "page break.",
+      recovery="Enlarge the page box, turn the view, read both pages' text through the "
+               "font's Encoding /Differences, and join the halves.")
+def vertical_split_off_page(path: Path) -> None:
+    turned = b"/Rotate 270 /CropBox [0 0 812 792]"
+    fonts = b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>"
+    first = (text("Quarterly report", 760) + b"\nBT /F2 12 Tf 0 -1 1 0 300 600 Tm "
+             + _break_coded("SSN 123-45-") + b" Tj ET")
+    second = (text("Quarterly report", 760) + b"\nBT /F2 12 Tf 0 -1 1 0 700 700 Tm "
+              + _break_coded("6789 continues") + b" Tj ET")
+    objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+               3: page(resources=fonts, extra=turned), 4: stream(b"", first),
+               6: HELVETICA, 7: differences_font(_BREAK_CHARS),
+               8: page(b"9 0 R", fonts, turned), 9: stream(b"", second)}
+    _write(path, objects)
+
+
 # ── Clean controls: a table row beside off-page text on its baseline ────
 # 'Item' | '123' | '45' | '6789' in cells inside a crop box ending at
 # x=400, and on the same baseline past it either wide single-digit cells

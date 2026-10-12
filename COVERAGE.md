@@ -132,11 +132,8 @@ resource but never drawn, they are not detected.
 These are not storage places but ways a value can be split so that no
 matcher sees it whole. Each is ✗:
 
-- A value split across a page break with a header, footer or page number
-  between its halves, or where a page's last line is not its
-  reading-order last line (two-column layouts, text rotated 270°).
-- A value wrapped inside one column of a multi-column page — joining a
-  page's lines interleaves the columns.
+- A value split around other text into more than three pieces, or with
+  its pieces more than five lines apart (see the review net below).
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
@@ -152,6 +149,22 @@ matcher sees it whole. Each is ✗:
   In pixels only OCR can, and on macOS 27 it reads the stack as one
   sideways line, usually misread, so the value usually does not match. What
   macOS 26 returns was not measured.
+
+A value split around other text is read at the manual-review tier
+(`match.page-break-furniture`, `match.columns`): the Text layer's review
+net assembles a known value from two or three pieces of different lines
+within five consecutive lines, in any order — the end of one line,
+optionally a whole line, the start of another — so a value split across
+a page break with a header, footer or page number between its halves, a
+value wrapped inside one column of a two-column page, or one whose
+halves come in reverse order is a manual-review warning (exit `2`),
+never a finding (owner decision, 2026-10-11). Phase 5's geometry
+matching remains the fix for the hard tier. Five lines allow a header
+and a footer between the halves of a value in three pieces; the bound
+keeps unrelated lines of a page from being pooled into a value. Cost,
+measured with the Text layer alone: 3 of 6,000 files of a fabricated
+fuzz of clean off-page layouts and none of a 2,072-file corpus of real
+PDFs gain a review warning.
 
 One page-break split is read at the manual-review tier only
 (`match.page-break-off-page-half`): a value one of whose halves lies
