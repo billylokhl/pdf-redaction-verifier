@@ -299,6 +299,9 @@ def test_flipping_a_shared_target_is_charged() -> None:
     per = min(_work(data)[1] for _ in range(3)) / work
     base = min(_work(linear)[1] for _ in range(3)) / base_work
     assert per < 3 * base, (per, base)
+    # Deterministic, whatever the machine: each of the 800 flips charges
+    # each of the 800 references into the target (uncharged work: ~0 here).
+    assert work - base_work >= 800 * 800, (work, base_work)
     assert FlagReason.REF_DANGLING in {f.reason for f in flags}
 
 
