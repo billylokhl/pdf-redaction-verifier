@@ -425,7 +425,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   unique and sorted by bytes and also as text, under both readers' decodings (qpdf compares
   UTF-8 text, MuPDF pdf_to_text_string; measured cost expected 0); P4 a non-empty name tree in an encrypted revision
   flags until 3a-9 (cost 0 on the corpus: no encrypted file); P5 a /Parent cycle among
-  AcroForm fields flags (ADR 0011 names no reason for it; the field chain decides what a
+  AcroForm fields flags (ADR 0011 named no reason for it before this amendment; the field chain decides what a
   synthesized appearance shows, and a cycle has no defined inheritance: a new FlagReason,
   FIELD_TREE, with an EMITTERS entry; expected cost 0, measured in 7d).
 - 3a-8 Pin pikepdf (runtime dep per ADR 0001), encrypted fixtures incl. earlier revision

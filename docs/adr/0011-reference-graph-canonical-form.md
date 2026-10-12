@@ -195,7 +195,7 @@ that revision. Otherwise:
 Name and number trees (the catalog's `/Names` subtrees and
 `/PageLabels`; the catalog's own `/Dests` is a plain dictionary): each
 node is a dictionary with exactly one of `/Names` (or `/Nums`), an array
-of key-value pairs with keys unique and sorted by bytes (and as text: amended 2026-10-11, below), or `/Kids`, an
+of key-value pairs with keys unique and sorted by bytes (and as text; a non-empty tree in an encrypted revision flags until 3a-9: amended 2026-10-11, below), or `/Kids`, an
 array of indirect references to nodes, none reached twice; every node
 below the root has a correct `/Limits`. Anything else flags
 (`FlagReason.NAME_TREE`) -- except an empty root, which reads as empty
@@ -247,7 +247,7 @@ revision:
   field is synthesized exactly when it is unsigned -- signed, in MuPDF's
   test, when its `/FT` is `/Sig` and its `/V` is a dictionary whose
   `/Type` is absent or `/Sig`, both inherited through the field `/Parent`
-  chain -- whatever `/AP` or `/NeedAppearances` say. Any other annotation
+  chain (a cycle flags `FIELD_TREE`: amended 2026-10-11, below) -- whatever `/AP` or `/NeedAppearances` say. Any other annotation
   is *not* synthesized only when it is a Link or a Popup, or has an `/AP
   /N` that is a stream or a dictionary in which `/AS` (references
   resolved) names an entry -- and, for a widget, the form's
