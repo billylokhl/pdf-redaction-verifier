@@ -360,8 +360,9 @@ candidate passes the flag itself. The candidate also blanks the `/ID`
 elements qpdf generates before its Binary sweep (CHANGELOG, "Binary
 layer: the `/ID` qpdf generates is not scanned"), which the reference
 cannot: a case whose generated `/ID` spelled a value rule would be a
-stable "warning removed" difference, to be listed as weaker with that
-reason.
+stable "warning removed" difference, listed with that reason (and as
+weaker only when it moves the case's exit to 0: weaker is judged by exit
+code).
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -482,6 +483,7 @@ input. A crashed or timed-out reference run is never written to the
 cache (and never trusted back out of it), so one flaky run doesn't
 poison every run after it. CI passes a persistent cache directory
 (`actions/cache`) so most PRs never re-run the reference at all.
+
 ### The real-world corpus (local only)
 
 Clean-side metrics (false hard, review rate) on real files, stratified
