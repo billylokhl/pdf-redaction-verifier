@@ -485,7 +485,8 @@ def test_qpdf_check_errors_are_gated(tmp_path: Path) -> None:
     found = compare(data, tmp_path)
     # A page content stream qpdf cannot decode: --check stops with "ERROR:
     # page 1: ... errors while decoding content stream", no allowlist covers
-    # it. (The fixture was a page tree with no pages until 3a-7b flagged that,
+    # it. (A known class of unflagged file the gate rejects until Phase 4
+    # decodes content streams.) (The fixture was a page tree with no pages until 3a-7b flagged that,
     # NO_PAGES; before that a /Pages that is no dictionary, until qpdf 12
     # refused to open it.)
     assert found.disagrees and found.check is Check.QPDF_CHECK, found

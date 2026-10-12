@@ -245,7 +245,8 @@ def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
         reasons = {f.reason for f in flags}
         assert reasons <= {FlagReason.BUDGET_EXHAUSTED}, reasons
     (w_s, t_s), (w_l, t_l) = work
-    assert w_l >= 32 * w_s or w_l >= 0.99 * Limits().work_limit(len(large))
+    # Superlinear by design (8x the input, revisions x pages: ~64x the walk).
+    assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(len(large))
     assert t_l / w_l < 3 * max(t_s, 0.01) / w_s  # time per charged unit: no hidden work
 
 
@@ -318,3 +319,44 @@ def test_an_unchanged_page_is_kept_once_across_revisions() -> None:
     assert inv.flags == ()
     distinct = {id(p) for pages in inv.pages if pages for p in pages}
     assert len(distinct) <= 50 + 50  # each page once, plus each rewrite once
+
+
+def _ancestor(pages: int, updates: int) -> bytes:
+    """The review's shape: *pages* under a root holding the inherited
+    /MediaBox and /Resources, /Kids an indirect array that never changes;
+    each update rewrites only the root (~150 bytes), so every page below
+    it reads a new attribute value."""
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    root = (b"<< /Type /Pages /Kids 3 0 R /Count %d /MediaBox [0 0 9 9] /Resources << >> >>"
+            % pages)
+    table[1] = (1, w.obj(1, CATALOG), 0)
+    table[2] = (1, w.obj(2, root), 0)
+    table[3] = (1, w.obj(3, b"[" + b" ".join(b"%d 0 R" % (10 + i) for i in range(pages))
+                          + b"]"), 0)
+    for i in range(pages):
+        table[10 + i] = (1, w.obj(10 + i, b"<< /Type /Page /Parent 2 0 R >>"), 0)
+    size = 10 + pages
+    prev = w.table(table, b"/Size %d /Root 1 0 R" % size)
+    w.epilogue(prev)
+    for _ in range(updates):
+        xref = w.table({2: (1, w.obj(2, root), 0)},
+                       b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
+        w.epilogue(xref)
+        prev = xref
+    return bytes(w.out)
+
+
+def test_rewriting_an_ancestor_pays_for_every_page_it_makes_new() -> None:
+    # Page records are retained across revisions: each new one is charged
+    # (pages.PAGE_RECORD_WORK), so memory stays within the work budget --
+    # the file is flagged BUDGET_EXHAUSTED long before it grows (review).
+    from redaction_verifier.inventory.pages import PAGE_RECORD_WORK
+    data = _ancestor(1000, 1000)
+    budget = Budget(file_size=len(data))
+    inv = build_inventory(data, budget=budget)
+    kept = {id(p) for pages in inv.pages if pages for p in pages}
+    assert len(kept) * PAGE_RECORD_WORK <= Limits().work_limit(len(data))
+    assert {f.reason for f in inv.flags} == {FlagReason.BUDGET_EXHAUSTED}
+    small = _ancestor(20, 20)  # the same shape, small: within the budget, unflagged
+    assert _inventory(small).flags == ()

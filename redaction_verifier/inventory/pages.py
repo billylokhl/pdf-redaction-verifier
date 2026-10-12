@@ -19,8 +19,8 @@ positive area -- in MuPDF's 32-bit floats, and for /MediaBox and its
 intersection with /CropBox (the page MuPDF shows) at least one unit wide
 and tall: MuPDF replaces a smaller one with a 1x1 page and an empty one
 with 612x792, where qpdf keeps the box as written; /Rotate is an integer
-multiple of 90; no /UserUnit other than 1 (MuPDF scales the page by it,
-qpdf does not); the tree holds at least one page (qpdf --check fails on
+multiple of 90; no /UserUnit other than 1 on the page itself (MuPDF scales
+the page by it and does not inherit it; qpdf ignores it); the tree holds at least one page (qpdf --check fails on
 none); no /Pages node carries /ArtBox, /TrimBox or /BleedBox
 (MuPDF inherits them, qpdf does not). A page's /Contents is absent, a
 reference to a stream, or an array (direct or by reference) of
@@ -67,6 +67,9 @@ class PageTreeRule(IntEnum):
 INHERITED: Final = (b"Resources", b"MediaBox", b"CropBox", b"Rotate")
 _PAGE_BOXES: Final = (b"BleedBox", b"TrimBox", b"ArtBox")
 MAX_LEVELS: Final = 100
+# Work charged for each page record made again in a later revision (retained
+# memory, a few hundred bytes): at most one per 16 bytes of the file.
+PAGE_RECORD_WORK: Final = 1024
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,7 @@ def build_pages(revisions: int, changes: list[list[int]],
     # A page read again unchanged is the same Page: retained memory grows
     # with the pages that change, not revisions x pages.
     kept: dict[tuple[object, ...], Page] = {}
+    made: set[tuple[int, int]] = set()  # pages with a record already
     for revision in reversed(range(revisions)):
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
@@ -111,7 +115,7 @@ def build_pages(revisions: int, changes: list[list[int]],
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]
             continue
-        walk = _Walk(revision, body_of, home_of, budget, kept)
+        walk = _Walk(revision, body_of, home_of, budget, kept, made)
         pages = walk.run(root)
         if walk.spent:
             return tuple(results), flags
@@ -198,10 +202,10 @@ def intersect(a: Box, b: Box) -> Box:
 class _Walk:
     def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
                  home_of: Callable[[int, int], int | None], budget: Budget,
-                 kept: dict[tuple[object, ...], Page]) -> None:
+                 kept: dict[tuple[object, ...], Page], made: set[tuple[int, int]]) -> None:
         self.revision, self.body_of, self.home_of, self.budget = (
             revision, body_of, home_of, budget)
-        self.kept = kept
+        self.kept, self.made = kept, made
         self.read: set[int] = set()
         self.flags: list[tuple[PageTreeRule, int]] = []
         self.spent = False
@@ -266,10 +270,12 @@ class _Walk:
             assert isinstance(value, PdfDict)
             kids = self.value(value.get(b"Kids"))
             kind = self.value(value.get(b"Type"))
-            here = dict(inherited)
+            here = inherited  # shared down the tree until a node sets its own
             for key in INHERITED:
                 found = value.get(key)
                 if found is not None and not isinstance(found, PdfNull):
+                    if here is inherited:
+                        here = dict(inherited)
                     here[key] = Attribute(found, text, number)
             if kids is not None:  # a /Pages node
                 if not isinstance(kids, PdfArray) or not _name_is(kind, b"Pages"):
@@ -309,6 +315,14 @@ class _Walk:
             ident = (number, gen, body[0], *((k, id(a.value), a.source)
                                              for k, a in sorted(here.items())))
             if ident not in self.kept:
+                # A page's first record is as big as its own object in the
+                # file; one made again in a later revision (an ancestor or an
+                # attribute rewritten) is retained memory the file did not
+                # pay for, so it is charged: a file whose updates rewrite an
+                # ancestor of many pages runs out of budget, not of memory.
+                if (number, gen) in self.made and not self.charge(PAGE_RECORD_WORK):
+                    return None
+                self.made.add((number, gen))
                 self.kept[ident] = Page(number, gen, body[0], here)
             pages.append(self.kept[ident])
         # Kids are pushed reversed: pages come off the stack in document order.
