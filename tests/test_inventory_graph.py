@@ -347,8 +347,11 @@ def test_every_step_of_the_graph_is_charged(shape) -> None:  # type: ignore[no-u
     # Wall clock, not only work counts (ADR 0010): 8x the input costs
     # about 8x the time, and the work charged keeps pace with it.
     small, large = shape(4000), shape(32000)
-    work_s, time_s, flags_s = _work(small)
-    work_l, time_l, flags_l = _work(large)
+    work_s, _, flags_s = _work(small)
+    work_l, _, flags_l = _work(large)
+    # The best of three runs each: a loaded machine slows a run, never speeds one.
+    time_s = min(_work(small)[1] for _ in range(3))
+    time_l = min(_work(large)[1] for _ in range(3))
     assert FlagReason.BUDGET_EXHAUSTED not in {f.reason for f in flags_s + flags_l}
     assert work_l < 10 * work_s, (work_s, work_l)
     assert time_l < 12 * max(time_s, 0.05), (time_s, time_l)  # quadratic: ~18x and up
