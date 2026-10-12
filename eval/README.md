@@ -683,7 +683,16 @@ own machine (`sha256sum`) when a number needs explaining.
   one-character-per-line stack as one line, which turned four
   `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
   finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
-  skips the grids, so only the weekly job runs those cases with OCR.
+  skips the grids, so only the weekly job runs those cases with OCR. Two
+  sides of that fix are also pinned outside the grids, so `full-macos`
+  runs them on every PR:
+  - `page.digit-column`, clean: a lone digit column must not give a hard
+    finding. It runs everywhere, OCR or not, but only macOS 27 misreads
+    the column, so only a local macOS 27 run catches a regression there;
+    on CI's macOS 26 it passes even with the code before the fix.
+  - `page.scan-image-sideways-90` and `-270`, `requires: ocr`: an SSN
+    that exists only as a turned image must stay a hard OCR finding. CI
+    guards this side on every PR.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

@@ -579,10 +579,11 @@ difference fails the gate.
   `layout.vertical-stack-*` pattern-rule grid cases exit `1` instead of
   `2`. The OCR view now holds a vertical line hard-finding eligible only
   when an upright re-read confirms it (DESIGN.md, two-tier model),
-  measured on generated pages alone; (d) the 4b OCR view should
-  re-measure it on the real-world corpus's scanned pages, and (e) read a
-  scanned stack character by character (#61: with a value rule it passes
-  as clean).
+  measured on generated pages alone, with `page.digit-column` and
+  `page.scan-image-sideways-90`/`-270` pinning both sides (#74); (d) the
+  4b OCR view should re-measure it on the real-world corpus's scanned
+  pages, and (e) read a scanned stack character by character (#61: with
+  a value rule it passes as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
