@@ -289,6 +289,142 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   own the page-tree semantics the xref differential exempts.
 - 3a-7 Reference graph per revision (iterative, cycles flagged, page-tree inheritance,
   ResourceScope for pages/forms/annots/patterns/Type3; edges by use-kind; reachable/orphaned).
+  Split (planned 2026-10-11) into five PRs, in order, each implementing a part of ADR 0011,
+  each growing the 3a-6 gate's oracle for what it adds (ADR 0011 item 8) so nothing it accepts
+  goes uncompared, each with corpus/caselib/fuzz gate numbers re-measured before merge (any
+  measured cost that differs from ADR 0011's figure goes to the owner before merge), its own docs sync
+  (README, DESIGN, COVERAGE, eval/README, REDESIGN, CHANGELOG), adversarial review, and its
+  own linearity tests: work counts and wall clock at n vs 8n on that PR's adversarial shape
+  (ADR 0010: work counting alone cannot see uncharged work). Opus implements. The graph lives
+  in a new `redaction_verifier/inventory/graph.py`, run by build_inventory after the bodies are
+  found and before the budget's flags are gathered (build.py's `self.budget.flags()`), so a
+  graph that runs out of budget leaves the file BUDGET_EXHAUSTED, never an unflagged inventory
+  with a partial graph (a test exhausts the budget in the graph alone). `Inventory` gains a
+  `graph` field (per-revision results); build already keeps each OBJECT's IndirectObject
+  (`_Builder.parsed`) and adds an object-stream member's value to `_Member`. Every walk is
+  iterative with a seen-set, never raises, and is charged to the required Budget (ADR 0006,
+  ADR 0011 item 7). "A revision's trailer" is its newest section's trailer, as build reads
+  /Root (the linearized base pair: the first-page section's; a hybrid's /XRefStm dictionary
+  is a cross-reference stream, not a trailer). "A dictionary" is a non-stream dictionary
+  throughout (qpdf reads a stream as no dictionary; MuPDF as one).
+  - 3a-7a Edges and references (ADR 0011 item 4). Each body's references are collected once,
+    with their key path, and shared by every revision the body lives in (bodies are
+    per-offset); a closed `UseKind` from the key path, `OTHER` for any unlisted key (use
+    kinds are informational: no label is derived from a key path alone, item 5). Per
+    revision a reference resolves only to a body live in that revision with the same
+    generation (a compressed target: generation 0); otherwise REF_GENERATION (the number has
+    a body, the generation differs) or REF_DANGLING (free, missing, an offset-0 entry, object
+    0, or no body found) -- R1, every one. One flag per (source body, target), whatever the
+    number of revisions it persists through; params integers only (source object, -1 for a
+    trailer; target object; the first revision it is found in). Resolution only is
+    incremental: a revision re-resolves the references whose source body or target body
+    changes in it (a target's body changes with its entry, and a compressed target's also
+    when its object stream's home is replaced: an index from home to live members, as
+    build's `live`; a reverse index from target number to referencing bodies), so a file of
+    many small updates costs its changes times their fan-in; later per-revision walks (7b,
+    7d) still cost revisions x live objects, the budget being the backstop (item 7). Gate:
+    OBJECT_ZERO_REFERENCE leaves the allowlist (with its test,
+    tests/test_inventory_values.py, the allowlist cases); the oracle stops normalizing
+    references to numbers it does not list (#52 item 1): on an unflagged file every reference
+    is live, so value_form and text_form compare references as written; qpdf's "object N/0
+    has unexpected xref entry type" is gated like any message, with a test (#44 comment 2
+    item 4). Pinned tests flip: tests/test_inventory_differential.py's generation-mismatch gap
+    (assert REF_GENERATION, add `3 5 R` to _VALUE_PIECES) -- and the fuzzer then skips an
+    example on build_inventory's flags, not only the object parser's, since `0 0 R`, `99 0 R`
+    and `8388607 0 R` in _VALUE_PIECES pass today only through the normalization;
+    tests/test_inventory_values.py's generation-mismatch disagreements (now FLAGGED) and
+    `test_a_reference_to_object_zero_reads_null_in_both_readers` (now REF_DANGLING);
+    tests/test_inventory_decisions.py's offset-0 entry with a /Probe reference (now
+    REF_DANGLING; without one it still agrees). Linearity: many revisions, each rewriting a
+    target many bodies reference. Expected: +7 corpus files flagged (ADR 0011's measurement).
+  - 3a-7b The page tree and page attributes (ADR 0011 item 2): FlagReason.PAGE_TREE with a
+    closed PageTreeRule (like NumberRule; final members fixed in the PR: the root's shape, a
+    kid that is not an indirect reference to a dictionary, a node reached twice, a node's
+    /Type against /Kids, /Count, /Parent, depth past 100, an attribute missing, an attribute
+    that is a reference to a live null object, one that is dangling, one invalid, /CropBox
+    not overlapping /MediaBox, /ArtBox /TrimBox /BleedBox on a node, /Contents' shape). Per
+    revision: the page list in order, and each page's /Resources, /MediaBox, /CropBox and
+    /Rotate pushed down the tree once (O(nodes)); /Kids, /Count and /Type may be indirect;
+    a direct null value is an absent key. MISSING_PAGE_TREE stays the chain's open-time
+    check (the xref tests need it); PAGE_TREE's root rule covers more. Gate: the page list
+    against MuPDF (page_xref for every page after loading the tree, then page_count) and
+    libqpdf (pages' object numbers from a separate pikepdf instance after the value
+    comparison, since listing pages runs qpdf's repairs: a copy with a new number or an
+    exception disagrees); each page's attributes against MuPDF's effective values
+    (pdf_page_resources for /Resources, mediabox, cropbox converted from MuPDF's flipped
+    coordinates, rotation) and against libqpdf -- OWNER DECISION P2 below: pikepdf has no
+    accessor that reads an inherited /Resources without writing it into the page.
+    Encrypted revisions get the page-list and attribute comparisons too (no strings
+    involved). PAGE_TREE_SEMANTICS, the retyped-catalog exemption and
+    tests/test_inventory_xref.py `_agree`'s page-tree exemption go: any qpdf page-tree
+    message on an unflagged file is then a disagreement. Expect a sweep of test fixtures
+    whose pages lack /Resources or /MediaBox. Closes #77, #52 item 5, #44 comment 1 item 3;
+    part of #52 item 2 (the unanchored content-stream substring stays, Phase 4's).
+    Linearity: wide and deep trees over many revisions. Expected corpus cost: 0 (ADR 0011).
+  - 3a-7c Resource scopes and name/number trees (ADR 0011 items 3 and 4). RESOURCE_SCOPE: a
+    form XObject, a tiling pattern, a Type3 font or an annotation appearance stream without
+    its own /Resources dictionary (direct or an indirect reference to one) -- found both by
+    role (reached from any resource dictionary: a page's, a form's, a pattern's, a Type3
+    font's, an appearance's, /AcroForm /DR; or an annotation's /AP) and by type (/Subtype
+    /Form, /PatternType 1, /Subtype /Type3, in any live body), the union, so a misread role
+    cannot exempt one (if the type half's measured cost is not 0, it goes to the owner
+    before merge). Each scope records only its innermost dictionary (4a resolves names there
+    and flags a miss). NAME_TREE for the catalog's /Names subtrees (all of them, read by a
+    reader or not) and /PageLabels (a number tree), per item 4 -- keys sorted and unique by
+    bytes, and (OWNER DECISION P3) by their text decoding too; an empty root reads as empty
+    (R5), with an anchored allowlist entry for each qpdf warning on one and a
+    reader-agreement test per tree kind qpdf's --check walks. Encrypted revisions (OWNER
+    DECISION P4): a name tree's keys are strings, encrypted until 3a-9, so their order and
+    uniqueness cannot be checked yet -- a non-empty name tree in an encrypted revision flags
+    NAME_TREE until 3a-9 lifts it (number-tree keys are integers: checked as usual). Gate:
+    /EmbeddedFiles entries against MuPDF's pdf_load_name_tree (pymupdf.mupdf) and libqpdf's
+    name-tree helper (pikepdf.NameTree). Linearity: large trees with many /Kids. Expected
+    corpus cost: 0 (ADR 0011).
+  - 3a-7d Synthesized annotations (ADR 0011 item 5, its SYNTHESIZED part) -- first, since the
+    drawing closure depends on it (/AcroForm /DR joins when any annotation is synthesized) and
+    its gate is the riskiest part. A spike settles the gate's method before code (OWNER
+    DECISION P1 if no exact method exists): pymupdf.mupdf.pdf_annot_ap returns the stored
+    /AP, not what MuPDF draws (an unsigned signature field and a widget under
+    /NeedAppearances both draw a synthesized appearance while it still names the stored
+    one), and widgets are listed by pdf_first_widget, not pdf_first_annot. Preferred:
+    MuPDF's display list for the annotation against a run of the stored stream (a text trace
+    cannot tell a synthesized appearance that shows no text from the stored one). Once the
+    method is settled the gate is stated in full: per revision, the annotation list
+    (pdf_first_annot and pdf_first_widget together) against ours, then each annotation's
+    classification. A SYNTHESIZED unit per (annotation body, revision) -- whether
+    an annotation is synthesized and what it shows (/V inherited through the field /Parent
+    chain, /NeedAppearances, /AS) changes from revision to revision while the widget's body
+    stays, the normal form-filling update -- starting UNEXAMINED; it claims no bytes (not a
+    tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
+    memoized per field node; a /Parent cycle among fields (OWNER DECISION P5) flags. Linearity: many fields deep
+    in a /Parent chain over many revisions.
+  - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
+    edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
+    lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like
+    the hint stream at the linearized pair's /H, cross-reference and object streams are
+    structural by the chain, not by a key reaching them), ORPHANED (every stream with no
+    other label); per body across revisions as item 5 says. The "decoder parses the whole
+    stream" condition of STRUCTURAL is checked where each decoder runs (3b's registry,
+    REDESIGN), so here a structural label records its kind and the walk's conditions only;
+    no label discharges a unit; 3b adds a test where a decoder that does not read the whole
+    stream leaves it ORPHANED. Labels add no inventory flag (R3). ADR 0011's costs are
+    re-measured on the implementation (orphans 307 files, synthesized 139, hint streams
+    416, XMP thumbnails 519, JavaScript 89) together with the corpus's largest sum of the
+    graph's work (item 7), and brought to the owner before 3b enforces anything
+    (R3, R6, R7). The item-7 timing test: revisions and objects scaled together (n vs 8n) --
+    within the linear bound or flagged BUDGET_EXHAUSTED. The oracle's added per-revision
+    page loads and pikepdf instances grow its cost (#52 item 4): re-measure the oracle's
+    time with each PR.
+  OWNER DECISIONS PENDING for 3a-7 (to be briefed): P1 the annotation gate's method (after
+  7d's spike); P2 how the gate reads libqpdf's inherited page attributes (push attributes
+  in the separate pikepdf instance, against ADR 0011 item 8's "without pushing", or walk
+  /Parent ourselves over libqpdf's objects); P3 amend ADR 0011 item 4: name-tree keys
+  unique and sorted by bytes and also as text, under both readers' decodings (qpdf compares
+  UTF-8 text, MuPDF pdf_to_text_string; measured cost expected 0); P4 a non-empty name tree in an encrypted revision
+  flags until 3a-9 (cost 0 on the corpus: no encrypted file); P5 a /Parent cycle among
+  AcroForm fields flags (ADR 0011 names no reason for it; the field chain decides what a
+  synthesized appearance shows, and a cycle has no defined inheritance: a new FlagReason,
+  FIELD_TREE, with an EMITTERS entry; expected cost 0, measured in 7d).
 - 3a-8 Pin pikepdf (runtime dep per ADR 0001), encrypted fixtures incl. earlier revision
   with a different /Encrypt; confirmation test pikepdf read_raw_bytes == fitz
   xref_stream_raw (decrypted, unfiltered). If it fails → reopen ADR 0001 (owner).
