@@ -285,19 +285,21 @@ def test_rewriting_a_shared_target_stays_linear() -> None:
     assert large < 10 * small, (small, large)  # 8x the input: about 8x the work
 
 
-def test_flipping_a_shared_target_is_linear_or_flagged() -> None:
+def test_flipping_a_shared_target_is_charged() -> None:
     # Every flip re-resolves every reference into it: changes x fan-in, by
-    # design (docs/phase3a-plan.md 3a-7a). The budget bounds it: within the
-    # linear limit, or flagged BUDGET_EXHAUSTED -- and fast either way.
-    for n in (200, 1600):
-        data = _rewrites(n, n, flip=True)
-        work, seconds, flags = _work(data)
-        limit = Limits().work_limit(len(data))
-        assert work <= limit
-        assert seconds < 30
-        if n == 1600:
-            assert work < limit or FlagReason.BUDGET_EXHAUSTED in {f.reason for f in flags}
-
+    # design (docs/phase3a-plan.md 3a-7a). The budget bounds it -- within the
+    # limit or flagged BUDGET_EXHAUSTED -- provided all of it is charged:
+    # its time per unit of work stays that of a linear shape (a ratio, so
+    # any machine and coverage's slowdown cancel; best of three runs).
+    data = _rewrites(800, 800, flip=True)
+    work, _, flags = _work(data)
+    assert work <= Limits().work_limit(len(data))
+    linear = _rewrites(800, 800, flip=False)
+    base_work = _work(linear)[0]
+    per = min(_work(data)[1] for _ in range(3)) / work
+    base = min(_work(linear)[1] for _ in range(3)) / base_work
+    assert per < 3 * base, (per, base)
+    assert FlagReason.REF_DANGLING in {f.reason for f in flags}
 
 
 def _wide(n: int) -> bytes:
