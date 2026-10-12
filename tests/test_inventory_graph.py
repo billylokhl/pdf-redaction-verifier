@@ -154,8 +154,8 @@ def _updated(update: dict[int, tuple[int, int, int] | bytes], base: dict[int, by
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
     for n, body in ({1: CATALOG, 2: PAGES, 3: PAGE} | base).items():
         table[n] = (1, w.obj(n, body), 0)
+    first = w.table(table, b"/Size %d /Root 1 0 R" % (max(table) + 1))
     size = max(max(table), *update) + 1
-    first = w.table(table, b"/Size %d /Root 1 0 R" % size)
     w.epilogue(first)
     newer = {n: (1, w.obj(n, v), 0) if isinstance(v, bytes) else v for n, v in update.items()}
     w.epilogue(w.table(newer, b"/Size %d /Root 1 0 R /Prev %d%s" % (size, first, trailer)))
@@ -298,3 +298,57 @@ def test_flipping_a_shared_target_is_linear_or_flagged() -> None:
         if n == 1600:
             assert work < limit or FlagReason.BUDGET_EXHAUSTED in {f.reason for f in flags}
 
+
+
+def _wide(n: int) -> bytes:
+    """Object 4 references n numbers the base lacks; one update adds them
+    all: every reference flips from dangling to resolved at once."""
+    w = Writer()
+    first = 10
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    probe = b"[" + b" ".join(b"%d 0 R" % k for k in range(first, first + n)) + b"]"
+    for k, body in ((1, CATALOG), (2, PAGES), (3, PAGE), (4, probe)):
+        table[k] = (1, w.obj(k, body), 0)
+    base = w.table(table, b"/Size 5 /Root 1 0 R")
+    w.epilogue(base)
+    newer = {k: (1, w.obj(k, b"(x)"), 0) for k in range(first, first + n)}
+    w.epilogue(w.table(newer, b"/Size %d /Root 1 0 R /Prev %d" % (first + n, base)))
+    return bytes(w.out)
+
+
+def _stale(bodies: int, flips: int) -> bytes:
+    """*bodies* objects reference 4 and are then freed; 4 then flips
+    between free and live *flips* times. Freed sources must cost nothing."""
+    w = Writer()
+    first = 10
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    for k, body in ((1, CATALOG), (2, PAGES), (3, PAGE), (4, b"(target)")):
+        table[k] = (1, w.obj(k, body), 0)
+    for k in range(first, first + bodies):
+        table[k] = (1, w.obj(k, b"<< /Probe 4 0 R >>"), 0)
+    size = first + bodies
+    prev = w.table(table, b"/Size %d /Root 1 0 R" % size)
+    w.epilogue(prev)
+    xref = w.table({k: (0, 0, 1) for k in range(first, first + bodies)},
+                   b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
+    w.epilogue(xref)
+    prev = xref
+    for i in range(flips):
+        entry = (0, 0, 1) if i % 2 == 0 else (1, w.obj(4, b"(again)"), 0)
+        xref = w.table({4: entry}, b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
+        w.epilogue(xref)
+        prev = xref
+    return bytes(w.out)
+
+
+@pytest.mark.parametrize("shape", [lambda n: _wide(n), lambda n: _stale(n, n // 4)],
+                         ids=["wide", "stale"])
+def test_every_step_of_the_graph_is_charged(shape) -> None:  # type: ignore[no-untyped-def]
+    # Wall clock, not only work counts (ADR 0010): 8x the input costs
+    # about 8x the time, and the work charged keeps pace with it.
+    small, large = shape(4000), shape(32000)
+    work_s, time_s, flags_s = _work(small)
+    work_l, time_l, flags_l = _work(large)
+    assert FlagReason.BUDGET_EXHAUSTED not in {f.reason for f in flags_s + flags_l}
+    assert work_l < 10 * work_s, (work_s, work_l)
+    assert time_l < 12 * max(time_s, 0.05), (time_s, time_l)  # quadratic: ~18x and up

@@ -24,7 +24,9 @@ keeps the file from being certified.
 
 Use kinds are informational -- decided by the key path from a closed
 table, OTHER for any key not listed; no label is derived from a key path
-alone (ADR 0011 item 5)."""
+alone (ADR 0011 item 5), and none from one body's key path alone can see
+its context (a field's or name tree's /Kids reads PAGES, outline and
+structure children OTHER): reachability (3a-7e) must not rest on a kind."""
 
 from __future__ import annotations
 
@@ -145,23 +147,37 @@ Body = tuple[UnitRef, PdfValue | None, int]
 _TRAILER: Final = -1  # a trailer reference's source in a flag
 
 
+# A key path as parent links, shared by siblings: (key, parent) or None.
+_Node = tuple[bytes, "_Node | None"] | None
+
+
 def edges_of(value: PdfValue | None, budget: Budget) -> tuple[Edge, ...] | None:
     """Every reference in *value*, in order, iteratively; None when the
-    budget refuses the walk."""
+    budget refuses the walk. Key paths are kept as parent links and
+    spelled out only at a reference, charged by their depth, so memory
+    stays linear in the value however deep it nests."""
     found: list[Edge] = []
-    stack: list[tuple[PdfValue, tuple[bytes, ...]]] = []
+    stack: list[tuple[PdfValue, _Node]] = []
     if value is not None:
-        stack.append((value, ()))
+        stack.append((value, None))
     while stack:
-        item, path = stack.pop()
+        item, node = stack.pop()
         if not budget.charge_work(1):
             return None
         if isinstance(item, PdfRef):
+            keys: list[bytes] = []
+            while node is not None:
+                keys.append(node[0])
+                node = node[1]
+            if not budget.charge_work(2 * len(keys) + 1):  # spelled out, then classified
+                return None
+            path = tuple(reversed(keys))
             found.append(Edge(use_kind(path), item.num, item.gen, path, item.start, item.end))
         elif isinstance(item, PdfDict):
-            stack.extend((v, (*path, k.raw)) for k, v in reversed(item.entries))
+            stack.extend((v, (k.raw, node)) for k, v in reversed(item.entries))
         elif isinstance(item, PdfArray):
-            stack.extend((v, (*path, ARRAY)) for v in reversed(item.items))
+            child: _Node = (ARRAY, node)
+            stack.extend((v, child) for v in reversed(item.items))
     return tuple(found)
 
 
@@ -176,13 +192,20 @@ def build_graph(revisions: int, changes: list[list[int]],
     *home_of(n, r)* its object stream's number when it is compressed
     there; *trailers[r]* revision r's trailer."""
     edges: dict[UnitRef, tuple[Edge, ...]] = {}
+    by_target: dict[UnitRef, dict[int, list[Edge]]] = {}  # a body's edges by target number
     trailer_edges: list[tuple[Edge, ...]] = [() for _ in range(revisions)]
     flags: list[Flag] = []
     seen: set[tuple[UnitRef | None, int, int, FlagReason]] = set()
     current: dict[int, Body | None] = {}
-    sources: dict[int, set[int]] = {}   # target number -> numbers whose body references it
+    # target number -> numbers whose current body references it: exact (a
+    # body that moves leaves the targets its successor does not share), so
+    # a regenerated target costs its fan-in, every step charged.
+    sources: dict[int, set[int]] = {}
     members: dict[int, set[int]] = {}   # object stream number -> its live members
     homes: dict[int, int] = {}          # member number -> its object stream number
+
+    def done() -> tuple[Graph, list[Flag]]:
+        return Graph(edges, tuple(trailer_edges)), flags
 
     def generation(number: int) -> int | None:
         body = current.get(number)
@@ -202,24 +225,33 @@ def build_graph(revisions: int, changes: list[list[int]],
         flags.append(Flag(reason, span, (("object", number), ("target", edge.num),
                                          ("generation", edge.gen), ("revision", revision))))
 
-    def collect(body: Body) -> tuple[Edge, ...] | None:
-        unit, value, _ = body
-        if unit not in edges:
-            found = edges_of(value, budget)
-            if found is None:
-                return None
-            edges[unit] = found
-        return edges[unit]
+    def collect(unit: UnitRef, value: PdfValue | None) -> bool:
+        if unit in edges:
+            return True
+        found = edges_of(value, budget)
+        if found is None or not budget.charge_work(len(found)):
+            return False
+        edges[unit] = found
+        grouped: dict[int, list[Edge]] = {}
+        for edge in found:
+            grouped.setdefault(edge.num, []).append(edge)
+        by_target[unit] = grouped
+        return True
 
     for revision in reversed(range(revisions)):
         touched = set(changes[revision])
-        for number in changes[revision]:
-            touched |= members.get(number, set())  # a replaced home moves its members
-        moved: list[int] = []      # numbers whose body changed
+        for number in changes[revision]:  # a replaced home moves its members
+            moving = members.get(number, set())
+            if not budget.charge_work(len(moving) + 1):
+                return done()
+            touched |= moving
+        if not budget.charge_work(2 * len(touched)):  # sorted, below
+            return done()
+        moved: list[int] = []        # numbers whose body changed
         regenerated: list[int] = []  # numbers whose live generation changed
         for number in sorted(touched):
             if not budget.charge_work(1):
-                return Graph(edges, tuple(trailer_edges)), flags
+                return done()
             home = home_of(number, revision)
             if homes.get(number) != home:
                 if number in homes:
@@ -229,46 +261,48 @@ def build_graph(revisions: int, changes: list[list[int]],
                     members.setdefault(home, set()).add(number)
             body = body_of(number, revision)
             before = current.get(number)
-            if (before[0] if before else None) != (body[0] if body else None):
-                before_gen = generation(number)
-                current[number] = body
-                moved.append(number)
-                if generation(number) != before_gen:
-                    regenerated.append(number)
-        # A moved body's references, all of them, join the reverse index (an
-        # older body's entries stay: a lookup checks the current body's edges).
-        for number in moved:
-            body = current[number]
-            found = collect(body) if body is not None else ()
-            if found is None:
-                return Graph(edges, tuple(trailer_edges)), flags
-            for edge in found:
-                sources.setdefault(edge.num, set()).add(number)
-        for number in moved:
+            if (before[0] if before else None) == (body[0] if body else None):
+                continue
+            before_gen = generation(number)
+            if body is not None and not collect(body[0], body[1]):
+                return done()
+            old = by_target.get(before[0], {}) if before is not None else {}
+            new = by_target.get(body[0], {}) if body is not None else {}
+            if not budget.charge_work(len(old) + len(new)):
+                return done()
+            for target in old:
+                if target not in new:
+                    sources.get(target, set()).discard(number)
+            for target in new:
+                sources.setdefault(target, set()).add(number)
+            current[number] = body
+            moved.append(number)
+            if generation(number) != before_gen:
+                regenerated.append(number)
+        for number in moved:  # a moved body: all its references
             body = current[number]
             if body is None:
                 continue
             for edge in edges[body[0]]:
                 if not budget.charge_work(1):
-                    return Graph(edges, tuple(trailer_edges)), flags
+                    return done()
                 resolve(body[0], number, edge, revision)
         moved_set = set(moved)
         for target in regenerated:  # references into a number whose generation changed
-            for number in sorted(sources.get(target, set()) - moved_set):
+            for number in sorted(sources.get(target, set())):
+                if not budget.charge_work(2):
+                    return done()
                 body = current.get(number)
-                if body is None:
+                if number in moved_set or body is None:
                     continue
-                for edge in edges.get(body[0], ()):
-                    if edge.num != target:
-                        continue
+                for edge in by_target[body[0]].get(target, ()):
                     if not budget.charge_work(1):
-                        return Graph(edges, tuple(trailer_edges)), flags
+                        return done()
                     resolve(body[0], number, edge, revision)
-        trailer = trailers[revision]
-        found = edges_of(trailer, budget)
+        found = edges_of(trailers[revision], budget)
         if found is None:
-            return Graph(edges, tuple(trailer_edges)), flags
+            return done()
         trailer_edges[revision] = found
         for edge in found:
             resolve(None, _TRAILER, edge, revision)
-    return Graph(edges, tuple(trailer_edges)), flags
+    return done()

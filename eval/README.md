@@ -596,7 +596,7 @@ What each part of the output means:
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
   printed an `ERROR` line (exit 2) the allowlists cover (page-tree
-  semantics, the reference graph's, 3a-7). ERROR lines are gated like
+  semantics, the reference graph's until 3a-7b). ERROR lines are gated like
   WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
