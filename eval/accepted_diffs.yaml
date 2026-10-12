@@ -160,6 +160,344 @@
     trailer, storage live. Exit unchanged.'
   cell: trailer.plain
   pr: '#73'
+- case: layout.page-break-bates-footer
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Code
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here a Bates footer sits between the halves of
+    a code name split across a page break (match.page-break-furniture, now review); the reference
+    exited 0.'
+  cell: match.page-break-furniture
+  pr: '#68'
+- case: layout.raw-font-coded-two-column-wrap
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here a right-column line sits between the halves
+    of a font-coded value wrapped inside the left column; the reference exited 0.'
+  cell: match.columns
+  pr: '#68'
+- case: layout.repeated-line-wraps-multi
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.repeated-line-wraps-multi-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.repeated-line-wraps-overlapping
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.repeated-line-wraps-overlapping-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.repeated-line-wraps-ssn
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.repeated-line-wraps-ssn-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning on a file that was already
+    exit 2.'
+  pr: '#68'
+- case: layout.two-column-wrap
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here a right-column line sits between the halves
+    of a value wrapped inside the left column (K34, match.columns, now review); the reference
+    exited 0 without OCR.'
+  cell: match.columns
+  pr: '#68'
 - case: leftover.deleted-page-embedded-font-compact
   old:
     exit: 0
@@ -551,6 +889,150 @@
     literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter only.'
   cell: off-page.font.straddling
   pr: '#68'
+- case: page.raw-font-coded-scattered-furniture-at-break
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.page-break-furniture
+  pr: '#68'
+- case: page.raw-font-coded-scattered-furniture-at-break-rotated
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.page-break-furniture
+  pr: '#68'
+- case: page.raw-font-coded-scattered-furniture-in-page
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.line-wrap
+  pr: '#68'
+- case: page.raw-font-coded-scattered-furniture-in-page-rotated
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.line-wrap
+  pr: '#68'
+- case: page.raw-font-coded-scattered-reversed
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.line-wrap
+  pr: '#68'
+- case: page.raw-font-coded-scattered-reversed-rotated
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the font-coded value is split around a header
+    or footer, or in reverse order; the reference exited 0.'
+  cell: match.line-wrap
+  pr: '#68'
 - case: page.raw-font-coded-split-at-break-off-page-rotated
   old:
     exit: 1
@@ -785,6 +1267,37 @@
     lines (a manual-review warning, now superseded by the hard finding). Stricter only.'
   cell: off-page.font.vertical
   pr: '#68'
+- case: page.raw-font-coded-vertical-split-at-break-off-page-rotated
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decisions of 2026-10-10 (a page-break split with a half wholly off
+    the page is manual review) and 2026-10-11 (extended to vertically written text): vertical
+    ''SSN 123-45-'' on page 1 and ''6789 continues'' wholly past page 2''s right edge, on
+    pages turned with /Rotate 270 under a crop box reaching 200 pt past the media box. The
+    reference''s 1: its visible area was misplaced (derotating page.rect used the unclipped
+    crop box), so it put the off-page half on the page; the vertical readings across the edge
+    feed no hard seam (their last column may be an off-page slug), and the review net joins
+    the halves.'
+  cell: match.page-break-off-page-half
+  pr: '#68'
+  weaker: true
 - case: page.raw-slug-beside-page-number
   old:
     exit: 0
