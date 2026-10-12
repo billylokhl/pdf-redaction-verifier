@@ -125,3 +125,36 @@ def earlier_trailer_id(path: Path) -> None:
 def generated_id_digits(path: Path) -> None:
     generated = b"(0a1b2c123456789def0a1b2c3d4e5f60)"
     path.write_bytes(_with_trailer(b"/ID [" + generated + b" " + generated + b"]"))
+
+
+# ── unindexed.plain: a dictionary after the final %%EOF (issue #76) ──────
+# scan_trailers reads a dictionary only right after a ``trailer`` keyword;
+# one with no keyword, or with junk between keyword and dictionary, after
+# the final %%EOF is unindexed bytes that nothing reads. A variant of K7
+# (plain text after the final %%EOF), so no K-number of its own.
+
+AFTER_EOF_MISTAKE = ("A tool appended its own dictionary (a note, a stray trailer) after the "
+                     "file's final %%EOF.")
+AFTER_EOF_RECOVERY = "Open the file in a text editor and read past the last %%EOF."
+
+
+@case("file.dictionary-after-final-eof", truth="leak", cells="unindexed.plain", writer="raw",
+      expected=expect(1), known_gap=KnownGap("unindexed.plain", expect(0)),
+      story="A bare dictionary holding the SSN appended after the file's final %%EOF, with "
+            "no trailer keyword: no object, no trailer, so nothing reads it (issue #76; a "
+            "variant of K7).",
+      mistake=AFTER_EOF_MISTAKE, recovery=AFTER_EOF_RECOVERY)
+def dictionary_after_final_eof(path: Path) -> None:
+    path.write_bytes(build(one_page(PAGE)) + b"<< /Note (" + SECRET.encode() + b") >>\n")
+
+
+@case("file.junk-trailer-after-final-eof", truth="leak", cells="unindexed.plain", writer="raw",
+      expected=expect(1), known_gap=KnownGap("unindexed.plain", expect(0)),
+      story="A trailer keyword appended after the final %%EOF with junk before its "
+            "dictionary (trailer x << ... >>): the trailer scan reads a dictionary only "
+            "right after the keyword, so this one is unindexed bytes nothing reads "
+            "(issue #76; a variant of K7).",
+      mistake=AFTER_EOF_MISTAKE, recovery=AFTER_EOF_RECOVERY)
+def junk_trailer_after_final_eof(path: Path) -> None:
+    path.write_bytes(build(one_page(PAGE)) + b"trailer x << /Note (" + SECRET.encode()
+                     + b") >>\n")

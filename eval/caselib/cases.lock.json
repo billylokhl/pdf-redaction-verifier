@@ -64,6 +64,8 @@
   "file.after-final-eof-container": "97db6ff7a007e0689898aa5b5dbf74ec02fa85345d7dd985cf567a9675d5161a",
   "file.after-final-eof-font-coded": "294d19612eb149f985eacb08861faaa76ed418f403f689f91505920b9a811f38",
   "file.after-final-eof-pixels": "dfa1bdb2ca58139eb7a23ea1f29f47be012ac0bc501997fdf4387a45ae648e17",
+  "file.dictionary-after-final-eof": "980e2a42234c38e6364d8b599bb7e83451d5ad2944dbb141a00eacf4d5b18e21",
+  "file.junk-trailer-after-final-eof": "e19a72ff2053e5e4eead5d6c0993b735f912bfc961cefcbff82d3f639f09a5f2",
   "layout.blank-pages-multi": "dd45dc1abb160fe95fcba6239af97bb03451e89d2c9a526c4a2d316a8c627118",
   "layout.blank-pages-multi-pattern": "dd45dc1abb160fe95fcba6239af97bb03451e89d2c9a526c4a2d316a8c627118",
   "layout.blank-pages-overlapping": "dd45dc1abb160fe95fcba6239af97bb03451e89d2c9a526c4a2d316a8c627118",
