@@ -579,10 +579,11 @@ difference fails the gate.
   `layout.vertical-stack-*` pattern-rule grid cases exit `1` instead of
   `2`. The OCR view now holds a vertical line hard-finding eligible only
   when an upright re-read confirms it (DESIGN.md, two-tier model),
-  measured on generated pages alone; (d) the 4b OCR view should
-  re-measure it on the real-world corpus's scanned pages, and (e) read a
-  scanned stack character by character (#61: with a value rule it passes
-  as clean).
+  measured on generated pages alone, with `page.digit-column` and
+  `page.scan-image-sideways-90`/`-270` pinning both sides (#74); (d) the
+  4b OCR view should re-measure it on the real-world corpus's scanned
+  pages, and (e) read a scanned stack character by character (#61: with
+  a value rule it passes as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -755,7 +756,7 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K4 | Plain-text orphan labelled as a 1×1 image |
 | K5 | Text converted to outlines, in an orphaned stream |
 | K6 | Same, in a switched-off optional-content layer |
-| K7 | Plain text after the final `%%EOF` |
+| K7 | Plain text after the final `%%EOF`. Two variants are pinned with no K-number of their own (issue #76): a bare dictionary holding the secret after the final `%%EOF` (`file.dictionary-after-final-eof`) and a `trailer` keyword there with junk between the keyword and the dictionary (`file.junk-trailer-after-final-eof`), which the trailer scan does not read — plain text in the same cell as K7, unlike K31–K33, which are other cells; the new design's byte tiling flags them as `UNINDEXED` |
 | K8 | Leftover font-coded text written without whitespace after `BT` (`BT/F1 11 Tf`, as `clean_contents` and redactor write it) — orphaned or superseded; found by the review of the case library; **fixed** in the current tool: leftover streams are tokenized as content (delimiters, NUL, long text objects, a font set before BT, compact inline images) |
 | K9 | Font-coded text running across the page edge: the page reading splits it into on- and off-page parts |
 | K10 | Leftover glyph codes shown one character per `Tj`: no string is long enough to judge |

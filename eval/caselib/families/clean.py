@@ -246,3 +246,20 @@ def many_revisions(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page()); save(doc, path)
     for i in range(55):
         update(path, lambda d, i=i: d[0].add_text_annot((60 + 8 * (i % 60), 700), f"n{i}"))  # type: ignore[misc]
+
+
+@clean("page.digit-column", "live.plain",
+       "A column of single digits, 9 down to 1, one per line, with a footer: "
+       "no SSN, but the column read as one run of digits has an SSN's shape.",
+       rules=({"name": "Any SSN", "class": "ssn"},),
+       expected=expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),)))
+def digit_column(path: Path) -> None:
+    # Joining the column is manual review (DESIGN.md, two-tier model). On
+    # macOS 27, Vision reads this column as one vertical line of digits
+    # that are not on the page, an SSN shape: before #70 that was a hard
+    # finding (exit 1) on a clean file (#74).
+    doc = fitz.open(); page = doc.new_page()
+    page.insert_text((72, 700), "Page footer text", fontsize=11)
+    for i, digit in enumerate("987654321"):
+        page.insert_text((100, 80 + 8 * 1.27 * i), digit, fontsize=8)
+    save(doc, path)
