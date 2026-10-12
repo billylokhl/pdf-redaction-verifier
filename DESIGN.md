@@ -167,7 +167,9 @@ revision's trailer was certified clean (K40, K41 in docs/REDESIGN.md
 §8). Trailers are now read from the file's own bytes: every trailer the
 cross-reference chain reaches (the current one, `live`; an earlier
 revision's, `superseded`; a hybrid file's `/XRefStm` stream with its
-section), then any other `trailer << ... >>` in the file (`unreferenced`;
+section), then any other `trailer << ... >>` in the file (`unreferenced`; a
+dictionary with no keyword before it, or junk between the two, is
+unindexed bytes, not read — issue #76;
 one that never closes is a warning, and so is a chain section whose
 trailer cannot be read). Comments are skipped when reading a trailer's
 strings — a `>>` or `(` inside one cannot cut the dictionary short —
@@ -380,6 +382,10 @@ either: in a further 1,080-page sweep of a slanted SSN line (30–60° in
 each quadrant, 7–14 pt, centred and at the page edges), 10 of the 1,047
 lines Vision read, mostly 7 pt near an edge, were manual review. Lines
 read horizontally, such as a row of form boxes, are not re-read.
+Outside the grids, `page.digit-column` (clean: a lone digit column) and
+`page.scan-image-sideways-90`/`-270` (an SSN that exists only as a turned
+image) pin both sides: no hard finding from a misread column, and a hard
+one from a genuine sideways scan.
 
 A page with any line read vertically gets two more reconstructed
 readings, so whatever Vision misses there is at least manual review.
