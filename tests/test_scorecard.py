@@ -1520,3 +1520,13 @@ def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
     # CHANGED lines, which name what to fix in the manifest, are separate).
     summary = [line for line in err.splitlines() if not line.startswith(("MISSING", "CHANGED"))]
     assert not any("private-name" in line for line in summary)
+
+
+def test_probe_error_codes_are_the_file_verdict_errors():
+    """`probe_mismatches` skips codes outside PROBE_ERROR_CODES, trusting
+    `_unmeasured` to fail them; `_unmeasured` exempts FILE_VERDICT_ERRORS.
+    A code in one set only would be skipped by both and silently counted."""
+    import scorecard.cli as cli
+    from scorecard.corpus import PROBE_ERROR_CODES
+
+    assert frozenset(PROBE_ERROR_CODES.values()) == cli.FILE_VERDICT_ERRORS
