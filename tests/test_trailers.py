@@ -572,3 +572,66 @@ class TestCrossReferenceStreams:
         path.write_bytes(out)
         assert ("Target SSN", "live", "cross-reference stream (trailer), object 7") \
             in _found(_objects(path))
+
+
+class TestTableFastPath:
+    """#75: the common table (headers, canonical 20-byte entries) is read
+    with slices at C speed; anything else falls to the token walk. The
+    fast path may only ever agree with the walk."""
+
+    @staticmethod
+    def _walk(table: bytes, monkeypatch: pytest.MonkeyPatch):
+        with monkeypatch.context() as m:
+            m.setattr(verify, "_table_subsections_fast", lambda _t: verify._SLOW)
+            return verify._table_subsections(table)
+
+    @staticmethod
+    def _table(rng, subsections: int) -> bytes:
+        out = b""
+        for _ in range(subsections):
+            count = rng.randrange(0, 6)
+            out += b"%d %d\n" % (rng.randrange(0, 1000), count)
+            for _ in range(count):
+                out += b"%010d %05d %s%s" % (rng.randrange(10**10), rng.randrange(65536),
+                                             rng.choice([b"n", b"f"]),
+                                             rng.choice([b" \n", b" \r", b"\r\n"]))
+        return out
+
+    def test_canonical_tables_take_the_fast_path(self) -> None:
+        import random
+        rng = random.Random(75)
+        for _ in range(200):
+            table = self._table(rng, rng.randrange(1, 4))
+            assert verify._table_subsections_fast(table) is not verify._SLOW
+
+    def test_the_fast_path_agrees_with_the_walk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import random
+        rng = random.Random(7575)
+        mutations = [b" ", b"\n", b"x", b"%", b"-", b"+", b"\x00", b"N", b"F", b"9", b"\t", b"\r"]
+        for _ in range(3000):
+            table = bytearray(self._table(rng, rng.randrange(0, 4)))
+            for _ in range(rng.randrange(0, 3)):
+                if table and rng.random() < 0.5:
+                    i = rng.randrange(len(table))
+                    if rng.random() < 0.5:
+                        del table[i]
+                    else:
+                        table[i:i + 1] = rng.choice(mutations)
+                else:
+                    table[rng.randrange(len(table) + 1):0] = rng.choice(mutations)
+            raw = bytes(table)
+            fast = verify._table_subsections_fast(raw)
+            if fast is not verify._SLOW:
+                assert fast == self._walk(raw, monkeypatch), raw
+
+    def test_a_large_canonical_table_is_quick(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The token walk loops per entry in Python; the fast path checks
+        # canonical entries in bounded chunks (measured: ~40x faster).
+        table = b"0 200000\n" + b"0000000000 65535 f \n" * 200_000
+        start = time.monotonic()
+        assert verify._table_subsections(table) == [range(0, 200_000)]
+        fast = time.monotonic() - start
+        start = time.monotonic()
+        self._walk(table, monkeypatch)
+        walk = time.monotonic() - start
+        assert fast * 5 < walk, (fast, walk)

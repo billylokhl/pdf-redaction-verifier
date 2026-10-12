@@ -2424,13 +2424,64 @@ def _section_trailer(raw: bytes, offset: int) -> tuple[int, int] | None:
     return None if opening is None else (pos, opening)
 
 
+_SLOW = object()
+_SUBSECTION_HEADER_RE = re.compile(rb"[ \t\r\n\f\v]*(\d+)[ \t]+(\d+)[ \t]*(?:\r\n|\r|\n)")
+_DIGITS = b"0123456789"
+_FAST_CHUNK_ENTRIES = 1 << 16
+
+
+def _canonical_entries(chunk: bytes) -> bool:
+    """Whether *chunk* is whole canonical 20-byte entries: 10 digits, a
+    space, 5 digits, a space, n or f, and a two-byte end of line."""
+    k = len(chunk) // 20
+    if len(chunk) % 20 or chunk[10::20] != b" " * k or chunk[16::20] != b" " * k:
+        return False
+    if not set(chunk[17::20]) <= {0x6E, 0x66} or not set(chunk[18::20]) <= {0x20, 0x0D} \
+            or not set(chunk[19::20]) <= {0x0D, 0x0A}:
+        return False
+    # The five fixed non-digit bytes per entry checked, the other fifteen
+    # must all be digits.
+    return len(chunk.translate(None, _DIGITS)) == 5 * k
+
+
+def _table_subsections_fast(table: bytes) -> list[range] | None | object:
+    """_table_subsections for the common table: each subsection a header
+    line then canonical 20-byte entries (ISO 32000 §7.5.4). Checked with
+    slices in bounded chunks, at C speed and in constant memory. Returns
+    _SLOW whenever the table is anything else, so the token walk decides:
+    a range set comes back only where the walk would return the same."""
+    ranges: list[range] = []
+    pos, n = 0, len(table)
+    while True:
+        header = _SUBSECTION_HEADER_RE.match(table, pos)
+        if header is None:
+            return ranges if not table[pos:].strip() else _SLOW
+        first, count = header.group(1), header.group(2)
+        if len(first) > _MAX_NUMBER_DIGITS or len(count) > _MAX_NUMBER_DIGITS:
+            return _SLOW
+        size = int(count)
+        start = header.end()
+        stop = start + 20 * size
+        if stop > n:
+            return _SLOW
+        for chunk_start in range(start, stop, 20 * _FAST_CHUNK_ENTRIES):
+            chunk = table[chunk_start:min(stop, chunk_start + 20 * _FAST_CHUNK_ENTRIES)]
+            if not _canonical_entries(chunk):
+                return _SLOW
+        ranges.append(range(int(first), int(first) + size))
+        pos = stop
+
+
 def _table_subsections(table: bytes) -> list[range] | None:
     """The object-number ranges a classic table's subsections define: a
     header (first number, count) then count entries of offset, generation
     and n/f, whatever the line layout and with comments skipped. None when
     the tokens do not have that shape (callers then treat every object as
-    possibly changed). Tokens are read one at a time, so memory stays
-    constant however long the table."""
+    possibly changed). The common table takes a fast path; anything else
+    is read one token at a time, in constant memory."""
+    fast = _table_subsections_fast(table)
+    if fast is not _SLOW:
+        return fast  # type: ignore[return-value]
     tokens = (m.group(1) for m in _TABLE_TOKEN_RE.finditer(table) if m.group(1))
     ranges: list[range] = []
     for first in tokens:
@@ -2458,6 +2509,7 @@ _INDEX_RE = re.compile(rb"/Index\s*\[([\d\s]*)\]")
 _SIZE_RE = re.compile(rb"/Size\s+(\d+)")
 
 
+@functools.lru_cache(maxsize=1024)
 def _xref_section(
     raw: bytes, offset: int
 ) -> tuple[int, int | None, list[range] | None] | None:
