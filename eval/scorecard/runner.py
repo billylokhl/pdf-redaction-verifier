@@ -122,6 +122,17 @@ def run_cli(
     )
 
 
+def error_code(result: CliResult) -> str | None:
+    """The report's `error.code` for a run that produced a judgeable report
+    saying the scan could not be completed, else None."""
+    if result.crashed or result.report is None:
+        return None
+    if "error" in result.report and result.report["error"] is None:
+        return None  # the schema's "no error"; anything else (missing included) is one
+    error = result.report.get("error")
+    return str(error.get("code")) if isinstance(error, dict) else str(error)
+
+
 def current_python() -> str:
     """The interpreter running this process — used to launch the CLI so
     the same environment (installed deps) is used for every ref."""

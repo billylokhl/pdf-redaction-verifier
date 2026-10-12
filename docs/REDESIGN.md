@@ -719,14 +719,17 @@ raised from 45 to 60 minutes (a run now takes 34.6); the reference's
 `qpdf` run through a shim adding `--deterministic-id` (the candidate
 passes it itself), after an intermittent unlisted `SHORT` review warning
 was traced to qpdf's clock-seeded trailer `/ID` in the Binary sweep
-(owner's decision, over re-tagging the reference). Not yet done, left
-for a later PR: `scorecard metrics` exiting non-zero on a crash or
-timeout (today only `scorecard diff` fails on them); qpdf's own
-generated trailer `/ID` (32 hex digits, now derived from the file) still
-swept by the Binary layer, so a 4-character all-hex value rule matches
-it on about 0.05% of files and a 3-character one (`Abe`, `Ada`) on about
-0.75% — stable and fail-closed, but noise: bytes qpdf wrote itself are
-not file content; the additive
+(owner's decision, over re-tagging the reference); `scorecard metrics`
+and `corpus run` exiting 1 when any file has no verdict (crashed, timed
+out, or an error report saying the scan could not be completed — except, in the real
+corpus only, an encrypted or corrupt file, whose exit 2 is the tool's
+real answer: owner's decision), when a corpus file is missing, changed
+or vanishes, or when nothing ran. Not yet done, left for a later PR:
+qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
+file) still swept by the Binary layer, so a 4-character all-hex value
+rule matches it on about 0.05% of files and a 3-character one (`Abe`,
+`Ada`) on about 0.75% — stable and fail-closed, but noise: bytes qpdf
+wrote itself are not file content; the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
@@ -862,8 +865,15 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   code using those words will trip it. It also bans, as attributes and
   as strings, every name under which an allowed module exposes some
   other module (`dataclasses.functools`, `typing.contextlib`, `re.enum.bltns`,
-  ...), computed at test time on the running Python because the set
-  differs between versions, plus `ForwardRef._evaluate`. It is a
+  ...), plus `ForwardRef._evaluate`. That set differs between Python
+  versions (`typing.contextlib` is gone in 3.13,
+  `dataclasses.annotationlib` is new in 3.14), so the guard bans the
+  union recorded from 3.10 to 3.15 (`KNOWN_MODULE_ATTRS`) together with
+  what the running Python exposes, and a test fails when the running
+  Python exposes a name the union lacks. CI runs 3.10 and 3.12 only, so
+  a name first exposed by a newer Python is caught only once someone
+  runs the suite on it, and a name a module binds only on first use
+  (3.14's `collections.heapq`) only once something has used it. It is a
   mistake-catcher, frozen by ADR 0010: plain routes past it remain
   (issue #38) and are closed by the Phase 3b child process, which never
   receives secrets; the OS sandbox follows in 3d. Loosen it
