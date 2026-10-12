@@ -865,6 +865,164 @@ def test_ensure_local_only_allows_outside_when_flagged(tmp_path):
     assert ensure_local_only(path, allow_outside=True) == path
 
 
+# ── corpus build: unread files are recorded, text layer unknown ──
+
+# A fabricated producer string standing in for one that names a person or
+# machine: it must never reach the manifest or the build's output.
+_PRODUCER_SENTINEL = "Fabricated Writer host-sentinel-42"
+
+
+def _write_corpus(root):
+    """Fabricated files: a plain text PDF, a user-password one, an
+    owner-password-only one (opens without a password), and three a
+    reader cannot open. Returns {relative name: expected probe}."""
+    import pymupdf as fitz
+
+    root.mkdir(parents=True, exist_ok=True)
+
+    def text_doc():
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "SSN 123-45-6789")
+        doc.set_metadata({"producer": _PRODUCER_SENTINEL})
+        return doc
+
+    text_doc().save(root / "plain.pdf")
+    text_doc().save(root / "locked.pdf", encryption=fitz.PDF_ENCRYPT_AES_256,
+                    user_pw="user-pw", owner_pw="owner-pw")
+    text_doc().save(root / "owner-only.pdf", encryption=fitz.PDF_ENCRYPT_AES_256,
+                    owner_pw="owner-pw")
+    (root / "not-a-pdf.pdf").write_bytes(b"this is not a PDF\n")
+    (root / "truncated.pdf").write_bytes(b"%PDF-1.7\n1 0 obj <<\n")
+    (root / "empty.pdf").write_bytes(b"")
+    return {"plain.pdf": "ok", "locked.pdf": "password", "owner-only.pdf": "ok",
+            "not-a-pdf.pdf": "unreadable", "truncated.pdf": "unreadable",
+            "empty.pdf": "unreadable"}
+
+
+def test_build_manifest_records_encrypted_and_unreadable_files(tmp_path):
+    """`corpus build` used to abort on the first password-protected or
+    corrupt file, so `corpus run`'s exemption for PDF_PASSWORD and
+    PDF_UNREADABLE could never be reached. They are now recorded with the
+    probe's outcome, their text layer unknown (None, never guessed) and
+    producer family "unknown"."""
+    import hashlib
+
+    from scorecard.corpus import build_manifest, load_manifest
+
+    root = tmp_path / "root"
+    expected = _write_corpus(root)
+    manifest = tmp_path / "manifest.json"
+    entries = build_manifest(root, manifest_path=manifest)
+    assert {e.path: e.probe for e in entries} == expected
+    for entry in entries:
+        assert entry.sha256 == hashlib.sha256((root / entry.path).read_bytes()).hexdigest()
+        if entry.probe != "ok":
+            assert entry.text_bearing is None
+            assert entry.producer_family == "unknown"
+    readable = {e.path: e for e in entries if e.probe == "ok"}
+    assert readable["plain.pdf"].text_bearing and readable["owner-only.pdf"].text_bearing
+    assert readable["plain.pdf"].producer_family == "other"
+    assert load_manifest(manifest) == entries
+    assert _PRODUCER_SENTINEL not in manifest.read_text()
+
+
+def test_classify_measures_revisions_of_an_unreadable_file_from_bytes(tmp_path):
+    from scorecard.corpus import classify
+
+    _write_corpus(tmp_path)
+    locked = tmp_path / "locked.pdf"
+    assert classify(locked) == (None, False, "unknown", "password")
+    locked.write_bytes(locked.read_bytes() + b"\n% appended\n%%EOF\n")
+    assert classify(locked) == (None, True, "unknown", "password")
+    junk = tmp_path / "not-a-pdf.pdf"
+    assert classify(junk) == (None, False, "unknown", "unreadable")
+    junk.write_bytes(b"%%EOF\n%%EOF\n")
+    assert classify(junk) == (None, True, "unknown", "unreadable")
+
+
+def test_classify_page_text_failure_is_text_unreadable(tmp_path, monkeypatch):
+    """A file MuPDF opens but cannot read a page's text from is recorded,
+    not raised on, and its text layer is unknown — not called text-free.
+    It is not "unreadable": the CLI does not report PDF_UNREADABLE for it."""
+    import pymupdf as fitz
+
+    from scorecard.corpus import classify
+
+    _write_corpus(tmp_path)
+
+    def broken(self, *a, **k):
+        raise RuntimeError("fabricated page failure in " + str(tmp_path))
+
+    monkeypatch.setattr(fitz.Page, "get_text", broken)
+    assert classify(tmp_path / "plain.pdf") == (None, False, "unknown", "text-unreadable")
+
+
+def test_load_manifest_without_probe_field_defaults_to_ok(tmp_path):
+    """A manifest written before the probe field existed could hold only
+    files the probe read (the build raised on any other), so "ok" is the
+    right default for it."""
+    from scorecard.corpus import load_manifest
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"entries": [{
+        "sha256": "ab" * 32, "path": "a.pdf", "text_bearing": False,
+        "multi_revision": False, "producer_family": "office"}]}))
+    assert load_manifest(manifest)[0].probe == "ok"
+
+
+def test_load_manifest_refuses_an_unknown_probe_without_naming_the_path(tmp_path):
+    from scorecard.corpus import load_manifest
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"entries": [{
+        "sha256": "ab" * 32, "path": "private-name.pdf", "text_bearing": None,
+        "multi_revision": False, "producer_family": "unknown", "probe": "bogus"}]}))
+    with pytest.raises(SystemExit, match="unknown probe 'bogus'") as exc:
+        load_manifest(manifest)
+    assert "private-name" not in str(exc.value)
+
+
+def test_stratify_keeps_unread_files_out_of_every_measured_stratum():
+    """An unread file's error report has no findings, so in a measured
+    stratum it would only pad the false-hard denominator. It goes to
+    text-unknown and its probe stratum only; "all" still counts its exit 2
+    as a review verdict."""
+    from scorecard.corpus import CorpusEntry, CorpusRun, stratify
+
+    plain = CorpusEntry("aa" * 32, "a.pdf", True, False, "office")
+    blank = CorpusEntry("cc" * 32, "c.pdf", False, False, "office")
+    nameless = CorpusEntry("dd" * 32, "d.pdf", True, False, "unknown")
+    locked = CorpusEntry("bb" * 32, "b.pdf", None, True, "unknown", probe="password")
+    runs = [CorpusRun(plain, _corpus_result("ok")), CorpusRun(blank, _corpus_result("ok")),
+            CorpusRun(nameless, _corpus_result("ok")), CorpusRun(locked, _corpus_result("PDF_PASSWORD"))]
+    strata = stratify(runs)
+    assert strata["text-bearing"].total == 2 and strata["text-bearing"].review_rate == 0
+    assert strata["text-free"].total == 1 and strata["text-free"].review_rate == 0
+    assert strata["text-unknown"].total == 1 and strata["probe:password"].total == 1
+    assert strata["all"].total == 4 and strata["all"].review_rate == 1
+    assert "multi-revision" not in strata and strata["single-revision"].total == 3
+    assert strata["producer:unknown"].total == 1  # the readable file, alone
+    assert not any(k in strata for k in ("probe:ok", "probe:unreadable", "probe:text-unreadable"))
+
+
+def test_corpus_build_cli_counts_unread_files_without_naming_them(tmp_path, capsys):
+    import scorecard.cli as cli
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    args = cli.build_parser().parse_args(
+        ["corpus", "build", "--root", str(root), "--allow-outside",
+         "--manifest", str(tmp_path / "out" / "manifest.json")]
+    )
+    assert args.func(args) == 0
+    out = capsys.readouterr().out
+    assert "wrote 6 entries" in out
+    assert "could not read 4 file(s) (1 password, 3 unreadable)" in out
+    for name in ("plain", "locked", "owner-only", "not-a-pdf", "truncated", "empty", str(root)):
+        assert name not in out
+    assert _PRODUCER_SENTINEL not in out
+
+
 # ── runner.run_cli: timeout handling ──────────────────────────────────────
 
 

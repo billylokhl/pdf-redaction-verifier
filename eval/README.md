@@ -499,6 +499,28 @@ username, hostname, or email address in it.
 `corpus build` picks up only files named `*.pdf` in lower case: rename or
 link any `.PDF` files first, or they are silently left out.
 
+A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
+abort on the first password-protected or corrupt file, so the exemption
+below could never be reached. Each entry now carries `probe`: `"ok"`,
+`"password"` (opens but needs a password: the CLI's `PDF_PASSWORD`),
+`"unreadable"` (MuPDF cannot open it: the CLI's `PDF_UNREADABLE`) or
+`"text-unreadable"` (opens, but reading a page's text fails; the CLI has
+no matching error code, so its verdict is whatever the scan reaches).
+Such a file's `text_bearing` is `null`, unknown, and its producer family
+`"unknown"`, since neither was read; multi-revision is still measured
+from the raw bytes. `corpus run` counts it only in `all` (its exit 2 is a
+review verdict, as below), in `text-unknown`, and in `probe:password`,
+`probe:unreadable` or `probe:text-unreadable` — never in a measured
+stratum (text-bearing, text-free, the revision strata or a producer
+family). An error report has no findings, so there it would only add an
+unscanned file to the false-hard denominator: as text-bearing, of the
+stratum the redesign's targets are measured on. The build
+prints only how many there were, never which, and never keeps the
+exception's message (it can name the path). A manifest written before
+the field existed loads with `probe` `"ok"`; one written now does not
+load in older code (it rejects the new field), so rebuild it after
+switching back. An unknown `probe` value is refused, not made a stratum.
+
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
 PYTHONPATH=eval:. python -m scorecard corpus build --root ~/corpus
@@ -586,7 +608,12 @@ What each part of the output means:
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
   `needs_password`, `encryption`, `oracle_error`, `tiling`),
-  `crashes`, `timeouts`, `unverified`, `inconsistent`.
+  `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
+  a user password is an unflagged `needs_password` disagreement, so it
+  fails the gate. `corpus build` can now record such a file (above),
+  where it used to abort, so a corpus holding one fails `inventory run`
+  instead of never reaching it; how the gate should count it is still
+  open (issue #48, item 3).
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and
