@@ -145,6 +145,13 @@ matcher sees it whole. Each is ✗:
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
   PyMuPDF does not return.
+- A one-character-per-line stack in a scanned page (pixels only),
+  searched with a value rule: exit `0`
+  ([#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)).
+  With text on the page, the Text layer reads the stack (manual review).
+  In pixels only OCR can, and on macOS 27 it reads the stack as one
+  sideways line, usually misread, so the value usually does not match. What
+  macOS 26 returns was not measured.
 
 ## What ⚑ costs, and what comes next
 

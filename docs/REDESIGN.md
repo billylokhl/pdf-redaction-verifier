@@ -573,7 +573,16 @@ difference fails the gate.
   handlers ran to the end without error, else the page is
   `PAGE_FAILED`; (c) because (b) does not cover Vision returning less
   text with no error (only OCR tests run on the new OS can catch that),
-  (a)'s versions should gate whether a result counts.
+  (a)'s versions should gate whether a result counts. macOS 27 also
+  changed what Vision reads without any error: a one-character-per-line
+  stack became one sideways line, whose misread made four
+  `layout.vertical-stack-*` pattern-rule grid cases exit `1` instead of
+  `2`. The OCR view now holds a vertical line hard-finding eligible only
+  when an upright re-read confirms it (DESIGN.md, two-tier model),
+  measured on generated pages alone; (d) the 4b OCR view should
+  re-measure it on the real-world corpus's scanned pages, and (e) read a
+  scanned stack character by character (#61: with a value rule it passes
+  as clean).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -871,8 +880,15 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   code using those words will trip it. It also bans, as attributes and
   as strings, every name under which an allowed module exposes some
   other module (`dataclasses.functools`, `typing.contextlib`, `re.enum.bltns`,
-  ...), computed at test time on the running Python because the set
-  differs between versions, plus `ForwardRef._evaluate`. It is a
+  ...), plus `ForwardRef._evaluate`. That set differs between Python
+  versions (`typing.contextlib` is gone in 3.13,
+  `dataclasses.annotationlib` is new in 3.14), so the guard bans the
+  union recorded from 3.10 to 3.15 (`KNOWN_MODULE_ATTRS`) together with
+  what the running Python exposes, and a test fails when the running
+  Python exposes a name the union lacks. CI runs 3.10 and 3.12 only, so
+  a name first exposed by a newer Python is caught only once someone
+  runs the suite on it, and a name a module binds only on first use
+  (3.14's `collections.heapq`) only once something has used it. It is a
   mistake-catcher, frozen by ADR 0010: plain routes past it remain
   (issue #38) and are closed by the Phase 3b child process, which never
   receives secrets; the OS sandbox follows in 3d. Loosen it

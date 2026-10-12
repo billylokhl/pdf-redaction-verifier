@@ -270,7 +270,17 @@ flattened to images, text converted to vector outlines.
   handler has run to the end. A page Vision reads without error but
   with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
-  hard findings.
+  hard findings — except a line Vision reads vertically that an upright
+  re-read does not confirm. On macOS 27, Vision returns a column of
+  characters written one per line as a single line read sideways, often
+  misread (`199140190` for the digits 1 to 9). So a vertical line's box
+  is turned upright and read again: rotated text reads back the same, a
+  stack usually does not (a stack of `0`, `1`, `8`, `O`, `I`, `H` can
+  repeat its misread: #65). Like the Text layer's reconstructed
+  readings, a match in an unconfirmed line is only ever a manual-review
+  warning. A page gets at most 64 re-reads, retries included; vertical
+  lines past that are manual review, and so, sometimes, is small slanted
+  text near a page edge whose re-read does not match.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
@@ -579,7 +589,7 @@ and what the file stores.
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |
 | **qpdf** | External command-line tool that rewrites a PDF's reachable objects with their streams decompressed. |
-| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. |
+| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. OCR's equivalent is Vision's own reading of a vertical line no upright re-read confirms. |
 | **Regex** | A text-search pattern language. |
 | **Rendered page** | The page drawn as an image — what a viewer sees. |
 | **Sidecar** | A small companion file next to a PDF listing the secrets it contains. |
