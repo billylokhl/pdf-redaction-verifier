@@ -99,7 +99,9 @@ sweep is value secrets only, the same limit as `embedded-other.plain`.
 
 ¹¹ Every trailer dictionary is read from the file's own bytes: the
 current one, each earlier revision's (`earlier revision N, trailer`),
-and any other `trailer << ... >>` in the file (`trailer at byte N`). A
+and any other `trailer << ... >>` in the file (`trailer at byte N`); a
+dictionary with no `trailer` keyword before it, or with junk between the
+two, is unindexed bytes and not read (`unindexed.plain`). A
 cross-reference stream's dictionary (PDF 1.5+) is the trailer too, and
 is labelled as such. The Binary layer cannot stand in here: qpdf writes
 only the current trailer, with the file's first `/ID` element

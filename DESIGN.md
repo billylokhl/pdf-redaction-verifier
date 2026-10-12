@@ -167,7 +167,9 @@ revision's trailer was certified clean (K40, K41 in docs/REDESIGN.md
 §8). Trailers are now read from the file's own bytes: every trailer the
 cross-reference chain reaches (the current one, `live`; an earlier
 revision's, `superseded`; a hybrid file's `/XRefStm` stream with its
-section), then any other `trailer << ... >>` in the file (`unreferenced`;
+section), then any other `trailer << ... >>` in the file (`unreferenced`; a
+dictionary with no keyword before it, or junk between the two, is
+unindexed bytes, not read — issue #76;
 one that never closes is a warning, and so is a chain section whose
 trailer cannot be read). Comments are skipped when reading a trailer's
 strings — a `>>` or `(` inside one cannot cut the dictionary short —
