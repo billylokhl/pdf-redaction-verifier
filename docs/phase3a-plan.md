@@ -441,6 +441,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   xref_stream_raw (decrypted, unfiltered). If it fails → reopen ADR 0001 (owner).
 - 3a-9 crypt.py: per-revision decrypt via pikepdf, value-level cross-check vs MuPDF,
   DECRYPTION_MISMATCH / DECRYPTION_UNVERIFIED, /Perms mismatch → flag.
+  From 3a-7b's review: decryption depends on each revision's own /Encrypt and /ID, which
+  pages.py's reuse (the whole-result reuse when no read object changed, and page records
+  keyed on attributes as written) does not see -- 3a-9 adds the revision's encryption
+  identity to both, or flags any change of /Encrypt across revisions.
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
   — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
