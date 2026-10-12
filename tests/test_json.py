@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pymupdf as fitz
@@ -745,10 +746,30 @@ class TestQpdfGeneratedId:
     def test_anything_but_qpdfs_final_trailer_is_left_alone(self, tail) -> None:
         assert verify._without_generated_id(tail) == tail
 
-    def test_only_the_final_trailer_is_touched(self) -> None:
-        decoy = b"4 0 obj\n<< /Length 60 >>\nstream\ntrailer << /ID [<" + self.GEN + b"><" + self.GEN + b">] >>\nendstream\nendobj\n"
+    DECOY = b"d" * 28 + b"4567"                   # file-controlled, 32 hex digits
+
+    def test_only_qpdfs_own_id_is_touched(self) -> None:
+        decoy = (b"4 0 obj\n<< /Length 60 >>\nstream\ntrailer << /ID [<" + self.DECOY + b"><"
+                 + self.DECOY + b">] >> startxref 1 %%EOF\nendstream\nendobj\n")
         out = verify._without_generated_id(_QDF_HEAD + decoy + _qdf_tail(self.GEN, self.GEN))
-        assert out.count(self.GEN) == 2          # the decoy's two, inside stream data
+        assert out.count(self.DECOY) == 2 and self.GEN not in out
+
+    def test_a_files_nested_id_before_qpdfs_is_not_blanked(self) -> None:
+        # qpdf writes every other trailer key first and its own /ID last:
+        # an /ID array the file nested in the trailer comes before it and
+        # is file content (the review's repro: it used to be the one blanked).
+        tail = (_QDF_HEAD + b"trailer <<\n  /Bar << /ID [ <00> <" + self.DECOY + b"> ] >>\n"
+                b"  /ID [<" + self.GEN + b"><" + self.GEN + b">]\n>>\nstartxref\n42\n%%EOF\n")
+        out = verify._without_generated_id(tail)
+        assert self.DECOY in out and self.GEN not in out
+
+    def test_linear_on_an_adversarial_tail(self) -> None:
+        # Thousands of "/ID [" and "trailer" tokens ahead of a fake ending:
+        # every match attempt is bounded by the hex run after "/ID [<".
+        tail = (b"(trailer <<" + b"/ID[<><>]" * 7000 + b">> startxref 1 %%EOF)")[-65536:]
+        start = time.perf_counter()
+        assert verify._without_generated_id(tail) == tail
+        assert time.perf_counter() - start < 0.5
 
     @staticmethod
     def _collect(output: bytes, exit_code: int, rule: str = "45-67") -> ScanReport:
@@ -787,6 +808,36 @@ class TestQpdfGeneratedId:
         monkeypatch.setattr(verify, "QPDF_TAIL_BYTES", len(body) - split)
         report = self._collect(body, 0, rule="123-45-6789")
         assert self._binary_rules(report) == {"SHORT"}
+
+    @requires_qpdf
+    def test_real_qpdf_a_files_nested_id_is_still_swept(self, tmp_path) -> None:
+        """End to end, the review's repro: a hex string the file nests in a
+        trailer dictionary under /ID holds the secret's digits; qpdf writes
+        it before its own /ID, so it must still raise REVIEW_BINARY."""
+        objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>",
+        ]
+        body, offsets = b"%PDF-1.4\n", []
+        for number, obj in enumerate(objects, 1):
+            offsets.append(len(body))
+            body += b"%d 0 obj\n" % number + obj + b"\nendobj\n"
+        xref = len(body)
+        body += b"xref\n0 4\n0000000000 65535 f \n" + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+        body += (b"trailer\n<< /Size 4 /Root 1 0 R /Bar << /ID [<00> <123456789>] >> >>\n"
+                 b"startxref\n%d\n%%%%EOF\n" % xref)
+        pdf = tmp_path / "nested.pdf"
+        pdf.write_bytes(body)
+        qdf = subprocess.run(
+            [shutil.which("qpdf"), "--qdf", "--object-streams=disable", "--deterministic-id",
+             str(pdf), "-"], capture_output=True,
+        )
+        assert qdf.returncode == 0 and b"/Bar" in qdf.stdout   # the nested /ID reaches qpdf's output
+        rules = _rules(tmp_path / "rules.json", [{"name": "SSN", "value": SSN}])
+        code, data = _run(pdf, rules, tmp_path)
+        assert [w for w in data["warnings"] if w["code"] == "REVIEW_BINARY"], data["warnings"]
+        assert code == 2
 
     @requires_qpdf
     def test_real_qpdf_generated_id_is_not_swept(self, tmp_path) -> None:

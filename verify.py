@@ -2407,22 +2407,24 @@ def _superseded(old: fitz.Document, doc: fitz.Document, xref: int, source: str,
     return False
 
 
-# qpdf's final trailer, matched only from the last "trailer" keyword (one
-# linear pass, whatever the tail holds) to the very end of its output: the /ID
-# array (two hex strings) inside a trailer dictionary that runs straight
-# into startxref and %%EOF. Strings in this array are the only bytes
-# _without_generated_id ever blanks.
-_QPDF_FINAL_TRAILER_ID_RE = re.compile(
-    rb"trailer\s*<<(?:(?!>>\s*startxref).)*?/ID\s*\[\s*<([0-9A-Fa-f]*)>\s*<([0-9A-Fa-f]*)>\s*\]"
-    rb"(?:(?!>>\s*startxref).)*>>\s*startxref\s+\d+\s+%%EOF\s*\Z",
-    re.S,
+# qpdf's own /ID, anchored to the very end of its output. qpdf writes every
+# other trailer key first and its /ID last, straight before the closing
+# ">>", then startxref and %%EOF; its second element is always an MD5
+# digest (32 hex digits). Anchoring there, rather than at a "trailer"
+# keyword, means an /ID array the *file* put anywhere — a nested
+# dictionary in the trailer, a string, stream data — can never be the one
+# matched. Every attempt is bounded by the hex run after a "/ID [<", so a
+# search over the tail is linear.
+_QPDF_OWN_ID_RE = re.compile(
+    rb"/ID\s*\[\s*<([0-9A-Fa-f]*)>\s*<([0-9A-Fa-f]{32})>\s*\]"
+    rb"\s*>>\s*startxref\s+\d+\s+%%EOF\s*\Z"
 )
 
 
 def _without_generated_id(tail: bytes) -> bytes:
     """*tail* (the end of qpdf's QDF output) with the trailer /ID elements
-    qpdf generated itself blanked out, or *tail* unchanged when its final
-    trailer is not found exactly where qpdf writes it.
+    qpdf generated itself blanked out, or *tail* unchanged when qpdf's own
+    /ID is not found exactly where qpdf writes it.
 
     With --deterministic-id qpdf always generates the second /ID element
     (an MD5 digest of its own output) and keeps the file's own first
@@ -2432,17 +2434,15 @@ def _without_generated_id(tail: bytes) -> bytes:
     0.75% of files, a manual-review warning with nothing behind it. So:
     blank the second element always, the first only when it is that same
     generated value; a first element that came from the file is kept and
-    swept as before. Only qpdf's last trailer, anchored to the end of its
-    output, is ever touched — the caller passes only output from a qpdf
-    that exited 0, so it cannot be a truncated stream's data."""
-    start = tail.rfind(b"trailer")
-    match = _QPDF_FINAL_TRAILER_ID_RE.match(tail, start) if start >= 0 else None
+    swept as before. Only the /ID array that ends qpdf's output is ever
+    touched, and the caller passes only output from a qpdf that exited 0,
+    so it cannot be a truncated stream's data."""
+    match = _QPDF_OWN_ID_RE.search(tail)
     if match is None:
         return tail
-    first, second = match.span(1), match.span(2)
-    blank = [second]
+    blank = [match.span(2)]
     if match.group(1).lower() == match.group(2).lower():
-        blank.append(first)
+        blank.append(match.span(1))
     out = bytearray(tail)
     for start, end in blank:
         out[start:end] = b" " * (end - start)
