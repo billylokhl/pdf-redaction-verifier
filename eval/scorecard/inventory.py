@@ -191,6 +191,18 @@ OFFSET_ZERO = re.compile(
     rb" \(object \d+ \d+\): object has offset 0 - a common error handled correctly by"
     rb" qpdf and most other applications")
 
+# A page content stream's own syntax error at the stream's first byte:
+# qpdf prints no offset when it is 0 (QPDFExc::createWhat), so the line
+# reads "(content): ..." instead of NOT_STRUCTURE's "(content, offset N)"
+# -- "unexpected )", "EOF while reading token" (an unterminated string
+# from the first byte), and the rest of its content tokenizer's messages
+# (QPDFObjectHandle::parseContentStream_data). As for that form, content
+# syntax is the content decoder's (Phase 4) and the stream's raw bytes are
+# still compared. Anchored on the whole line as --check prints it (qpdf's
+# own prefix; no file path). Issue #88.
+CONTENT_AT_ZERO = re.compile(
+    rb"WARNING: page object \d+ \d+ stream \d+ \d+ \(content\): [^\r\n]+")
+
 
 def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
                undecoded: Collection[int] = ()) -> list[bytes]:
@@ -204,6 +216,8 @@ def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
         if not line.startswith((b"WARNING", b"ERROR")):
             continue
         if any(pattern in line for pattern in NOT_STRUCTURE):
+            continue
+        if CONTENT_AT_ZERO.fullmatch(line):
             continue
         rest = line[len(prefix):] if line.startswith(prefix) else None
         if rest is not None:

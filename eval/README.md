@@ -647,7 +647,10 @@ readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
 stream's data start; content decoding is Phase 4's) -- the entry for a
 reference to object 0 (`OBJECT_ZERO_REFERENCE`) went with 3a-7a, which
-flags it `REF_DANGLING`; since 3a-6c, qpdf's warning on an
+flags it `REF_DANGLING`; a page content stream's syntax error at its first byte, which qpdf prints
+with no offset, `(content): ...` (`CONTENT_AT_ZERO`, the whole line, issue
+#88; content syntax is Phase 4's as for the `(content, offset N)` form);
+since 3a-6c, qpdf's warning on an
 in-use entry at offset 0 (`OFFSET_ZERO`, tested in
 `tests/test_inventory_decisions.py`), which the inventory reads as no
 object -- the oracle drops such an entry from qpdf's map only after MuPDF
