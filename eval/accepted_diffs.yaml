@@ -194,6 +194,54 @@
     normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
   pr: '#13'
+- case: page.raw-font-coded-baseline-off-page-far
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: a value formed by a visible part and a far
+    off-page part (a column break away) on the same line is flagged for review (exit 2), never
+    a finding and never 0, at every rotation. The Text layer''s reading 9 keeps each visible
+    line whole, its off-page stretches included, and its joined text forms the SSN from ''Acct
+    123-45'' at the margin and ''6789 Job'' past the edge. The reference (eval-ref-0) never
+    read past the edge and exited 0 at /Rotate 0. On a clean page this is review-tier noise
+    by design.'
+  pr: '#68'
+- case: page.raw-font-coded-baseline-off-page-near
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: a value formed by a visible part and a far
+    off-page part (a column break away) on the same line is flagged for review (exit 2), never
+    a finding and never 0, at every rotation. The Text layer''s reading 9 keeps each visible
+    line whole, its off-page stretches included, and its joined text forms the SSN from ''Acct
+    123-45'' at the margin and ''6789 Job'' past the edge. The reference (eval-ref-0) never
+    read past the edge and exited 0 at /Rotate 0. On a clean page this is review-tier noise
+    by design.'
+  pr: '#68'
 - case: page.raw-font-coded-runs-off-overhanging-crop
   old:
     exit: 0
