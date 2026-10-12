@@ -40,7 +40,7 @@ from enum import IntEnum
 from typing import Final
 
 from ..budget import Budget
-from ..ledger import Flag, FlagReason, UnitRef
+from ..ledger import Flag, FlagReason, UnitKind, UnitRef
 from .graph import Body
 from .objects import PdfArray, PdfDict, PdfInt, PdfName, PdfNull, PdfReal, PdfRef, PdfValue
 
@@ -76,8 +76,9 @@ PAGE_RECORD_WORK: Final = 1024
 class Attribute:
     """An inherited attribute as found: its value as written (a reference
     or a direct value), the bytes it indexes, the object holding it, and
-    its written bytes' identity (equal bytes, equal number: the same
-    reading, whichever parse of them was read)."""
+    its written bytes' identity in place (equal bytes, from a holder of the
+    same generation read from the same kind of place -- file or object
+    stream, as decryption keys on them -- read alike, whichever parse)."""
 
     value: PdfValue
     text: bytes
@@ -111,7 +112,9 @@ def build_pages(revisions: int, changes: list[list[int]],
     # with the pages that change, not revisions x pages.
     kept: dict[tuple[object, ...], Page] = {}
     made: set[tuple[int, int]] = set()  # pages with a record already
-    written: dict[bytes, int] = {}  # each attribute's bytes as written, interned
+    # Each attribute as written -- its bytes, its holder's generation and
+    # whether it is read from the file or an object stream -- interned.
+    written: dict[tuple[bytes, int, UnitKind], int] = {}
     for revision in reversed(range(revisions)):
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
@@ -207,7 +210,7 @@ class _Walk:
     def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
                  home_of: Callable[[int, int], int | None], budget: Budget,
                  kept: dict[tuple[object, ...], Page], made: set[tuple[int, int]],
-                 written: dict[bytes, int]) -> None:
+                 written: dict[tuple[bytes, int, UnitKind], int]) -> None:
         self.revision, self.body_of, self.home_of, self.budget = (
             revision, body_of, home_of, budget)
         self.kept, self.made, self.written = kept, made, written
@@ -284,7 +287,11 @@ class _Walk:
                     written = text[found.start:found.end]
                     if not self.charge(len(written) + 1):
                         return None
-                    content = self.written.setdefault(written, len(self.written))
+                    # Equal bytes read alike only in the same place: an
+                    # encrypted file's strings are decrypted by the holder's
+                    # number and generation, and only outside object streams.
+                    where = (written, gen, body[0].kind)
+                    content = self.written.setdefault(where, len(self.written))
                     here[key] = Attribute(found, text, number, content)
             if kids is not None:  # a /Pages node
                 if not isinstance(kids, PdfArray) or not _name_is(kind, b"Pages"):

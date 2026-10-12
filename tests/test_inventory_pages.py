@@ -370,3 +370,24 @@ def test_rewriting_an_ancestor_whose_attributes_read_the_same_keeps_every_page()
     inv = _inventory(data)
     assert inv.flags == ()
     assert len({id(p) for pages in inv.pages if pages for p in pages}) == 1000
+
+
+def test_equal_attribute_bytes_in_another_place_make_a_new_record() -> None:
+    # Review: under encryption equal bytes read differently in an object
+    # stream (plaintext) than in the file, or at another generation (the
+    # key decrypts them). Moving the attribute-holding root into an object
+    # stream with identical bytes makes each page's record again.
+    w = Writer()
+    root = b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 9 9] /Resources << >> >>"
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, CATALOG), 0)
+    table[2] = (1, w.obj(2, root), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R >>"), 0)
+    first = w.xref_stream(4, table, b"/Size 5 /Root 1 0 R")
+    w.epilogue(first)
+    newer = {5: (1, w.objstm(5, [(2, root)]), 0), 2: (2, 5, 0)}
+    w.epilogue(w.xref_stream(6, newer, b"/Size 7 /Root 1 0 R /Prev %d" % first))
+    inv = _inventory(bytes(w.out))
+    assert inv.flags == ()
+    old, new = inv.pages[1], inv.pages[0]
+    assert old is not None and new is not None and old[0] is not new[0]
