@@ -210,6 +210,41 @@ def test_the_allowlist_matches_whole_lines_on_the_exact_path(tmp_path: Path) -> 
     entry = b"WARNING: %s: object 5/0 has unexpected xref entry type" % str(path).encode()
     assert structural([entry], path)  # gated like any message (#44)
     assert structural([b"ERROR: %s: an error" % str(path).encode()], path)
+    eof = b"WARNING: page object 3 0 stream 4 0 (content): EOF while reading token"
+    assert structural([eof], path) == []                       # #88: content syntax
+    assert structural([eof.replace(b"WARNING: page", b"WARNING: x page")], path)  # anchored
+    assert structural([eof.replace(b"(content)", b"(object)")], path)
+    array = eof.replace(b"stream 4 0", b"stream 4 0, stream 5 0")  # /Contents an array
+    assert structural([array], path) == []
+    decode = (b"ERROR: page 1: content stream (content stream object 4 0): errors while"
+              b" decoding content stream")
+    assert structural([decode], path)                          # a decode error stays gated
+
+
+@requires_qpdf
+@pytest.mark.parametrize("first", [b"(", b")", b"}", b"]", b">"])
+def test_a_content_syntax_error_at_the_first_byte_is_phase_4s(
+        tmp_path: Path, first: bytes) -> None:
+    # Issue #88, found by the dev-profile fuzz: `BT` mutated to `(T` or `)T`.
+    # qpdf prints such an error at offset 0 with no offset. Content syntax
+    # is the content decoder's (Phase 4); all the inventory owns agrees.
+    data = _file(page=b" /Resources << >>", content=first + b"T (page 0) Tj ET")
+    assert oracle.inventory(data).flags == ()
+    assert compare(data, tmp_path).agrees
+    # The same error in the first of two content streams (/Contents an array).
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
+                          b" /Resources << >> /Contents [4 0 R 5 0 R] >>"), 0)
+    table[4] = (1, w.stream(4, b"", first + b"T (page 0) Tj ET"), 0)
+    table[5] = (1, w.stream(5, b"", b"BT ET"), 0)
+    w.epilogue(w.table(table, b"/Size 6 /Root 1 0 R"))
+    data = bytes(w.out)
+    assert oracle.inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees, found
 
 
 def _linearized(tmp_path: Path, objstm: bool) -> bytes:
