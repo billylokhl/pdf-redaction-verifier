@@ -118,7 +118,7 @@ chain reaches but this tool cannot parse is a warning (exit `2`).
 
 ¹² Vision can report success and return fewer lines than the page holds.
 On macOS 27, a scanned page of 40 lines of 8 pt text turned 90° comes
-back without ten of them, the SSN's line among them
+back without eight of them (14–21), the SSN's line among them
 (`page.dense-sideways-scan`, [#67](https://github.com/billylokhl/pdf-redaction-verifier/issues/67)); with 20 or 30 lines it is read
 whole. A page with any line read vertically is now also read turned 90°
 and 270°, which finds such lines, but only as manual review (exit `2`):

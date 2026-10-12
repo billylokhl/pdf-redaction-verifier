@@ -359,8 +359,8 @@ def _extra_readings(
 
     - The page turned 90 and 270 degrees, its lines read horizontally
       there. On macOS 27 Vision reads sideways text in a page image only
-      in part (30 of 40 sideways lines; at 200 or 400 dpi, none) and
-      turned upright reads it whole (#67). Turning also makes a
+      in part (a dense page of 40 sideways lines lost 14-21; at 200 or
+      400 dpi it read none) and turned upright reads it whole (#67). Turning also makes a
       one-character-per-line stack a row of sideways glyphs, which
       Vision misreads as a number (13 of 48 stack pages matched the SSN
       pattern), so this reading is never hard.

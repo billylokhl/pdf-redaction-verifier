@@ -693,11 +693,12 @@ own machine (`sha256sum`) when a number needs explaining.
   - `page.scan-image-sideways-90` and `-270`, `requires: ocr`: an SSN
     that exists only as a turned image must stay a hard OCR finding. CI
     guards this side on every PR.
-  - Two OCR cases on scanned pages, `layout.scanned-vertical-stack`
-    (K42, fixed) and the known gap `page.dense-sideways-scan` (K43)
-    (`families/ocr_misses.py`), pin what Vision on macOS 27 returns;
-    `full-macos` runs them on macOS 26 too, and fails if Vision there
-    reads those pages differently.
+
+  Separately, two OCR cases on scanned pages, `layout.scanned-vertical-stack`
+  (K42, fixed) and the known gap `page.dense-sideways-scan` (K43)
+  (`families/ocr_misses.py`), pin what Vision on macOS 27 returns. They
+  are not grid cases, so `full-macos` runs them on macOS 26 too, and
+  fails if Vision there reads those pages differently.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

@@ -390,9 +390,9 @@ one from a genuine sideways scan.
 A page with any line read vertically gets two more reconstructed
 readings, so whatever Vision misses there is at least manual review.
 The page is read again turned 90° and 270°: on macOS 27 Vision reads
-sideways text in a page image only in part (30 of a dense page's 40
-lines; the same page at 200 or 400 dpi, none) and reads it whole turned
-upright (#67). Turning also makes a one-character-per-line stack a row
+sideways text in a page image only in part (a dense page of 40 lines
+lost 14–21; the same page at 200 or 400 dpi, none) and reads it whole
+turned upright (#67). Turning also makes a one-character-per-line stack a row
 of sideways glyphs, which Vision misread as a number in 13 of 48 stack
 pages, so a turned reading is never hard. And each vertical line no
 re-read confirmed is unstacked: the runs of inked pixel rows in its box

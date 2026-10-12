@@ -462,6 +462,15 @@ class TestOcrVerticalLines:
         confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), fail)
         assert confirmed == [[False, True], []]
 
+    def test_a_mupdf_error_in_a_re_read_leaves_the_line_unconfirmed(
+        self, monkeypatch
+    ) -> None:
+        def refuse(call: int) -> tuple[list[str], list[str]]:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), refuse)
+        assert confirmed == [[False, True], []]
+
     def test_a_bug_in_a_re_read_is_not_swallowed(self, monkeypatch) -> None:
         def bug(call: int) -> tuple[list[str], list[str]]:
             raise AttributeError("no such method")
@@ -699,6 +708,40 @@ class TestOcrExtraReadings:
             assert ocr._unstack(image, image.rect.irect) is None
         finally:
             doc.close()
+
+    def test_a_hyphen_among_digits_is_still_a_stack(self) -> None:
+        # A hyphen is a short run of ink; the median run decides, so a
+        # value with separators is not taken for a photo among rules.
+        doc, image = _stack_image("123-45-6789")
+        try:
+            assert ocr._unstack(image, image.rect.irect) is not None
+        finally:
+            doc.close()
+
+    def test_a_mupdf_error_in_a_turned_reading_loses_only_it(self, monkeypatch) -> None:
+        def refuse(png: bytes) -> Any:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", refuse)
+        monkeypatch.setattr(ocr, "_unstack", lambda image, box: None)
+        assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
+
+    def test_a_bug_in_a_turned_reading_fails_the_page(self, monkeypatch) -> None:
+        def bug(png: bytes) -> Any:
+            raise AttributeError("no such method")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", bug)
+        with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
+            ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
+
+    def test_a_bug_in_an_extra_reading_fails_the_page(self, monkeypatch) -> None:
+        def bug(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap:
+            raise AttributeError("no such method")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: ([], []))
+        monkeypatch.setattr(ocr, "_unstack", bug)
+        with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
+            ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
 
     def test_fewer_than_three_rows_of_ink_is_no_stack(self) -> None:
         doc, image = _stack_image("12")
