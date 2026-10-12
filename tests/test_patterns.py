@@ -24,6 +24,7 @@ from redaction_verifier.matching import (
 )
 from redaction_verifier.model import ScanReport, Secret, VerifyError
 from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS, load_rules
+from redaction_verifier.views import OCR_GENUINE_READINGS
 
 from .conftest import (
     report_layers,
@@ -334,7 +335,7 @@ class TestTiering:
                 doc, SecretMatcher([Secret("unused", "zzzz")]), report,
                 layer="OCR",
                 extractor=lambda page: ["SSN: I23-45-6789", f"SSN: {VALID_SSN}"],
-                note="test", patterns=patterns, hard_variants=2,
+                note="test", patterns=patterns, hard_variants=OCR_GENUINE_READINGS,
             )
             assert [f.secret_name for f in report.findings] == ["ssn"]
         finally:

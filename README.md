@@ -200,7 +200,12 @@ in this project's real-document case.
   attachment, object stream or cross-reference stream, or when under 85%
   of their first 64 KB is printable; so an inline image making up more
   than about 15% of a content stream also hides the text around it. Every
-  dictionary is always scanned. References are followed from the file's
+  object's dictionary is always scanned, and so is every trailer
+  dictionary — the document `/ID` and any other key, in the current
+  trailer and every earlier revision's — which is not an object (a
+  pattern-rule match in a `/ID` element written as nothing but hex
+  digits is manual review: such generated identifiers hold digit runs by
+  coincidence). References are followed from the file's
   root; any object not reached is reported **ORPHANED** — left behind, not
   displayed.
 - **Leftover content:** orphaned objects, and every object an incremental
@@ -265,7 +270,17 @@ flattened to images, text converted to vector outlines.
   handler has run to the end. A page Vision reads without error but
   with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
-  hard findings.
+  hard findings — except a line Vision reads vertically that an upright
+  re-read does not confirm. On macOS 27, Vision returns a column of
+  characters written one per line as a single line read sideways, often
+  misread (`199140190` for the digits 1 to 9). So a vertical line's box
+  is turned upright and read again: rotated text reads back the same, a
+  stack usually does not (a stack of `0`, `1`, `8`, `O`, `I`, `H` can
+  repeat its misread: #65). Like the Text layer's reconstructed
+  readings, a match in an unconfirmed line is only ever a manual-review
+  warning. A page gets at most 64 re-reads, retries included; vertical
+  lines past that are manual review, and so, sometimes, is small slanted
+  text near a page edge whose re-read does not match.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
@@ -276,8 +291,8 @@ flattened to images, text converted to vector outlines.
 A cross-check using a second PDF parser: qpdf can recover objects from a
 damaged cross-reference table, and it decompresses attachment contents.
 
-- **Method:** `qpdf --qdf --object-streams=disable` rewrites the objects
-  reachable from the file's root, decompressing their streams (image
+- **Method:** qpdf (`qpdf --qdf --object-streams=disable
+  --deterministic-id`) rewrites the objects reachable from the file's root, decompressing their streams (image
   codecs such as JPEG stay encoded); the output is streamed through the
   same normalized substring search, for value secrets only. Regex patterns
   are not run here — raw bytes produce too many coincidental matches.
@@ -346,7 +361,9 @@ assembled as a hard finding at a page seam (a page number followed by the
 next page's first line); a value assembled down a vertical column or
 through several page-number-only pages is only ever manual review; and
 decompressed font tables can raise coincidental Binary warnings (see
-Binary). Prefer longer, more specific values.
+Binary); a document `/ID` written as hex text whose digits happen to
+form an SSN, card or phone number is manual review under a pattern
+rule. Prefer longer, more specific values.
 
 A rewrite that closes these gaps by accounting for every byte of the
 file, rather than searching the places this tool knows about, is planned
@@ -478,8 +495,9 @@ evaluation harness — `eval/caselib`, `eval/scorecard`, `eval/gallery`,
 coverage on the Linux Python 3.12 job; the commands above run the same
 checks locally. Property tests use Hypothesis: with `CI` set (as on
 GitHub Actions) they run the derandomized `ci` profile, locally the `dev`
-profile explores fresh examples each run; `HYPOTHESIS_PROFILE=ci`
-reproduces CI exactly. Two suites go further and test robustness directly:
+profile explores fresh examples each run and replays any failure it
+found from `.hypothesis/` until it passes (each one root-caused, then
+pinned as an explicit test); `HYPOTHESIS_PROFILE=ci` reproduces CI exactly. Two suites go further and test robustness directly:
 
 - **`test_case_library.py`** judges every case in the case library
   ([eval/README.md](eval/README.md)): generated PDFs, each with the
@@ -505,7 +523,9 @@ certified → leak) must be listed under **Verdict changes** in
 The **scorecard** (`PYTHONPATH=eval:. python -m scorecard diff`) runs
 this same case library through the real CLI as a subprocess and diffs it
 against a pinned reference version, so every intended verdict change is
-reviewed explicitly in `eval/accepted_diffs.yaml` — see
+reviewed explicitly in `eval/accepted_diffs.yaml`. It runs one scan per
+usable core by default (fewer if RAM is short), so its per-file timeout
+measures the file rather than contention — see
 [eval/README.md](eval/README.md#the-scorecard-scorecard).
 
 The **gallery** (`PYTHONPATH=eval:. python -m gallery build --out DIR`) is
@@ -573,7 +593,7 @@ and what the file stores.
 | **PyMuPDF** | Python library for reading and rendering PDFs; most layers use it. |
 | **PyObjC** | Bridge that lets Python call macOS frameworks such as Apple Vision. |
 | **qpdf** | External command-line tool that rewrites a PDF's reachable objects with their streams decompressed. |
-| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. |
+| **Reconstructed reading** | Every glyph stacked into vertical columns — catches a value written one character per line, but its matches are only ever manual review. OCR's equivalent is Vision's own reading of a vertical line no upright re-read confirms. |
 | **Regex** | A text-search pattern language. |
 | **Rendered page** | The page drawn as an image — what a viewer sees. |
 | **Sidecar** | A small companion file next to a PDF listing the secrets it contains. |

@@ -18,22 +18,102 @@ reference entirely on a cache hit, at the case-id granularity).
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .accepted import AcceptedDiff, find_accepted, load_accepted_diffs
 from .keys import NormalizedKey, effective_exit, normalize
 from .metrics import CaseMetricRow
 from .refs import REFERENCE_REF, candidate_verify_path, repo_root, resolve_commit, worktree_for_ref
-from .runner import CliResult, current_python, run_cli
+from .runner import CliResult, current_python, error_code, run_cli
 
 DEFAULT_TIMEOUT = 60.0
+
+
+@contextlib.contextmanager
+def deterministic_qpdf_env() -> Iterator[dict[str, str] | None]:
+    """An environment for the *reference* CLI whose `qpdf` always gets
+    `--deterministic-id`, or None (inherit) when qpdf is not installed.
+
+    The reference (`eval-ref-0`) predates that flag, so its qpdf writes a
+    trailer /ID seeded by the current second into the output its Binary
+    layer sweeps, and a short all-hex value rule (the case library's
+    SHORT, "45-67") matched it about once in 2,000 scans — a warning that
+    came and went with the clock, failing the differential at random.
+    The candidate passes the flag itself. This shim, first on PATH (the
+    reference launches a bare `qpdf`), removes that one clock input from
+    the reference and changes nothing else; it is the owner's chosen fix
+    over re-tagging the reference (docs/REDESIGN.md §7, Phase 0c). The
+    shim is a POSIX shell script, like the rest of the tool's tooling."""
+    real = shutil.which("qpdf")
+    if real is None:
+        yield None
+        return
+    real = os.path.abspath(real)
+    with tempfile.TemporaryDirectory(prefix="scorecard-qpdf-") as shim_dir:
+        shim = Path(shim_dir) / "qpdf"
+        shim.write_text(f'#!/bin/sh\nexec {shlex.quote(real)} --deterministic-id "$@"\n')
+        shim.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = shim_dir + os.pathsep + env.get("PATH", os.defpath)
+        yield env
+
+
+# Memory to budget per concurrent scan. One CLI scan peaks at 0.3-0.5 GB
+# RSS (OCR rasterizes each page at 300 dpi); 1 GiB leaves room for the
+# rest of the machine.
+SCAN_MEMORY_BYTES = 1 << 30
+
+
+def _usable_cores() -> int:
+    """Cores this process may run on: its CPU-affinity mask (which a
+    cgroup cpuset narrows) where Python exposes one, else the machine's
+    count. A cgroup CPU *quota* (`docker --cpus`) is not seen."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)  # Python 3.13+
+    if process_cpu_count is not None:
+        return process_cpu_count() or 1
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)  # Linux
+    if sched_getaffinity is not None:
+        return len(sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def _physical_memory() -> int | None:
+    """Total physical RAM in bytes, or None if unknown. Not a container's
+    memory limit."""
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+    return total if total > 0 else None  # sysconf returns -1 when indeterminate
+
+
+def default_workers() -> int:
+    """Parallel CLI subprocesses when `--workers` is not given: one per
+    usable core, and no more than `SCAN_MEMORY_BYTES` of RAM each allows.
+
+    `DEFAULT_TIMEOUT` is a wall-clock limit per file, so it only measures
+    a file's own runtime while every scan has a core, and the memory it
+    needs, to itself. This used to be `cpu_count() * 4`: on the weekly
+    macOS runner (3 cores, 7 GB, OCR on the CPU at ~1-2 s a page) that
+    meant twelve concurrent scans of 0.3-0.5 GB each, which pushed the
+    VM into memory compression and swap on top of the CPU contention.
+    Four-page cases that take ~9 s alone took 45-68 s, eight cases passed
+    60 s, and a pass over the library took 11.4 min instead of 6.7."""
+    cores = _usable_cores()
+    memory = _physical_memory()
+    if memory is None:
+        return cores
+    return max(1, min(cores, memory // SCAN_MEMORY_BYTES))
 
 
 @dataclass(frozen=True)
@@ -349,7 +429,7 @@ def run_differential(
     cases = select_cases(case_ids, have=have)
     out_dir.mkdir(parents=True, exist_ok=True)
     python_exe = current_python()
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
 
     pdfs = {case.id: build_case(case, out_dir / f"{case.id}.pdf") for case in cases}
     input_hashes = {
@@ -365,20 +445,23 @@ def run_differential(
     reference_runs: dict[str, CaseRun] = dict(cached)
     missing = [case for case in cases if case.id not in reference_runs]
     if missing:
-        with worktree_for_ref(reference_ref, root=root) as reference_verify:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(
-                        run_cli, python_exe, reference_verify, pdfs[case.id], case.rules,
-                        out_dir / "reference", case.id, timeout=timeout,
-                    ): case
-                    for case in missing
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    case = futures[future]
-                    reference_runs[case.id] = CaseRun.from_result(
-                        case.id, future.result(), have=filter_have
-                    )
+        with (
+            worktree_for_ref(reference_ref, root=root) as reference_verify,
+            deterministic_qpdf_env() as reference_env,
+            concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool,
+        ):
+            futures = {
+                pool.submit(
+                    run_cli, python_exe, reference_verify, pdfs[case.id], case.rules,
+                    out_dir / "reference", case.id, timeout=timeout, env=reference_env,
+                ): case
+                for case in missing
+            }
+            for future in concurrent.futures.as_completed(futures):
+                case = futures[future]
+                reference_runs[case.id] = CaseRun.from_result(
+                    case.id, future.result(), have=filter_have
+                )
         if cache_dir is not None and cache_key is not None:
             save_reference_cache(cache_dir, cache_key, reference_runs, input_hashes)
 
@@ -486,6 +569,7 @@ def to_metric_row(
         crashed=result.crashed,
         timed_out=result.timed_out,
         elapsed=result.elapsed,
+        error_code=error_code(result),
     )
 
 
@@ -509,7 +593,7 @@ def run_candidate(
     candidate_verify = candidate_verify_path(root)
 
     rows: list[CaseMetricRow] = []
-    workers = max_workers or min(32, (os.cpu_count() or 4) * 4)
+    workers = max_workers or default_workers()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for case in cases:

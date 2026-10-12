@@ -87,6 +87,7 @@ WARNING_CODES: dict[str, str] = {
     "TOOL_OUTPUT_MALFORMED": "coverage",
     "XMP_UNREADABLE": "coverage",
     "XREF_UNREADABLE": "coverage",
+    "TRAILER_UNREADABLE": "coverage",
     "OBJECT_UNREADABLE": "coverage",
     "UNTERMINATED_STRING": "coverage",
     "LEFTOVER_UNDECODABLE_TEXT": "coverage",

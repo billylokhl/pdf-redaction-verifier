@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pymupdf as fitz
@@ -684,6 +685,9 @@ class TestSubprocessHardening:
             qpdf_argv, qpdf_env, qpdf_cwd = captured["/opt/tools/qpdf"]
             assert qpdf_argv[-2:] == [str(target.resolve()), "-"]
             assert qpdf_argv[-2].startswith("/")
+            # The output's trailer /ID must come from the file, not the
+            # clock (see test_qpdf_output_does_not_depend_on_the_clock).
+            assert "--deterministic-id" in qpdf_argv[1:-2]
 
             for env in (exif_env, qpdf_env):
                 assert set(env) <= {"PATH", "LANG", "LC_ALL"}
@@ -741,30 +745,40 @@ class TestSubprocessHardening:
         finally:
             scratch.cleanup()
 
-    def test_qpdf_writes_a_deterministic_document_id(self, monkeypatch) -> None:
-        # By default qpdf derives the /ID it writes from the current time,
-        # so the Binary layer would scan different bytes on every run (see
-        # tests/test_objects.py::TestQpdfGeneratedId).
-        monkeypatch.setattr(verify.shutil, "which", lambda name: f"/opt/tools/{name}")
-        captured: dict[str, list[str]] = {}
+    @requires_qpdf
+    def test_qpdf_output_does_not_depend_on_the_clock(self, tmp_path) -> None:
+        """The Binary layer sweeps qpdf's output, so it must be a function
+        of the file alone. Without --deterministic-id qpdf writes a trailer
+        /ID seeded by the current second, and a short all-hex value rule
+        matched it about once in 2,000 runs (a clean file then exited 2,
+        at random). Two runs in different seconds must agree byte for
+        byte."""
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing sensitive here")
+        doc.save(pdf, no_new_id=True)   # no /ID of its own: qpdf writes both
+        doc.close()
 
-        class _FakeProc:
-            def poll(self):
-                return None
+        def qpdf_output() -> bytes:
+            procs, scratch = verify.start_hidden_tools(pdf, ScanReport())
+            try:
+                for name, proc in procs.items():
+                    if name != "qpdf" and proc is not None:
+                        proc.kill()
+                        proc.communicate()
+                proc = procs["qpdf"]
+                assert proc is not None
+                out, _ = proc.communicate(timeout=60)
+                assert proc.returncode == 0
+                return out
+            finally:
+                scratch.cleanup()
 
-        def _fake_popen(argv, stdout=None, stderr=None, env=None, cwd=None):
-            captured[argv[0]] = list(argv)
-            return _FakeProc()
-
-        monkeypatch.setattr(verify.subprocess, "Popen", _fake_popen)
-        report = ScanReport()
-        procs, scratch = verify.start_hidden_tools(Path("/nonexistent/target.pdf"), report)
-        try:
-            argv = captured["/opt/tools/qpdf"]
-            assert "--deterministic-id" in argv
-            assert argv.index("--deterministic-id") < argv.index("/nonexistent/target.pdf")
-        finally:
-            scratch.cleanup()
+        first = qpdf_output()
+        second = int(time.time())
+        while int(time.time()) == second:
+            time.sleep(0.05)
+        assert qpdf_output() == first
 
     @requires_qpdf
     def test_dash_prefixed_target_is_scanned_not_parsed_as_an_option(
