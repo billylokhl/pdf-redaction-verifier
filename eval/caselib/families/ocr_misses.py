@@ -115,7 +115,7 @@ def _dense_sideways_page(page: fitz.Page) -> None:
     "page.dense-sideways-scan", truth="leak", cells="live.pixels.ocr-dropped-line",
     story="K43. A scanned page of 40 lines of 8 pt text turned 90 degrees, 10.4 pt apart, the "
           "middle one holding the SSN whole, searched with the SSN pattern rule. Vision on "
-          "macOS 27 reports success but returns 36 lines and leaves out lines 14 to 21, the "
+          "macOS 27 reports success but returns 36 lines covering 30 of them and leaves out 10 (11 and 13 to 21), the "
           "SSN's among them; nothing compares what Vision read with the ink on the page, so "
           "the run certified the page clean (exit 0, no warnings). OCR now also reads a page "
           "with any vertical line turned 90 and 270 degrees, which finds the SSN's line; a "

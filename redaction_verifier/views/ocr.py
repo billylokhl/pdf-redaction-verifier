@@ -69,6 +69,11 @@ REREAD_PADS = (1.0, 3.0)
 # (_extra_readings), at most this many per page; past that, a line is
 # still in the raw readings.
 MAX_UNSTACKS = 16
+# An unstacked strip larger than this many pixels is not read: a column
+# of glyphs is small (nine 11 pt digits at 300 dpi: under 0.05 Mpx), and
+# MuPDF refuses an overly large image (a box holding a photo and many
+# thin rules, say).
+MAX_UNSTACK_PIXELS = 4_000_000
 
 try:
     import Vision
@@ -99,6 +104,13 @@ class Observation:
     top_left: tuple[float, float]
     top_right: tuple[float, float]
     bottom_left: tuple[float, float]
+
+
+# What a re-read, a turned reading or an unstacked line may raise without
+# failing the page: Vision's own failure (_vision_recognize_batch raises
+# RuntimeError) and MuPDF's (its errors subclass FzErrorBase, not
+# RuntimeError). Anything else is a bug and fails the page (PAGE_FAILED).
+_READ_FAILURES: tuple[type[BaseException], ...] = (RuntimeError, fitz.mupdf.FzErrorBase)
 
 
 def _vision_recognize_batch(
@@ -281,12 +293,9 @@ def _confirm_vertical(
                     image.insert_image(image.rect, stream=png_bytes)
                 try:
                     reads = _upright_reads(image, fitz.IRect(*corners))
-                except RuntimeError:
-                    # A re-read that fails (Vision: _vision_recognize_batch
-                    # raises RuntimeError; MuPDF's errors subclass it too)
-                    # confirms nothing: its lines stay manual review, and the
-                    # page's other lines still count. Any other exception,
-                    # such as a bug, fails the page (PAGE_FAILED).
+                except _READ_FAILURES:
+                    # A re-read that fails confirms nothing: its lines stay
+                    # manual review, and the page's other lines still count.
                     continue
                 for p, i in members:
                     text = normalize_string(passes[p][i].text)
@@ -316,10 +325,16 @@ def _unstack(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap | None:
             start = None
     if len(runs) < 3:
         return None
+    heights = sorted(bottom - top for top, bottom in runs)
+    tallest = heights[-1]
+    if tallest > 3 * heights[len(heights) // 2]:
+        return None     # one run far taller than the rest: not a column of glyphs
     columns = [x for x in range(width) if min(samples[x::width]) < 128]
     left, right = columns[0], columns[-1] + 1
-    tallest = max(bottom - top for top, bottom in runs)
     gap, margin = max(2, tallest // 6), tallest // 2
+    if ((right - left + gap) * len(runs) + 2 * margin) * (tallest + 2 * margin) \
+            > MAX_UNSTACK_PIXELS:
+        return None
     strip = fitz.Pixmap(fitz.csGRAY, fitz.IRect(
         0, 0, (right - left) * len(runs) + gap * (len(runs) - 1) + 2 * margin,
         tallest + 2 * margin), False)
@@ -361,11 +376,11 @@ def _extra_readings(
         image = doc.new_page(width=width, height=height)   # one point per pixel
         image.insert_image(image.rect, stream=png_bytes)
         for degrees in (90, 270):
-            pix = image.get_pixmap(matrix=fitz.Matrix(1, 1).prerotate(degrees),
-                                   colorspace=fitz.csGRAY)
             try:
+                pix = image.get_pixmap(matrix=fitz.Matrix(1, 1).prerotate(degrees),
+                                       colorspace=fitz.csGRAY)
                 turned = _vision_recognize_batch(pix.tobytes("png"))
-            except RuntimeError:   # as for a re-read: nothing gained, nothing lost
+            except _READ_FAILURES:   # as for a re-read: nothing gained, nothing lost
                 continue
             for read, observations in zip(lines, turned):
                 read.extend(o.text for o in observations
@@ -377,12 +392,12 @@ def _extra_readings(
                     box = _box(observation, width, height, REREAD_PADS[0])
                     boxes.setdefault((box.x0, box.y0, box.x1, box.y1), set()).add(p)
         for corners, members in list(boxes.items())[:MAX_UNSTACKS]:
-            strip = _unstack(image, fitz.IRect(*corners))
-            if strip is None:
-                continue
             try:
+                strip = _unstack(image, fitz.IRect(*corners))
+                if strip is None:
+                    continue
                 reads = _vision_recognize_batch(strip.tobytes("png"))
-            except RuntimeError:
+            except _READ_FAILURES:
                 continue
             for p in members:
                 lines[p].extend(o.text for o in reads[p])

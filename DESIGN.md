@@ -393,7 +393,10 @@ re-read confirmed is unstacked: the runs of inked pixel rows in its box
 are laid out left to right as one line and read (#61). In a stack
 Vision reports as a line, that reads the value as written (21 of 23
 generated stacks); in 25 of 48 stack pages Vision reported no vertical
-line at all, and those are not read (#81).
+line at all, and those are not read (#81). The cost is noise on some
+clean scans: turned, a column of repeated digits reads as a row, so a
+questionnaire with sideways headers and answer columns of 1–5 matched
+the phone pattern (manual review; 1 of 14 generated clean scans moved).
 
 ## Bounded resources
 
@@ -414,7 +417,10 @@ are squares around whole lines, about a minute, instead of under half a
 second (measured on macOS 27), so a long sideways scan is slow, not
 unbounded.
 A page with a vertical line also costs two Vision calls on the whole
-page turned, and up to 16 on unstacked lines (the #67 page: about 11 s).
+page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
+the #67 page about 0.3 s more than before, of about 5 s). The worst
+case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
+16 unstacked.
 Vision calls themselves have no deadline (as before the re-reads).
 
 The subprocesses themselves are launched defensively, not just bounded:

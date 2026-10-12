@@ -670,6 +670,36 @@ class TestOcrExtraReadings:
         glyphs = sum(1 for x in range(width) if inked[x] and (x == 0 or not inked[x - 1]))
         assert glyphs == 9   # nine digits, side by side
 
+    def test_a_mupdf_error_in_an_unstack_loses_only_that_read(self, monkeypatch) -> None:
+        # MuPDF's errors are not RuntimeErrors: one escaping would fail the
+        # page and drop its genuine hard findings.
+        def refuse(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        monkeypatch.setattr(ocr, "_unstack", refuse)
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: ([], []))
+        assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
+
+    def test_a_tall_run_among_thin_ones_is_no_stack(self) -> None:
+        # A photo-like block and thin rules: laid out, a strip MuPDF may refuse.
+        doc = fitz.open()
+        image = doc.new_page(width=200, height=900)
+        image.draw_rect(fitz.Rect(20, 20, 180, 420), color=(0, 0, 0), fill=(0, 0, 0))
+        for y in range(450, 890, 40):
+            image.draw_line(fitz.Point(20, y), fitz.Point(180, y), width=2)
+        try:
+            assert ocr._unstack(image, image.rect.irect) is None
+        finally:
+            doc.close()
+
+    def test_an_oversized_strip_is_not_built(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "MAX_UNSTACK_PIXELS", 100)
+        doc, image = _stack_image()
+        try:
+            assert ocr._unstack(image, image.rect.irect) is None
+        finally:
+            doc.close()
+
     def test_fewer_than_three_rows_of_ink_is_no_stack(self) -> None:
         doc, image = _stack_image("12")
         try:
