@@ -983,7 +983,8 @@ def test_load_manifest_refuses_an_unknown_probe_without_naming_the_path(tmp_path
 
 
 @pytest.mark.parametrize("probe, text_bearing", [("ok", None), ("password", True),
-                                                 ("unreadable", False)])
+                                                 ("unreadable", False), ("ok", "false"),
+                                                 ("ok", 1)])
 def test_load_manifest_refuses_a_probe_inconsistent_with_text_bearing(
     tmp_path, probe, text_bearing
 ):
@@ -1470,6 +1471,10 @@ def _corpus_result(outcome):
         (["PDF_UNREADABLE"], (), (), 1, ["(ok; CLI error PDF_UNREADABLE)"], "ok"),
         # Scanned, but its text stratum is unknown: never placeable.
         (["ok"], (), (), 1, ["(text-unreadable; CLI error none)"], "text-unreadable"),
+        # A crash or run-level error is listed once, by the unmeasured check,
+        # not again as a probe mismatch.
+        (["crash"], (), (), 1, ["crashed    " + "ab" * 8], "password"),
+        (["INTERNAL_ERROR"], (), (), 1, ["(INTERNAL_ERROR)"], "unreadable"),
         ([], (), (), 1, ["disappeared during the run", "zero files measured"], "ok"),
     ],
 )
@@ -1509,6 +1514,8 @@ def test_corpus_run_exits_nonzero_on_drift_or_unmeasured_file(
     err = capsys.readouterr().err
     for text in mentions:
         assert text in err
+    if scan in (["crash"], ["INTERNAL_ERROR"]):
+        assert "  probe  " not in err
     # The new summary lines never carry the file's path (the MISSING/
     # CHANGED lines, which name what to fix in the manifest, are separate).
     summary = [line for line in err.splitlines() if not line.startswith(("MISSING", "CHANGED"))]

@@ -189,6 +189,10 @@ def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
         if entry.probe not in PROBE_OUTCOMES:
             raise SystemExit(f"manifest entry {entry.sha256[:16]} has an unknown probe "
                              f"{entry.probe!r}: rebuild it with `corpus build`")
+        if not isinstance(entry.text_bearing, (bool, type(None))):
+            raise SystemExit(f"manifest entry {entry.sha256[:16]} has text_bearing "
+                             f"{entry.text_bearing!r}, not true, false or null: rebuild it "
+                             "with `corpus build`")
         if (entry.probe == "ok") != (entry.text_bearing is not None):
             raise SystemExit(f"manifest entry {entry.sha256[:16]} has probe {entry.probe!r} "
                              f"but text_bearing {entry.text_bearing!r}: rebuild it with "
@@ -279,13 +283,16 @@ def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]
     findings included, left out of every measured stratum; and a file the
     probe read but the CLI could not open would pad a measured stratum's
     false-hard denominator. A "text-unreadable" file is always listed: the
-    CLI scans it, but its text stratum is unknown. A crash or timeout is
-    left to the run's own unmeasured check."""
+    CLI scans it, but its text stratum is unknown. A crash, a timeout or a
+    run-level error code (INTERNAL_ERROR, ...) is left to the run's own
+    unmeasured check, which already fails it."""
     found = []
     for run in runs:
         if run.result.crashed or run.result.timed_out:
             continue
         code = error_code(run.result)
+        if code is not None and code not in PROBE_ERROR_CODES.values():
+            continue  # a run-level error: the run's unmeasured check lists it
         probe = run.entry.probe
         if probe == "text-unreadable" or (
             code != PROBE_ERROR_CODES[probe] if probe in PROBE_ERROR_CODES

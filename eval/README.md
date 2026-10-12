@@ -525,15 +525,18 @@ CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
 upgrade can make a file readable, and its findings would otherwise
 vanish from every measured stratum), an `"ok"` file the CLI could not
 open, and every `"text-unreadable"` file, which the CLI scans but no
-text stratum can hold. Rebuild the manifest for the first two; remove a
-text-unreadable file from the root. The build
+text stratum can hold. Rebuild the manifest for the first two. A
+text-unreadable file keeps the run failing until the owner decides how
+to count it: open an issue rather than deleting the file, since dropping
+every file the tool struggles with would bias the corpus toward easy
+files and flatter the rates. The build
 prints only how many there were, never which, and never keeps the
 exception's message (it can name the path). A manifest written before
 the field existed loads with `probe` `"ok"`; one written now does not
 load in older code (it rejects the new field), so rebuild it after
-switching back. An unknown `probe` value, or one that disagrees with
-`text_bearing` (known exactly when the probe is `"ok"`), is refused, not
-made a stratum.
+switching back. An unknown `probe` value, a `text_bearing` that is not
+`true`, `false` or `null`, or a pair that disagrees (`text_bearing` is
+known exactly when the probe is `"ok"`), is refused, not made a stratum.
 
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
@@ -549,7 +552,8 @@ PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
 
 `corpus run` exits 1 when a manifest file is missing, changed or vanishes
 mid-run (it scans only the rest), when any scan has no verdict as above,
-or when nothing was scanned — each would leave the clean-side rates
+when a scan contradicts the build-time probe (above), or when nothing
+was scanned — each would leave the clean-side rates
 describing something other than the manifest. The per-file lines name a
 file by its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
 manifest path, since that is what you fix. One exception (owner's

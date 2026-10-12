@@ -185,7 +185,9 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         # By SHA-256 prefix only, like the lines above.
         print(f"ERROR: {len(mismatched)} file(s) whose build-time probe the scan does not "
               "bear out, so the strata cannot place them; rebuild the manifest with "
-              "`corpus build` (a text-unreadable file stays unplaceable: remove it):",
+              "`corpus build`. A text-unreadable file stays unplaceable and blocks a "
+              "passing run until the owner decides how to count it (open an issue; do "
+              "not just delete it, which would bias the corpus toward easy files):",
               file=sys.stderr)
         for sha, probe, code in mismatched:
             print(f"  probe      {sha} ({probe}; CLI error {code or 'none'})", file=sys.stderr)
