@@ -586,11 +586,13 @@ class TestTableFastPath:
             return verify._table_subsections(table)
 
     @staticmethod
-    def _table(rng, subsections: int) -> bytes:
+    def _table(rng, subsections: int, long_headers: bool = True) -> bytes:
         out = b""
         for _ in range(subsections):
             count = rng.randrange(0, 6)
-            out += b"%d %d\n" % (rng.randrange(0, 1000), count)
+            first = rng.choice([rng.randrange(0, 1000),
+                                rng.randrange(10**9, 10**12 if long_headers else 10**10)])
+            out += b"%d %d\n" % (first, count)
             for _ in range(count):
                 out += b"%010d %05d %s%s" % (rng.randrange(10**10), rng.randrange(65536),
                                              rng.choice([b"n", b"f"]),
@@ -601,7 +603,7 @@ class TestTableFastPath:
         import random
         rng = random.Random(75)
         for _ in range(200):
-            table = self._table(rng, rng.randrange(1, 4))
+            table = self._table(rng, rng.randrange(1, 4), long_headers=False)
             assert verify._table_subsections_fast(table) is not verify._SLOW
 
     def test_the_fast_path_agrees_with_the_walk(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -623,6 +625,19 @@ class TestTableFastPath:
             fast = verify._table_subsections_fast(raw)
             if fast is not verify._SLOW:
                 assert fast == self._walk(raw, monkeypatch), raw
+
+    def test_an_overlong_header_is_never_the_fast_path(self) -> None:
+        entry = b"0000000009 00000 n \n"
+        for header in (b"12345678901 1\n", b"0 12345678901\n"):
+            assert verify._table_subsections_fast(header + entry) is verify._SLOW
+            assert verify._table_subsections(header + entry) is None
+
+    def test_section_reads_are_kept_for_one_file_only(self) -> None:
+        files = [build(one_page(PAGE)) + b"%" + bytes([i]) * 1000 for i in range(5)]
+        for raw in files:
+            verify._earlier_revisions.cache_clear()
+            verify._earlier_revisions(raw)
+        assert verify._section_memo[0] is files[-1]
 
     def test_a_large_canonical_table_is_quick(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The token walk loops per entry in Python; the fast path checks

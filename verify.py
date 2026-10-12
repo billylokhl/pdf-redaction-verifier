@@ -2434,6 +2434,7 @@ def _canonical_entries(chunk: bytes) -> bool:
     """Whether *chunk* is whole canonical 20-byte entries: 10 digits, a
     space, 5 digits, a space, n or f, and a two-byte end of line."""
     k = len(chunk) // 20
+    # Callers cut chunks at multiples of 20; the length test is defensive.
     if len(chunk) % 20 or chunk[10::20] != b" " * k or chunk[16::20] != b" " * k:
         return False
     if not set(chunk[17::20]) <= {0x6E, 0x66} or not set(chunk[18::20]) <= {0x20, 0x0D} \
@@ -2509,7 +2510,22 @@ _INDEX_RE = re.compile(rb"/Index\s*\[([\d\s]*)\]")
 _SIZE_RE = re.compile(rb"/Size\s+(\d+)")
 
 
-@functools.lru_cache(maxsize=1024)
+# Section reads for the one file being scanned: the earlier-revision walk
+# and the trailer chain read the same sections. Keyed by the bytes object
+# itself, so a new file starts a new memo and none outlives its file.
+_section_memo: tuple[bytes | None, dict[int, Any]] = (None, {})
+
+
+def _xref_section_memo(raw: bytes, offset: int) -> tuple[int, int | None, list[range] | None] | None:
+    global _section_memo
+    if _section_memo[0] is not raw:
+        _section_memo = (raw, {})
+    memo = _section_memo[1]
+    if offset not in memo:
+        memo[offset] = _xref_section(raw, offset)
+    return memo[offset]
+
+
 def _xref_section(
     raw: bytes, offset: int
 ) -> tuple[int, int | None, list[range] | None] | None:
@@ -2574,7 +2590,7 @@ def _earlier_revisions(raw: bytes) -> tuple[tuple[int, int, frozenset[int] | Non
         if offset in tried:
             continue
         tried.add(offset)
-        found = _xref_section(raw, offset)
+        found = _xref_section_memo(raw, offset)
         if found is None:
             continue
         end, prev, objects = found
@@ -2651,7 +2667,7 @@ def _chain_trailers(raw: bytes) -> tuple[tuple[_TrailerDict, ...], tuple[int, ..
         if offset in tried:
             continue
         tried.add(offset)
-        section_read = _xref_section(raw, offset)
+        section_read = _xref_section_memo(raw, offset)
         if section_read is None:
             if raw.startswith(b"xref", offset):
                 unreadable.append(offset)
