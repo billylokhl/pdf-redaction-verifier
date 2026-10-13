@@ -439,6 +439,74 @@ def two_column_wrap(path: Path) -> None:
     _write(path, objects)
 
 
+# ── Known gaps the owner signed off on (2026-10-12) ─────────────────────
+# Two fabricated layouts from the review sweeps, font-coded, that main
+# flagged on a rotated page only because its misplaced visible area put
+# the value's text off the page, where reading 3 read it apart; with the
+# visible area correct they are read with the visible text, and no
+# reading assembles them (main gives 0 for the same layouts at
+# /Rotate 0). Pinned at today's exit 0, the target manual review, and
+# judged where OCR is absent: on macOS the full CLI gives 2 for the
+# fine-print layout, the rendered page read by OCR, which would mask the
+# Text layer's gap.
+_GAP_CHARS = "0123456789-SNabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMOPQRTUVWXYZ"
+
+
+def _gap_coded(text_: str) -> bytes:
+    """*text_* as a TJ array in differences_font(_GAP_CHARS)'s codes,
+    words apart by 300 thousandths of an em."""
+    words = [b"<" + b"".join(b"%02X" % (_GAP_CHARS.index(c) + 1) for c in w) + b">"
+             for w in text_.split(" ")]
+    return b"[" + b" -300 ".join(words) + b"]"
+
+
+def _gap_page(path: Path, content: bytes, extra: bytes) -> None:
+    header = b"BT /F2 12 Tf 1 0 0 1 %d 762 Tm " + _gap_coded("Quarterly report") + b" TJ ET\n"
+    objects = one_page(stream(b"", header % (120 if b"270" in extra else 20) + content),
+                       o7=differences_font(_GAP_CHARS))
+    objects[3] = page(resources=b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>", extra=extra)
+    _write(path, objects)
+
+
+@leak("page.raw-font-coded-letter-spaced-stack-rotated", "match.letter-spaced-stack",
+      "The SSN in font codes, 8 pt with 9 pt character spacing, on two lines at the "
+      "right margin: 'SSN 123' above, '-45-' and '6789' below, on a page turned with "
+      "/Rotate 270, /UserUnit 2, under a crop box reaching past the media box. Read with the page's header, its glyphs "
+      "fall into one-character lines around the header: more than three pieces, so no "
+      "reading and no review join assembles it. Main flagged it (2) only because its "
+      "misplaced visible area read the value apart, off the page; it exits 0 for the "
+      "same layout at /Rotate 0.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+      known_gap=KnownGap("match.letter-spaced-stack", expect(0)),
+      requires=("no-ocr",),   # OCR may read the rendered page; the gap is the Text layer's
+      mistake="Nobody redacted it; the value is set letter-spaced in fine print.",
+      recovery="Read the text through the font's Encoding /Differences, letter by letter.")
+def letter_spaced_stack(path: Path) -> None:
+    content = (b"BT /F2 8 Tf 9.0 Tc 1 0 0 1 547.8 776.8 Tm " + _gap_coded("SSN 123") + b" TJ ET\n"
+               b"BT /F2 8 Tf 9.0 Tc 1 0 0 1 547.8 767.2 Tm " + _gap_coded("-45-") + b" TJ ET\n"
+               b"BT /F2 8 Tf 9.0 Tc 1 0 0 1 583.8 767.2 Tm " + _gap_coded("6789") + b" TJ ET")
+    _gap_page(path, content, b"/Rotate 270 /CropBox [100 100 712 892] /UserUnit 2")
+
+
+@leak("page.raw-font-coded-tight-fine-print-rotated", "match.tight-fine-print",
+      "The SSN in font codes split over two 8 pt lines 9.6 pt apart at the right margin, "
+      "'123-45-' above '6789', under a 12 pt header, on a page turned with /Rotate 180 "
+      "under a crop box reaching past the media box's left edge. The line tolerance, set "
+      "by the page's larger glyphs, merges the two lines into one, interleaving their "
+      "glyphs ('162738-945-'), so no reading holds the value. Main flagged it (2) only "
+      "because its misplaced visible area read the lines apart, off the page; it exits 0 "
+      "for the same layout at /Rotate 0.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+      known_gap=KnownGap("match.tight-fine-print", expect(0)),
+      requires=("no-ocr",),   # OCR may read the rendered page; the gap is the Text layer's
+      mistake="Nobody redacted it; the value wraps across two tightly set lines of fine print.",
+      recovery="Read the text through the font's Encoding /Differences, line by line.")
+def tight_fine_print(path: Path) -> None:
+    content = (b"BT /F2 8 Tf 1 0 0 1 554.2 770.0 Tm " + _gap_coded("123-45-") + b" TJ ET\n"
+               b"BT /F2 8 Tf 1 0 0 1 554.2 760.4 Tm " + _gap_coded("6789") + b" TJ ET")
+    _gap_page(path, content, b"/Rotate 180 /CropBox [-400 0 612 792]")
+
+
 # ── Vertical text split at a page break, one half off the page ──────────
 # Owner decisions of 2026-10-10 and 2026-10-11: like the horizontal
 # off-page-half split, vertically written text whose second half lies

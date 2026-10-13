@@ -366,11 +366,16 @@ secret can still be **not detected** (exit `0`). In short:
 - **Image data beyond the main picture:** a JPEG's own EXIF (or other)
   thumbnail can hold a second, fully decodable image the tool never
   looks at — only the main picture is ever drawn or OCR'd.
-- **Split values:** a page-break split with a header, footer or page
-  number between its halves, or where a page's last line is not its
-  reading-order last line; a value wrapped inside one column of a
-  multi-column page; dash-less pattern numbers wrapped at a line or page
-  break; text at extreme coordinates.
+- **Split values:** a value split around other text into more than three
+  pieces, or with its pieces more than five lines apart (a page-break
+  split with a header, footer or page number between its halves, a value
+  wrapped inside one column of a multi-column page, or halves in reverse
+  order are manual review, exit `2`); a letter-spaced value in fine print
+  that the page's reading breaks into one-character lines around other
+  text; a value wrapped over two fine-print lines closer together than
+  the line tolerance, which merges them into one interleaved line;
+  dash-less pattern numbers wrapped at a line or page break; text at
+  extreme coordinates.
 
 Leftover images, leftover text in non-plain font codes, and attachments
 that are not text are **flagged** (exit `2`) rather than read: a clean

@@ -134,6 +134,13 @@ matcher sees it whole. Each is ✗:
 
 - A value split around other text into more than three pieces, or with
   its pieces more than five lines apart (see the review net below).
+- A letter-spaced value in fine print that the page's reading breaks into
+  one-character lines around other text — more than three pieces
+  (`match.letter-spaced-stack`).
+- A value wrapped over two fine-print lines closer together than the
+  line tolerance, set by the page's larger glyphs, which merges them into
+  one interleaved line (`match.tight-fine-print`). OCR may still read the
+  rendered page.
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
