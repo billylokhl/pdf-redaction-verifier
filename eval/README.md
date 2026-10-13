@@ -361,7 +361,13 @@ The reference runs with a `qpdf` shim first on its `PATH` that adds
 `/ID` seeded by the current second, which the case library's `SHORT`
 rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
 that came and went with the clock. The shim removes only that input; the
-candidate passes the flag itself.
+candidate passes the flag itself. The candidate also blanks the `/ID`
+elements qpdf generates before its Binary sweep (CHANGELOG, "Binary
+layer: the `/ID` qpdf generates is not scanned"), which the reference
+cannot: a case whose generated `/ID` spelled a value rule would be a
+stable "warning removed" difference, listed with that reason (and as
+weaker only when it moves the case's exit to 0: weaker is judged by exit
+code).
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -504,6 +510,45 @@ username, hostname, or email address in it.
 `corpus build` picks up only files named `*.pdf` in lower case: rename or
 link any `.PDF` files first, or they are silently left out.
 
+A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
+abort on the first password-protected or corrupt file, so the exemption
+below could never be reached. Each entry now carries `probe`: `"ok"`,
+`"password"` (opens but needs a password: the CLI's `PDF_PASSWORD`),
+`"unreadable"` (MuPDF cannot open it: the CLI's `PDF_UNREADABLE`) or
+`"text-unreadable"` (opens, but reading a page's text fails; the CLI has
+no matching error code and scans it normally). Such a file's
+`text_bearing` is `null`, unknown, and its producer family `"unknown"`,
+since neither was read; multi-revision is still measured from the raw
+bytes. `corpus run` counts a `"password"` or `"unreadable"` file only in
+`all` (its exit 2 is a review verdict, as below), in `text-unknown`, and
+in `probe:password` or `probe:unreadable` — never in a measured stratum
+(text-bearing, text-free, the revision strata or a producer family). The
+CLI's error report on it has no findings, so there it would only add an
+unscanned file to the false-hard denominator: as text-bearing, of the
+stratum the redesign's targets are measured on. `all` does include them,
+so its false-hard denominator counts files nothing scanned: read false
+hard on a measured stratum.
+
+That placement is decided by the build-time probe, so `corpus run` exits
+1 when the scan does not bear the probe out, listing each such file by
+SHA-256 prefix (`probe` lines): a `"password"` or `"unreadable"` file the
+CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
+upgrade can make a file readable, and its findings would otherwise
+vanish from every measured stratum), an `"ok"` file the CLI could not
+open, and every `"text-unreadable"` file, which the CLI scans but no
+text stratum can hold. Rebuild the manifest for the first two. A
+text-unreadable file keeps the run failing until the owner decides how
+to count it: open an issue rather than deleting the file, since dropping
+every file the tool struggles with would bias the corpus toward easy
+files and flatter the rates. The build
+prints only how many there were, never which, and never keeps the
+exception's message (it can name the path). A manifest written before
+the field existed loads with `probe` `"ok"`; one written now does not
+load in older code (it rejects the new field), so rebuild it after
+switching back. An unknown `probe` value, a `text_bearing` that is not
+`true`, `false` or `null`, or a pair that disagrees (`text_bearing` is
+known exactly when the probe is `"ok"`), is refused, not made a stratum.
+
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
 PYTHONPATH=eval:. python -m scorecard corpus build --root ~/corpus
@@ -518,7 +563,8 @@ PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
 
 `corpus run` exits 1 when a manifest file is missing, changed or vanishes
 mid-run (it scans only the rest), when any scan has no verdict as above,
-or when nothing was scanned — each would leave the clean-side rates
+when a scan contradicts the build-time probe (above), or when nothing
+was scanned — each would leave the clean-side rates
 describing something other than the manifest. The per-file lines name a
 file by its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
 manifest path, since that is what you fix. One exception (owner's
@@ -597,7 +643,12 @@ What each part of the output means:
   pushes them to the pages, owner decision 9; and the page as MuPDF
   shows it -- media box, crop box, rotation, rectangle -- against what
   those attributes say it is), `oracle_error`, `tiling`),
-  `crashes`, `timeouts`, `unverified`, `inconsistent`.
+  `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
+  a user password is an unflagged `needs_password` disagreement, so it
+  fails the gate. `corpus build` can now record such a file (above),
+  where it used to abort, so a corpus holding one fails `inventory run`
+  instead of never reaching it; how the gate should count it is still
+  open (issue #48, item 3).
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and

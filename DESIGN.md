@@ -212,6 +212,27 @@ qpdf writes a trailer `/ID` hashed from the current second into the
 output being swept, and a short all-hex value matched it at random — a
 verdict that depended on the clock, not the file.
 
+Only the file's bytes are scanned there, not bytes qpdf invents. The
+`/ID` qpdf writes is now the same on every run, but it is still not in
+the file: qpdf keeps the input's first element and generates the second
+(both, if the file has none or its first is empty), so the generated
+elements are blanked before the scan. Blanking is deliberately narrow:
+only in a trailer of exactly qpdf's shape at the very end of its output,
+only elements that are none of the input's own `/ID` elements, and only
+when the input accounts for qpdf's first element — either it is one of
+the input's own (qpdf keeps a non-empty first element), or no `/ID` was
+found in the input and qpdf's two elements are identical, as qpdf writes
+them when it generates both. The second rule matters because qpdf reads
+`/ID` keys this tool's parser does not (`/I#44`, `/ID` followed by NUL):
+it keeps the file's first element and generates a different second one,
+so nothing is blanked. Nor is anything blanked for a file whose first
+`/ID` element is empty: qpdf replaces that element, so it is not the
+input's own, and the input did have an `/ID`, so neither rule holds.
+Anything unexpected leaves the bytes as they are: a mistake costs at
+most a false alarm, now the same on every run. The one file element that
+can still be blanked is one byte-for-byte equal to the `/ID` qpdf
+generates for that same file.
+
 A finding names its carrier and says whether the document still
 references it. An object nothing references is the founding failure mode
 — a redactor that drew a box and left the original content stream
