@@ -88,40 +88,80 @@ def producer_family(producer: str | None) -> str:
 class CorpusEntry:
     sha256: str
     path: str  # relative to the caller's configured root
-    text_bearing: bool
+    # None: unknown, because the probe could not read the pages (see
+    # `classify`). Never guessed either way.
+    text_bearing: bool | None
     multi_revision: bool
     producer_family: str  # coarse bucket only — never the raw /Producer string
+    # Whether the probe below could read the file: one of PROBE_OUTCOMES.
+    # Defaults to "ok" so a manifest written before the field existed (which
+    # could hold no other kind: `classify` used to raise on them) still loads.
+    probe: str = "ok"
 
 
-def classify(pdf_path: Path) -> tuple[bool, bool, str]:
-    """(text_bearing, multi_revision, producer_family) via a quick probe.
-    The raw `/Producer` string is read here and immediately reduced to a
-    coarse family — it is never returned or stored (it can hold a
-    username, hostname, or email address some producers embed)."""
+# What `classify`'s probe made of a file. "password": MuPDF opened it but
+# needs a password (the CLI's PDF_PASSWORD). "unreadable": MuPDF could not
+# open it (the CLI's PDF_UNREADABLE). "text-unreadable": MuPDF opened it
+# but failed reading a page's text — the CLI has no matching error code,
+# so its verdict there is whatever the scan reaches. None keeps the
+# exception's message: it can name the path.
+PROBE_OUTCOMES = ("ok", "password", "unreadable", "text-unreadable")
+
+
+def classify(pdf_path: Path) -> tuple[bool | None, bool, str, str]:
+    """(text_bearing, multi_revision, producer_family, probe) via a quick
+    probe. The raw `/Producer` string is read here and immediately reduced
+    to a coarse family — it is never returned or stored (it can hold a
+    username, hostname, or email address some producers embed).
+
+    A file the probe cannot read (*probe* other than "ok") is recorded,
+    not raised on: `corpus run` counts the CLI's exit 2 on an encrypted or
+    corrupt file as a review verdict (owner's decision), which it could
+    never do if the build aborted. Its text_bearing is None, unknown, so
+    `stratify` keeps it out of every measured stratum. Either guess would
+    make a measured stratum look better than it is: the CLI's error report
+    on a "password" or "unreadable" file has no findings, so counting it as
+    text-bearing adds an unscanned file to the false-hard denominator of
+    the stratum the redesign's targets are measured on, and counting it as
+    text-free does the same there. A "text-unreadable" file is scanned by
+    the CLI, so its verdict is real but has no known stratum: `corpus run`
+    refuses it (`probe_mismatches`). Its producer family is "unknown", since its
+    metadata was not read. multi_revision is still measured, from the raw
+    bytes, which need no parser."""
     import pymupdf as fitz
 
-    text_bearing = False
-    raw_producer = None
-    doc = fitz.open(pdf_path)
+    multi_revision = pdf_path.read_bytes().count(b"%%EOF") > 1
     try:
-        text_bearing = any(page.get_text().strip() for page in doc)
-        if doc.metadata:
-            raw_producer = doc.metadata.get("producer") or None
+        doc = fitz.open(pdf_path)
+    except Exception:  # any open failure; the message is never kept
+        return None, multi_revision, "unknown", "unreadable"
+    try:
+        if doc.needs_pass:
+            return None, multi_revision, "unknown", "password"
+        try:
+            text_bearing = any(page.get_text().strip() for page in doc)
+        except Exception:
+            return None, multi_revision, "unknown", "text-unreadable"
+        try:
+            raw_producer = (doc.metadata or {}).get("producer") or None
+        except Exception:
+            raw_producer = None  # family "unknown", as for a file without one
     finally:
         doc.close()
-    multi_revision = pdf_path.read_bytes().count(b"%%EOF") > 1
-    return text_bearing, multi_revision, producer_family(raw_producer)
+    return text_bearing, multi_revision, producer_family(raw_producer), "ok"
 
 
 def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
     """Scan *root* for `*.pdf` files, hash and classify each, and write the
     manifest. Re-running replaces it entirely, so a file removed from
-    *root* is dropped and a changed file's hash and strata are refreshed."""
+    *root* is dropped and a changed file's hash and strata are refreshed.
+    A file the probe cannot read is recorded with its text layer unknown
+    (see `classify`), never skipped and never fatal."""
     entries: list[CorpusEntry] = []
     for path in sorted(root.rglob("*.pdf")):
         data = path.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
-        text_bearing, multi_revision, family = classify(path)
+        text_bearing, multi_revision, family, probe = classify(path)
         entries.append(
             CorpusEntry(
                 sha256=sha256,
@@ -129,6 +169,7 @@ def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> lis
                 text_bearing=text_bearing,
                 multi_revision=multi_revision,
                 producer_family=family,
+                probe=probe,
             )
         )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +182,22 @@ def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
     if not manifest_path.exists():
         return []
     payload = json.loads(manifest_path.read_text())
-    return [CorpusEntry(**e) for e in payload.get("entries", [])]
+    entries = [CorpusEntry(**e) for e in payload.get("entries", [])]
+    for entry in entries:
+        # A hand-edited value would invent a stratum; the message names the
+        # value only, never the entry's path.
+        if entry.probe not in PROBE_OUTCOMES:
+            raise SystemExit(f"manifest entry {entry.sha256[:16]} has an unknown probe "
+                             f"{entry.probe!r}: rebuild it with `corpus build`")
+        if not isinstance(entry.text_bearing, (bool, type(None))):
+            raise SystemExit(f"manifest entry {entry.sha256[:16]} has text_bearing "
+                             f"{entry.text_bearing!r}, not true, false or null: rebuild it "
+                             "with `corpus build`")
+        if (entry.probe == "ok") != (entry.text_bearing is not None):
+            raise SystemExit(f"manifest entry {entry.sha256[:16]} has probe {entry.probe!r} "
+                             f"but text_bearing {entry.text_bearing!r}: rebuild it with "
+                             "`corpus build`")
+    return entries
 
 
 @dataclass(frozen=True)
@@ -214,15 +270,60 @@ def metric_row(run: CorpusRun, have: frozenset[str] | None) -> CaseMetricRow:
     )
 
 
+# The CLI error code a probe outcome predicts: `classify` and the CLI open
+# a file the same way (fitz.open, then needs_pass).
+PROBE_ERROR_CODES = {"password": "PDF_PASSWORD", "unreadable": "PDF_UNREADABLE"}
+
+
+def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]:
+    """(SHA-256 prefix, probe, CLI error code) for every scanned file whose
+    stratum the build probe cannot vouch for. `stratify` places a file by
+    its build-time probe, so a file the probe could not read but the CLI
+    scanned (after a PyMuPDF upgrade, say) would have its verdict, hard
+    findings included, left out of every measured stratum; and a file the
+    probe read but the CLI could not open would pad a measured stratum's
+    false-hard denominator. A "text-unreadable" file is always listed: the
+    CLI scans it, but its text stratum is unknown. A crash, a timeout or a
+    run-level error code (INTERNAL_ERROR, ...) is left to the run's own
+    unmeasured check, which already fails it."""
+    found = []
+    for run in runs:
+        if run.result.crashed or run.result.timed_out:
+            continue
+        code = error_code(run.result)
+        if code is not None and code not in PROBE_ERROR_CODES.values():
+            continue  # a run-level error: the run's unmeasured check lists it
+        probe = run.entry.probe
+        if probe == "text-unreadable" or (
+            code != PROBE_ERROR_CODES[probe] if probe in PROBE_ERROR_CODES
+            else code in PROBE_ERROR_CODES.values()
+        ):
+            found.append((run.entry.sha256[:16], probe, code))
+    return found
+
+
 def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[str, Scorecard]:
-    """Clean-side metrics overall and per stratum: text-bearing vs not,
-    multi-revision vs not, and each producer family seen. *have* drops
-    environmental warnings (e.g. no OCR on this machine) the same way
-    the differential does, so a run on a partial environment does not
-    inflate the review rate — pass `caselib.run.available()` for that;
+    """Clean-side metrics overall and per stratum: text-bearing vs
+    text-free, multi-revision vs not, and each producer family seen. A
+    file the build probe could not read is counted in "all" (its exit 2
+    is a review verdict, the owner's decision) and otherwise only in
+    "text-unknown" and its own `probe:password`, `probe:unreadable` or
+    `probe:text-unreadable` stratum, never in a measured one — which is
+    safe only when the CLI agreed with the probe: check `probe_mismatches`.
+    *have* drops environmental warnings (e.g. no OCR on this machine) the
+    same way the differential does, so a run on a partial environment
+    does not inflate the review rate — pass `caselib.run.available()` for that;
     omit it to use the exit code exactly as reported."""
     strata: dict[str, list[CorpusRun]] = {"all": list(runs)}
     for run in runs:
+        if run.entry.probe != "ok":
+            # Unread: nothing measured its text layer or producer, and its
+            # error report has no findings, so in any measured stratum it
+            # would only pad the false-hard denominator. Revisions are
+            # measured from bytes, but are left out for the same reason.
+            strata.setdefault("text-unknown", []).append(run)
+            strata.setdefault(f"probe:{run.entry.probe}", []).append(run)
+            continue
         strata.setdefault(
             "text-bearing" if run.entry.text_bearing else "text-free", []
         ).append(run)

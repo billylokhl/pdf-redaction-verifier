@@ -112,6 +112,13 @@ def _cmd_corpus_build(args: argparse.Namespace) -> int:
     manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
     entries = corpus_mod.build_manifest(args.root, manifest_path=manifest)
     print(f"wrote {len(entries)} entries to {manifest}")
+    # Counts only, never which files (corpus.classify, corpus.stratify).
+    unread = {o: sum(e.probe == o for e in entries)
+              for o in corpus_mod.PROBE_OUTCOMES if o != "ok"}
+    if any(unread.values()):
+        counts = ", ".join(f"{n} {o}" for o, n in unread.items() if n)
+        print(f"note: the probe could not read {sum(unread.values())} file(s) ({counts}); "
+              "recorded with text layer and producer family unknown")
     return 0
 
 
@@ -173,6 +180,18 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         if row.error_code in FILE_VERDICT_ERRORS:
             print(f"note: {row.case_id} could not be opened ({row.error_code}); "
                   "counted as a review verdict (exit 2)", file=sys.stderr)
+    mismatched = corpus_mod.probe_mismatches(runs)
+    if mismatched:
+        # By SHA-256 prefix only, like the lines above.
+        print(f"ERROR: {len(mismatched)} file(s) whose build-time probe the scan does not "
+              "bear out, so the strata cannot place them; rebuild the manifest with "
+              "`corpus build`. A text-unreadable file stays unplaceable and blocks a "
+              "passing run until the owner decides how to count it (open an issue; do "
+              "not just delete it, which would bias the corpus toward easy files):",
+              file=sys.stderr)
+        for sha, probe, code in mismatched:
+            print(f"  probe      {sha} ({probe}; CLI error {code or 'none'})", file=sys.stderr)
+        failed = True
     error = _unmeasured(rows, "file", FILE_VERDICT_ERRORS)
     if error is not None:
         print(error, file=sys.stderr)
