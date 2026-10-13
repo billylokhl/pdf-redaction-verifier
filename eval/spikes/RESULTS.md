@@ -575,3 +575,19 @@ flagged for other reasons, so the decision flags no new file. Case
 library (396 agree, 4 flagged) and fuzz (740 agree, 2,260 flagged) are
 unchanged, 0 unflagged disagreements in both.
 
+
+
+## Phase 3a-7d spike: which annotations MuPDF synthesizes -- eval/spikes/annotation_appearance.py
+
+Question (docs/phase3a-plan.md 3a-7d, owner decision P1 if no exact method): how can the gate
+tell, per annotation, whether MuPDF draws the stored /AP or an appearance it synthesizes?
+
+- No object-level signal works (MuPDF 1.28.2): `pdf_annot_ap` (before or after drawing, or
+  after `pdf_update_annot`), the annotation's /AP in MuPDF's in-memory document and
+  `pdf_annot_needs_resynthesis` all leave a synthesized annotation looking like a stored one.
+- A drawing comparison works: MuPDF's trace (`fz_new_trace_device` + `pdf_run_annot`) of the
+  annotation against the trace of a stand-in -- a /Square with the same /Rect, /AP, /AS and
+  /F, in a separate copy of the document -- reads NOTHING, STORED or SYNTHESIZED.
+- On 13 fabricated fixtures MuPDF's reading agrees with ADR 0011 item 5's rules (ours
+  SYNTHESIZED ~ SYNTHESIZED or NOTHING; not synthesized ~ STORED or NOTHING); a pixel control
+  draws the stored box exactly where the reading is STORED.

@@ -401,7 +401,19 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     cannot tell a synthesized appearance that shows no text from the stored one). Once the
     method is settled the gate is stated in full: per revision, the annotation list
     (pdf_first_annot and pdf_first_widget together) against ours, then each annotation's
-    classification. A SYNTHESIZED unit per (annotation body, revision) -- whether
+    classification. SPIKE DONE (2026-10-12, eval/spikes/annotation_appearance.py; P1 needs
+    no owner decision -- an exact method exists): no object-level signal works (pdf_annot_ap
+    before or after drawing or pdf_update_annot, the in-memory /AP, needs_resynthesis); a
+    drawing comparison does. MuPDF's trace (fz_new_trace_device + pdf_run_annot) of the
+    annotation against the trace of a stand-in -- a /Square with the same /Rect, /AP, /AS and
+    /F, which MuPDF draws from /AP whenever /AP /N names a stream -- in a separate copy of the
+    document gives NOTHING (no mark), STORED (equal traces) or SYNTHESIZED (otherwise). The
+    gate: ours SYNTHESIZED matches SYNTHESIZED or NOTHING; ours not synthesized matches
+    STORED or NOTHING (what draws nothing cannot differ). On 13 fabricated fixtures (stored
+    and missing /AP, /AP state dictionaries with and without a matching /AS, signed and
+    unsigned signatures, hidden, /NeedAppearances, a text widget without /AP, FreeText, a
+    link) MuPDF's reading agrees with ADR 0011 item 5's rules; pixels confirm the STORED
+    readings. A SYNTHESIZED unit per (annotation body, revision) -- whether
     an annotation is synthesized and what it shows (/V inherited through the field /Parent
     chain, /NeedAppearances, /AS) changes from revision to revision while the widget's body
     stays, the normal form-filling update -- starting UNEXAMINED; it claims no bytes (not a
@@ -426,8 +438,8 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     page loads and pikepdf instances grow its cost (#52 item 4): re-measure the oracle's
     time with each PR.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
-  pending 7d's spike): P1 the annotation gate's method (after
-  7d's spike); decided (decision 9): P2 how the gate reads libqpdf's inherited page
+  settled by 7d's spike, no decision needed): P1 the annotation gate's method -- a trace
+  comparison against a stand-in (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page
   attributes -- pushed in the separate pikepdf instance (amends ADR 0011 item 8's "without
   pushing"); P3 amend ADR 0011 item 4: name-tree keys
   unique and sorted by bytes and also as text, under both readers' decodings (qpdf compares
