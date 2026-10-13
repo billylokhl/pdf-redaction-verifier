@@ -163,6 +163,7 @@
   "page.raw-font-coded-carried-off-page-second-half-above-rotated": "none",
   "page.raw-font-coded-carried-off-page-wrap-below": "none",
   "page.raw-font-coded-carried-off-page-wrap-below-rotated": "none",
+  "page.raw-font-coded-letter-spaced-stack-rotated": "none",
   "page.raw-font-coded-scattered-furniture-at-break": "partial",
   "page.raw-font-coded-scattered-furniture-at-break-rotated": "partial",
   "page.raw-font-coded-scattered-furniture-in-page": "wrapped",
@@ -173,5 +174,6 @@
   "page.raw-font-coded-split-at-break-off-page-rotated": "none",
   "page.raw-font-coded-split-at-break-off-page-rotated-180": "none",
   "page.raw-font-coded-split-at-break-off-page-slug": "none",
+  "page.raw-font-coded-tight-fine-print-rotated": "wrapped",
   "page.raw-font-coded-vertical-split-at-break-off-page-rotated": "none"
 }

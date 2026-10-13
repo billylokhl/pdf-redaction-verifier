@@ -190,9 +190,9 @@ def test_secret_visibility_matches_the_table_for_every_match_case(tmp_path) -> N
     vertical-stack-split-pages variant, page-break, ...), "later" (none
     of it on page 1, but on a later page: the several-values variants
     whose only rules are for the SSN, which sits on pages 2-3), "none" (in
-    no page's text: page.extreme-coordinates; or not readable from the
+    no page's text: page.extreme-coordinates; or not assembled from the
     pages' visible text at all: a page-break split or a line wrap one of
-    whose halves lies off the page)."""
+    whose halves lies off the page, a letter-spaced stack)."""
     from caselib.run import build as build_case
     from gallery.build import _secret_visibility
     wrong = []
