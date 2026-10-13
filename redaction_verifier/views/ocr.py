@@ -373,8 +373,11 @@ def _extra_readings(
     lines: tuple[list[str], list[str]] = ([], [])
     doc = fitz.open()
     try:
-        image = doc.new_page(width=width, height=height)   # one point per pixel
-        image.insert_image(image.rect, stream=png_bytes)
+        try:
+            image = doc.new_page(width=width, height=height)   # one point per pixel
+            image.insert_image(image.rect, stream=png_bytes)
+        except _READ_FAILURES:   # no page image: no extra readings, as before them
+            return ["", ""]
         for degrees in (90, 270):
             try:
                 pix = image.get_pixmap(matrix=fitz.Matrix(1, 1).prerotate(degrees),

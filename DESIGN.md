@@ -388,7 +388,8 @@ image) pin both sides: no hard finding from a misread column, and a hard
 one from a genuine sideways scan.
 
 A page with any line read vertically gets two more reconstructed
-readings, so whatever Vision misses there is at least manual review.
+readings, which can turn some of what Vision misses there into manual
+review (measured on macOS 27; not all of it, see the counts below).
 The page is read again turned 90° and 270°: on macOS 27 Vision reads
 sideways text in a page image only in part (a dense page of 40 lines
 lost 14–21; the same page at 200 or 400 dpi, none) and reads it whole

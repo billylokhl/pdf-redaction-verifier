@@ -41,6 +41,11 @@ def redacted_no_gc(path):
 - **`known_gap`**: `KnownGap(cell, today=expect(...))` when today's tool
   gets it wrong. The case is judged against `today`, so a fix, a partial
   fix or a broken generator fails the test until the label is updated.
+- **`older_macos`** (OCR cases only): `OlderMacOS(27, today)` when
+  Vision on a macOS older than the owner's 27 reads the case's page
+  differently; there it replaces `known_gap` (`today`, or `None` when
+  `expected` holds there). `before` must be 27, so it never changes a
+  label on the owner's macOS.
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
   `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
@@ -717,7 +722,9 @@ own machine (`sha256sum`) when a number needs explaining.
   `known_gap` on a macOS older than 27: `today` is the wrong answer pinned
   there, or `None` when the case's `expected` holds there. So CI guards
   what macOS 26 gives and a local macOS 27 run what the owner gets; a
-  change on either side fails until the label is updated.
+  change on either side fails until the label is updated. The gallery
+  does not read `older_macos`: built from a macOS 26 scorecard, it would
+  show K42 as a miss with no known gap.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

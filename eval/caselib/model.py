@@ -113,6 +113,11 @@ class KnownGap:
     today: Expect
 
 
+# The macOS the case labels are measured on: the owner's (README: results
+# are certified only there). An OlderMacOS label applies only below it.
+OWNER_MACOS = 27
+
+
 @dataclass(frozen=True)
 class OlderMacOS:
     """Where Vision on a macOS older than *before* reads this case's page
@@ -202,6 +207,9 @@ class Case:
         if self.older_macos is not None:
             here = self.known_gap.today if self.known_gap else self.expected
             older = self.older_macos.today or self.expected
+            if self.older_macos.before != OWNER_MACOS:
+                raise ValueError(f"{self.id}: older_macos.before must be {OWNER_MACOS}, the "
+                                 "owner's macOS, so it never replaces a label there")
             if "ocr" not in self.requires or older == here:
                 raise ValueError(f"{self.id}: older_macos is for an OCR case whose label "
                                  "differs on an older macOS")

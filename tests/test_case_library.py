@@ -120,6 +120,7 @@ class TestOlderMacOS:
         ({"older_macos": OlderMacOS(27, None)}, "older_macos is for an OCR case"),
         ({"known_gap": KnownGap("live.plain", expect(0)),
           "older_macos": OlderMacOS(27, expect(1))}, "equal to expected"),
+        ({"older_macos": OlderMacOS(28, expect(0))}, "the owner's macOS"),
     ])
     def test_an_older_label_must_differ(self, kwargs, problem) -> None:
         fields = {"id": "page.older-label", "truth": "leak", "cells": ("live.plain",),

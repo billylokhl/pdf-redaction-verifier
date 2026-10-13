@@ -121,7 +121,8 @@ On macOS 27, a scanned page of 40 lines of 8 pt text turned 90° comes
 back without eight of them (14–21), the SSN's line among them
 (`page.dense-sideways-scan`, [#67](https://github.com/billylokhl/pdf-redaction-verifier/issues/67)); with 20 or 30 lines it is read
 whole. A page with any line read vertically is now also read turned 90°
-and 270°, which finds such lines, but only as manual review (exit `2`):
+and 270°, which found the SSN's line on 21 of 24 generated sideways
+pages (macOS 27), but only as manual review (exit `2`):
 turned, a one-character-per-line stack becomes a row Vision misreads as
 a number. A page whose dropped lines are horizontal, or where Vision
 reports no vertical line at all, can still pass as clean; nothing yet

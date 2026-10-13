@@ -726,6 +726,12 @@ class TestOcrExtraReadings:
         monkeypatch.setattr(ocr, "_unstack", lambda image, box: None)
         assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
 
+    def test_a_page_image_mupdf_refuses_gives_no_extra_reading(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: pytest.fail("no page image, no read"))
+        assert ocr._extra_readings(b"not a png", *A4_PX, ([STACK], []), [[False], []]) \
+            == ["", ""]
+
     def test_a_bug_in_a_turned_reading_fails_the_page(self, monkeypatch) -> None:
         def bug(png: bytes) -> Any:
             raise AttributeError("no such method")
@@ -885,8 +891,11 @@ class TestVisionBridge:
         copied = options.mutableCopy()
         copied.removeObjectForKey_(Vision.VNImageOptionProperties)
         copied.removeObjectForKey_(Vision.VNImageOptionCameraIntrinsics)
+        # Genuine and raw readings hold it; no line is vertical, so the
+        # turned and unstacked readings are not made.
         assert all(normalize_string(SSN) in normalize_string(text)
-                   for text in readings[:ocr.OCR_GENUINE_READINGS])
+                   for text in readings[:2 * ocr.OCR_GENUINE_READINGS])
+        assert readings[2 * ocr.OCR_GENUINE_READINGS:] == ["", ""]
 
 
 class _FakeCandidate:
