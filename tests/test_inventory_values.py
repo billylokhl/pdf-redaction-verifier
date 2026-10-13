@@ -107,17 +107,17 @@ def test_a_qpdf_cli_unlike_libqpdf_is_refused(tmp_path: Path, monkeypatch: pytes
 @requires_qpdf
 @pytest.mark.parametrize(("data", "check"), [
     # MuPDF resolves a reference by its number; libqpdf reads `1 5 R` as
-    # null. Unflagged until the reference graph (3a-7): the gate sees it.
+    # null: flagged REF_GENERATION (3a-7), never compared.
     (_file(catalog=b" /Probe 1 5 R", page=b" /Resources << >>"), Check.OBJECT_VALUE),
     # A trailer is not an object: an old-generation /Info reaches MuPDF's
     # metadata (a fabricated author) and not libqpdf's.
     (_file(page=b" /Resources << >>", trailer=b" /Info 5 3 R",
            extra={5: b"<< /Author (SSN " + SSN + b") >>"}), Check.TRAILER_VALUE),
 ])
-def test_a_generation_mismatch_is_a_disagreement(tmp_path: Path, data: bytes,
-                                                 check: Check) -> None:
-    assert oracle.inventory(data).flags == ()
-    assert compare(data, tmp_path).check is check
+def test_a_generation_mismatch_is_flagged(tmp_path: Path, data: bytes, check: Check) -> None:
+    # Until 3a-7 the gate saw these as a disagreement (*check*).
+    assert [f.reason for f in oracle.inventory(data).flags] == [FlagReason.REF_GENERATION]
+    assert compare(data, tmp_path).flagged
 
 
 @requires_qpdf
@@ -128,7 +128,8 @@ def test_a_generation_mismatch_is_a_disagreement(tmp_path: Path, data: bytes,
     # 2147483648.5) or only in use (MuPDF's pdf_to_int truncates /Rotate
     # to 90) look alike to the value comparison: the flag is what sees them.
     (b" /BBox [0 0 2147483648.5 1000]", False),
-    (b" /Rotate 4294967386", False),
+    # Since 3a-7b the page-attribute comparison sees /Rotate too.
+    (b" /Rotate 4294967386", True),
 ])
 def test_numbers_the_readers_read_differently_are_flagged(
         tmp_path: Path, entry: bytes, seen: bool) -> None:
@@ -144,7 +145,8 @@ def test_numbers_the_readers_read_differently_are_flagged(
 def test_inherited_page_attributes_are_read_as_written(tmp_path: Path) -> None:
     # pikepdf's default open pushes /Resources and /Rotate from /Pages down
     # to the page (new objects, rewritten page dictionaries); the oracle
-    # opens without it, so libqpdf's values are the file's own.
+    # reads values without it, so libqpdf's values are the file's own, and
+    # reads the inherited attributes from a second, pushed instance (3a-7b).
     data = _file(pages=b" /Resources << /ProcSet [/PDF] >> /Rotate 90")
     found = compare(data, tmp_path)
     assert found.agrees and found.values_compared >= 5, found
@@ -191,7 +193,7 @@ def test_float32_rounds_once_from_the_exact_value() -> None:
     (b"-0.0", b"0", True), (b"0.5", b"-0.5", False),
 ])
 def test_a_real_may_be_one_float32_step_from_mupdf(ours: bytes, mupdf: bytes, same: bool) -> None:
-    assert same_as_mupdf(oracle.text_form(ours, ()), oracle.text_form(mupdf, ())) is same
+    assert same_as_mupdf(oracle.text_form(ours), oracle.text_form(mupdf)) is same
 
 
 # ── The written allowlist of qpdf messages ────────────────────────────────
@@ -206,9 +208,45 @@ def test_the_allowlist_matches_whole_lines_on_the_exact_path(tmp_path: Path) -> 
     assert structural([cut % str(path).encode()], path, undecoded={77}) == []
     assert structural([cut % str(path).encode()], path, undecoded={78})
     zero = b"WARNING: %s (object 3 0, offset 9): treating bad indirect reference (%s R) as null"
-    assert structural([zero % (str(path).encode(), b"0 0")], path) == []
-    assert structural([zero % (str(path).encode(), b"1 65535")], path)
+    assert structural([zero % (str(path).encode(), b"0 0")], path)  # gated since 3a-7 (R1)
+    entry = b"WARNING: %s: object 5/0 has unexpected xref entry type" % str(path).encode()
+    assert structural([entry], path)  # gated like any message (#44)
     assert structural([b"ERROR: %s: an error" % str(path).encode()], path)
+    eof = b"WARNING: page object 3 0 stream 4 0 (content): EOF while reading token"
+    assert structural([eof], path) == []                       # #88: content syntax
+    assert structural([eof.replace(b"WARNING: page", b"WARNING: x page")], path)  # anchored
+    assert structural([eof.replace(b"(content)", b"(object)")], path)
+    array = eof.replace(b"stream 4 0", b"stream 4 0, stream 5 0")  # /Contents an array
+    assert structural([array], path) == []
+    decode = (b"ERROR: page 1: content stream (content stream object 4 0): errors while"
+              b" decoding content stream")
+    assert structural([decode], path)                          # a decode error stays gated
+
+
+@requires_qpdf
+@pytest.mark.parametrize("first", [b"(", b")", b"}", b"]", b">"])
+def test_a_content_syntax_error_at_the_first_byte_is_phase_4s(
+        tmp_path: Path, first: bytes) -> None:
+    # Issue #88, found by the dev-profile fuzz: `BT` mutated to `(T` or `)T`.
+    # qpdf prints such an error at offset 0 with no offset. Content syntax
+    # is the content decoder's (Phase 4); all the inventory owns agrees.
+    data = _file(page=b" /Resources << >>", content=first + b"T (page 0) Tj ET")
+    assert oracle.inventory(data).flags == ()
+    assert compare(data, tmp_path).agrees
+    # The same error in the first of two content streams (/Contents an array).
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
+                          b" /Resources << >> /Contents [4 0 R 5 0 R] >>"), 0)
+    table[4] = (1, w.stream(4, b"", first + b"T (page 0) Tj ET"), 0)
+    table[5] = (1, w.stream(5, b"", b"BT ET"), 0)
+    w.epilogue(w.table(table, b"/Size 6 /Root 1 0 R"))
+    data = bytes(w.out)
+    assert oracle.inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees, found
 
 
 def _linearized(tmp_path: Path, objstm: bool) -> bytes:
@@ -291,9 +329,9 @@ def test_truncated_flate_content_is_the_content_decoders(tmp_path: Path, cut: in
 
 
 @requires_qpdf
-def test_a_reference_to_object_zero_reads_null_in_both_readers(tmp_path: Path) -> None:
-    # In an object qpdf --show-xref does not read (in the catalog it would
-    # warn there too, exit 3: an OBJECT_SET disagreement, fail closed).
+def test_a_reference_to_object_zero_is_dangling(tmp_path: Path) -> None:
+    # Both readers read null, but qpdf warns (the gate's allowlist held an
+    # entry for it until 3a-7, R1).
     data = _file(page=b" /Resources << >>", extra={5: b"<< /Probe [0 0 R] /K 0 0 R >>"})
-    assert oracle.inventory(data).flags == ()
-    assert compare(data, tmp_path).agrees
+    assert {f.reason for f in oracle.inventory(data).flags} == {FlagReason.REF_DANGLING}
+    assert compare(data, tmp_path).flagged

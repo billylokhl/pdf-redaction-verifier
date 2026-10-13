@@ -4,6 +4,7 @@ box, in a field, in the document's own properties."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import pymupdf as fitz
 
@@ -60,6 +61,32 @@ def image_on_page(path: Path) -> None:
     doc = fitz.open(); page = doc.new_page(); body(page)
     page.insert_image(fitz.Rect(72, 200, 372, 260), stream=png_of(f"SSN {SSN}"))
     save(doc, path)
+
+
+def _sideways_scan(turn: int) -> Callable[[Path], None]:
+    def build(path: Path) -> None:
+        doc = fitz.open(); page = doc.new_page(); body(page)
+        page.insert_image(fitz.Rect(250, 200, 310, 500), stream=png_of(f"SSN {SSN}"),
+                          rotate=turn)
+        save(doc, path)
+    return build
+
+
+# A scan saved sideways, searched for by the SSN pattern: the SSN exists
+# only as pixels, so only OCR can find it, and OCR reads it as a vertical
+# line, which counts as a line of the page only if a re-read confirms it
+# (DESIGN.md, the OCR exception; macOS 27 reads a column of single
+# characters as one vertical line of characters not on the page). A
+# genuinely turned line must stay a hard finding; page.digit-column
+# (clean.py) is the other side (#74).
+for _turn in (90, 270):
+    leak(f"page.scan-image-sideways-{_turn}", "live.pixels",
+         f"A scanned image showing the SSN, turned {_turn}° on the page; "
+         "searched for by the built-in SSN pattern.",
+         rules=({"name": "Any SSN", "class": "ssn"},),
+         expected=expect(1, findings=(("Any SSN", "live"),), layers=(("Any SSN", "OCR"),)),
+         requires=("ocr",), mistake="Redacting the text layer and forgetting the scan.",
+         recovery="Turn the page and look at it.")(_sideways_scan(_turn))
 
 
 @leak("page.box-over-text", "live.plain",

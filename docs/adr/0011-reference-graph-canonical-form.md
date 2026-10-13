@@ -1,6 +1,6 @@
 # 0011. The reference graph: canonical form
 
-Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended)
+Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below)
 
 ## Context
 
@@ -195,7 +195,7 @@ that revision. Otherwise:
 Name and number trees (the catalog's `/Names` subtrees and
 `/PageLabels`; the catalog's own `/Dests` is a plain dictionary): each
 node is a dictionary with exactly one of `/Names` (or `/Nums`), an array
-of key-value pairs with keys unique and sorted by bytes, or `/Kids`, an
+of key-value pairs with keys unique and sorted by bytes (and as text; a non-empty tree in an encrypted revision flags until 3a-9: amended 2026-10-11, below), or `/Kids`, an
 array of indirect references to nodes, none reached twice; every node
 below the root has a correct `/Limits`. Anything else flags
 (`FlagReason.NAME_TREE`) -- except an empty root, which reads as empty
@@ -247,7 +247,7 @@ revision:
   field is synthesized exactly when it is unsigned -- signed, in MuPDF's
   test, when its `/FT` is `/Sig` and its `/V` is a dictionary whose
   `/Type` is absent or `/Sig`, both inherited through the field `/Parent`
-  chain -- whatever `/AP` or `/NeedAppearances` say. Any other annotation
+  chain (a cycle flags `FIELD_TREE`: amended 2026-10-11, below) -- whatever `/AP` or `/NeedAppearances` say. Any other annotation
   is *not* synthesized only when it is a Link or a Popup, or has an `/AP
   /N` that is a stream or a dictionary in which `/AS` (references
   resolved) names an entry -- and, for a widget, the form's
@@ -357,7 +357,7 @@ every file the graph leaves unflagged:
 - each page's attributes: ours against MuPDF's effective values (its
   inherited `/Resources`, `page.mediabox`, `page.cropbox` converted from
   MuPDF's flipped coordinates, `page.rotation`) and libqpdf's page
-  helper, without pushing attributes; a box's area is measured on its
+  helper, without pushing attributes (amended 2026-10-11, below: pushed in a separate instance); a box's area is measured on its
   normalized rectangle;
 - the `/EmbeddedFiles` name tree: its entries as MuPDF's
   `pdf_load_name_tree` and libqpdf's name-tree helper read them, against
@@ -407,6 +407,32 @@ prototype over the current revisions and are re-measured on the
 implementation. In 3b the ledger verdict is computed but not shipped
 (REDESIGN §7); before 4a no content decoder exists, so it exits `2` on
 nearly every file anyway.
+
+## Amendment (2026-10-11, the 3a-7 plan): owner decision 9
+
+Decided with the 3a-7 plan ([phase3a-plan.md](../phase3a-plan.md), decision 9), on findings
+of its review:
+
+- **Item 4, name-tree keys (P3).** Keys must be unique and sorted as text, under both
+  readers' decodings (qpdf compares UTF-8 text, MuPDF `pdf_to_text_string`), as well as by
+  bytes: `(a)` and `<FEFF0061>` are distinct bytes but one name, and the readers then
+  resolve it to different objects (as the gate's accessors read it, MuPDF's
+  `pdf_load_name_tree` the last, pikepdf's `NameTree` iteration the first; their lookups,
+  `pdf_lookup_name` and `NameTree[key]`, return the opposite entries). Expected cost 0,
+  measured in 3a-7c.
+- **Item 8, page attributes (P2).** pikepdf has no accessor that reads an inherited
+  `/Resources` without writing it into the page (its `Page.resources` returns an empty
+  dictionary for an inherited one and stores it). The gate compares against libqpdf's
+  attributes pushed by pikepdf in its separate, throwaway instance -- qpdf's own
+  inheritance -- rather than "without pushing attributes": a second instance opened with
+  `inherit_page_attributes=True`, whose libqpdf warnings are gated like the first's.
+- **Item 4, encrypted revisions (P4).** A name tree's keys are strings, encrypted until
+  3a-9 decrypts them, so their order and uniqueness cannot be checked: a non-empty name tree
+  in an encrypted revision flags `NAME_TREE` until 3a-9 (number-tree keys are integers,
+  checked as usual). Corpus cost 0 (no encrypted file).
+- **Item 5, field inheritance (P5).** A `/Parent` cycle among AcroForm fields leaves the
+  inherited `/FT` and `/V`, so a synthesized appearance's input, undefined: it flags a new
+  `FlagReason.FIELD_TREE`. Expected cost 0, measured in 3a-7d.
 
 ## Owner decisions
 
@@ -483,7 +509,8 @@ the user it is there.
 ## Consequences
 
 - New closed flag reasons (`PAGE_TREE` with `PageTreeRule`,
-  `RESOURCE_SCOPE`, `REF_GENERATION`, `NAME_TREE`, `REF_DANGLING`), each with an EMITTERS entry; new `UseKind`, the
+  `RESOURCE_SCOPE`, `REF_GENERATION`, `NAME_TREE`, `REF_DANGLING`, and `FIELD_TREE` from the
+  2026-10-11 amendment), each with an EMITTERS entry; new `UseKind`, the
   `DRAWABLE`/`STRUCTURAL`/`ORPHANED` labels and a `SYNTHESIZED` unit kind;
   `Inventory` gains per-revision page lists, page attributes, scopes and
   edges.

@@ -585,7 +585,13 @@ What each part of the output means:
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
-  `needs_password`, `encryption`, `oracle_error`, `tiling`),
+  `needs_password`, `encryption`, `page_list` and `page_attribute`
+  (since 3a-7b: each revision's pages in order, and each page's
+  inherited `/Resources`, `/MediaBox`, `/CropBox`, `/Rotate` as written,
+  against MuPDF's own inheritance and a second libqpdf instance that
+  pushes them to the pages, owner decision 9; and the page as MuPDF
+  shows it -- media box, crop box, rotation, rectangle -- against what
+  those attributes say it is), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
@@ -596,8 +602,8 @@ What each part of the output means:
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
   printed an `ERROR` line (exit 2) the allowlists cover (page-tree
-  semantics, the reference graph's, 3a-7). ERROR lines are gated like
-  WARNING lines since 3a-6b.
+  semantics until 3a-7b, which flags them; now only page content
+  syntax). ERROR lines are gated like WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
   compared with the readers: the inventory said the readers may disagree,
@@ -629,27 +635,34 @@ What each part of the output means:
   is compared with libqpdf exactly (kinds, string bytes, integers and
   reals as written, references by number and generation) and with MuPDF
   allowing a real one 32-bit float step from ours (MuPDF holds reals in
-  32 bits); a reference to an object number with no body reads as null.
+  32 bits); references are compared as written -- since 3a-7a the
+  inventory flags any that does not resolve (`REF_DANGLING`,
+  `REF_GENERATION`), so none reaches the comparison.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
-applied to `--check` lines and to libqpdf's warnings alike: page-tree
-semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
-3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
-them); and since 3a-6b, entries that each match one whole line on
+applied to `--check` lines and to libqpdf's warnings alike: a content
+stream's own syntax (Phase 4's), as in 3a-6 -- a substring of a line, not
+anchored (issue #46 tracks narrowing it; the page-tree substrings went
+with 3a-7b, which flags any tree off the canonical shape, as did the
+retyped-catalog exemption); and since 3a-6b, entries that each match one whole line on
 the exact path, each with a reader-agreement test in
 `tests/test_inventory_values.py`: linearization hint-table lint
 (`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
 linearized; 15 messages of qpdf's linearization checker:
 readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
-stream's data start; content decoding is Phase 4's), and a reference to
-object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
-until 3a-7 flags dangling references); since 3a-6c, qpdf's warning on an
-in-use entry at offset 0 (`OFFSET_ZERO`, tested in
-`tests/test_inventory_decisions.py`), which the inventory reads as no
-object -- the oracle drops such an entry from qpdf's map only after MuPDF
-and libqpdf have both read it as null.
+stream's data start; content decoding is Phase 4's) -- the entry for a
+reference to object 0 (`OBJECT_ZERO_REFERENCE`) went with 3a-7a, which
+flags it `REF_DANGLING`; since 3a-6c, qpdf's warning on an in-use entry
+at offset 0 (`OFFSET_ZERO`, tested in `tests/test_inventory_decisions.py`),
+which the inventory reads as no object -- the oracle drops such an entry
+from qpdf's map only after MuPDF and libqpdf have both read it as null.
+And one whole-line entry on qpdf's own line, which carries no path
+(issue #88): a page content stream's syntax error in a token starting at
+byte 0, which qpdf prints with no offset, `page object N G stream N G
+(content): ...` (one stream or an array of them; `CONTENT_AT_ZERO`) --
+content syntax is Phase 4's, as for the `(content, offset N)` form.
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader
@@ -683,7 +696,16 @@ own machine (`sha256sum`) when a number needs explaining.
   one-character-per-line stack as one line, which turned four
   `layout.vertical-stack-*` pattern-rule cases from manual review into a hard
   finding on a misread number (both fixed; see the CHANGELOG). `full-macos`
-  skips the grids, so only the weekly job runs those cases with OCR.
+  skips the grids, so only the weekly job runs those cases with OCR. Two
+  sides of that fix are also pinned outside the grids. `full-macos` runs
+  both on every PR, but only the second is a real guard there:
+  - `page.digit-column`, clean: a lone digit column must not give a hard
+    finding. It runs everywhere, OCR or not, but only macOS 27 misreads
+    the column, so only a local macOS 27 run catches a regression there;
+    on CI's macOS 26 it passes even with the code before the fix.
+  - `page.scan-image-sideways-90` and `-270`, `requires: ocr`: an SSN
+    that exists only as a turned image must stay a hard OCR finding. CI
+    guards this side on every PR.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 
