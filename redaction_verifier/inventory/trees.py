@@ -12,8 +12,9 @@ the whole tree: by bytes, and (owner decision 9, P3) as text, which is
 what both readers compare -- so a name key must decode the same in both:
 lossless, without a language tag, and in PDFDocEncoding only from the
 bytes both readers map alike (printable ASCII and 0xA1-0xFF but 0xAD;
-one trailing NUL allowed, owner decision 10) or in UTF-16BE without
-U+0000 -- unique and in order under each reader's reading. An empty root (neither /Names nor /Kids, or an empty array)
+one trailing NUL after printable ASCII allowed, owner decision 10) or in
+UTF-16BE without U+0000 or U+001B -- unique and in order under each
+reader's reading. An empty root (neither /Names nor /Kids, or an empty array)
 reads as empty in both readers (owner decision R5). A non-empty name tree
 in an encrypted revision is flagged until 3a-9 decrypts its keys (P4).
 Anything else is FlagReason.NAME_TREE with a closed NameTreeRule.
@@ -99,24 +100,33 @@ def build_trees(revisions: int, changes: list[list[int]],
 
 def key_text(raw: bytes) -> str | None:
     """A name key as MuPDF reads it as text, or None when the readers may
-    not read it alike. UTF-16BE without U+0000 (MuPDF handles text as C
-    strings), or PDFDocEncoding from the bytes both readers map alike --
-    printable ASCII and 0xA1-0xFF but 0xAD, which MuPDF maps to U+0000 and
-    qpdf does not -- plus one trailing NUL byte (owner decision 10,
-    2026-10-12, amending P3): MuPDF reads the key as a C string, the NUL
-    cut off; qpdf keeps it (qpdf_key_text); both resolve the key as written
-    to the same object (tests/test_inventory_trees.py). Keys are checked
-    unique and in order under both readings (_order): with keys of mixed
-    encodings, order under one does not imply order under the other."""
+    not read it alike.
+
+    UTF-16BE without U+0000 (MuPDF handles text as C strings) and without
+    U+001B (MuPDF strips a language escape byte-wise -- ESC, 2 or 4 bytes
+    of any value, ESC -- where libqpdf strips nothing and our own tag rule
+    matches only ASCII letters). Or PDFDocEncoding from the bytes both
+    readers map alike: printable ASCII and 0xA1-0xFF but 0xAD, which MuPDF
+    maps to U+0000 and qpdf does not. A printable-ASCII key may end in one
+    NUL byte (owner decision 10, 2026-10-12, amending P3): MuPDF cuts it
+    off, libqpdf keeps it (qpdf_key_text), and both resolve the key as
+    written to the same object (tests/test_inventory_trees.py); MuPDF keeps
+    the NUL of a key holding any byte at or above 0x80, so there it flags.
+    Keys are checked unique and in order under both readings (_order):
+    with keys of mixed encodings, order under one does not imply order
+    under the other."""
     decoded = text_string(raw)
     if not decoded.lossless or decoded.tags_removed:
         return None
     if decoded.encoding is TextEncoding.UTF16BE:
-        return None if "\0" in decoded.text else decoded.text
-    body = raw[:-1] if raw.endswith(b"\0") else raw
-    if decoded.encoding is TextEncoding.PDFDOC and all(
-            (0x20 <= b <= 0x7E or b >= 0xA1) and b != 0xAD for b in body):
-        return decoded.text[:len(body)]
+        return None if "\0" in decoded.text or "\x1b" in decoded.text else decoded.text
+    if decoded.encoding is not TextEncoding.PDFDOC:
+        return None
+    if raw.endswith(b"\0"):
+        body = raw[:-1]
+        return decoded.text[:len(body)] if all(0x20 <= b <= 0x7E for b in body) else None
+    if all((0x20 <= b <= 0x7E or b >= 0xA1) and b != 0xAD for b in raw):
+        return decoded.text
     return None
 
 
@@ -237,6 +247,12 @@ class _Walk:
                 # The subtree's least and greatest keys, if its entries are
                 # in order (else ORDER flags it): its first and last, never
                 # a copy (a deep tree would copy each leaf once per level).
+                # Comparing passes over the keys' bytes: charged by their
+                # length (a /Limits array many nodes share by reference
+                # would otherwise compare a long key once per node, free).
+                if isinstance(limits, tuple) and not self.charge(
+                        sum(len(k) if isinstance(k, bytes) else 1 for k in limits) + 1):
+                    return None
                 if len(entries) <= start or (not ciphered and limits != (
                         entries[start].key, entries[-1].key)):
                     self.flag(NameTreeRule.LIMITS, holder)

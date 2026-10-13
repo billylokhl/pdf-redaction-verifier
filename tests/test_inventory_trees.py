@@ -504,7 +504,12 @@ def test_other_nul_and_control_keys_stay_flagged(keys: list[bytes]) -> None:
     [b"<61AD62>", b"<61AD63>"],                 # 0xAD: MuPDF reads U+0000, qpdf does not
     [b"(a\\000)", b"<FEFF00610000>"],            # one name to libqpdf, two to MuPDF
     [b"<FEFF00610000>", b"<FEFF0062>"],          # U+0000 in a UTF-16 key
-], ids=["soft-hyphen", "nul-mixed-encodings", "utf16-nul"])
+    [b"<FEFF001B4142001B0061>", b"<FEFF0062>"],  # ESC: MuPDF strips a language escape
+    [b"<FEFF001B0041001B0061>", b"<FEFF0062>"],  # ... of any bytes; libqpdf strips none
+    [b"(a)", b"<FEFF001B4142001B0061>"],         # one name to MuPDF ("a"), two to libqpdf
+    [b"<A100>", b"<B0>"],                       # MuPDF keeps the NUL after a high byte
+], ids=["soft-hyphen", "nul-mixed-encodings", "utf16-nul", "utf16-esc-any", "utf16-esc-ascii",
+        "utf16-esc-collides", "high-byte-nul"])
 def test_keys_the_readers_read_apart_are_flagged(keys: list[bytes]) -> None:
     assert int(R.TEXT) in _rules(_files(*keys))
 
@@ -536,3 +541,37 @@ def test_an_images_soft_mask_needs_no_resources() -> None:
     data = _file(streams={4: (image + b" /SMask 5 0 R", b"\x00"), 5: (image, b"\x00")},
                  page=_page(b" /Resources << /XObject << /I 4 0 R >> >>"))
     assert not _scoped(data)
+
+
+# Pinned regressions of review round 2 (3a-7c): one in a tree the gate
+# compares, one in a tree it does not -- the inventory flags both.
+@requires_qpdf
+def test_an_escape_key_in_embedded_files_is_flagged_not_compared(tmp_path: Path) -> None:
+    data = _files(b"(a)", b"<FEFF001B4142001B0062>")
+    assert int(R.TEXT) in _rules(data)
+    assert not compare(data, tmp_path).agrees  # FLAGGED: never certified
+
+
+def test_an_escape_key_in_dests_is_flagged() -> None:
+    data = _file(b" /Names << /Dests 4 0 R >>",
+                 {4: b"<< /Names [(a) [3 0 R /Fit] <FEFF001B4142001B0062> [3 0 R /Fit]] >>"})
+    assert int(R.TEXT) in _rules(data)
+
+
+def test_a_shared_limits_array_of_a_long_key_is_charged() -> None:
+    # Review round 2: d nodes naming one /Limits array of an L-byte key
+    # compared d x L bytes uncharged. Now charged: linear, or BUDGET_EXHAUSTED.
+    def chain(levels: int) -> bytes:
+        key = b"(" + b"a" * (64 * levels) + b")"
+        objects: dict[int, bytes] = {6: b"[%s %s]" % (key, key)}
+        for i in range(levels):
+            node = 100 + i
+            below = (b"/Kids [%d 0 R]" % (node + 1) if i + 1 < levels
+                     else b"/Names [%s 1]" % key)
+            objects[node] = b"<< %s %s >>" % (b"/Limits 6 0 R" if i else b"", below)
+        return _file(b" /Names << /Dests 100 0 R >>", objects)
+    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(chain, 200)
+    for flags in (f_s, f_l):
+        assert {f.reason for f in flags} <= {FlagReason.BUDGET_EXHAUSTED}
+    assert t_l < 12 * max(t_s, 0.05), (t_s, t_l, w_s, w_l)
+    assert FlagReason.BUDGET_EXHAUSTED in {f.reason for f in f_l}

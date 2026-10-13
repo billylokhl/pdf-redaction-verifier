@@ -400,7 +400,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     one visited set (a node two trees share is reached twice). Review round 1 added: a soft
     mask's /G as a role (MuPDF runs it as a form whatever its /Subtype); byte 0xAD in a
     PDFDocEncoding key (MuPDF reads U+0000) and U+0000 in a UTF-16 key flag; keys in order
-    under each reader's reading. Gate: /EmbeddedFiles against
+    under each reader's reading. Round 2: U+001B in a UTF-16 key flags (MuPDF strips a
+    language escape of any bytes); the trailing NUL only after printable ASCII (MuPDF keeps it
+    after a high byte); /Limits comparisons charged by key length (a shared /Limits array
+    had compared a long key once per node, free). Gate: /EmbeddedFiles against
     MuPDF and libqpdf, keys as each reads them; EMPTY_TREE_ROOT anchored (R5), with
     agreement tests for /EmbeddedFiles, /Dests and /PageLabels. Measured cost differed from
     ADR 0011's: P3 flagged 85 corpus files (expected 0) -- 72 keys ending in one NUL, 10
@@ -510,8 +513,8 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    name tree in an encrypted revision flags NAME_TREE until 3a-9; P5: a /Parent cycle among
    AcroForm fields flags FIELD_TREE. P1 (the annotation gate's method) waits for 3a-7d's
    spike.
-10. (2026-10-12, 3a-7c's measured costs) P3 amended: a name-tree key may end in one NUL
-   byte (72 corpus files), allowed because a reader-agreement test shows MuPDF (which cuts
+10. (2026-10-12, 3a-7c's measured costs) P3 amended: a printable-ASCII name-tree key may
+   end in one NUL byte (72 corpus files), allowed because a reader-agreement test shows MuPDF (which cuts
    the NUL) and libqpdf (which keeps it) resolve the key as written to the same object;
    keys must be unique and in order under both readers' readings (NUL cut off, NUL kept). Keys sorted by bytes but not as
    text (10 files) and bytes 0x7F-0xA0 (3 files) stay flagged. RESOURCE_SCOPE stays strict

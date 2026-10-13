@@ -140,9 +140,9 @@ class Graph:
 
     edges: dict[UnitRef, tuple[Edge, ...]]
     trailers: tuple[tuple[Edge, ...], ...]
-    # Each form, tiling pattern, Type3 font or appearance stream's own
-    # /Resources as written (a dictionary, or the reference to one), by
-    # body (3a-7c, scopes.py): its scope's innermost dictionary, the only
+    # Each form, tiling pattern, Type3 font, appearance stream or soft-mask
+    # group's own /Resources as written (a dictionary, or the reference to
+    # one), by body (3a-7c, scopes.py): its scope's innermost dictionary, the only
     # one 4a resolves names in (ADR 0011 item 3). A body that must carry
     # one and does not is flagged RESOURCE_SCOPE instead.
     scopes: dict[UnitRef, PdfValue]
