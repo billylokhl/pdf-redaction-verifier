@@ -337,6 +337,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tests/test_inventory_decisions.py's offset-0 entry with a /Probe reference (now
     REF_DANGLING; without one it still agrees). Linearity: many revisions, each rewriting a
     target many bodies reference. Expected: +7 corpus files flagged (ADR 0011's measurement).
+    Done (3a-7a PR): graph.py, REF_GENERATION / REF_DANGLING; gate re-run all passing: corpus
+    1,932 agree / 141 flagged / 0 unflagged disagreements (+7, as measured), caselib 407/6/0
+    (413 cases), fuzz 501/1,499/0.
   - 3a-7b The page tree and page attributes (ADR 0011 item 2): FlagReason.PAGE_TREE with a
     closed PageTreeRule (like NumberRule; final members fixed in the PR: the root's shape, a
     kid that is not an indirect reference to a dictionary, a node reached twice, a node's
@@ -363,6 +366,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     whose pages lack /Resources or /MediaBox. Closes #77, #52 item 5, #44 comment 1 item 3;
     part of #52 item 2 (the unanchored content-stream substring stays, Phase 4's).
     Linearity: wide and deep trees over many revisions. Expected corpus cost: 0 (ADR 0011).
+    Done (3a-7b PR): pages.py, PAGE_TREE with 14 PageTreeRules (review added NO_PAGES, boxes
+    in 32-bit floats at least one unit wide and tall, no /UserUnit but 1: what MuPDF shows
+    otherwise differs from qpdf); the gate compares page lists, inherited attributes as
+    written and the page as MuPDF shows it; exemptions removed. Gate: corpus 1,932/141/0, caselib 407/6/0,
+    fuzz 501/1,499/0 -- no verdict change (cost 0, as measured).
   - 3a-7c Resource scopes and name/number trees (ADR 0011 items 3 and 4). RESOURCE_SCOPE: a
     form XObject, a tiling pattern, a Type3 font or an annotation appearance stream without
     its own /Resources dictionary (direct or an indirect reference to one) -- found both by
@@ -433,6 +441,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   xref_stream_raw (decrypted, unfiltered). If it fails → reopen ADR 0001 (owner).
 - 3a-9 crypt.py: per-revision decrypt via pikepdf, value-level cross-check vs MuPDF,
   DECRYPTION_MISMATCH / DECRYPTION_UNVERIFIED, /Perms mismatch → flag.
+  From 3a-7b's review: decryption depends on each revision's own /Encrypt and /ID, which
+  pages.py's reuse (the whole-result reuse when no read object changed, and page records
+  keyed on attributes as written) does not see -- 3a-9 adds the revision's encryption
+  identity to both, or flags any change of /Encrypt across revisions.
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
   — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).

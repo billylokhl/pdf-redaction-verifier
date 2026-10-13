@@ -28,7 +28,10 @@ from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
 from scorecard.inventory import libqpdf_form, same_as_mupdf, structural, text_form, value_form
 
+from redaction_verifier.budget import Budget
+from redaction_verifier.inventory import build_inventory
 from redaction_verifier.inventory.objects import IndirectObject, ObjectParser, PdfInt
+from redaction_verifier.ledger import FlagReason
 
 from .conftest import requires_qpdf
 
@@ -177,8 +180,9 @@ _VALUE_PIECES = st.sampled_from([
     b"0.0000000000000000000000000000000000001", b"0.00000000000000000000000000000000000001",
     b"0.00000000000000000000000000000000000000000000001", b"66.089836", b"100000004.5",
     b"000012345.5", b"0016777217.5", b"0.123456789012345678", b"+.5", b"-007.5",
-    # (Not `1 65534 R`: a generation mismatch, the 3a-7 gap pinned below.)
-    b"0 0 R", b"99 0 R", b"8388607 0 R", b"8388608 0 R", b"1 65535 R",
+    # Since 3a-7 these are flagged (REF_DANGLING, REF_GENERATION): the fuzz
+    # checks that build_inventory flags whatever the readers read apart.
+    b"0 0 R", b"99 0 R", b"3 5 R", b"1 65534 R", b"8388607 0 R", b"8388608 0 R", b"1 65535 R",
     b"/A#FF", b"/#E9", b"<FEFF0041>", b"<EFBBBF41>",
 ])
 
@@ -199,7 +203,7 @@ def _value_pdf(body: bytes) -> tuple[bytes, int]:
     objects = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> >>",
         4: body,
     }
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
@@ -214,7 +218,8 @@ def _value_pdf(body: bytes) -> tuple[bytes, int]:
     return bytes(out), offsets[4]
 
 
-_LIVE = (1, 2, 3, 4)  # the objects _value_pdf writes
+def _inventory_flags(data: bytes) -> set[FlagReason]:
+    return {f.reason for f in build_inventory(data, budget=Budget(file_size=len(data))).flags}
 
 
 def _readers_agree(data: bytes, offset: int, path: Path) -> tuple[bool, object]:
@@ -223,10 +228,10 @@ def _readers_agree(data: bytes, offset: int, path: Path) -> tuple[bool, object]:
     warning or repair from either? (agreed, what differed)"""
     ours = ObjectParser(data).parse_indirect_at(offset, len(data))
     assert ours is not None
-    mine = value_form(ours.value, data, _LIVE)
+    mine = value_form(ours.value, data)
     pymupdf.TOOLS.mupdf_warnings()
     doc = pymupdf.open(stream=data, filetype="pdf")
-    mu = text_form(doc.xref_object(4, compressed=False).encode("latin-1"), _LIVE)
+    mu = text_form(doc.xref_object(4, compressed=False).encode("latin-1"))
     mu_warnings, repaired = pymupdf.TOOLS.mupdf_warnings(), doc.is_repaired
     path.write_bytes(data)
     with pikepdf.explicit_conversion(), pikepdf.Pdf.open(
@@ -247,8 +252,8 @@ def test_an_unflagged_value_reads_the_same_in_every_reader(
     data, offset = _value_pdf(body)
     ours = ObjectParser(data).parse_indirect_at(offset, len(data))
     assert ours is not None
-    if ours.flags or not ours.complete:
-        return
+    if ours.flags or not ours.complete or _inventory_flags(data):
+        return  # flagged: readers may disagree, and we said so
     event("reached the readers")  # not vacuous: --hypothesis-show-statistics
     agreed, seen = _readers_agree(data, offset, tmp_path_factory.mktemp("val") / "case.pdf")
     assert agreed, (body, seen)
@@ -293,14 +298,12 @@ def test_every_accepted_leniency_reads_the_same_in_every_reader(
 
 
 @requires_qpdf
-def test_a_generation_mismatch_is_unflagged_until_the_reference_graph(tmp_path: Path) -> None:
-    """Known gap, owned by 3a-7 (the reference graph flags it): MuPDF
-    resolves `3 5 R` by its number, libqpdf reads null, and the inventory
-    does not flag it yet. The gate compares values, so it reports such a
-    file as a disagreement (fail closed). When 3a-7 flags it, this test
-    flips: assert the flag instead, and add `3 5 R` to _VALUE_PIECES."""
+def test_a_generation_mismatch_is_flagged(tmp_path: Path) -> None:
+    """MuPDF resolves `3 5 R` by its number, libqpdf reads null: the
+    readers disagree, and since 3a-7 the inventory flags it."""
     data, offset = _value_pdf(b"<< /K 3 5 R >>")
     ours = ObjectParser(data).parse_indirect_at(offset, len(data))
     assert ours is not None and ours.flags == ()
+    assert _inventory_flags(data) == {FlagReason.REF_GENERATION}
     agreed, _ = _readers_agree(data, offset, tmp_path / "case.pdf")
     assert not agreed

@@ -61,7 +61,9 @@ jobs:
   # tests still run. Guards the cross-platform degrade-loudly behavior.
   partial-linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The 3.12 leg runs under coverage: about 14 min before 3a-7b's page-tree
+    # and linearity tests (wall-clock checks at n and 8n), past 15 after.
+    timeout-minutes: 25
     strategy:
       matrix:
         # qpdf: the release matching each Python's pikepdf pin's libqpdf
