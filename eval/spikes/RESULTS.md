@@ -594,7 +594,7 @@ docs/phase3a-plan.md (1,932 agree, 141 flagged).
 Before the owner's decision 10 the same code flagged `NAME_TREE` on 85
 files (1,848 agree, 225 flagged, 10.85%): 72 with plain-encoded keys
 ending in one NUL byte, 10 whose keys sort by bytes but not as text (9
-mixing UTF-16 and plain-encoded keys), 3 with bytes 0x7F-0xA0. Re-run after review round 1 (commit 50e937b: 0xAD and U+0000 in a UTF-16 key flag, keys in order under each reader's reading): unchanged -- the class with 0xAD included is still 3 files, no key holds 0xAD or a UTF-16 U+0000. The NUL
+mixing UTF-16 and plain-encoded keys), 3 with bytes 0x7F-0xA0. Re-run after review round 1 (commit 50e937b: 0xAD and U+0000 in a UTF-16 key flag, keys in order under each reader's reading): unchanged -- the class with 0xAD included is still 3 files, no key holds 0xAD or a UTF-16 U+0000. Re-run after review round 2 (commit 488248e: U+001B in a UTF-16 key flags, the trailing NUL only after printable ASCII, /Limits comparisons charged): unchanged again -- all 72 trailing-NUL files are printable ASCII. The NUL
 class is now allowed (a reader-agreement test shows both readers resolve
 such a key to the same object); the other 13 stay flagged. Case library
 (413 cases): 387 agree, 26 flagged, 0 unflagged disagreements -- 20
