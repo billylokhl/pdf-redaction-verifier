@@ -36,9 +36,10 @@ expect the tool to catch them.
 
 K42 and K43 (OCR's silent misses on scanned pages, #61 and #67;
 ``caselib/families/ocr_misses.py``) are new rows, each with its own
-case, and their stories carry the K-number prefix. K42 was fixed in the
-pull request that pinned it, so, like K40 and K41, §8 marks it fixed and
-it has no entry; K43 is now manual review rather than silent, still short
+case, and their stories carry the K-number prefix. K42 was fixed, on
+macOS 27, in the pull request that pinned it, so, like K40 and K41, §8
+marks it fixed and it has no entry (on CI's macOS 26 it still exits 0:
+the case's ``older_macos`` label); K43 is now manual review rather than silent, still short
 of its target.
 
 K1-K11's cases (``caselib/families/raw.py``) also write their K-number

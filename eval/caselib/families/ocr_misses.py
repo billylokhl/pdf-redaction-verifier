@@ -6,9 +6,11 @@ a scratch page, rendered at 300 dpi and drawn as the page's only
 content, so no layer but OCR can see it. Vision reports success, but
 what it returns leaves the secret out. Both exited 0 until OCR read the
 pages again: unstacked (K42, fixed) and turned (K43, now manual review,
-short of its target). Labels are what macOS 27.0.1's Vision gives; CI's
-macOS runners are older and run these cases too (`full-macos`), so they
-say whether that version reads the same way."""
+short of its target). Labels are what macOS 27.0.1's Vision gives, the
+owner's macOS. CI's ``full-macos`` runner (macOS 26) runs these cases too
+and its Vision reads both pages differently, so each also carries what
+macOS 26 gives (``older_macos``): there K42 still exits 0, and K43's
+SSN line is read whole (exit 1, its target)."""
 
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from typing import Callable
 
 import pymupdf as fitz
 
-from ..model import SSN, KnownGap, case, expect
+from ..model import SSN, KnownGap, OlderMacOS, case, expect
 from ..pdfkit import save
 from ..rawpdf import build, flate, one_page, page
 
@@ -86,8 +88,11 @@ def _raw_scan_of(draw: Callable[[fitz.Page], None], clip: fitz.Rect, path: Path)
           "raw line contain 123456789. With the value rule nothing matched (exit 0, no "
           "warnings) until OCR unstacked such a line: its glyphs laid out as one line and read "
           "again, a reconstruction, where the value matches (manual review, the Text layer's "
-          "answer for a stack).",
+          "answer for a stack). On macOS 26 (CI's runner) Vision reads this page "
+          "differently, and it still exits 0 there.",
     expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
+    # macOS 26 (CI): still exit 0, no warnings; why was not measured there.
+    older_macos=OlderMacOS(27, expect(0)),
     rules=({"name": "SSN", "value": SSN},),
     requires=("ocr",),
     mistake="Nobody redacted the value; it is written one character per line in a scanned "
@@ -122,10 +127,13 @@ def _dense_sideways_page(page: fitz.Page) -> None:
           "with any vertical line turned 90 and 270 degrees, which finds the SSN's line; a "
           "turned reading also turns a one-character-per-line stack into a row Vision "
           "misreads, so it is only manual review (today: exit 2). The same page with 20 or 30 "
-          "lines is read whole and exits 1, as rotated text does.",
+          "lines is read whole and exits 1, as rotated text does. On macOS 26 (CI's runner) "
+          "Vision reads the SSN's line, and this page exits 1.",
     expected=expect(1, findings=(("Any SSN", "live"),), layers=(("Any SSN", "OCR"),)),
     known_gap=KnownGap("live.pixels.ocr-dropped-line",
                        expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),))),
+    # macOS 26 (CI): Vision reads the SSN's line, a hard finding (exit 1).
+    older_macos=OlderMacOS(27, None),
     rules=({"name": "Any SSN", "class": "ssn"},),
     requires=("ocr",),
     mistake="Scanning a page of a report sideways and sharing the image without a text "

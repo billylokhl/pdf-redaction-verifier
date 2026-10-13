@@ -166,8 +166,9 @@ matcher sees it whole. Each is ✗:
   as one line and reading that, so the value is manual review
   (`layout.scanned-vertical-stack`, [#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)). In 25 of 48 generated stack
   pages, though, Vision reported no vertical line, only some of the
-  single glyphs or nothing, and those stacks still pass as clean. What
-  macOS 26 returns was not measured.
+  single glyphs or nothing, and those stacks still pass as clean. On
+  macOS 26 (CI's runner) `layout.scanned-vertical-stack` itself still
+  passes as clean; what Vision returns there was not looked at.
 
 ## What ⚑ costs, and what comes next
 

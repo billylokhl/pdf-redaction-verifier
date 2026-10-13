@@ -399,7 +399,10 @@ re-read confirmed is unstacked: the runs of inked pixel rows in its box
 are laid out left to right as one line and read (#61). In a stack
 Vision reports as a line, that reads the value as written (21 of 23
 generated stacks); in 25 of 48 stack pages Vision reported no vertical
-line at all, and those are not read (#81). The cost is noise on some
+line at all, and those are not read (#81). These counts are macOS 27's;
+on CI's macOS 26, Vision reads `layout.scanned-vertical-stack` so that
+it still passes as clean, and reads `page.dense-sideways-scan`'s SSN
+line whole (a hard finding). The cost is noise on some
 clean scans: turned, a column of repeated digits reads as a row, so a
 questionnaire with sideways headers and answer columns of 1–5 matched
 the phone pattern (manual review; 1 of 14 generated clean scans moved).

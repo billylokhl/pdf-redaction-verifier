@@ -289,7 +289,9 @@ flattened to images, text converted to vector outlines.
   are still stored in the file. An image placed outside the visible page
   area is not rendered, so OCR does not see it either. A scanned value
   written one character per line that Vision does not report as a line
-  at all passes as clean with a value rule (#81); a page Vision reads
+  at all passes as clean with a value rule (#81); on macOS 26 so does
+  the stack that macOS 27 unstacks (`layout.scanned-vertical-stack`,
+  K42), since Vision there reads it differently; a page Vision reads
   with lines missing passes too, unless a line on it is read vertically
   (#67, #82).
 

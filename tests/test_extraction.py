@@ -789,7 +789,10 @@ class TestOcrVerticalLinesWithVision:
         # Vision reads 8 pt spaced digits whole depends on the OS (macOS 27
         # does; on CI's macOS 26 it did not, at 90 or 270 degrees), so the
         # check is the invariant: a line Vision's own reading holds whole,
-        # the genuine readings hold whole too.
+        # the genuine readings hold whole too. Vision's own reading is the
+        # raw readings only: the turned and unstacked reads after them are
+        # of another image (on macOS 26 the page turned holds the line
+        # whole where Vision's own reading does not).
         doc = fitz.open()
         page = doc.new_page()
         page.insert_text(at, "1 2 3 - 4 5 - 6 7 8 9", fontname="cour", fontsize=8,
@@ -801,7 +804,7 @@ class TestOcrVerticalLinesWithVision:
         genuine, raw = (
             [normalize_string(ln) for r in part for ln in r.split("\n")]
             for part in (readings[:ocr.OCR_GENUINE_READINGS],
-                         readings[ocr.OCR_GENUINE_READINGS:]))
+                         readings[ocr.OCR_GENUINE_READINGS:2 * ocr.OCR_GENUINE_READINGS]))
         whole = [ln for ln in raw if normalize_string(SSN) in ln]
         assert all(ln in genuine for ln in whole), (raw, genuine)
 

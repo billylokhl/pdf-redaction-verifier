@@ -710,8 +710,14 @@ own machine (`sha256sum`) when a number needs explaining.
   Separately, two OCR cases on scanned pages, `layout.scanned-vertical-stack`
   (K42, fixed) and the known gap `page.dense-sideways-scan` (K43)
   (`families/ocr_misses.py`), pin what Vision on macOS 27 returns. They
-  are not grid cases, so `full-macos` runs them on macOS 26 too, and
-  fails if Vision there reads those pages differently.
+  are not grid cases, so `full-macos` runs them on macOS 26 too, where
+  Vision reads both pages differently: K42 still exits `0` there and
+  K43 exits `1`. Each case says so in its `older_macos` label
+  (`OlderMacOS(27, today)` in `caselib/model.py`), which replaces its
+  `known_gap` on a macOS older than 27: `today` is the wrong answer pinned
+  there, or `None` when the case's `expected` holds there. So CI guards
+  what macOS 26 gives and a local macOS 27 run what the owner gets; a
+  change on either side fails until the label is updated.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 
