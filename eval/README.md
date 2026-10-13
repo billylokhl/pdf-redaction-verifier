@@ -148,6 +148,72 @@ strings; every screen tried was defeatable — `/Users/[^/]+`, `.+\.home`,
 `[^@]+@acme\.com`, a conditional group — and no case used the
 allowlist, so it is literal-only now.)
 
+### The real-redactor set (`redactor_set/`, local)
+
+The committed real-tool files above are three, made by hand. The
+real-redactor set measures a redaction tool's real output at scale,
+against secrets whose every location is known: fabricated documents of
+the kinds people redact, run through the tool, then (in later PRs)
+judged by an oracle that shares no code with the verifier and adjudicated
+per file, so the verifier's silent misses and its exit `0` rate on
+correctly redacted files can be counted. It is local: everything it
+writes lives under the gitignored `eval/scorecard/redactor_set_local/`
+(the generator refuses any other `--root` unless given
+`--allow-outside`), and only aggregate counts are ever published. A
+small, scrubbed subset will join `caselib/real/` with the usual sidecars.
+
+```bash
+uv sync --extra test --extra redactor-set     # reportlab, Pillow, pdfminer.six
+PYTHONPATH=eval:. python -m redactor_set generate        # 20 documents -> inputs/
+PYTHONPATH=eval:. python -m redactor_set probes          # 22 probes   -> probes/
+REDACTOR_CMD=... REDACTOR_PYTHON=... \
+  PYTHONPATH=eval:. python -m redactor_set run --set inputs   # or --set probes
+```
+
+- **Documents** (`templates.py`): 20 templates — tax forms (a W-2, a
+  1099-INT, a fillable and a printed 1040-style return, a state return),
+  statements (checking, with check images, card, a two-column brokerage
+  one), scans (image-only, searchable with an OCR text layer, and a mixed
+  packet), a three-page fillable application, a macOS "Save as PDF"
+  letter, and the parts a page-text redactor might not reach:
+  annotations, document Info and XMP, bookmarks, an attachment, page
+  thumbnails, values in another format, and a clean control. Five
+  producers write them — Chrome (`--no-pdf-header-footer`, a throwaway
+  profile), reportlab, tesseract, macOS `cupsfilter` and pikepdf — and
+  none is PyMuPDF, the library the verifier reads with. Needs Chrome
+  (`CHROME` to override its path), poppler, tesseract and macOS.
+- **Secrets** (`persona.py`): one fabricated household, every value
+  unissuable (SSN area 666 or the repo's 123-45-6789, EIN prefix 00, an
+  unassigned routing prefix, the card networks' test number,
+  example.com), no two sharing a run of six digits. One fabricated config
+  with a real config's structure (exact values, patterns, entity types;
+  LLM detection off), written to `config/redact.yaml`, drives every
+  document and is also the verifier's `--secrets`.
+- **Truth** (`truth.py`, `<doc>.truth.json`): every place a secret was
+  written — its location code (live text, a variant format, a split
+  value, a form field, each annotation kind, Info, XMP, an outline, an
+  attachment, scan pixels, an OCR text layer, an image, a thumbnail),
+  page, box (points, top-left origin) and, for drawn text, the bytes its
+  own fonts encode it with once a text block's string operands are
+  joined (`locate.py`, through each font's ToUnicode map, pdfminer.six
+  for positions). Generation fails if a declared value is drawn a
+  different number of times, or a secret appears anywhere undeclared.
+- **Preflight** (`generate.py`): a document is refused if it carries
+  this machine's login name or home path (raw or decoded), a secret's
+  bytes inside a font program or image samples (a coincidence an oracle
+  would report as a leak), or a trailer `/ID` the config's patterns
+  match.
+- **Probes** (`probes.py`): one location per document, to see what the
+  tool does to each place alone before the full set is trusted.
+- **Runner** (`run.py`): method 1 is the tool exactly as it is run day
+  to day, `$REDACTOR_CMD <file> --config <yaml>`; method 2 re-saves
+  method 1's output with garbage collection (`garbage=4, deflate=True`)
+  in the tool's own Python, `$REDACTOR_PYTHON`. The tool is named
+  nowhere in the repo, only by these environment variables.
+
+Nothing in `redactor_set/` imports the verifier
+(`tests/test_redactor_set_generator.py` checks it).
+
 ### The blind red-team slot (`caselib/redteam/`)
 
 Every other case is written by someone who has read `verify.py`, which

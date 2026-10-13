@@ -517,7 +517,12 @@ Guards against same-author bias:
   shrink.
 - A committed **real-redactor tier**: small binaries with fake data and
   recorded provenance — a redactor POC, Acrobat Redact, a macOS
-  Preview box, Word export with a shape over text.
+  Preview box, Word export with a shape over text. Extended by a local
+  **real-redactor set** (`eval/redactor_set`, eval/README.md): 20
+  fabricated documents from five producers, each with a truth manifest
+  of every planted secret, run through a redaction tool as-is and
+  re-saved with garbage collection; an oracle independent of the
+  verifier, the measurement and a committed subset follow.
 - A **blind red-team slot**: cases written from `COVERAGE.md` and the
   threat model by someone (or an agent) who has not read the code.
 
