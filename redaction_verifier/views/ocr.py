@@ -106,8 +106,8 @@ class Observation:
     bottom_left: tuple[float, float]
 
 
-# What a re-read, a turned reading or an unstacked line may raise without
-# failing the page: Vision's own failure (_vision_recognize_batch raises
+# What a turned reading or an unstacked line (_extra_readings) may raise
+# without failing the page, which then reads as it did before them: Vision's own failure (_vision_recognize_batch raises
 # RuntimeError) and MuPDF's (its errors subclass FzErrorBase, not
 # RuntimeError). Anything else is a bug and fails the page (PAGE_FAILED).
 _READ_FAILURES: tuple[type[BaseException], ...] = (RuntimeError, fitz.mupdf.FzErrorBase)
@@ -293,9 +293,14 @@ def _confirm_vertical(
                     image.insert_image(image.rect, stream=png_bytes)
                 try:
                     reads = _upright_reads(image, fitz.IRect(*corners))
-                except _READ_FAILURES:
-                    # A re-read that fails confirms nothing: its lines stay
+                except RuntimeError:
+                    # A re-read Vision fails on (_vision_recognize_batch
+                    # raises RuntimeError) confirms nothing: its lines stay
                     # manual review, and the page's other lines still count.
+                    # Any other exception fails the page (PAGE_FAILED),
+                    # MuPDF's errors included: they subclass FzErrorBase, not
+                    # RuntimeError, and dropping them here instead could move
+                    # a page that fails today (exit 2) to clean (#99).
                     continue
                 for p, i in members:
                     text = normalize_string(passes[p][i].text)

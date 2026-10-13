@@ -462,14 +462,14 @@ class TestOcrVerticalLines:
         confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), fail)
         assert confirmed == [[False, True], []]
 
-    def test_a_mupdf_error_in_a_re_read_leaves_the_line_unconfirmed(
-        self, monkeypatch
-    ) -> None:
+    def test_a_mupdf_error_in_a_re_read_fails_the_page(self, monkeypatch) -> None:
+        # As on main: dropping it would move a failed page (exit 2) to
+        # whatever the rest of the page gives, possibly clean (#99).
         def refuse(call: int) -> tuple[list[str], list[str]]:
             raise fitz.mupdf.FzErrorBase(5, "Overly large image")
 
-        confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), refuse)
-        assert confirmed == [[False, True], []]
+        with pytest.raises(fitz.mupdf.FzErrorBase):   # the page fails: PAGE_FAILED
+            self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), refuse)
 
     def test_a_bug_in_a_re_read_is_not_swallowed(self, monkeypatch) -> None:
         def bug(call: int) -> tuple[list[str], list[str]]:
