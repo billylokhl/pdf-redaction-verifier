@@ -131,7 +131,8 @@ never hard-fails a clean document. Demotion never discards a match; what
 the tool cannot see at all is listed under [Known gaps](#known-gaps).
 Regex patterns are held to the stricter rule: hard only within one line
 of a genuine reading or one decoded string. Reported samples are masked
-(`****6789`).
+(`****6789`); when a sample overlaps one of your exact values, only `****` is
+shown, so no part of an exact value ever appears in a report.
 
 ## What it checks — six layers, most likely to find a leak first
 
@@ -578,7 +579,7 @@ and what the file stores.
 | **LLM** | Large language model — the AI the redactor uses to find names and addresses. |
 | **Luhn** | Checksum built into credit-card numbers; random 16-digit strings usually fail it. |
 | **Manual-review warning** | A possible match that needs a human to check it; exits `2`. |
-| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. |
+| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. If the match overlaps one of your exact values, only `****` is shown. |
 | **Mutation testing** | Deliberately breaking a guard to prove the tests notice. |
 | **NANP** | North American Numbering Plan — the rules for valid US/Canada phone numbers. |
 | **NFKC** | Unicode step that folds look-alike characters (fullwidth digits, fancy dashes) to plain ones without splitting accents. |

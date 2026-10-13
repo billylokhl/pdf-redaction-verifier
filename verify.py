@@ -519,7 +519,7 @@ def scan_page_layer(
             "REVIEW_FUSED_PATTERN",
             layer,
             f"{layer}: {where}: sequence matching pattern rule {name!r} appears "
-            f"only when lines, columns or pages are fused (sample {mask(sample)})"
+            f"only when lines, columns or pages are fused (sample {mask(sample, report.exact_norms)})"
             " — possibly coincidental concatenation; manual review recommended",
             storage="live",
             rule=name,
@@ -1077,7 +1077,7 @@ def scan_hidden_objects(
                     "REVIEW_HIDDEN_TEXT",
                     "Hidden",
                     f"Hidden: {item.location} contains a sequence matching "
-                    f"pattern rule {name!r} (sample {mask(sample)}) — this content "
+                    f"pattern rule {name!r} (sample {mask(sample, report.exact_norms)}) — this content "
                     "is a run of arbitrary text, so the match may be a "
                     "coincidental fusion; manual review recommended",
                     storage="live",
@@ -1186,7 +1186,7 @@ def _collect_exiftool(
                 "REVIEW_METADATA_RAW",
                 "Metadata",
                 f"Metadata: raw exiftool output matches pattern rule {name!r} "
-                f"(sample {mask(sample)}) — may originate from filesystem "
+                f"(sample {mask(sample, report.exact_norms)}) — may originate from filesystem "
                 "fields; manual review recommended",
                 storage="live",
                 rule=name,
@@ -1901,7 +1901,7 @@ def _report_payload_hit(
     if hard:
         report.record("Objects", name, where, sample, **origin)
         return
-    shown = f" (sample {mask(sample)})" if sample else ""
+    shown = f" (sample {mask(sample, report.exact_norms)})" if sample else ""
     report.warn(
         "REVIEW_OBJECT_TEXT",
         "Objects",
@@ -2288,7 +2288,7 @@ def _match_texts(
                 "Objects",
                 f"Objects: {where}: the document /ID (a generated identifier, "
                 f"written as hex digits) contains a sequence matching pattern rule "
-                f"{name!r} (sample {mask(sample)}) — such identifiers hold digit runs "
+                f"{name!r} (sample {mask(sample, report.exact_norms)}) — such identifiers hold digit runs "
                 "by coincidence; manual review recommended",
                 rule=name,
                 adjacency="NOISY_SOURCE",
@@ -2301,7 +2301,7 @@ def _match_texts(
             "REVIEW_ADJACENT_LITERALS",
             "Objects",
             f"Objects: {where}: adjacent literals fuse into a sequence "
-            f"matching pattern rule {name!r} (sample {mask(sample)}) — "
+            f"matching pattern rule {name!r} (sample {mask(sample, report.exact_norms)}) — "
             "possibly a coincidental concatenation; manual review recommended",
             rule=name,
             adjacency="JOINED_LITERALS",
@@ -3359,6 +3359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except VerifyError as exc:
             return finish(2, ("RULES_INVALID", str(exc)))
         secrets, patterns = rules.secrets, rules.patterns
+        report.exact_norms = tuple(s.normalized for s in secrets)
 
         matcher = SecretMatcher(secrets)
 

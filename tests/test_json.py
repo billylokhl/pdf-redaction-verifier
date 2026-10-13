@@ -701,3 +701,64 @@ class TestNothingSecretLeaks:
         _, data = _run(pdf, rules, tmp_path)
         for f in data["findings"]:
             assert f["rule"].isprintable()
+
+
+class TestMaskedTailNeverShowsAnExactValue:
+    """Issue #66: a pattern sample's masked tail must not reveal part of an
+    exact value (README: exact values are never shown). Fabricated data."""
+
+    @staticmethod
+    def _samples(tmp_path, text: str, rule_list: list[dict]) -> set[str]:
+        pdf = _pdf(tmp_path / "doc.pdf", text)
+        rules = _rules(tmp_path / "r.json", rule_list)
+        code, data = _run(pdf, rules, tmp_path)
+        assert code == 1
+        return {f["sample"] for f in data["findings"]}
+
+    def test_builtin_type_overlapping_an_exact_value(self, tmp_path) -> None:
+        # Before the fix this showed "****6789" (the value's own tail).
+        samples = self._samples(tmp_path, f"SSN {SSN}", [
+            {"name": "the value", "value": SSN},
+            {"name": "any ssn", "class": "ssn"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_user_pattern_overlapping_an_exact_value(self, tmp_path) -> None:
+        # Before the fix: "****7890", whose "789" comes from the value.
+        samples = self._samples(tmp_path, "ref 123-45-67890", [
+            {"name": "the value", "value": SSN},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_sample_containing_the_whole_value(self, tmp_path) -> None:
+        # The revealed tail ("0000") shares nothing with the value, but the
+        # sample contains it, so even the tail is dropped.
+        samples = self._samples(tmp_path, "ref 123-45-00000", [
+            {"name": "the value", "value": "123-45"},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_non_overlapping_control_keeps_its_tail(self, tmp_path) -> None:
+        samples = self._samples(tmp_path, "ref 123-45-67890 Jane Q. Example", [
+            {"name": "other value", "value": "Jane Q. Example"},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples == {"", "****7890"}
+
+
+class TestMaskHelper:
+    @pytest.mark.parametrize("sample, exact, shown", [
+        ("123-45-6789", ["123456789"], "****"),    # tail comes from the value
+        ("123-45-60000", ["12345"], "****"),       # sample contains the value
+        ("abc-12345", ["x45y"], "****"),           # 2 consecutive chars overlap
+        ("abc-12345", ["x4y5z"], "****2345"),      # only non-adjacent chars: kept
+        ("ab", ["b"], "****"),                     # 1-character tail
+        ("ab", ["q"], "****b"),                    # 1-character control
+        ("123-45-6789", [], "****6789"),           # no exact values
+        ("123-45-6789", [""], "****6789"),         # an empty value matches nothing
+        ("a", ["a"], "****"),                      # too short to reveal anything
+    ])
+    def test_cases(self, sample, exact, shown) -> None:
+        assert mask(sample, exact) == shown

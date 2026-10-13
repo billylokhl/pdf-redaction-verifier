@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from redaction_verifier.matching import mask
 from redaction_verifier.model import Finding, ScanReport
@@ -126,14 +126,14 @@ _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
 _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
 
 
-def _label(finding: Finding, rules: RuleSet | None) -> str:
+def _label(finding: Finding, rules: RuleSet | None, exact_norms: Sequence[str] = ()) -> str:
     label = rules.labels.get(finding.secret_name) if rules is not None else None
     text = repr(finding.secret_name) if label is None else label.text
     text = _sanitize_report_text(text)
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
-        text += f" {mask(finding.sample)}"
+        text += f" {mask(finding.sample, exact_norms)}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
 
@@ -209,6 +209,9 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     certified (exit 2).
     """
     name = _sanitize_report_text(pdf_path.name)
+    exact = list(report.exact_norms)
+    if rules is not None:
+        exact += [s.normalized for s in rules.secrets]
     print(f"\n{_BAR}")
     if report.leaked:
         print(f"  [FAIL]  SECRETS ARE STILL IN THIS FILE: {name}")
@@ -226,7 +229,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
         print(_BAR)
         for f in report.findings:
             tag, _ = _where(f)
-            line = (f"  ✖ STILL PRESENT | {_label(f, rules):<36} | {f.layer:<8} | {tag:<15} | "
+            line = (f"  ✖ STILL PRESENT | {_label(f, rules, exact):<36} | {f.layer:<8} | {tag:<15} | "
                     f"{f.location}")
             print(_sanitize_report_text(line))
         _print_meaning(report, rules)

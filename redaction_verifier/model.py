@@ -238,6 +238,10 @@ class ScanReport:
     findings: list[Finding] = field(default_factory=list)
     warnings: list[str] = field(default_factory=WarnList)
     _seen: set[Finding] = field(default_factory=set, repr=False)
+    # The rules' normalized exact values, so every masked sample (report
+    # lines, --json, warning text) can drop a tail that would reveal part
+    # of one. Set once the rules are loaded.
+    exact_norms: tuple[str, ...] = field(default=(), compare=False, repr=False)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))

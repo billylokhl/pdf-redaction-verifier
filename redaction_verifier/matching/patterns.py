@@ -13,6 +13,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Collection, Sequence
 
+from redaction_verifier.matching.values import normalize_string
 from redaction_verifier.matching.validators import (
     _valid_card,
     _valid_email,
@@ -75,14 +76,31 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
-def mask(matched: str) -> str:
+def mask(matched: str, exact_norms: Collection[str] = ()) -> str:
     """Mask a matched sample for the report.
 
     Reveals at most 4 trailing characters and never more than half the
     match; the fixed '****' prefix hides the true length.
+
+    *exact_norms* are the rules' normalized exact values (never shown in
+    a report). When the sample contains one, or any 2 consecutive
+    revealed characters (or a lone revealed character) occur in one, the
+    tail would disclose part of an exact value, so only '****' is shown.
     """
     reveal = min(4, len(matched) // 2)
-    return "****" + (matched[-reveal:] if reveal else "")
+    if not reveal:
+        return "****"
+    exacts = [e for e in exact_norms if e]
+    if exacts:
+        if any(e in normalize_string(matched) for e in exacts):
+            return "****"
+        tail = normalize_string(matched[-reveal:])
+        width = min(2, len(tail))
+        if width and any(
+            tail[i : i + width] in e for e in exacts for i in range(len(tail) - width + 1)
+        ):
+            return "****"
+    return "****" + matched[-reveal:]
 
 
 def match_patterns(

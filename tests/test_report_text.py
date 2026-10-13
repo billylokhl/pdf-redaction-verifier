@@ -240,3 +240,45 @@ class TestCliWiring:
         result = self._scan(tmp_path, "--fail-fast")
         assert result.returncode == 1, result.stdout
         assert "Later checks were skipped (--fail-fast); there may be more." in result.stdout
+
+
+class TestMaskedTailNeverShowsAnExactValue:
+    """Issue #66: the human report drops a pattern sample's masked tail when
+    it overlaps an exact value. Fabricated data."""
+
+    @staticmethod
+    def _line(capsys, tmp_path, sample: str, rule_list: list[dict]) -> str:
+        rules_path = tmp_path / "rules.json"
+        rules_path.write_text(json.dumps(rule_list))
+        report = ScanReport()
+        report.record("Text", "any", "page 1 (visual text layer)", sample, page=1)
+        out = _render(capsys, report, rules_path)
+        return next(ln for ln in out.splitlines() if "STILL PRESENT" in ln)
+
+    def test_builtin_type_overlapping_an_exact_value(self, capsys, tmp_path) -> None:
+        # Before the fix: "****6789".
+        line = self._line(capsys, tmp_path, SSN, [
+            {"name": "any", "class": "ssn"}, {"name": "v", "value": SSN}])
+        assert "****" in line and "6789" not in line
+
+    def test_user_pattern_overlapping_an_exact_value(self, capsys, tmp_path) -> None:
+        # Before the fix: "****7890".
+        line = self._line(capsys, tmp_path, "123-45-67890", [
+            {"name": "any", "pattern": r"\d{3}-\d{2}-\d{5}"}, {"name": "v", "value": SSN}])
+        assert "****" in line and "7890" not in line
+
+    def test_one_character_tail(self, capsys, tmp_path) -> None:
+        # "ab" reveals only "b"; that character is in the value.
+        line = self._line(capsys, tmp_path, "ab", [
+            {"name": "any", "pattern": "ab"}, {"name": "v", "value": "Xbq"}])
+        assert line.split("|")[1].rstrip().endswith("****")
+
+    def test_sample_containing_the_whole_value(self, capsys, tmp_path) -> None:
+        line = self._line(capsys, tmp_path, "123-45-60000", [
+            {"name": "any", "pattern": r"\d{3}-\d{2}-\d{5}"}, {"name": "v", "value": "123-45"}])
+        assert "0000" not in line
+
+    def test_non_overlapping_control_keeps_its_tail(self, capsys, tmp_path) -> None:
+        line = self._line(capsys, tmp_path, "123-45-67890", [
+            {"name": "any", "pattern": r"\d{3}-\d{2}-\d{5}"}, {"name": "v", "value": VALUE}])
+        assert "****7890" in line

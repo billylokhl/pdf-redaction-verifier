@@ -88,7 +88,7 @@ def build_json_report(
                 "revision": f.revision,
                 "page": f.page,
                 "location": text(f.location),
-                "sample": text(mask(f.sample)) if f.sample else "",
+                "sample": text(mask(f.sample, report.exact_norms)) if f.sample else "",
             }
             for f in report.findings
         ),
