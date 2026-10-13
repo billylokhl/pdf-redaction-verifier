@@ -632,7 +632,7 @@ What each part of the output means:
   pushes them to the pages, owner decision 9; and the page as MuPDF
   shows it -- media box, crop box, rotation, rectangle -- against what
   those attributes say it is), `oracle_error`, `tiling`),
-  `crashes`, `timeouts`, `unverified`, `inconsistent`.  A file that needs
+  `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password is an unflagged `needs_password` disagreement, so it
   fails the gate. `corpus build` can now record such a file (above),
   where it used to abort, so a corpus holding one fails `inventory run`
