@@ -136,10 +136,16 @@ class Edge:
 class Graph:
     """``edges``: each body's references, by its unit (every body live in
     some revision, collected once). ``trailers``: each revision's
-    trailer references, by revision (0 = current)."""
+    trailer references, by revision (0 = current). ``scopes``: below."""
 
     edges: dict[UnitRef, tuple[Edge, ...]]
     trailers: tuple[tuple[Edge, ...], ...]
+    # Each form, tiling pattern, Type3 font or appearance stream's own
+    # /Resources as written (a dictionary, or the reference to one), by
+    # body (3a-7c, scopes.py): its scope's innermost dictionary, the only
+    # one 4a resolves names in (ADR 0011 item 3). A body that must carry
+    # one and does not is flagged RESOURCE_SCOPE instead.
+    scopes: dict[UnitRef, PdfValue]
 
 
 # A number's body in a revision: its unit, its value, its generation, the
@@ -193,6 +199,7 @@ def build_graph(revisions: int, changes: list[list[int]],
     revision r; *body_of(n, r)* is number n's body in revision r;
     *home_of(n, r)* its object stream's number when it is compressed
     there; *trailers[r]* revision r's trailer."""
+    from .scopes import Scopes  # scopes reads this module's types
     edges: dict[UnitRef, tuple[Edge, ...]] = {}
     by_target: dict[UnitRef, dict[int, list[Edge]]] = {}  # a body's edges by target number
     trailer_edges: list[tuple[Edge, ...]] = [() for _ in range(revisions)]
@@ -206,8 +213,10 @@ def build_graph(revisions: int, changes: list[list[int]],
     members: dict[int, set[int]] = {}   # object stream number -> its live members
     homes: dict[int, int] = {}          # member number -> its object stream number
 
+    scopes = Scopes(current, edges, budget, flags)
+
     def done() -> tuple[Graph, list[Flag]]:
-        return Graph(edges, tuple(trailer_edges)), flags
+        return Graph(edges, tuple(trailer_edges), scopes.scopes), flags
 
     def generation(number: int) -> int | None:
         body = current.get(number)
@@ -301,6 +310,8 @@ def build_graph(revisions: int, changes: list[list[int]],
                     if not budget.charge_work(1):
                         return done()
                     resolve(body[0], number, edge, revision)
+        if not scopes.revision(revision, moved):  # resource scopes (3a-7c)
+            return done()
         found = edges_of(trailers[revision], budget)
         if found is None:
             return done()
