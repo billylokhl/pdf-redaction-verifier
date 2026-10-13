@@ -19,7 +19,8 @@ Result (2026-10-12, MuPDF 1.28.2):
   (fz_new_trace_device: paths, glyphs and their text, image sizes and
   transforms) and by its pixels (rendered alone at 4x: the trace lacks
   image samples). Readings: NOTHING (no mark -- no path filled or
-  stroked, no glyph, image or shading; a clip alone marks nothing),
+  stroked, no text element of any kind -- clip-mode and invisible text
+  are extractable -- no image or shading; a path clip alone marks nothing),
   STORED (equal trace and pixels), SYNTHESIZED (otherwise, and any
   annotation without /AP that marks).
 - Not exact: two drawings equal in trace and in 4x pixels are read as
@@ -29,7 +30,11 @@ Result (2026-10-12, MuPDF 1.28.2):
 - Link and Popup annotations are not listed by pdf_first_annot or
   pdf_first_widget (MuPDF draws neither); every other subtype is, a
   duplicated /Annots reference twice, annotations before widgets: the
-  gate compares the lists as multisets by object number, without Link
+  the copies pair by each annotation's page and /Annots position (a
+  private key set in both: a widget's /Square stand-in moves from MuPDF's
+  widget list to its annotation list); the gate compares MuPDF's list
+  with ours as a multiset by object number (by /Annots position for an
+  annotation written directly), without Link
   and Popup.
 
 The fixtures cover ADR 0011 item 5's conditions; ``expected`` is the
@@ -56,21 +61,25 @@ NEED = b" /AcroForm << /Fields [4 0 R] /NeedAppearances true >>"
 
 
 def build(annot: bytes, extra: dict[int, bytes] | None = None, acroform: bytes = b"",
-          page: bytes = b"", direct: bool = False) -> bytes:
-    """One page; annotation 4 (or *annot* written directly in /Annots);
-    object 5 the stored red box; *extra* objects."""
+          page: bytes = b"", direct: bool = False, stored: bytes = RED,
+          also: bytes = b"") -> bytes:
+    """One page; annotation 4 (or *annot* written directly in /Annots),
+    then *also* (more /Annots items); object 5 the stored appearance
+    (*stored*: a red box by default); *extra* objects."""
     w = Writer()
     t: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
     t[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R%s >>" % acroform), 0)
     t[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
-    annots = b"[%s]" % annot if direct else b"[4 0 R]"
+    annots = b"[%s%s]" % (annot if direct else b"4 0 R", also)
     t[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
                         b" /Resources << >> /Annots %s%s >>" % (annots, page)), 0)
     if not direct:
         t[4] = (1, w.obj(4, annot), 0)
     for n, body in (extra or {}).items():
         t[n] = (1, w.obj(n, body), 0)
-    t[5] = (1, w.stream(5, FORM, RED), 0)
+    t[5] = (1, w.stream(5, FORM.replace(b"/Resources << >>",
+                                        b"/Resources << /Font << /F1 9 0 R >> >>"), stored), 0)
+    t[9] = (1, w.obj(9, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"), 0)
     w.epilogue(w.table(t, b"/Size %d /Root 1 0 R" % (max(t) + 1)))
     return bytes(w.out)
 
@@ -92,6 +101,8 @@ CASES: dict[str, tuple[bytes, bool]] = {
     "square-direct": (build(b"<< %s %s %s >>" % (SQ, RECT, AP), direct=True), False),
     "text-rotated-page": (build(b"<< /Type /Annot /Subtype /Text %s %s >>" % (RECT, AP),
                                 page=b" /Rotate 90"), False),
+    "square-clip-text": (build(b"<< %s %s %s >>" % (SQ, RECT, AP),
+                               stored=b"BT 7 Tr /F1 9 Tf 2 5 Td (SSN 123-45-6789) Tj ET"), False),
     "square-hidden": (build(b"<< %s %s /F 2 %s >>" % (SQ, RECT, AP)), False),
     "square-noview": (build(b"<< %s %s /F 32 %s >>" % (SQ, RECT, AP)), False),
     "square-oc-off": (build(b"<< %s %s /OC 6 0 R %s >>" % (SQ, RECT, AP),
@@ -149,15 +160,30 @@ CASES: dict[str, tuple[bytes, bool]] = {
     "sig-unsigned-hidden": (build(b"<< %s /F 2 %s %s >>" % (SIG, RECT, AP), acroform=FIELDS),
                             True),
 }
+# Pages with several annotations, a widget first in /Annots (MuPDF lists
+# annotations before widgets, and a widget's stand-in is a /Square):
+# /Annots order, ADR classification per annotation.
+SQUARE_6 = {6: b"<< %s /Rect [70 10 120 30] %s >>" % (SQ, AP)}
+MULTI: dict[str, tuple[bytes, list[bool]]] = {
+    "widget-then-square": (build(b"<< %s %s %s >>" % (TX, RECT, AP), SQUARE_6, FIELDS,
+                                 also=b" 6 0 R"), [False, False]),
+    "need-widget-then-square": (build(b"<< %s %s %s >>" % (TX, RECT, AP), SQUARE_6, NEED,
+                                      also=b" 6 0 R"), [True, False]),
+}
 # Not listed by MuPDF (it draws neither): the gate leaves them out of both lists.
 UNLISTED = {
     "link": build(b"<< /Type /Annot /Subtype /Link %s /Border [0 0 0] >>" % RECT),
     "popup": build(b"<< /Type /Annot /Subtype /Popup %s >>" % RECT),
 }
 
-# Trace elements that mark the page; a clip alone marks nothing.
-MARKS = (b"<fill_path", b"<stroke_path", b"<fill_text", b"<stroke_text", b"<ignore_text",
-         b"<fill_image", b"<fill_shade")
+# Trace elements that mark the page or hold text: paths filled or stroked,
+# any text element (clip-mode and invisible text are extractable), images
+# and shadings. A path clip alone marks nothing.
+MARKS = (b"<fill_path", b"<stroke_path", b"_text", b"<fill_image", b"<fill_shade")
+# A private key each annotation carries in both copies: its page and its
+# /Annots index. The copies pair by it -- a widget whose stand-in is a
+# /Square moves from MuPDF's widget list to its annotation list.
+TAG = "SpikeIndex"
 
 
 def _name(key: str) -> object:
@@ -212,13 +238,14 @@ def copies(data: bytes) -> tuple[pymupdf.Document, pymupdf.Document]:
                     continue
                 M.pdf_dict_del(annot, _name("F"))
                 M.pdf_dict_del(annot, _name("OC"))
+                M.pdf_dict_put(annot, _name(TAG), M.pdf_new_int(number * 1_000_000 + i))
                 ap = M.pdf_dict_get(annot, _name("AP"))
                 if not stand_in or not ap.m_internal or M.pdf_is_null(ap):
                     continue
                 square = M.pdf_new_dict(pdf, 6)
                 M.pdf_dict_put(square, _name("Type"), _name("Annot"))
                 M.pdf_dict_put(square, _name("Subtype"), _name("Square"))
-                for key in ("Rect", "AP", "AS"):
+                for key in ("Rect", "AP", "AS", TAG):
                     value = M.pdf_dict_get(annot, _name(key))  # as written: references kept
                     if value.m_internal and not M.pdf_is_null(value):
                         M.pdf_dict_put(square, _name(key), value)
@@ -230,23 +257,32 @@ def copies(data: bytes) -> tuple[pymupdf.Document, pymupdf.Document]:
     return pair[0], pair[1]
 
 
+def _tag(annot: object) -> int:
+    return M.pdf_to_int(M.pdf_dict_get(M.pdf_annot_obj(annot), _name(TAG)))
+
+
 def readings(data: bytes) -> list[str]:
-    """MuPDF's reading of each listed annotation on page 1, in its order."""
+    """MuPDF's reading of each listed annotation, page by page in /Annots
+    order, copy A paired with copy B by TAG."""
     real, stand_ins = copies(data)
-    page_a, page_b = real[0], stand_ins[0]  # kept alive: annotations are bound to pages
     found = []
-    for a, b in zip(listed(page_a), listed(page_b), strict=True):
-        drawn = trace(a)
-        if not any(mark in drawn for mark in MARKS):
-            found.append("NOTHING")
-            continue
-        ap = M.pdf_dict_get(M.pdf_annot_obj(a), _name("AP"))
-        if not ap.m_internal or M.pdf_is_null(ap):
-            found.append("SYNTHESIZED")
-            continue
-        same = drawn == trace(b) and pixels(a) == pixels(b)
-        found.append("STORED" if same else "SYNTHESIZED")
+    for number in range(real.page_count):
+        page_a, page_b = real[number], stand_ins[number]  # kept alive: annotations bind to pages
+        in_b = {_tag(b): b for b in listed(page_b)}
+        for a in sorted(listed(page_a), key=_tag):
+            found.append(_reading(a, in_b[_tag(a)]))
     return found
+
+
+def _reading(a: object, b: object) -> str:
+    """One annotation: copy A's drawing (a) against copy B's (b)."""
+    drawn = trace(a)
+    if not any(mark in drawn for mark in MARKS):
+        return "NOTHING"
+    ap = M.pdf_dict_get(M.pdf_annot_obj(a), _name("AP"))
+    if not ap.m_internal or M.pdf_is_null(ap):
+        return "SYNTHESIZED"
+    return "STORED" if drawn == trace(b) and pixels(a) == pixels(b) else "SYNTHESIZED"
 
 
 def object_signals(data: bytes) -> tuple[int, int, int]:
@@ -288,6 +324,13 @@ def main() -> None:
               f" {'agrees' if agrees else 'DISAGREES'}"
               f"{' (NOTHING: agrees with both)' if reading == 'NOTHING' else ''}"
               f"  [ap-before/after={before}/{after} needs-resynthesis={needs}]")
+    for name, (data, expected_all) in MULTI.items():
+        found = readings(data)
+        ok = len(found) == len(expected_all) and all(
+            r == "NOTHING" or (r == "SYNTHESIZED") == e for r, e in zip(found, expected_all))
+        disagreements += not ok
+        print(f"{name:27} mupdf={found} adr-synthesized={expected_all}"
+              f" {'agrees' if ok else 'DISAGREES'}")
     for name, data in UNLISTED.items():
         doc = pymupdf.open(stream=data, filetype="pdf")
         page = doc[0]

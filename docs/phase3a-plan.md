@@ -409,13 +409,17 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     (copy A with every annotation that has /AP replaced by a stand-in /Square with the same
     /Rect, /AP and /AS, which MuPDF draws from /AP whenever /AP /N names a stream); per
     annotation MuPDF's trace (fz_new_trace_device + pdf_run_annot) and 4x pixels drawn alone
-    give NOTHING (no mark), STORED (equal trace and pixels) or SYNTHESIZED. The gate: the
-    annotation lists as multisets by object number, Link and Popup left out (MuPDF lists and
-    draws neither); ours SYNTHESIZED matches SYNTHESIZED or NOTHING, ours not synthesized
-    STORED or NOTHING. On 32 fabricated fixtures covering ADR 0011 item 5's conditions
-    MuPDF's reading agrees with the ADR every time; cost linear (0.54 s for 1,600
-    annotations). Not exact: content differing only below 4x resolution (an image's samples,
-    a glyph program) is not told apart -- OWNER DECISION P1 (via the coordinator). A SYNTHESIZED unit per (annotation body, revision) -- whether
+    give NOTHING (no mark: any text element is a mark, a path clip alone is not), STORED
+    (equal trace and pixels) or SYNTHESIZED; the copies pair by each annotation's page and
+    /Annots position (a widget's /Square stand-in changes MuPDF's list it is in). The gate:
+    MuPDF's annotation list against ours as a multiset by object number (by /Annots position
+    for a direct annotation), Link and Popup left out (MuPDF lists and draws neither); ours
+    SYNTHESIZED matches SYNTHESIZED or NOTHING, ours not synthesized STORED or NOTHING. On 35
+    fabricated fixtures covering ADR 0011 item 5's conditions MuPDF's reading agrees with the
+    ADR every time; cost linear (about 0.5-0.8 s for 1,600 annotations). Not exact: content
+    differing only below 4x resolution (an image's samples, a glyph program) is not told
+    apart -- OWNER DECISION P1 (via the coordinator). A SYNTHESIZED unit per (annotation
+    body, revision) -- whether
     an annotation is synthesized and what it shows (/V inherited through the field /Parent
     chain, /NeedAppearances, /AS) changes from revision to revision while the widget's body
     stays, the normal form-filling update -- starting UNEXAMINED; it claims no bytes (not a
