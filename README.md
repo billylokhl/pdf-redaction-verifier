@@ -377,7 +377,9 @@ secret can still be **not detected** (exit `0`). In short:
   order are manual review, exit `2`); a letter-spaced value in fine print
   that the page's reading breaks into one-character lines around other
   text; a value wrapped over two fine-print lines closer together than
-  the line tolerance, which merges them into one interleaved line;
+  the line tolerance, which merges them into one interleaved line; a
+  page-break split whose halves are written in different directions (one
+  horizontal, one vertical);
   dash-less pattern numbers wrapped at a line or page break; text at
   extreme coordinates.
 

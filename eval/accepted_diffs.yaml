@@ -848,6 +848,34 @@
   cell: match.letter-spaced-stack
   pr: '#68'
   weaker: true
+- case: page.raw-font-coded-mixed-direction-split-rotated
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  reason: 'PR #68: a value split across a page break in two writing directions (''SSN 123-45-''
+    vertical on page 1, ''6789 continues'' horizontal on page 2, wholly past the media box''s
+    right edge): no reading joins text of two directions. Root cause of the reference''s 2:
+    on this rotated page with an overhanging crop box its visible area was misplaced (derotating
+    page.rect used the unclipped crop box), so it put the off-page second half on the page,
+    where its review net joined it to the first; correctly placed, the second half is off
+    the page and horizontal, the first vertical, and no reading or review join crosses directions.
+    The reference exits 0 for the same layout at /Rotate 0. Owner sign-off, 2026-10-12: pinned
+    as a known gap (OCR does not catch it: the full CLI exits 0 with OCR working too).'
+  cell: match.mixed-direction-split
+  pr: '#68'
+  weaker: true
 - case: page.raw-font-coded-runs-off-overhanging-crop
   old:
     exit: 0

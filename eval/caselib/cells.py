@@ -136,6 +136,8 @@ def _cells() -> dict[str, Cell]:
         "match.line-wrap": Cell(read, "a value wrapped across lines", tier="review"),
         "match.letter-spaced-stack": Cell(
             gap, "a letter-spaced value read as one-character lines around other text"),
+        "match.mixed-direction-split": Cell(
+            gap, "a page-break split whose halves are written in different directions"),
         "match.tight-fine-print": Cell(
             gap, "a value wrapped over two fine-print lines closer than the line tolerance"),
         "match.columns": Cell(

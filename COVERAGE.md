@@ -143,6 +143,9 @@ matcher sees it whole. Each is ✗:
   line tolerance, set by the page's larger glyphs, which merges them into
   one interleaved line (`match.tight-fine-print`). OCR, where it runs,
   flags this one (exit `2`); it does not catch the letter-spaced stack.
+- A page-break split whose halves are written in different directions,
+  one horizontal and one vertical: no reading joins text of two
+  directions (`match.mixed-direction-split`).
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a

@@ -507,6 +507,35 @@ def tight_fine_print(path: Path) -> None:
     _gap_page(path, content, b"/Rotate 180 /CropBox [-400 0 612 792]")
 
 
+
+@leak("page.raw-font-coded-mixed-direction-split-rotated", "match.mixed-direction-split",
+      "The SSN in font codes split across a page break in two writing directions: "
+      "'SSN 123-45-' written vertically on page 1, and '6789 continues' written "
+      "horizontally on page 2, wholly past the media box's right edge, on pages turned "
+      "with /Rotate 270 under a crop box reaching past that edge. No reading joins text "
+      "of two directions, and the review net's pieces are read one direction at a time. "
+      "Main flagged it (2) only because its misplaced visible area put the second half on "
+      "the page; it exits 0 for the same layout at /Rotate 0. A known gap the owner "
+      "signed off on (2026-10-12).",
+      expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
+      known_gap=KnownGap("match.mixed-direction-split", expect(0)),
+      mistake="Nobody redacted it; half the value runs vertically, the rest sits past the "
+              "next page's edge.",
+      recovery="Enlarge the page box, read both directions through the font's Encoding "
+               "/Differences, and join the halves.")
+def mixed_direction_split(path: Path) -> None:
+    turned = b"/Rotate 270 /CropBox [0 0 812 792]"
+    fonts = b"<< /Font << /F1 6 0 R /F2 7 0 R >> >>"
+    first = (text("Quarterly report", 760) + b"\nBT /F2 12 Tf 0 -1 1 0 300 200 Tm "
+             + _break_coded("SSN 123-45-") + b" Tj ET")
+    second = (b"BT /F2 12 Tf 1 0 0 1 650 760 Tm " + _break_coded("6789 continues")
+              + b" Tj ET\n" + text("Quarterly report", 700))
+    objects = {1: CATALOG, 2: b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>",
+               3: page(resources=fonts, extra=turned), 4: stream(b"", first),
+               6: HELVETICA, 7: differences_font(_BREAK_CHARS),
+               8: page(b"9 0 R", fonts, turned), 9: stream(b"", second)}
+    _write(path, objects)
+
 # ── Vertical text split at a page break, one half off the page ──────────
 # Owner decisions of 2026-10-10 and 2026-10-11: like the horizontal
 # off-page-half split, vertically written text whose second half lies
