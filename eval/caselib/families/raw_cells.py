@@ -445,10 +445,11 @@ def two_column_wrap(path: Path) -> None:
 # the value's text off the page, where reading 3 read it apart; with the
 # visible area correct they are read with the visible text, and no
 # reading assembles them (main gives 0 for the same layouts at
-# /Rotate 0). Pinned at today's exit 0, the target manual review, and
-# judged where OCR is absent: on macOS the full CLI gives 2 for the
-# fine-print layout, the rendered page read by OCR, which would mask the
-# Text layer's gap.
+# /Rotate 0). Pinned at today's exit 0, the target manual review. OCR
+# does not catch the letter-spaced stack (the full CLI exits 0 with OCR
+# working), so it is judged everywhere; it does flag the fine print (2),
+# so that case is judged where OCR is absent, which would otherwise mask
+# the Text layer's gap.
 _GAP_CHARS = "0123456789-SNabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMOPQRTUVWXYZ"
 
 
@@ -478,7 +479,6 @@ def _gap_page(path: Path, content: bytes, extra: bytes) -> None:
       "same layout at /Rotate 0.",
       expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
       known_gap=KnownGap("match.letter-spaced-stack", expect(0)),
-      requires=("no-ocr",),   # OCR may read the rendered page; the gap is the Text layer's
       mistake="Nobody redacted it; the value is set letter-spaced in fine print.",
       recovery="Read the text through the font's Encoding /Differences, letter by letter.")
 def letter_spaced_stack(path: Path) -> None:
@@ -498,7 +498,7 @@ def letter_spaced_stack(path: Path) -> None:
       "for the same layout at /Rotate 0.",
       expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
       known_gap=KnownGap("match.tight-fine-print", expect(0)),
-      requires=("no-ocr",),   # OCR may read the rendered page; the gap is the Text layer's
+      requires=("no-ocr",),   # OCR flags it (2), masking the Text layer's gap
       mistake="Nobody redacted it; the value wraps across two tightly set lines of fine print.",
       recovery="Read the text through the font's Encoding /Differences, line by line.")
 def tight_fine_print(path: Path) -> None:

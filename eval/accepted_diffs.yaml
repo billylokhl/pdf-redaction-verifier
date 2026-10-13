@@ -843,8 +843,8 @@
     unclipped crop box), so it read the value''s text apart, off the page, where the joined
     off-page reading formed the value; with the visible area correct the text is read with
     the page''s header and no reading assembles it. The reference exits 0 for the same layout
-    at /Rotate 0. Owner sign-off, 2026-10-12: pinned as a known gap (judged without OCR; on
-    macOS OCR may read the rendered page).'
+    at /Rotate 0. Owner sign-off, 2026-10-12: pinned as a known gap (OCR does not catch
+    it: the full CLI exits 0 with OCR working too).'
   cell: match.letter-spaced-stack
   pr: '#68'
   weaker: true
@@ -1220,7 +1220,8 @@
     where the joined off-page reading formed the value; with the visible area correct the
     text is read with the page''s header and no reading assembles it. The reference exits
     0 for the same layout at /Rotate 0. Owner sign-off, 2026-10-12: pinned as a known gap
-    (judged without OCR; on macOS OCR may read the rendered page).'
+    (judged without OCR: on macOS
+    OCR flags it, exit 2).'
   cell: match.tight-fine-print
   pr: '#68'
   weaker: true
