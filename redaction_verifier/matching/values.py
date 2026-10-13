@@ -85,22 +85,39 @@ class SecretMatcher:
         """
         names: set[str] = set()
         n_lines = len(lines)
+        last_chars = {line[-1] for line in lines if line}
+        first_chars = {line[0] for line in lines if line}
         for secret in self._secrets:
             v = secret.normalized
             n = len(v)
             if n < 2:
                 continue
+            # Cut points k (1..n-1) whose first piece v[:k] could end a line
+            # (its last character is some line's last character), and whose
+            # last piece v[k:] could start one: a secret with none is
+            # skipped before any line is compared, which keeps the cost on
+            # a page of many lines and many rules near one pass per rule.
+            cuts_end = [k for k in range(1, n) if v[k - 1] in last_chars]
+            cuts_start = [k for k in range(1, n) if v[k] in first_chars]
+            if not cuts_end or not cuts_start:
+                continue
             # ends[i]: cut points k where lines[i] ends with v[:k];
             # starts[i]: cut points k where lines[i] starts with v[k:].
-            ends = [{k for k in range(1, n) if line.endswith(v[:k])} for line in lines]
-            starts = [{k for k in range(1, n) if line.startswith(v[k:])} for line in lines]
+            ends = [{k for k in cuts_end if line.endswith(v[:k])} if line else set()
+                    for line in lines]
+            if not any(ends):
+                continue
+            starts = [{k for k in cuts_start if line.startswith(v[k:])} if line else set()
+                      for line in lines]
+            if not any(starts):
+                continue
             found = False
             for i in range(n_lines):
                 if not ends[i] or found:
                     continue
                 low, high = max(0, i - window + 1), min(n_lines, i + window)
                 for j in range(low, high):
-                    if j == i:
+                    if j == i or not starts[j]:
                         continue
                     # Two pieces: v[:k] ends line i, v[k:] starts line j.
                     if ends[i] & starts[j] and (

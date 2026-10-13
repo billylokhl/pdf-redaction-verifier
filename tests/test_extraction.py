@@ -780,6 +780,30 @@ class TestScatteredValues:
         assert report.findings == []
         assert report.warnings == [crossing(2) if layout == "furniture-at-break" else line(1)]
 
+    def test_matcher_cost_grows_linearly_with_lines(self) -> None:
+        # A dense numeric page with many value rules: eight times the lines
+        # must cost about eight times as much, not sixty-four (the window
+        # bounds the pairs each line is compared with). Generous bound
+        # against timing noise: under sixteen times, best of three.
+        import random
+        import time
+        rng = random.Random(1)
+        m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
+
+        def lines(count: int) -> list[str]:
+            return ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+
+        def cost(ls: list[str]) -> float:
+            best = math.inf
+            for _ in range(3):
+                start = time.perf_counter()
+                m.scattered(ls, 5)
+                best = min(best, time.perf_counter() - start)
+            return best
+
+        small, large = lines(500), lines(4000)
+        assert cost(large) < 16 * cost(small) + 0.05
+
     def test_matcher_bounds(self) -> None:
         m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
         assert m.scattered(["ssn12345", "header", "6789end"], 5) == ["SSN"]
