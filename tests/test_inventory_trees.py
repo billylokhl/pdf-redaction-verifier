@@ -443,3 +443,57 @@ def test_the_empty_root_allowlist_is_anchored() -> None:
     assert EMPTY_TREE_ROOT.fullmatch(line.replace(b" (object 4)", b""))
     assert not EMPTY_TREE_ROOT.fullmatch(line + b"; and more")
     assert not EMPTY_TREE_ROOT.fullmatch(line.replace(b"Name/Number tree node (", b"page ("))
+
+
+# ── A trailing NUL in a name key (owner decision 2026-10-12, amending P3) ──
+NUL_KEYS = [b"(a.txt\\000)", b"(b.txt\\000)"]
+
+
+@requires_qpdf
+def test_both_readers_resolve_a_key_with_a_trailing_nul_to_the_same_object(
+        tmp_path: Path) -> None:
+    # The condition the owner set for allowing the key: MuPDF reads it as a
+    # C string (the NUL cut off), libqpdf keeps the NUL -- and each, listing
+    # the tree or looking the key up as written, finds the same object.
+    import pikepdf
+    import pymupdf
+    path = tmp_path / "nul.pdf"
+    path.write_bytes(_files(*NUL_KEYS))
+    mupdf = pymupdf.mupdf
+    doc = pymupdf.open(path)
+    pdf = pymupdf._as_pdf_document(doc)
+    name = mupdf.pdf_new_name("EmbeddedFiles")
+    loaded = mupdf.pdf_load_name_tree(pdf, name)
+    listed = {mupdf.pdf_to_name(mupdf.pdf_dict_get_key(loaded, i)):
+              mupdf.pdf_to_num(mupdf.pdf_dict_get_val(loaded, i))
+              for i in range(mupdf.pdf_dict_len(loaded))}
+    assert listed == {"a.txt": 10, "b.txt": 11}
+    looked = {k: mupdf.pdf_to_num(mupdf.pdf_lookup_name(pdf, name, mupdf.pdf_new_string(k, len(k))))
+              for k in ("a.txt\0", "b.txt\0")}
+    assert looked == {"a.txt\0": 10, "b.txt\0": 11}
+    with pikepdf.open(path) as qpdf:
+        tree = pikepdf.NameTree(qpdf.Root.Names.EmbeddedFiles)
+        assert [(k, v.objgen[0]) for k, v in tree.items()] == [("a.txt\0", 10), ("b.txt\0", 11)]
+        assert {k: tree[k].objgen[0] for k in ("a.txt\0", "b.txt\0")} == looked
+        assert qpdf.get_warnings() == []
+    # Known asymmetry, outside the key itself: MuPDF also finds the name
+    # without its NUL (its C-string compare); libqpdf does not.
+    assert mupdf.pdf_to_num(mupdf.pdf_lookup_name(pdf, name, mupdf.pdf_new_string("a.txt", 5))) == 10
+
+
+@requires_qpdf
+def test_a_tree_with_trailing_nul_keys_agrees_with_the_readers(tmp_path: Path) -> None:
+    data = _files(*NUL_KEYS)
+    assert _inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees, found
+
+
+@pytest.mark.parametrize("keys", [
+    [b"(a)", b"(a\\000)"],            # one name once the NUL is cut: MuPDF keeps the last
+    [b"(a\\000\\000)", b"(b)"],         # two NULs
+    [b"(a\\000b)", b"(c)"],            # a NUL inside
+    [b"(a\\001)", b"(b)"],             # another control byte at the end
+], ids=["collides", "two-nuls", "inner-nul", "other-control"])
+def test_other_nul_and_control_keys_stay_flagged(keys: list[bytes]) -> None:
+    assert int(R.TEXT) in _rules(_files(*keys))

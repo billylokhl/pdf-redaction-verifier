@@ -66,7 +66,7 @@ from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBoo
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
 from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
-from redaction_verifier.inventory.trees import Trees, key_text
+from redaction_verifier.inventory.trees import Trees, key_text, qpdf_key_text
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
 
@@ -812,15 +812,20 @@ def _embedded_files_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, trees: Trees
                           revision: int, encrypted: bool, stats: _Stats) -> None:
     """The /EmbeddedFiles name tree's entries (ADR 0011 item 8): ours, in
     order, against MuPDF's pdf_load_name_tree (a dictionary: compared as
-    a set) and libqpdf's name-tree helper (in order) -- keys as text,
+    a set) and libqpdf's name-tree helper (in order) -- keys as text, as
+    each reads them (a trailing NUL: MuPDF cuts it, libqpdf keeps it),
     values as written. An encrypted revision's keys are encrypted in our
     reading and its non-empty trees flagged (P4): not compared."""
     if trees is None:
         raise _Disagreement(Check.NAME_TREE, revision, templates=("no trees",))
     if encrypted:
         return
+    entries = trees.get(b"EmbeddedFiles", ())
     ours = [(key_text(e.key) if isinstance(e.key, bytes) else None,
-             value_form(e.value, e.text)) for e in trees.get(b"EmbeddedFiles", ())]
+             value_form(e.value, e.text)) for e in entries]
+    # libqpdf keeps a key's trailing NUL, which MuPDF cuts (key_text).
+    ours_qpdf = [(qpdf_key_text(e.key) if isinstance(e.key, bytes) else None, value)
+                 for e, (_, value) in zip(entries, ours)]
     mupdf = pymupdf.mupdf
     pdf = pymupdf._as_pdf_document(doc)
     loaded = mupdf.pdf_load_name_tree(pdf, mupdf.pdf_new_name("EmbeddedFiles"))
@@ -840,7 +845,7 @@ def _embedded_files_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, trees: Trees
     if (len(mu) != len(ours) or len(by_key) != len(mu)
             or not all(key in by_key and same_as_mupdf(value, by_key[key])
                        for key, value in ours)
-            or qp != ours):
+            or qp != ours_qpdf):
         raise _Disagreement(Check.NAME_TREE, revision, templates=("EmbeddedFiles",))
     stats.values += len(ours)
 
