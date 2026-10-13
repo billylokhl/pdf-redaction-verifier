@@ -284,6 +284,7 @@ def test_needs_password_is_an_encryption_split_unless_our_trailer_reads_it_encry
     plain = build_pdf(Spec())
     assert oracle.compare(plain, tmp_path).check is Check.ENCRYPTION
 
+
 @requires_qpdf
 def test_a_password_protected_corpus_file_passes_the_gate_as_flagged(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -301,6 +302,7 @@ def test_a_password_protected_corpus_file_passes_the_gate_as_flagged(
     assert agg["flags"]["files_by_reason"] == {"needs_password": 1}
     captured = capsys.readouterr()
     assert PLANTED not in captured.out + captured.err
+
 
 def test_a_drifted_corpus_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     names = [f"{PLANTED}-{i}.pdf" for i in range(3)]
