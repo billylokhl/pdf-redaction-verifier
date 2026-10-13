@@ -1127,20 +1127,26 @@ def test_stratify_keeps_unread_files_out_of_every_measured_stratum():
     nameless = CorpusEntry("dd" * 32, "d.pdf", True, False, "unknown")
     locked = CorpusEntry("bb" * 32, "b.pdf", None, True, "unknown", probe="password")
     broken = CorpusEntry("ee" * 32, "e.pdf", None, False, "unknown", probe="unreadable")
+    unread_text = CorpusEntry("ff" * 32, "f.pdf", None, True, "unknown",
+                              probe="text-unreadable")
     runs = [CorpusRun(plain, _corpus_result("ok")), CorpusRun(blank, _corpus_result("ok")),
             CorpusRun(nameless, _corpus_result("ok")),
             CorpusRun(locked, _corpus_result("PDF_PASSWORD")),
-            CorpusRun(broken, _corpus_result("PDF_UNREADABLE"))]
+            CorpusRun(broken, _corpus_result("PDF_UNREADABLE")),
+            CorpusRun(unread_text, _corpus_result("ok"))]
     strata = stratify(runs)
     assert strata["text-bearing"].total == 2 and strata["text-bearing"].review_rate == 0
     assert strata["text-free"].total == 1 and strata["text-free"].review_rate == 0
-    assert strata["text-unknown"].total == 2
+    # A text-unreadable file is scanned (exit 0 here) but is its own group:
+    # all, text-unknown and probe:text-unreadable only (owner decision).
+    assert strata["text-unknown"].total == 3
     assert strata["probe:password"].total == 1 and strata["probe:unreadable"].total == 1
-    assert strata["all"].total == 5 and strata["all"].review_rate == 2
+    assert strata["probe:text-unreadable"].total == 1
+    assert strata["all"].total == 6 and strata["all"].review_rate == 2
     assert "multi-revision" not in strata and strata["single-revision"].total == 3
     assert strata["producer:unknown"].total == 1  # the readable file, alone
     assert "probe:ok" not in strata
-    assert strata["probe:text-unreadable"].total == 0  # always reported, even empty
+    assert stratify([])["probe:text-unreadable"].total == 0  # always reported, even empty
 
 
 def test_corpus_build_cli_counts_unread_files_without_naming_them(tmp_path, capsys):

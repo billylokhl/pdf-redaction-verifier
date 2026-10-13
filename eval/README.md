@@ -645,13 +645,19 @@ What each part of the output means:
   shows it -- media box, crop box, rotation, rectangle -- against what
   those attributes say it is), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
-  a user password cannot be certified, so it is **flagged**, under the
-  reason `needs_password` in `flags`, not a disagreement and not exempt
-  (owner decision, 2026-10-12, #48 item 3): it no longer fails the gate.
-  Such a file still fails the gate when something else is wrong too: if
-  it does not tile it is a disagreement (listed under `needs_password`
-  here), and if the two children flag it differently it is
-  `inconsistent`.
+  a user password cannot be certified, so it is **flagged**, not a
+  disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
+  it no longer fails the gate. It is reported under the reason
+  `needs_password` in `flags`, or under the inventory's own reasons when
+  it has any, so `files_by_reason.needs_password` counts only files with
+  no other flag. The oracle stops at the first revision that needs a
+  password, so nothing after it is compared; the file fails the gate
+  only if it does not tile (a disagreement, listed under
+  `needs_password` here) or the two children flag it differently
+  (`inconsistent`). The oracle reports `needs_password` only when our
+  trailer also reads that revision encrypted; a file MuPDF wants a
+  password for that our trailer reads as plain is an `encryption`
+  disagreement, which gates.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and

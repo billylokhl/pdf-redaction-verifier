@@ -255,6 +255,11 @@ def test_a_file_that_needs_a_password_is_flagged_not_a_disagreement() -> None:
     assert other.verdict == gate.DISAGREE
     torn = gate.judge(job, 10, gate.ChildRun("ok", 0.1, {"flags": {}, "tiles": False}), locked)
     assert torn.verdict == gate.DISAGREE
+    # The children flagging differently is still INCONSISTENT, password or not.
+    split = gate.judge(job, 10, unflagged,
+                       gate.ChildRun("ok", 0.1, {**_agreement("disagrees", "needs_password"),
+                                                 "flags": ["xref_tail"]}))
+    assert split.verdict == gate.INCONSISTENT
     # The inventory's own flags, when it has any, stay the reasons reported.
     flagged = gate.judge(job, 10, gate.ChildRun("ok", 0.1, {"flags": {"xref_tail": 1},
                                                             "tiles": True}),
@@ -262,6 +267,22 @@ def test_a_file_that_needs_a_password_is_flagged_not_a_disagreement() -> None:
                                                    "flags": ["xref_tail"]}))
     assert (flagged.verdict, flagged.reasons) == (gate.FLAGGED, ("xref_tail",))
 
+
+def test_needs_password_is_an_encryption_split_unless_our_trailer_reads_it_encrypted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate flags a needs_password file instead of failing it, so the
+    oracle reports needs_password only when our trailer also has /Encrypt.
+    A file MuPDF wants a password for but our trailer reads as plain is an
+    `encryption` disagreement, which still gates."""
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+    locked = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="user-pw",
+                         owner_pw="owner-pw")
+    assert oracle.compare(locked, tmp_path).check is Check.NEEDS_PASSWORD
+    monkeypatch.setattr(pymupdf.Document, "needs_pass", property(lambda self: 1))
+    plain = build_pdf(Spec())
+    assert oracle.compare(plain, tmp_path).check is Check.ENCRYPTION
 
 @requires_qpdf
 def test_a_password_protected_corpus_file_passes_the_gate_as_flagged(
