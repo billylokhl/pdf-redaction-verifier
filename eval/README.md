@@ -356,7 +356,13 @@ The reference runs with a `qpdf` shim first on its `PATH` that adds
 `/ID` seeded by the current second, which the case library's `SHORT`
 rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
 that came and went with the clock. The shim removes only that input; the
-candidate passes the flag itself.
+candidate passes the flag itself. The candidate also blanks the `/ID`
+elements qpdf generates before its Binary sweep (CHANGELOG, "Binary
+layer: the `/ID` qpdf generates is not scanned"), which the reference
+cannot: a case whose generated `/ID` spelled a value rule would be a
+stable "warning removed" difference, listed with that reason (and as
+weaker only when it moves the case's exit to 0: weaker is judged by exit
+code).
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key

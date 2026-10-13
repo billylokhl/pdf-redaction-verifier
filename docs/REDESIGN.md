@@ -741,12 +741,12 @@ and `corpus run` exiting 1 when any file has no verdict (crashed, timed
 out, or an error report saying the scan could not be completed — except, in the real
 corpus only, an encrypted or corrupt file, whose exit 2 is the tool's
 real answer: owner's decision), when a corpus file is missing, changed
-or vanishes, or when nothing ran. Not yet done, left for a later PR:
-qpdf's own generated trailer `/ID` (32 hex digits, now derived from the
-file) still swept by the Binary layer, so a 4-character all-hex value
-rule matches it on about 0.05% of files and a 3-character one (`Abe`,
-`Ada`) on about 0.75% — stable and fail-closed, but noise: bytes qpdf
-wrote itself are not file content; the additive
+or vanishes, or when nothing ran. Since done: the `/ID` qpdf generates
+is no longer swept by the Binary layer wherever it can be told apart
+from the file's own (CHANGELOG, "Binary layer: the `/ID` qpdf generates
+is not scanned"); it still is, the same on every run, when the input's
+`/ID` cannot be read or its first element is empty. Not yet done, left
+for a later PR: the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
@@ -810,11 +810,23 @@ codes for '0'-'9' in order — the literal digits `0123456789` — purely as
 a byproduct of the ramp itself. The Binary (qpdf) layer's raw byte sweep
 cannot distinguish that coincidence from a real leak inside binary data,
 so it warns (exit `2`) on a genuinely clean file
-(`false-alarm.binary-value-collision`). A third is by the owner's
-design (decision D, with K40's fix): a document `/ID` written as hex
-text whose digits happen to form a run a pattern class accepts is
-manual review (`false-alarm.generated-id-digits`,
-`document.generated-id-digits`), not a hard finding.
+(`false-alarm.binary-value-collision`). A second Binary false alarm was
+not even repeatable: qpdf writes a time-based document `/ID` of its own,
+which the raw sweep scanned, so a short value rule matched it about once
+in 20 full scorecard runs (an occasional unlisted `scorecard-diff` on
+`main`). Fixed in today's tool (CHANGELOG, "Clock-dependent Binary
+warning" and "Binary layer: the `/ID` qpdf generates is not scanned");
+the inventory's qpdf cross-check must likewise compare only bytes that
+are in the file. One constructible residual remains: an `/ID` element
+equal to the one qpdf generates for that file, under an `/ID` key the
+raw parse does not reach (a spelling such as `/I#44`, or a key inside an
+earlier `/ID` array's string), is blanked too. Taking the input's `/ID`
+from qpdf's own reading of the trailer instead of a raw parse would
+close it. A third is by the owner's design (decision D, with K40's fix):
+a document `/ID` written as hex text whose digits happen to form a run a
+pattern class accepts is manual review
+(`false-alarm.generated-id-digits`, `document.generated-id-digits`), not
+a hard finding.
 
 Two more silent misses used to have no K-number, because every K-number
 must have a case and these did not; Phase 3a added cases for both
