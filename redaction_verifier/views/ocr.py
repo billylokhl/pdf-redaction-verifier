@@ -107,9 +107,10 @@ class Observation:
 
 
 # What a turned reading or an unstacked line (_extra_readings) may raise
-# without failing the page, which then reads as it did before them: Vision's own failure (_vision_recognize_batch raises
-# RuntimeError) and MuPDF's (its errors subclass FzErrorBase, not
-# RuntimeError). Anything else is a bug and fails the page (PAGE_FAILED).
+# without failing the page, dropping only that reading (the page still
+# reads at least as it did before them): Vision's own failure
+# (_vision_recognize_batch raises RuntimeError) and MuPDF's (its errors
+# subclass FzErrorBase, not RuntimeError). Anything else is a bug and fails the page (PAGE_FAILED).
 _READ_FAILURES: tuple[type[BaseException], ...] = (RuntimeError, fitz.mupdf.FzErrorBase)
 
 
