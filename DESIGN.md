@@ -419,8 +419,8 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 — so a stalled tool cannot hang the run. Report samples are
 masked — at most four trailing characters, never more than half, and
 none at all (just `****`) when the sample contains an exact value or its
-revealed tail shares two consecutive characters (or a lone character)
-with one — and
+revealed tail shares two consecutive characters (or a lone character,
+or a single edge character) with one — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 OCR's upright re-reads of vertical lines are capped at 64 per page,

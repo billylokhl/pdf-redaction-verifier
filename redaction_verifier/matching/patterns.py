@@ -100,6 +100,10 @@ def mask(matched: str, exact_norms: Collection[str] = ()) -> str:
             tail[i : i + width] in e for e in exacts for i in range(len(tail) - width + 1)
         ):
             return "****"
+        # A one-character overlap at the edge of the match: the tail ends
+        # with an exact value's first character or begins with its last.
+        if tail and any(tail[-1] == e[0] or tail[0] == e[-1] for e in exacts):
+            return "****"
     return "****" + matched[-reveal:]
 
 

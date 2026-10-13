@@ -132,7 +132,8 @@ the tool cannot see at all is listed under [Known gaps](#known-gaps).
 Regex patterns are held to the stricter rule: hard only within one line
 of a genuine reading or one decoded string. Reported samples are masked
 (`****6789`); when a sample overlaps one of your exact values, only `****` is
-shown, so no part of an exact value ever appears in a report.
+shown, so a report never shows two consecutive characters of an exact value, nor any
+character where the match overlaps one.
 
 ## What it checks — six layers, most likely to find a leak first
 

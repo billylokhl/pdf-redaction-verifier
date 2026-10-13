@@ -754,6 +754,8 @@ class TestMaskHelper:
         ("123-45-60000", ["12345"], "****"),       # sample contains the value
         ("abc-12345", ["x45y"], "****"),           # 2 consecutive chars overlap
         ("abc-12345", ["x4y5z"], "****2345"),      # only non-adjacent chars: kept
+        ("123-45-67890", ["0ok"], "****"),         # tail ends with the value's first char
+        ("abcd", ["xyzabc"], "****"),              # tail begins with the value's last char
         ("ab", ["b"], "****"),                     # 1-character tail
         ("ab", ["q"], "****b"),                    # 1-character control
         ("123-45-6789", [], "****6789"),           # no exact values
@@ -762,3 +764,16 @@ class TestMaskHelper:
     ])
     def test_cases(self, sample, exact, shown) -> None:
         assert mask(sample, exact) == shown
+
+
+def test_review_warning_text_is_masked_against_exact_values(tmp_path) -> None:
+    # Fused across lines: a REVIEW_FUSED_PATTERN warning embeds a sample.
+    # "0ok" is an exact value whose first character ends the sample.
+    pdf = _pdf(tmp_path / "doc.pdf", "ref 123-45-", "67890 ok")
+    rules = _rules(tmp_path / "r.json", [
+        {"name": "v", "value": "0ok"},
+        {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+    ])
+    _, data = _run(pdf, rules, tmp_path)
+    messages = [w["message"] for w in data["warnings"] if w["code"] == "REVIEW_FUSED_PATTERN"]
+    assert messages and all("7890" not in m for m in messages)
