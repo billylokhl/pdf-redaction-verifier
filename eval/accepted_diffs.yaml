@@ -820,6 +820,34 @@
     or on a line below page 1''s bottom edge — is a manual-review warning.'
   cell: match.line-wrap
   pr: '#68'
+- case: page.raw-font-coded-letter-spaced-stack-rotated
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  reason: 'PR #68: a letter-spaced value in fine print (''SSN 123'' / ''-45-'' / ''6789'',
+    8 pt, 9 pt character spacing) that the page''s reading breaks into one-character lines
+    around the header: more than three pieces for the review net. Root cause of the reference''s
+    2: on this rotated page its visible area was misplaced (derotating page.rect used the
+    unclipped crop box), so it read the value''s text apart, off the page, where the joined
+    off-page reading formed the value; with the visible area correct the text is read with
+    the page''s header and no reading assembles it. The reference exits 0 for the same layout
+    at /Rotate 0. Owner sign-off, 2026-10-12: pinned as a known gap (judged without OCR; on
+    macOS OCR may read the rendered page).'
+  cell: match.letter-spaced-stack
+  pr: '#68'
+  weaker: true
 - case: page.raw-font-coded-runs-off-overhanging-crop
   old:
     exit: 0
@@ -1169,6 +1197,33 @@
     reference (eval-ref-0) exited 0. Stricter only.'
   cell: match.page-break
   pr: '#68'
+- case: page.raw-font-coded-tight-fine-print-rotated
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  reason: 'PR #68: a value wrapped over two 8 pt lines 9.6 pt apart under a 12 pt header,
+    which the line tolerance merges into one interleaved line (''162738-945-''). Root cause
+    of the reference''s 2: on this rotated page its visible area was misplaced (derotating
+    page.rect used the unclipped crop box), so it read the value''s text apart, off the page,
+    where the joined off-page reading formed the value; with the visible area correct the
+    text is read with the page''s header and no reading assembles it. The reference exits
+    0 for the same layout at /Rotate 0. Owner sign-off, 2026-10-12: pinned as a known gap
+    (judged without OCR; on macOS OCR may read the rendered page).'
+  cell: match.tight-fine-print
+  pr: '#68'
+  weaker: true
 - case: page.raw-font-coded-vertical-off-page-down
   old:
     exit: 2
