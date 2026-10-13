@@ -397,7 +397,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     dictionary is any /Resources or /DR value), every hop direct or by reference, roles kept
     incrementally by target; each scope's innermost /Resources as written in
     `Graph.scopes`. trees.py, NAME_TREE with 9 NameTreeRules; all trees of a revision share
-    one visited set (a node two trees share is reached twice). Gate: /EmbeddedFiles against
+    one visited set (a node two trees share is reached twice). Review round 1 added: a soft
+    mask's /G as a role (MuPDF runs it as a form whatever its /Subtype); byte 0xAD in a
+    PDFDocEncoding key (MuPDF reads U+0000) and U+0000 in a UTF-16 key flag; keys in order
+    under each reader's reading. Gate: /EmbeddedFiles against
     MuPDF and libqpdf, keys as each reads them; EMPTY_TREE_ROOT anchored (R5), with
     agreement tests for /EmbeddedFiles, /Dests and /PageLabels. Measured cost differed from
     ADR 0011's: P3 flagged 85 corpus files (expected 0) -- 72 keys ending in one NUL, 10
@@ -510,7 +513,7 @@ OWNER DECISIONS (2026-09-27), all as recommended:
 10. (2026-10-12, 3a-7c's measured costs) P3 amended: a name-tree key may end in one NUL
    byte (72 corpus files), allowed because a reader-agreement test shows MuPDF (which cuts
    the NUL) and libqpdf (which keeps it) resolve the key as written to the same object;
-   keys must be unique and in order with the NUL cut off. Keys sorted by bytes but not as
+   keys must be unique and in order under both readers' readings (NUL cut off, NUL kept). Keys sorted by bytes but not as
    text (10 files) and bytes 0x7F-0xA0 (3 files) stay flagged. RESOURCE_SCOPE stays strict
    (ADR 0011 item 3; 20 case-library cases); it is revisited with real redactor output
    (operating plan §5, Lane B) before enforcement.

@@ -11,8 +11,9 @@ and greatest key. Keys are strings (integers) unique and in order across
 the whole tree: by bytes, and (owner decision 9, P3) as text, which is
 what both readers compare -- so a name key must decode the same in both:
 lossless, without a language tag, and in PDFDocEncoding only from the
-bytes both readers map alike (printable ASCII and 0xA1-0xFF; one trailing
-NUL allowed, owner decision 2026-10-12) or in UTF-16BE. An empty root (neither /Names nor /Kids, or an empty array)
+bytes both readers map alike (printable ASCII and 0xA1-0xFF but 0xAD;
+one trailing NUL allowed, owner decision 10) or in UTF-16BE without
+U+0000 -- unique and in order under each reader's reading. An empty root (neither /Names nor /Kids, or an empty array)
 reads as empty in both readers (owner decision R5). A non-empty name tree
 in an encrypted revision is flagged until 3a-9 decrypts its keys (P4).
 Anything else is FlagReason.NAME_TREE with a closed NameTreeRule.
@@ -97,22 +98,24 @@ def build_trees(revisions: int, changes: list[list[int]],
 
 
 def key_text(raw: bytes) -> str | None:
-    """A name key as both readers read it as text -- MuPDF's reading, the
-    one keys are compared in -- or None when they may not read it alike.
-    UTF-16BE, or PDFDocEncoding from the bytes both readers map alike
-    (printable ASCII and 0xA1-0xFF), plus one trailing NUL byte (owner
-    decision, 2026-10-12, amending P3): MuPDF reads the key as a C string,
-    the NUL cut off; qpdf keeps it (qpdf_key_text); both resolve the key as
-    written to the same object (tests/test_inventory_trees.py). Unique and
-    in order with the NUL cut off implies unique and in order with it."""
+    """A name key as MuPDF reads it as text, or None when the readers may
+    not read it alike. UTF-16BE without U+0000 (MuPDF handles text as C
+    strings), or PDFDocEncoding from the bytes both readers map alike --
+    printable ASCII and 0xA1-0xFF but 0xAD, which MuPDF maps to U+0000 and
+    qpdf does not -- plus one trailing NUL byte (owner decision 10,
+    2026-10-12, amending P3): MuPDF reads the key as a C string, the NUL
+    cut off; qpdf keeps it (qpdf_key_text); both resolve the key as written
+    to the same object (tests/test_inventory_trees.py). Keys are checked
+    unique and in order under both readings (_order): with keys of mixed
+    encodings, order under one does not imply order under the other."""
     decoded = text_string(raw)
     if not decoded.lossless or decoded.tags_removed:
         return None
     if decoded.encoding is TextEncoding.UTF16BE:
-        return decoded.text
+        return None if "\0" in decoded.text else decoded.text
     body = raw[:-1] if raw.endswith(b"\0") else raw
     if decoded.encoding is TextEncoding.PDFDOC and all(
-            0x20 <= b <= 0x7E or b >= 0xA1 for b in body):
+            (0x20 <= b <= 0x7E or b >= 0xA1) and b != 0xAD for b in body):
         return decoded.text[:len(body)]
     return None
 
@@ -305,13 +308,15 @@ class _Walk:
         a few times: charged by their length."""
         keys = [e.key for e in entries]
         size = sum(len(k) if isinstance(k, bytes) else 1 for k in keys)
-        if not self.charge(3 * size + len(keys) + 1):
+        if not self.charge(6 * size + 2 * len(keys) + 1):  # bytes, then two readings
             return
         if any(not a < b for a, b in zip(keys, keys[1:])):  # type: ignore[operator]
             self.flag(NameTreeRule.ORDER, root)
         if number:
             return
-        texts = [key_text(k) for k in keys if isinstance(k, bytes)]
-        if any(t is None for t in texts) or any(
-                not a < b for a, b in zip(texts, texts[1:])):  # type: ignore[operator]
-            self.flag(NameTreeRule.TEXT, root)
+        for read in (key_text, qpdf_key_text):  # MuPDF's reading, then libqpdf's
+            texts = [read(k) for k in keys if isinstance(k, bytes)]
+            if any(t is None for t in texts) or any(
+                    not a < b for a, b in zip(texts, texts[1:])):  # type: ignore[operator]
+                self.flag(NameTreeRule.TEXT, root)
+                return

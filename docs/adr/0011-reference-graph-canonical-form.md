@@ -445,9 +445,13 @@ same object, which a reader-agreement test shows
 (`tests/test_inventory_trees.py`): MuPDF reads the key as a C string,
 the NUL cut off, libqpdf keeps it, and each finds the same object for
 the key as written. A key may therefore end in one NUL byte; keys must
-be unique and in order with it cut off (MuPDF's reading), which implies
-the same with it kept; two NULs, a NUL inside, or any other control byte
-still flag. The other 13 files stay flagged. Known asymmetry, outside
+be unique and in order under each reader's reading -- with it cut off
+(MuPDF's) and with it kept (libqpdf's): with keys of mixed encodings one
+does not imply the other (`(a\000)` and `<FEFF00610000>` are one name to
+libqpdf, two to MuPDF); two NULs, a NUL inside, U+0000 in a UTF-16 key,
+or any other control byte still flag. 3a-7c's review also found byte
+0xAD, which MuPDF's PDFDocEncoding maps to U+0000 and qpdf does not: it
+flags too. The other 13 files stay flagged. Known asymmetry, outside
 the key itself: MuPDF also finds the name without its NUL (its lookup
 compares C strings), libqpdf does not. Measured after: 13 files
 `NAME_TREE` (12 otherwise unflagged); corpus 1,920 agree, 153 flagged

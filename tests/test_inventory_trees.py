@@ -497,3 +497,42 @@ def test_a_tree_with_trailing_nul_keys_agrees_with_the_readers(tmp_path: Path) -
 ], ids=["collides", "two-nuls", "inner-nul", "other-control"])
 def test_other_nul_and_control_keys_stay_flagged(keys: list[bytes]) -> None:
     assert int(R.TEXT) in _rules(_files(*keys))
+
+
+# ── Round-1 review findings ───────────────────────────────────────────────
+@pytest.mark.parametrize("keys", [
+    [b"<61AD62>", b"<61AD63>"],                 # 0xAD: MuPDF reads U+0000, qpdf does not
+    [b"(a\\000)", b"<FEFF00610000>"],            # one name to libqpdf, two to MuPDF
+    [b"<FEFF00610000>", b"<FEFF0062>"],          # U+0000 in a UTF-16 key
+], ids=["soft-hyphen", "nul-mixed-encodings", "utf16-nul"])
+def test_keys_the_readers_read_apart_are_flagged(keys: list[bytes]) -> None:
+    assert int(R.TEXT) in _rules(_files(*keys))
+
+
+def test_a_soft_hyphen_key_is_flagged_in_trees_the_gate_does_not_compare() -> None:
+    data = _file(b" /Names << /JavaScript 4 0 R >>",
+                 {4: b"<< /Names [(a!) 5 0 R <61AD> 6 0 R] >>", 5: b"<< >>", 6: b"<< >>"})
+    assert int(R.TEXT) in _rules(data)
+
+
+@pytest.mark.parametrize("gs", [
+    b"<< /SMask << /S /Luminosity /G 4 0 R >> >>",   # direct soft mask
+    b"<< /SMask 8 0 R >>",                           # soft mask by reference
+], ids=["direct", "by-reference"])
+def test_a_soft_masks_group_must_carry_its_own_resources(gs: bytes) -> None:
+    # MuPDF runs /G as a form whatever its /Subtype says, borrowing the
+    # page's resources when it has none (round-1 review, B3).
+    objects = {6: gs, 8: b"<< /S /Luminosity /G 4 0 R >>"}
+    data = _file(objects=objects, streams={4: (b" /BBox [0 0 9 9]", DRAW)},
+                 page=_page(b" /Resources << /ExtGState << /GS0 6 0 R >> >>"))
+    assert _scoped(data)
+    fixed = _file(objects=objects, streams={4: (b" /BBox [0 0 9 9] /Resources << >>", DRAW)},
+                  page=_page(b" /Resources << /ExtGState << /GS0 6 0 R >> >>"))
+    assert not _scoped(fixed)
+
+
+def test_an_images_soft_mask_needs_no_resources() -> None:
+    image = b" /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"
+    data = _file(streams={4: (image + b" /SMask 5 0 R", b"\x00"), 5: (image, b"\x00")},
+                 page=_page(b" /Resources << /XObject << /I 4 0 R >> >>"))
+    assert not _scoped(data)

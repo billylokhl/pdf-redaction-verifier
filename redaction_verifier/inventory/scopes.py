@@ -22,7 +22,9 @@ misdeclared type exempts one:
   direct or by reference. Roles are read from key paths, from every
   occurrence of a holder key along a path, so a resource or state named
   like a holder key (/Resources << /XObject << /AP 4 0 R >> >>) keeps
-  both readings.
+  both readings;
+- and a soft mask's /G (a graphics state's /SMask dictionary, direct or
+  by reference): MuPDF runs it as a form whatever its /Subtype says.
 
 Each scope records only its innermost dictionary, as written: 4a
 resolves names there and flags a miss (item 3), never through MuPDF.
@@ -58,15 +60,17 @@ class Role(Enum):
     AP = 4          # an annotation's /AP dictionary
     STATE = 5       # /AP's /N, /R or /D: an appearance stream or a state dictionary
     APPEARANCE = 6  # a state dictionary's entry: an appearance stream
+    SOFT_MASK = 7   # a soft-mask dictionary (/SMask: a graphics state's, or an image's)
+    GROUP = 8       # a soft mask's /G: a form MuPDF runs whatever its /Subtype says
 
 
 _HOLDERS: Final = frozenset({b"Resources", b"DR"})
 _CATEGORIES: Final = frozenset({b"XObject", b"Pattern"})
 _STATES: Final = frozenset({b"N", b"R", b"D"})
 # The roles whose holder passes a role on to what it references.
-_PASSING: Final = (Role.RESOURCES, Role.CATEGORY, Role.AP, Role.STATE)
+_PASSING: Final = (Role.RESOURCES, Role.CATEGORY, Role.AP, Role.STATE, Role.SOFT_MASK)
 # The roles that oblige a stream to carry /Resources.
-_OBLIGING: Final = frozenset({Role.DRAWN, Role.STATE, Role.APPEARANCE})
+_OBLIGING: Final = frozenset({Role.DRAWN, Role.STATE, Role.APPEARANCE, Role.GROUP})
 
 
 def _below_holder(suffix: tuple[bytes, ...]) -> Role | None:
@@ -98,7 +102,8 @@ def roles_at(via: Role | None, path: tuple[bytes, ...]) -> set[Role]:
     if via is None:
         for i, key in enumerate(path):
             role = (_below_holder(path[i + 1:]) if key in _HOLDERS
-                    else _below_ap(path[i + 1:]) if key == b"AP" else None)
+                    else _below_ap(path[i + 1:]) if key == b"AP"
+                    else _below_soft_mask(path[i + 1:]) if key == b"SMask" else None)
             if role is not None:
                 found.add(role)
     elif via is Role.RESOURCES:
@@ -109,9 +114,20 @@ def roles_at(via: Role | None, path: tuple[bytes, ...]) -> set[Role]:
         role = _below_ap(path)
         if role is not None and role is not Role.AP:
             found.add(role)
+    elif via is Role.SOFT_MASK:
+        if path == (b"G",):
+            found.add(Role.GROUP)
     elif len(path) == 1 and path[0] != ARRAY:
         found.add(Role.DRAWN if via is Role.CATEGORY else Role.APPEARANCE)
     return found
+
+
+def _below_soft_mask(suffix: tuple[bytes, ...]) -> Role | None:
+    """The role of a reference at *suffix* below an /SMask key: the soft
+    mask itself (by reference), or its /G group form."""
+    if not suffix:
+        return Role.SOFT_MASK
+    return Role.GROUP if suffix == (b"G",) else None
 
 
 _Source = tuple[int, Role | None]  # a number, and the role its body is read in
@@ -256,6 +272,7 @@ class Scopes:
             typed = True
         image = isinstance(kind, PdfName) and kind.raw == b"Image"
         roled = stream and (self.has(number, Role.STATE) or self.has(number, Role.APPEARANCE)
+                            or self.has(number, Role.GROUP)
                             or (not image and self.has(number, Role.DRAWN)))
         if not (typed or roled):
             return None
