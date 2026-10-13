@@ -1,6 +1,6 @@
 # 0011. The reference graph: canonical form
 
-Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below)
+Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below) and 2026-10-12 (item 4's text rule, measured in 3a-7c)
 
 ## Context
 
@@ -433,6 +433,28 @@ of its review:
 - **Item 5, field inheritance (P5).** A `/Parent` cycle among AcroForm fields leaves the
   inherited `/FT` and `/V`, so a synthesized appearance's input, undefined: it flags a new
   `FlagReason.FIELD_TREE`. Expected cost 0, measured in 3a-7d.
+
+### Amendment (2026-10-12, measured in 3a-7c): owner decision 10
+
+P3's expected cost of 0 did not hold: on the corpus it flagged 85 files
+(84 otherwise unflagged). 72 of them have plain-encoded keys ending in
+one NUL byte; 10 sort by bytes but not as text (9 mix UTF-16 and
+plain-encoded keys); 3 hold bytes 0x7F-0xA0. The owner allowed the first
+class only, on the condition that both readers resolve such a key to the
+same object, which a reader-agreement test shows
+(`tests/test_inventory_trees.py`): MuPDF reads the key as a C string,
+the NUL cut off, libqpdf keeps it, and each finds the same object for
+the key as written. A key may therefore end in one NUL byte; keys must
+be unique and in order with it cut off (MuPDF's reading), which implies
+the same with it kept; two NULs, a NUL inside, or any other control byte
+still flag. The other 13 files stay flagged. Known asymmetry, outside
+the key itself: MuPDF also finds the name without its NUL (its lookup
+compares C strings), libqpdf does not. Measured after: 13 files
+`NAME_TREE` (12 otherwise unflagged); corpus 1,920 agree, 153 flagged
+(7.38%). Item 3 (`RESOURCE_SCOPE`) stays strict (0 corpus files); 20
+case-library cases whose annotation appearance streams draw only paths
+and carry no `/Resources` are flagged, and the rule is revisited with
+real redactor output (plan §5, Lane B) before it is enforced.
 
 ## Owner decisions
 
