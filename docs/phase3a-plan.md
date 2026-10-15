@@ -322,7 +322,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     when its object stream's home is replaced: an index from home to live members, as
     build's `live`; a reverse index from target number to referencing bodies), so a file of
     many small updates costs its changes times their fan-in; later per-revision walks (7b,
-    7d) still cost revisions x live objects, the budget being the backstop (item 7). Gate:
+    7c, 7d) still cost revisions x live objects, the budget being the backstop (item 7) --
+    for 7c's trees, a revision that changes a tree node a walk read walks every tree again
+    (revisions x tree size; a catalog rewrite that leaves /Names and /PageLabels as written
+    does not). Gate:
     OBJECT_ZERO_REFERENCE leaves the allowlist (with its test,
     tests/test_inventory_values.py, the allowlist cases); the oracle stops normalizing
     references to numbers it does not list (#52 item 1): on an unflagged file every reference
@@ -415,7 +418,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     NUL (decision 10 below). RESOURCE_SCOPE: 0 corpus files, as measured; 20 case-library
     cases (annotation appearances that draw only paths, without /Resources) newly flagged,
     kept strict (decision 10). Gate, all passing: corpus 1,920 agree / 153 flagged (7.38%) /
-    0 unflagged disagreements (NAME_TREE 13 files, 12 newly flagged); caselib 387/26/0;
+    0 unflagged disagreements (NAME_TREE 13 files, 12 newly flagged); caselib 426/27/0 (453 cases);
     fuzz 501/1,499/0.
   - 3a-7d Synthesized annotations (ADR 0011 item 5, its SYNTHESIZED part) -- first, since the
     drawing closure depends on it (/AcroForm /DR joins when any annotation is synthesized) and
