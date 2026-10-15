@@ -146,7 +146,12 @@ def test_a_wide_tree_stays_linear() -> None:
         assert build_inventory(data, budget=budget).flags == ()
         times.append((time.process_time() - started, budget.work))
     (t_s, w_s), (t_l, w_l) = times
-    assert w_l < 10 * w_s and t_l < 12 * max(t_s, 0.05), times
+    # Work counts are the measure. The wall clock, which only catches
+    # uncharged work, is loose until #113's tests/steps.py lands.
+    # TODO(#113): replace the wall clock with steps.py's line events per
+    # unit charged, counted over trees.py.
+    assert w_l < 10 * w_s, times
+    assert t_l < 16 * max(t_s, 0.05), times
 
 
 # ── Resource scopes (ADR 0011 item 3) ─────────────────────────────────────
@@ -357,6 +362,8 @@ def test_a_deep_tree_stays_linear() -> None:
     # Work counts are the exact measure (8x the bytes, within 10x the work);
     # the wall clock only catches uncharged work, so its bound is looser
     # (16x: the 8x run builds 16,000 objects, more allocator and GC time).
+    # TODO(#113): replace the wall clock with steps.py's line events per
+    # unit charged, counted over trees.py.
     assert w_l < 10 * w_s, (w_s, w_l)
     assert t_l < 16 * max(t_s, 0.05), (t_s, t_l)
 
