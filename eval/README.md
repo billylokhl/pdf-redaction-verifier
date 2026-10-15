@@ -1068,7 +1068,20 @@ What each part of the output means:
   revision's `/EmbeddedFiles` entries, keys as text and values as
   written, against MuPDF's `pdf_load_name_tree` and libqpdf's name-tree
   helper; an encrypted revision's keys are not compared until 3a-9, and
-  its non-empty name trees are flagged), `oracle_error`, `tiling`),
+  its non-empty name trees are flagged), `annotation_list` and
+  `annotation` (since 3a-7d, `eval/scorecard/annotations.py`, owner
+  decision 11: each page's annotations as MuPDF lists them --
+  `pdf_first_annot` then `pdf_first_widget`, Link and Popup in neither
+  list -- against ours as a multiset by object number, by `/Annots`
+  position for one written directly; then each annotation synthesized or
+  not against MuPDF's drawing of it, read by the 3a-7d spike's method: a
+  copy with rotation, `/F` and `/OC` cleared against the same copy with
+  every annotation that has `/AP` replaced by a stand-in `/Square` drawn
+  from it, each annotation's trace and 4x pixels compared, NOTHING
+  agreeing with either reading; not exact below 4x. MuPDF's warnings while
+  it loads and draws those two copies are the gate's own and are
+  discarded; the file's own -- its pages loaded, its appearances
+  synthesized -- are gated as before), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password cannot be certified, so it is **flagged**, not a
   disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
@@ -1127,7 +1140,8 @@ What each part of the output means:
   allowing a real one 32-bit float step from ours (MuPDF holds reals in
   32 bits); references are compared as written -- since 3a-7a the
   inventory flags any that does not resolve (`REF_DANGLING`,
-  `REF_GENERATION`), so none reaches the comparison.
+  `REF_GENERATION`), so none reaches the comparison. `annotations` (since
+  3a-7d): annotations listed and classified against MuPDF, per revision.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
