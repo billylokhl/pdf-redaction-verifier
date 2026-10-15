@@ -597,6 +597,45 @@ not just in the file you pointed at. `--out` defaults under
 `eval/scorecard/real_corpus/scan-workdir` (gitignored, guarded the same
 way as `--manifest`) for exactly this reason.
 
+### Pattern-class false-hard baseline (Phase 5, measurement only)
+
+Phase 5's gate is "built-in pattern false hard < 1% on text-bearing real
+files" (docs/REDESIGN.md §7). ADR 0005's 23.1% scanned page text only;
+`scorecard.pattern_baseline` measures the whole CLI, every layer:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard.pattern_baseline \
+    --root eval/scorecard/real_corpus/links --workers 4 --timeout 300 \
+    --json /tmp/pattern-baseline.json
+```
+
+Each manifest file is scanned with `builtin_classes.rules.json` — the
+four built-in classes (`ssn`, `credit-card`, `email`, `us-phone`) and no
+value — so on this corpus, which holds no planted secret, every hard
+finding is a false hard (an `email` match is a true positive for "an
+address is here", ADR 0005, and is reported but kept out of the
+digit-class unions). The CLI is run through `scorecard/pattern_recorder.py`:
+`verify.py` itself, same arguments, exit status and report (a test checks
+this), with `match_patterns` — the one function every pattern match in
+the tool goes through — wrapped to note each hit's rule, masked sample
+and **shape** (`scorecard/match_shapes.py`): `uuid`, `hex-id`,
+`date-or-time` (a `YYYYMMDD` run, a PDF `D:` date, epoch seconds or
+milliseconds), `alnum-id`, `formatted` (has separators, like a real
+value), `bare-digits` or `email-address`. Each hard finding in the
+`--json` report is joined to its shape by (rule, masked sample); one with
+no record counts as `unjoined`, which should stay 0. The matched text is
+classified inside the CLI's own process and never written.
+
+Output, to stdout and `--json`, is counts only, per stratum (all,
+text-bearing, text-free, text-unknown): per class, files with a hard
+finding, by layer and by shape, and files with a review warning for the
+class; the unions `ssn|us-phone`, `ssn|us-phone|credit-card` and
+`any built-in`, each with how many of its files have only
+`uuid`/`hex-id`/`date-or-time` shapes; exit codes; and unmeasured files
+(a crash or timeout, never folded into a rate's denominator). Scratch
+reports and rules go under `real_corpus/pattern-baseline-workdir`. It
+changes no verdict. Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
+
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import corpus as corpus_mod
-from .match_shapes import OUT_ENV, SHAPES
+from .match_shapes import OUT_ENV, SHAPES, record_key
 from .runner import DEFAULT_TIMEOUT, CliResult, current_python, run_cli
 
 HERE = Path(__file__).resolve().parent
@@ -77,19 +77,19 @@ def _stratum(entry: corpus_mod.CorpusEntry) -> str:
 
 def reduce_result(stratum: str, result: CliResult, records: list[dict[str, Any]]) -> FileResult:
     """Join each hard finding in the CLI's --json report to the recorder's
-    shape for the same (rule, masked sample). A finding with no record is
-    counted as UNJOINED, never dropped."""
+    shape for the same `record_key(rule, masked sample)`. A finding with no
+    record is counted as UNJOINED, never dropped."""
     report = result.report
     if result.crashed or report is None:
         return FileResult(stratum, False, result.returncode)
-    shapes: dict[tuple[str, str], Counter[str]] = {}
+    shapes: dict[str, Counter[str]] = {}
     for rec in records:
-        shapes.setdefault((rec["rule"], rec["sample"]), Counter())[rec["shape"]] += 1
+        shapes.setdefault(rec["key"], Counter())[rec["shape"]] += 1
     hard = []
     for f in report.get("findings", []):
         if f.get("tier") != "hard" or f.get("rule") not in CLASSES:
             continue
-        found = shapes.get((f["rule"], f.get("sample", "")))
+        found = shapes.get(record_key(f["rule"], f.get("sample", "")))
         # Several shapes for one masked sample: the most frequent, then the
         # first in SHAPE_NAMES order, so the choice is deterministic.
         shape = (
@@ -123,6 +123,7 @@ def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
         by_layer: Counter[str] = Counter()
         by_shape_files: Counter[str] = Counter()
         by_shape_findings: Counter[str] = Counter()
+        by_layer_shape: dict[str, Counter[str]] = {}
         for r in measured:
             mine = [h for h in r.hard if h.rule == cls]
             for layer in {h.layer for h in mine}:
@@ -131,13 +132,18 @@ def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
                 by_shape_files[shape] += 1
             for h in mine:
                 by_shape_findings[h.shape] += 1
+            for layer, shape in {(h.layer, h.shape) for h in mine}:
+                by_layer_shape.setdefault(layer, Counter())[shape] += 1
         review_files = files_where(lambda r: cls in r.review_rules)
         per_class[cls] = {
             "hard_files": hard_files,
             "hard_pct": _pct(hard_files, n),
             "hard_files_by_layer": dict(sorted(by_layer.items())),
+            "hard_pct_by_layer": {k: _pct(v, n) for k, v in sorted(by_layer.items())},
             "hard_files_by_shape": dict(sorted(by_shape_files.items())),
             "hard_findings_by_shape": dict(sorted(by_shape_findings.items())),
+            "hard_files_by_layer_and_shape": {
+                layer: dict(sorted(c.items())) for layer, c in sorted(by_layer_shape.items())},
             "review_files": review_files,
             "review_pct": _pct(review_files, n),
         }
@@ -191,7 +197,9 @@ def render(agg: dict[str, Any]) -> str:
             lines.append(f"  {cls:12} hard {c['hard_files']:5} ({c['hard_pct']}%)  "
                          f"review {c['review_files']:5} ({c['review_pct']}%)")
             if c["hard_files_by_layer"]:
-                lines.append(f"    by layer: {c['hard_files_by_layer']}")
+                lines.append("    by layer: " + ", ".join(
+                    f"{layer} {count} ({c['hard_pct_by_layer'][layer]}%)"
+                    for layer, count in c["hard_files_by_layer"].items()))
             if c["hard_files_by_shape"]:
                 lines.append(f"    by shape (files): {c['hard_files_by_shape']}")
         for union, u in s["unions"].items():

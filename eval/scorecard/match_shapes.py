@@ -18,6 +18,7 @@ order of `SHAPES`, so a dashed run inside a UUID is "uuid", not
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 # The environment variable naming the file pattern_recorder writes its
@@ -31,7 +32,8 @@ SHAPES: tuple[str, ...] = (
     "hex-id",         # inside a token whose letters are all hex digits (a hash, an object id)
     "date-or-time",   # a YYYYMMDD run, a PDF date (D:...), or epoch seconds/milliseconds
     "alnum-id",       # inside a token with other letters (a serial, a part number)
-    "formatted",      # the match itself has separators: shaped like a real value
+    "formatted",      # separators grouping the digits as the class's real values are
+    "number-list",    # separators, but grouped otherwise (a list of small numbers)
     "bare-digits",    # a plain digit run standing alone (a number, an id)
 )
 
@@ -43,6 +45,25 @@ _HEX_LETTERS = frozenset("abcdefABCDEF")
 # Seconds and milliseconds since the epoch, 2000-01-01 to 2040-01-01.
 _EPOCH_SECONDS = (946_684_800, 2_208_988_800)
 _EPOCH_MILLIS = (_EPOCH_SECONDS[0] * 1000, _EPOCH_SECONDS[1] * 1000)
+
+
+def record_key(rule: str, masked_sample: str) -> str:
+    """The join key between a recorder record and a --json finding: a hash,
+    so the record file holds neither the match nor its masked sample."""
+    return hashlib.sha256(f"{rule}\0{masked_sample}".encode()).hexdigest()[:24]
+
+
+# Digit-group lengths of each class's real written forms.
+def _canonical_groups(class_name: str, groups: list[int]) -> bool:
+    if class_name == "ssn":
+        return groups == [3, 2, 4]
+    if class_name == "us-phone":
+        return groups in ([3, 3, 4], [1, 3, 3, 4])
+    if class_name == "credit-card":
+        return (groups in ([4, 6, 5], [4, 6, 4])
+                or (len(groups) >= 3 and all(g == 4 for g in groups[:-1])
+                    and 1 <= groups[-1] <= 4))
+    return False
 
 
 def _token_span(text: str, start: int, end: int) -> tuple[int, int]:
@@ -93,5 +114,6 @@ def classify(class_name: str, text: str, start: int, end: int) -> str:
     if letters:
         return "alnum-id"
     if not matched.isdigit():
-        return "formatted"
+        groups = [len(g) for g in re.findall(r"\d+", matched)]
+        return "formatted" if _canonical_groups(class_name, groups) else "number-list"
     return "bare-digits"

@@ -6,17 +6,22 @@ built-in pattern-class match it makes (Phase 5's false-hard baseline;
 Run exactly like `verify.py` (same arguments, same exit status, same
 `--json` report). Every pattern match in the tool, at every layer and
 tier, goes through `redaction_verifier.matching.patterns.match_patterns`
-(`PatternScanner` calls it too); this wraps that function, returns its
-result untouched, and for each hit notes the rule, the masked sample (the
-same string the `--json` report shows, so a finding can be joined to its
-record) and the match's shape from `scorecard.match_shapes`. When the
-verdict is decided, the records go to the file named by the
-PATTERN_RECORDER_OUT environment variable. The matched text itself is
-never written anywhere.
+(`PatternScanner` calls it too); `Recorder.install` wraps that function,
+which still returns its own result object untouched, and for each hit
+notes the match's shape from `scorecard.match_shapes` under a hash of
+(rule, masked sample) -- the masked sample is the string the `--json`
+report shows, so a finding can be joined to its record. When the verdict
+is decided, the records go to the file named by the PATTERN_RECORDER_OUT
+environment variable. Neither the matched text nor the masked sample is
+ever written.
 
 A record cannot change the verdict: the wrapper returns what the wrapped
-function returned, and a failure while classifying is recorded as the
-shape "classifier-error" instead of raised.
+function returned (or raises what it raised), and every step of
+recording runs under a catch-all -- a failure while classifying is
+recorded as the shape "classifier-error", any other failure drops the
+record, never the hit. tests/test_pattern_baseline.py runs every
+case-library case that has a pattern rule with and without the recorder
+and requires identical reports.
 """
 
 from __future__ import annotations
@@ -26,73 +31,104 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 REPO = Path(__file__).resolve().parents[2]
-# Never this script's own directory first: scorecard's modules (report,
-# keys, inventory, ...) must not shadow anything the verifier imports.
-sys.path[0] = str(REPO)
-sys.path.append(str(REPO / "eval"))
-
-import verify  # noqa: E402
-from redaction_verifier import matching as _matching  # noqa: E402
-from redaction_verifier.matching import patterns as _patterns  # noqa: E402
-from scorecard.match_shapes import OUT_ENV, classify  # noqa: E402
-
-_records: dict[tuple[str, str, str, bool], None] = {}  # insertion-ordered set
-_original_match_patterns = _patterns.match_patterns
 
 
-def _recording_match_patterns(raw_text, patterns, already=(), *, collapse_separators=False):
-    hits = _original_match_patterns(
-        raw_text, patterns, already, collapse_separators=collapse_separators
-    )
-    if hits:
+class Recorder:
+    """Wraps match_patterns wherever the tool looks it up (the patterns
+    module, the matching package, verify's re-export) while installed."""
+
+    def __init__(self) -> None:
+        # Insertion-ordered set of (key, shape, collapsed).
+        self.records: dict[tuple[str, str, bool], None] = {}
+        self._saved: list[tuple[Any, Callable[..., Any]]] = []
+
+    def install(self) -> None:
+        import verify
+        from redaction_verifier import matching
+        from redaction_verifier.matching import patterns
+
+        original = patterns.match_patterns
+
+        def recording(raw_text, patterns_, already=(), *, collapse_separators=False):
+            hits = original(raw_text, patterns_, already, collapse_separators=collapse_separators)
+            if hits:
+                self._record(raw_text, hits, collapse_separators)
+            return hits
+
+        for module in (patterns, matching, verify):
+            self._saved.append((module, module.match_patterns))
+            module.match_patterns = recording  # type: ignore[attr-defined]
+
+    def uninstall(self) -> None:
+        while self._saved:
+            module, function = self._saved.pop()
+            module.match_patterns = function
+
+    def _record(self, raw_text: str, hits: dict[str, str], collapsed: bool) -> None:
         try:
-            # The text match_patterns itself searched (see its body).
-            text = _patterns._fold_for_patterns(raw_text)
-            if collapse_separators:
-                text = re.sub(r"[-\s]{2,}", "-", text)
-        except Exception:
-            text = None
-        for name, sample in hits.items():
+            from redaction_verifier.matching import patterns
+            from scorecard.match_shapes import classify, record_key
+
             try:
-                start = text.find(sample) if text is not None else -1
-                if start < 0:
-                    raise ValueError("match not found in its own text")
-                shape = classify(name, text, start, start + len(sample))
+                # The text match_patterns itself searched (see its body).
+                folded = patterns._fold_for_patterns(raw_text)
+                text: str | None = (
+                    re.sub(r"[-\s]{2,}", "-", folded) if collapsed else folded)
             except Exception:
-                shape = "classifier-error"
-            _records[(name, _patterns.mask(sample), shape, collapse_separators)] = None
-    return hits
+                text = None
+            for name, sample in list(hits.items()):
+                try:
+                    if text is None:
+                        raise ValueError("text could not be folded")
+                    start = text.find(sample)
+                    if start < 0:
+                        raise ValueError("match not found in its own text")
+                    shape = classify(name, text, start, start + len(sample))
+                except Exception:
+                    shape = "classifier-error"
+                self.records[(record_key(name, patterns.mask(sample)), shape, collapsed)] = None
+        except Exception:
+            pass  # a lost record shows up as an unjoined finding, never as a changed verdict
+
+    def write(self, path: Path) -> None:
+        payload = [
+            {"key": key, "shape": shape, "collapsed": collapsed}
+            for key, shape, collapsed in self.records
+        ]
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, path)
 
 
-def _write_records() -> None:
-    out = os.environ.get(OUT_ENV)
-    if not out:
-        return
-    path = Path(out)
-    payload = [
-        {"rule": rule, "sample": sample, "shape": shape, "collapsed": collapsed}
-        for rule, sample, shape, collapsed in _records
-    ]
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, path)
+def _run() -> None:
+    # Never this script's own directory first: scorecard's modules (report,
+    # keys, inventory, ...) must not shadow anything the verifier imports.
+    sys.path[0] = str(REPO)
+    sys.path.append(str(REPO / "eval"))
+    import verify
+    from scorecard.match_shapes import OUT_ENV
 
+    recorder = Recorder()
+    recorder.install()
+    original_main = verify.main
 
-_original_main = verify.main
+    def main_and_record(argv=None):
+        try:
+            return original_main(argv)
+        finally:
+            out = os.environ.get(OUT_ENV)
+            if out:
+                try:
+                    recorder.write(Path(out))
+                except Exception:
+                    pass  # no record file: every finding counts as unjoined
 
+    verify.main = main_and_record
+    verify.run_cli()
 
-def _main_and_record(argv=None):
-    try:
-        return _original_main(argv)
-    finally:
-        _write_records()
-
-
-for _module in (_patterns, _matching, verify):
-    _module.match_patterns = _recording_match_patterns  # type: ignore[attr-defined]
-verify.main = _main_and_record
 
 if __name__ == "__main__":
-    verify.run_cli()
+    _run()
