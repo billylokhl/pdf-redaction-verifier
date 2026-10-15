@@ -53,11 +53,21 @@ The 5 left look exactly like the real thing: 3 files with a dashed
 SSN-shaped value (Objects layer) and 2 with a punctuated phone number. No
 option short of demoting real-looking values meets "< 1%": 5/488 is 1.02%.
 
-Not measured yet: **recall**, i.e. which leak cases each option would
-move from exit 1 to exit 2. A real SSN written against a label with the
-space lost ("SSN123456789") has the same shape as an id and would be
-demoted with them. Demotion never certifies such a file (exit 2, not 0),
-but it does move a confirmed leak to "please review".
+**Recall** (Phase 5 PR 2a, `eval/scorecard/pattern_recall.py`): every
+case-library leak case with a built-in class rule (109, of which 52 exit
+1 today), scanned with the recorder, each option applied to what it saw.
+A demotion never certifies a file (exit 2, not 0), but it moves a
+confirmed leak to "please review":
+
+| Option | Leak cases moved from exit 1 to exit 2 |
+| --- | --- |
+| A | 0 |
+| B | 1: `layout.form-boxes-pattern-only`, an SSN typed one digit per form box, which the Text layer reads as a bare `123456789` |
+| C | 9: every pattern-only leak (`page.visible-pattern-rule`, the five `pattern-only` layout rows, `document.trailer-key-pattern-rule`, the two sideways scans) |
+
+The lower and upper bounds agree for every option. The case library does
+not yet hold an SSN written against a label with the space lost
+("SSN123456789"), which A would also demote; it should, before PR 3.
 
 ## Options
 
@@ -68,20 +78,27 @@ Per class. "Shape" is the classification PR 1 measured
 **A. Context rule, narrow.** Demote a match that sits inside a token
 (touching letters, part of a UUID or hex id) or inside a dated run (a PDF
 `D:` date, a timestamp). Keep standalone matches hard, bare or formatted.
-`ssn`/`us-phone`: 28.3% → 5.1%. Gate not met. Smallest recall risk.
+`ssn`/`us-phone`: 28.3% → 5.1%. Gate not met. Moves no case-library
+leak.
 
 **B. Context rule, wide.** A, plus demote any match not grouped as the
 class's real values are (bare digit runs, lists of small numbers). Keep
 only matches written like a real SSN (`3-2-4`), phone number (`3-3-4`,
 optional `1`/parentheses) or card number (groups of four) hard.
 `ssn`/`us-phone`: 28.3% → 1.0% (5 files). Gate missed by one file in
-488. Recall risk: a real SSN stored as nine bare digits (common in form
-fields and exports) goes to review.
+488. Moves one case-library leak: an SSN in form digit boxes, read as
+nine bare digits. Tax and benefit forms, among the owner's document
+types, are written that way.
 
 **C. Demote the class.** Every match of the class is review. 28.3% → 0.
-Recall risk: every pattern-only leak goes to review; the case library's
-pattern-only leak cases (ADR 0005's list: `page.visible-pattern-rule`
-and the `pattern-only` rows of `page_text_labels.py`) all relabel 1 → 2.
+Moves all 9 pattern-only leaks to review; they relabel 1 → 2 (ADR
+0005's list, plus the trailer and sideways-scan cases).
+
+**E. B with a digit-box exception.** B, but a bare run read from single
+digits in evenly spaced boxes stays hard. This needs the glyph geometry
+`views.text.visual_text_glyphs` now provides (#120), and has not been
+measured: neither how many clean corpus files hold such runs, nor whether
+OCR and the other layers can tell boxes apart.
 
 **D. Mix per class.** For example B for `ssn` and `us-phone`, A for
 `credit-card` (whose validator already rejects most noise: 1.4%, none
@@ -106,33 +123,41 @@ real-looking), and `email` unchanged.
 
 ## Recommendation
 
-**D: B for `ssn` and `us-phone`, A for `credit-card`, `email`
-unchanged, with gate G3**, subject to two conditions:
+**In two steps, with `email` unchanged:**
 
-1. PR 2's recall measurement shows no leak case the case library labels
-   exit 1 that B would move to exit 2 other than pattern-only leaks
-   written as bare runs or against a label. Those relabel 1 → 2 under
-   `weaker: true` in `eval/accepted_diffs.yaml`, with this ADR as the
-   owner decision and a CHANGELOG line.
-2. Lane B's U3 number does not show good redactions held at exit 2 by
-   these same shapes. If it does, the owner may prefer C for `ssn`.
+1. **Now: A for every digit class** (`ssn`, `us-phone`, `credit-card`).
+   It moves no case-library leak and removes 82% of today's false hards
+   (138 → 25 files, 28.3% → 5.1%). It does not meet the gate, and the
+   owner should hear that plainly; it is the most that can be taken
+   without a measured recall cost.
+2. **Then: E for `ssn` and `us-phone`**, once the digit-box exception is
+   built and measured on both the corpus and the case library, aiming at
+   B's 1.0% without B's form-box loss, **with gate G3**: the 5 files left
+   hold values written exactly like an SSN or a phone number, the shape no
+   context rule can tell from a secret, and G3 counts them the way ADR
+   0005 counts an email address.
 
-Why: B removes 96% of today's false hards (138 → 5 files) while keeping
-the one shape a context rule cannot tell from a secret (a value written
-exactly like an SSN or phone number) at the hard tier. C reaches 0 by
-giving that up too. G3 states plainly what the 5 remaining files are,
-instead of moving the bar (G2) or demoting real-looking values to make
-the number (C).
+Why not B now: its one recall loss is the owner's own document type. Why
+not C: it gives up every pattern-only leak (9 cases) to reach a number. G2
+moves the bar to fit the number; G3 instead says what the remaining files
+are.
 
-If the owner keeps G1, the recommendation becomes C for `ssn` and B for
-`us-phone` and `credit-card`: `us-phone` alone leaves 2 files (0.4%).
+Conditions: Lane B's U3 number does not show good redactions held at exit
+2 by these shapes; if it does, the owner may weigh C for `ssn` again. Any
+case relabelled (none under A) goes under `weaker: true` in
+`eval/accepted_diffs.yaml` with this ADR as the owner decision and a
+CHANGELOG line.
+
+If the owner wants the gate as written (G1) met now, only C for `ssn`
+does it (with B for `us-phone` and `credit-card`: 2 files, 0.4%), at the
+cost of all 9 pattern-only SSN leaks moving to review.
 
 ## Consequences
 
 - Verdicts: some pattern-only findings move from exit 1 to exit 2. Never to 0.
-- PR 2: the measured shapes become a pure tier policy in `matching/`,
-  with tests, plus the recall measurement over the case library. No
-  call-site change.
+- PR 2: the recall measurement (2a, done above), then the chosen option
+  as a pure tier policy in `matching/` with tests (2b). No call-site
+  change.
 - PR 3 (after #100 merges and this ADR is accepted): the policy wired
   into `verify.py`'s pattern call sites; accepted diffs marked
   `weaker: true`; case relabels; docs in sync; the baseline re-run to
