@@ -158,10 +158,11 @@ allowlist, so it is literal-only now.)
 The committed real-tool files above are three, made by hand. The
 real-redactor set measures a redaction tool's real output at scale,
 against secrets whose every location is known: fabricated documents of
-the kinds people redact, run through the tool, then (in later PRs)
-judged by an oracle that shares no code with the verifier and adjudicated
-per file, so the verifier's silent misses and its exit `0` rate on
-correctly redacted files can be counted. It is local: everything it
+the kinds people redact, run through the tool, then judged by an oracle
+that shares no code with the verifier and adjudicated per file before the
+verifier ever sees them, so the verifier's silent misses and its exit `0`
+rate on correctly redacted files can be counted (the measurement
+subcommand is a later PR). It is local: everything it
 writes lives under the gitignored `eval/scorecard/redactor_set_local/`
 (the generator refuses any other `--root` unless given
 `--allow-outside`), and only aggregate counts are ever published. A
@@ -173,6 +174,9 @@ PYTHONPATH=eval:. python -m redactor_set generate        # 20 documents -> input
 PYTHONPATH=eval:. python -m redactor_set probes          # 22 probes   -> probes/
 REDACTOR_CMD=... REDACTOR_PYTHON=... \
   PYTHONPATH=eval:. python -m redactor_set run --set inputs   # or --set probes
+PYTHONPATH=eval:. python -m redactor_set oracle --set inputs  # m0, m1, m2 -> oracle/
+PYTHONPATH=eval:. python -m redactor_set adjudicate draft --set inputs
+PYTHONPATH=eval:. python -m redactor_set adjudicate lock --set inputs    # then: verify
 ```
 
 - **Documents** (`templates.py`): 20 templates — tax forms (a W-2, a
@@ -243,8 +247,94 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   removed first, so they can never stand in for a failed one
   (`work/<set>/run.json`).
 
+- **Partial residue** (owner decision, 2026-10-14): a surviving piece of
+  a secret counts as a leak. For digits and identifiers, any run of four
+  or more of a value's digits counts (separators inside one token
+  dropped: `123-45` holds `1234`); for letters, only a whole word of four
+  or more letters from a secret (`Testperson`, `Fictional`) — a
+  four-letter fragment inside another word (`tion` in `compensation`) is
+  not one. The generator keeps filler free of such pieces and the oracle
+  looks for them by this one rule (`persona.residue_in`,
+  `oracle_raw.residue`; a test checks the two agree).
+- **Oracle** (`oracle_raw.py`, `oracle.py`): for each output file and
+  each planted instance, which channels still find the value, on three
+  engines so no class rests on one the verifier also uses. **R1**
+  (`oracle_raw`, standard library only): every `stream … endstream`
+  body in the raw bytes decoded (Flate, ASCIIHex, ASCII85) and searched
+  for the written text (ASCII, escaped and hex strings, UTF-16, and
+  UTF-16 as a hex string) and, in content streams, for the instance's
+  fingerprints or its UTF-16 in each text block's joined operands; a
+  body is marked superseded when a later body has its object number and
+  unindexed after the final `%%EOF`; a hit in a font
+  program or image never counts alone. **R2** (pikepdf): every object,
+  live (reachable from the trailer) or orphaned, each string with the
+  role of the dictionary holding it (Info, annotation, field, outline,
+  file spec, link action) and each decoded stream with its role (page
+  content, appearance, XMP, attachment); every image and thumbnail is
+  extracted for OCR (one this channel cannot decode is noted on the
+  result, never dropped silently). **V** (poppler `pdftoppm` at 300 dpi, then
+  tesseract — not the verifier's Vision): each planted box cropped and
+  read, each page read whole, each extracted image read; plus
+  pdfminer.six's live text (R3). Evidence counts for an instance only
+  from a place that kind of instance is stored (a name in the Info
+  dictionary is not counted for the same name drawn on a page).
+  Evidence no planted instance can claim — the tool copied a value into
+  an annotation or metadata, a scan gained a text layer, an earlier
+  revision kept it — is kept as an **unattributed** row for its secret:
+  it makes the file a leak, and the adjudicator must place it. A
+  page-level reading (pdfminer's live text, the whole-page OCR) is
+  accounted for only by an instance of that secret that took that same
+  reading on that page: a scan or a form field on the page does not
+  account for a text layer the tool added over it. Each row
+  is **recoverable-visible** (V reads it whole), **recoverable-hidden**
+  (stored whole, outside fonts and images), **partial** (a piece, or one
+  part of a split value) or **removed**. OCR allows one edit on values
+  of nine or more characters; a farther miss (two or three edits, or one
+  on a shorter value) is flagged *uncertain*, never a match, as is a
+  planted box that still holds ink no reading explains (a box of one
+  colour — a redaction box, or blank paper — does not). Machine-written
+  dates are never searched for partial residue; a secret's piece inside
+  another secret's whole value still counts (a name in an email address
+  is a name). Method `m0` (the
+  unredacted inputs) is a calibration: every planted instance must be
+  found whole, and by the channels that read stored content (R1 or R2
+  for text, the extracted-image OCR for pixels; they alone see an
+  orphaned stream or image later), or `oracle` exits 1. Renders and crops are kept under
+  `oracle/<set>/<method>/<stem>/` for the adjudicator.
+- **Adjudication** (`adjudicate.py`): `draft` turns each oracle result
+  into a record per file — per row its class, where its evidence is
+  stored (live, orphaned, superseded, unindexed; for pixels, drawn or
+  orphaned), the COVERAGE.md cell that puts it in and the exit a correct
+  verifier gives there, taken from the case library's own case for that
+  cell (`EXPECTED`; rows with no case of their own are marked
+  provisional, known gaps marked as such, and a test checks every case
+  id, cell and exit against the library). Pixels a page draws map to
+  `live.pixels`, which the library expects to be a hard finding through
+  OCR (exit `1`). Rows the adjudicator must clear are flagged: uncertain
+  OCR or ink, a channel disagreement, an unattributed row, a storage the
+  oracle could not tell. The adjudicator (an agent viewing the kept
+  renders and crops, the owner spot-checking) names themself and clears
+  each flag — `confirmed` with a note, or an `override` with a reason
+  (and, for a recoverable row, a cell and expected exit; never exit `0`,
+  which would score a silent miss as correct). `lock` refuses an
+  unfinished record, a record whose output file or oracle result has
+  changed, a row edited by hand rather than overridden, and a set that
+  is not exactly one record, `<method>/<stem>.json`, per `m1` and `m2`
+  output in the run's `run.json` (an output the run did not make is
+  reported, never skipped); `--seed` limits the set to those seeds'
+  documents and the lock keeps it (`draft --seed` drafts only those);
+  it recomputes each file's truth and expected exit (the worst of its rows,
+  in the order `0 < 2 < 1`) and writes a sha256 per record to
+  `adjudication.lock.json`. A locked record that changes, disappears or
+  is added, a change of seeds, or a lock file gone while records are
+  already finalised needs a reason, which the lock keeps. `verify` re-checks everything
+  and prints the lock's own sha256: the lock lives in the gitignored
+  root, so the measurement reports that hash beside its counts. Records
+  are locked before the verifier runs on the set.
+
 Nothing in `redactor_set/` imports the verifier or PyMuPDF
-(`tests/test_redactor_set_generator.py` checks it).
+(`tests/test_redactor_set_generator.py` and
+`tests/test_redactor_set_oracle.py` check it).
 
 ### The blind red-team slot (`caselib/redteam/`)
 
