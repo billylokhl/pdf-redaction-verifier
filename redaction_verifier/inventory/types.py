@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Final, TypeAlias
 
 from ..ledger import Flag, Span, Unit, UnitKind, UnitRef
+from .annotations import Annotations, Synthesized
 from .graph import Graph
 from .pages import Page
 from .trees import Trees
@@ -85,7 +86,11 @@ class Inventory:
     ``revisions`` counts the chain's revisions (0 = current). ``graph``:
     the reference graph (3a-7), its edges by body and trailer; ``pages``:
     each revision's page list (3a-7b), None where the tree is flagged;
-    ``trees``: each revision's name and number trees' entries (3a-7c)."""
+    ``trees``: each revision's name and number trees' entries (3a-7c);
+    ``annotations``: each revision's annotations as MuPDF lists them, each
+    classified synthesized or not (3a-7d), None where the page list is;
+    ``synthesized``: each revision's SYNTHESIZED units (ADR 0011 item 5):
+    no bytes, UNEXAMINED, charged to the unit cap."""
 
     size: int
     tiling: Tiling
@@ -100,6 +105,8 @@ class Inventory:
     graph: Graph
     pages: tuple[tuple[Page, ...] | None, ...]
     trees: tuple[Trees | None, ...]
+    annotations: tuple[Annotations | None, ...]
+    synthesized: tuple[tuple[Synthesized, ...], ...]
 
     def entry(self, number: int, revision: int = 0) -> tuple[int, int, int] | None:
         """Object *number*'s xref entry (kind, a, b) in *revision*."""

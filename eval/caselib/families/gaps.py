@@ -378,12 +378,15 @@ def orphan_xmp_thumbnail(path: Path) -> None:
 
 # ── thumbnail.pixels (/Thumb) ────────────────────────────────────────────
 
+PAGE_THUMBNAIL_LIVE = expect(2, warnings=(("PAGE_THUMBNAIL", "live"),))
+
+
 @leak_raw(
     "page.thumb-image", "thumbnail.pixels",
     "The SSN as the page's own /Thumb preview image: referenced by the page, so "
-    "it is live, but nothing renders or OCRs a page thumbnail.",
-    expected=LIVE_SSN,
-    known_gap=KnownGap("thumbnail.pixels", expect(0)),
+    "it is live, but nothing renders or OCRs a page thumbnail. Flagged (the H1 "
+    "hotfix): every page carrying a /Thumb is manual review until Phase 4b reads it.",
+    expected=PAGE_THUMBNAIL_LIVE,
     mistake="Leaving a page's /Thumb preview image in place instead of regenerating or "
             "removing it.",
     recovery="Extract the page's /Thumb image directly and OCR it.",
@@ -393,6 +396,24 @@ def page_thumb(path: Path) -> None:
     w, h = gray.width, gray.height
     objects = one_page(PAGE)
     objects[3] = page(extra=b"/Thumb 7 0 R")
+    objects[7] = stream(_gray_image_dict(w, h), gray.samples)
+    _write(path, objects)
+
+
+@leak_raw(
+    "page.thumb-image-on-page-tree", "thumbnail.pixels",
+    "The SSN as a /Thumb preview image set on the page tree's Pages node rather "
+    "than on the page: not inheritable by the spec, but a reader may still show "
+    "it, and nothing renders or OCRs it. Flagged like a page's own /Thumb.",
+    expected=PAGE_THUMBNAIL_LIVE,
+    mistake="Leaving a /Thumb preview image on the page tree instead of removing it.",
+    recovery="Extract the /Thumb image from the Pages node and OCR it.",
+)
+def page_tree_thumb(path: Path) -> None:
+    gray = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of(SECRET)))
+    w, h = gray.width, gray.height
+    objects = one_page(PAGE)
+    objects[2] = b"<< /Type /Pages /Kids [3 0 R] /Count 1 /Thumb 7 0 R >>"
     objects[7] = stream(_gray_image_dict(w, h), gray.samples)
     _write(path, objects)
 
