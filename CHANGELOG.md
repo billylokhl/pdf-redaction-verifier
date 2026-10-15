@@ -125,6 +125,8 @@ Blanking is narrow by design: only a trailer of qpdf's exact shape at the very e
 - a match split by the hold boundary is still found.
 
 ### Changed
+**CI: weekly scorecard limit 60 → 120 minutes, one queue per branch** (`.github/workflows/scorecard-weekly.yml`, H3): a full run recently took 58-62 minutes, so the 60-minute limit cancelled branch runs mid-way; and the workflow-wide concurrency group let a newer dispatch on one branch cancel another branch's pending run. Branches now use this run as their pre-merge macOS+OCR gate (#147), so each branch gets its own queue. No test or verdict change.
+
 **`PAGE_FAILED` warnings carry storage `live`** (#128): the JSON report's `storage` field for a page the Text or OCR layer failed to read, or OCR could not read whole, is now `live` (the page's own content); it was null. No verdict change.
 
 **CI: full-macos time limit 25 → 35 minutes** (`.github/workflows/tests.yml`, H3): the full suite takes about 21 minutes on main, 84% of the old limit. With the Phase 5 recorder-parity test (#134) a branch run took 23.8 minutes and the next was cancelled at the 25-minute limit (run 38737399523). No test or verdict change.
