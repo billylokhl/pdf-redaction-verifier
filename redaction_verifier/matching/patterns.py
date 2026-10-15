@@ -11,9 +11,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Callable, Collection, Sequence
+from typing import Callable, Collection, Iterable, Sequence
 
-from redaction_verifier.matching.values import normalize_string
+from redaction_verifier.model import MaskIndex, fold_wide
 from redaction_verifier.matching.validators import (
     _valid_card,
     _valid_email,
@@ -76,33 +76,35 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
-def mask(matched: str, exact_norms: Collection[str] = ()) -> str:
+def mask(matched: str, exact: MaskIndex | Iterable[str] = ()) -> str:
     """Mask a matched sample for the report.
 
     Reveals at most 4 trailing characters and never more than half the
     match; the fixed '****' prefix hides the true length.
 
-    *exact_norms* are the rules' normalized exact values (never shown in
-    a report). When the sample contains one, or any 2 consecutive
-    revealed characters (or a lone revealed character) occur in one, the
-    tail would disclose part of an exact value, so only '****' is shown.
+    *exact* holds the rules' exact values (a MaskIndex, or raw strings),
+    which a report never shows. Everything is compared folded (letters and
+    digits of any script, case and accents ignored). Only '****' is shown
+    when the sample contains an exact value, when two consecutive revealed
+    characters (or a lone revealed character) occur in one, or when the
+    tail touches one at an edge by a single character.
     """
     reveal = min(4, len(matched) // 2)
     if not reveal:
         return "****"
-    exacts = [e for e in exact_norms if e]
-    if exacts:
-        if any(e in normalize_string(matched) for e in exacts):
+    index = exact if isinstance(exact, MaskIndex) else MaskIndex(exact)
+    if index:
+        if index.contained_in(fold_wide(matched)):
             return "****"
-        tail = normalize_string(matched[-reveal:])
-        width = min(2, len(tail))
-        if width and any(
-            tail[i : i + width] in e for e in exacts for i in range(len(tail) - width + 1)
-        ):
+        tail = fold_wide(matched[-reveal:])
+        if len(tail) == 1:
+            if tail in index.chars:
+                return "****"
+        elif any(tail[i : i + 2] in index.pairs for i in range(len(tail) - 1)):
             return "****"
         # A one-character overlap at the edge of the match: the tail ends
         # with an exact value's first character or begins with its last.
-        if tail and any(tail[-1] == e[0] or tail[0] == e[-1] for e in exacts):
+        if tail and (tail[-1] in index.firsts or tail[0] in index.lasts):
             return "****"
     return "****" + matched[-reveal:]
 

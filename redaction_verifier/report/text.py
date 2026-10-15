@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 from redaction_verifier.matching import mask
-from redaction_verifier.model import Finding, ScanReport
+from redaction_verifier.model import Finding, MaskIndex, ScanReport
 
 if TYPE_CHECKING:
     from redaction_verifier.rules import RuleSet
@@ -126,14 +126,14 @@ _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
 _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
 
 
-def _label(finding: Finding, rules: RuleSet | None, exact_norms: Sequence[str] = ()) -> str:
+def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = None) -> str:
     label = rules.labels.get(finding.secret_name) if rules is not None else None
     text = repr(finding.secret_name) if label is None else label.text
     text = _sanitize_report_text(text)
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
-        text += f" {mask(finding.sample, exact_norms)}"
+        text += f" {mask(finding.sample, exact if exact is not None else ())}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
 
@@ -209,9 +209,9 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     certified (exit 2).
     """
     name = _sanitize_report_text(pdf_path.name)
-    exact = list(report.exact_norms)
+    exact = report.exact_index
     if rules is not None:
-        exact += [s.normalized for s in rules.secrets]
+        exact = MaskIndex([*exact.values, *(s.folded or s.normalized for s in rules.secrets)])
     print(f"\n{_BAR}")
     if report.leaked:
         print(f"  [FAIL]  SECRETS ARE STILL IN THIS FILE: {name}")

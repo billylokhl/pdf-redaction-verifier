@@ -282,3 +282,11 @@ class TestMaskedTailNeverShowsAnExactValue:
         line = self._line(capsys, tmp_path, "123-45-67890", [
             {"name": "any", "pattern": r"\d{3}-\d{2}-\d{5}"}, {"name": "v", "value": VALUE}])
         assert "****7890" in line
+
+
+    def test_non_ascii_tail_of_an_exact_value_is_dropped(self, capsys, tmp_path) -> None:
+        # "-O-slash" is the start of the exact value; ASCII-only folding
+        # used to lose it and show "****-O-slash".
+        line = self._line(capsys, tmp_path, "ABC-Ø", [
+            {"name": "any", "pattern": r"[A-Z]{3}-\w"}, {"name": "v", "value": "Øvre 12"}])
+        assert "Ø" not in line

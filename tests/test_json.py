@@ -777,3 +777,39 @@ def test_review_warning_text_is_masked_against_exact_values(tmp_path) -> None:
     _, data = _run(pdf, rules, tmp_path)
     messages = [w["message"] for w in data["warnings"] if w["code"] == "REVIEW_FUSED_PATTERN"]
     assert messages and all("7890" not in m for m in messages)
+
+
+class TestMaskNonAsciiAndCost:
+    def test_non_latin_letters_in_the_tail_are_compared(self, tmp_path) -> None:
+        # The ASCII-only normalizer drops O-slash; the tail "-O-slash"
+        # belongs to the exact value and must not be shown.
+        pdf = _pdf(tmp_path / "doc.pdf", "Ref ABC-Øvre 12")
+        rules = _rules(tmp_path / "r.json", [
+            {"name": "v", "value": "Øvre 12"},
+            {"name": "p", "pattern": r"[A-Z]{3}-\w"},
+        ])
+        _, data = _run(pdf, rules, tmp_path)
+        samples = {f["sample"] for f in data["findings"]}
+        assert samples == {"", "****"}
+
+    @pytest.mark.parametrize("sample, value, shown", [
+        ("ABC-Ø", "Øvre 12", "****"),                       # Latin, non-ASCII
+        ("kod-中文", "中文 12", "****"),              # CJK
+        ("abc-жук", "жук 5", "****"),   # Cyrillic
+        ("abc-١٢", "١٢٣", "****"),           # Arabic-Indic digits
+        ("ABC-Ø", "Zebra 12", "****-Ø"),                    # control: kept
+    ])
+    def test_helper(self, sample, value, shown) -> None:
+        assert mask(sample, [value]) == shown
+
+    def test_cost_does_not_scale_with_the_number_of_values(self) -> None:
+        import time
+
+        from redaction_verifier.model import MaskIndex
+
+        values = [f"v{i:06d}-{i * 7919 % 1000003:07d}" for i in range(200_000)]
+        index = MaskIndex(values)
+        start = time.perf_counter()
+        for _ in range(2000):
+            mask("ref 000000-0000000 and more text", index)
+        assert time.perf_counter() - start < 2.0

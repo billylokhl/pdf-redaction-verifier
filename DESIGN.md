@@ -449,7 +449,9 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 masked — at most four trailing characters, never more than half, and
 none at all (just `****`) when the sample contains an exact value or its
 revealed tail shares two consecutive characters (or a lone character,
-or a single edge character) with one — and
+or a single edge character) with one (compared as letters and digits of any
+script, case, accents and punctuation ignored; the index of exact values is
+built once per run) — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 OCR's upright re-reads of vertical lines are capped at 64 per page,
