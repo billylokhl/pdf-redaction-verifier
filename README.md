@@ -494,7 +494,11 @@ version: 12.4 with Python 3.11+, 12.3 with Python 3.10. Homebrew's qpdf
 12.4 matches; Debian/Ubuntu's packaged qpdf is older, so install the
 matching release binary from qpdf's GitHub releases, as CI does
 (`.github/workflows/tests.yml`). With a mismatch those tests fail closed
-and the inventory gate refuses to run. Without uv, `pip install -e '.[test]'`
+and the inventory gate refuses to run. qpdf's macOS release binary reads
+RC4-encrypted files only if it finds OpenSSL's legacy provider; CI sets
+`OPENSSL_MODULES` to Homebrew openssl@3's `lib/ossl-modules` (Homebrew's
+own qpdf needs nothing). Without the provider, the RC4 encrypted-file
+test fails: the gate reads a split on encryption. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
 `python verify.py --target ... --secrets ...` works installed or not; pass
 `--fail-fast` to stop at the first confirmed finding. `verify.py` imports
