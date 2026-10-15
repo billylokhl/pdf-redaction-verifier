@@ -631,7 +631,12 @@ the gap is stated rather than implied away.
   to the document set. Measured on 488 real text-bearing PDFs with no
   secret in them, `ssn` or `us-phone` raised a hard finding on 28.3%,
   mostly digit runs inside hex or alphanumeric ids
-  (eval/spikes/RESULTS.md, "Phase 5 baseline").
+  (eval/spikes/RESULTS.md, "Phase 5 baseline"). So a class is not a
+  secret: with `--no-strict-classes` its matches are notices that never
+  change the exit code ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
+  `redaction_verifier/matching/policy.py` decides which rules are
+  informational, and `ScanReport` routes their findings to its notices as
+  they are recorded and their review warnings before the verdict).
 
 [docs/REDESIGN.md](docs/REDESIGN.md) is the plan to replace enumeration
 (searching the places this tool knows about) with an accounted ledger
