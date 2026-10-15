@@ -9,7 +9,8 @@ since the move. In _vision_recognize_batch: the image handler's options
 are a native NSDictionary, not a Python {} (macOS 27 compatibility), a
 reading counts only once its completion handler ran to the end, with
 nothing allowed to escape a handler, and Vision is waited on for at most
-VISION_CALL_TIMEOUT_S per call (_perform_requests; #115). And a line Vision reads vertically
+VISION_CALL_TIMEOUT_S per call (_perform_requests; #115). And a line
+Vision reads vertically
 is hard-finding eligible only when an upright re-read confirms it, since
 Vision on macOS 27 returns a stack of upright characters as one line
 read sideways (see _confirm_vertical).
@@ -140,6 +141,18 @@ def _refuse_while_stalled() -> None:
                 f"out after {VISION_CALL_TIMEOUT_S:g} s; not waiting on Vision again")
 
 
+def _abandon(thread: threading.Thread, requests: list[Any]) -> None:
+    """Cancel *requests* and record *thread*, still inside Vision, as
+    stalled (_refuse_while_stalled)."""
+    for request in requests:
+        try:
+            request.cancel()
+        except BaseException:
+            pass    # best effort: the deadline holds either way
+    with _stalled_lock:
+        _stalled.append(thread)
+
+
 def _perform_requests(image_handler: Any, requests: list[Any]) -> tuple[Any, Any]:
     """image_handler.performRequests_error_(requests, None), but waited
     on for at most VISION_CALL_TIMEOUT_S: on a worker thread, joined with
@@ -161,15 +174,16 @@ def _perform_requests(image_handler: Any, requests: list[Any]) -> tuple[Any, Any
 
     thread = threading.Thread(target=perform, name="vision-perform", daemon=True)
     thread.start()
-    thread.join(VISION_CALL_TIMEOUT_S)
+    try:
+        thread.join(VISION_CALL_TIMEOUT_S)
+    except BaseException:
+        # Ctrl-C while waiting: leave Vision as a timeout would, so a
+        # caller that carries on (in-process) never runs a second call
+        # beside the abandoned one.
+        _abandon(thread, requests)
+        raise
     if thread.is_alive():
-        for request in requests:
-            try:
-                request.cancel()
-            except BaseException:
-                pass    # best effort: the deadline holds either way
-        with _stalled_lock:
-            _stalled.append(thread)
+        _abandon(thread, requests)
         raise VisionTimeout(
             f"Apple Vision did not return within {VISION_CALL_TIMEOUT_S:g} s")
     if "error" in outcome:
@@ -210,8 +224,7 @@ def _vision_recognize_batch(
     VisionTimeout when Vision does not return within
     VISION_CALL_TIMEOUT_S (_perform_requests), and at once, without
     calling Vision, while an earlier call that did not has still not
-    returned. Returns each pass's
-    observations in Vision's order.
+    returned. Returns each pass's observations in Vision's order.
     """
     _refuse_while_stalled()
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))

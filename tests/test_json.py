@@ -413,7 +413,9 @@ class TestOcrFailureFailsClosed:
         finally:
             release.set()
             for thread in list(ocr._stalled):
-                thread.join(30)
+                thread.join(60)
+            # A thread still in Vision would fail every later OCR test here.
+            assert not any(thread.is_alive() for thread in ocr._stalled)
         assert code == 2
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
         assert "did not return within 1 s" in data["warnings"][0]["message"]

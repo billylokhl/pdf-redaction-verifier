@@ -1450,8 +1450,9 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]],
     None) runs it with results() None, ("error", message) runs it with an
     error, ("raises", exc) runs it on an observation whose topCandidates_
     raises *exc*, and ("skip", None) never runs it — all while
-    still reporting success. ("hang", event) blocks performRequests until
-    *event* is set, as a stalled Vision would (#115), then runs nothing. Handlers run on the calling thread here; on
+    still reporting success. ("hang", event) blocks performRequests
+    until *event* is set, as a stalled Vision would (#115), then runs
+    nothing. Handlers run on the calling thread here; on
     real Vision they run on worker threads, where an exception escaping
     one aborts the process, so the handler itself must not let one out.
     """
