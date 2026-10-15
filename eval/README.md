@@ -987,7 +987,8 @@ owner's sign-off. It applies policy 1 to every case label too (expected,
 known gap, older macOS; scanned or not): a label lists warning codes, not
 their rule, so a review warning is the class's only when the case's rules
 are all classes, and a label it cannot judge is settled by this scan's
-report or reported as undetermined. It also prints the cases measured per class (a class with
+report when that report satisfies the label exactly (`caselib.run.judge`;
+listed as `settled_by_scan`), or reported as undetermined. It also prints the cases measured per class (a class with
 none has no measured recall), how many exit-1 cases a value rule holds, the
 cases expected at exit 1 that exit otherwise today (not judged), and any
 finding of unknown or ambiguous shape. It exits 1 if a finding's shape is

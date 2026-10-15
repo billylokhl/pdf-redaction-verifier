@@ -209,9 +209,12 @@ def test_scan_case_joins_every_class_finding(case_id, other_hard, tmp_path):
     assert o.unattributed == 0
     assert moves(o, OPTIONS["C"], upper=False) is not other_hard
     assert o.policy1_exit == (1 if other_hard else 0)
+    assert "expected" in o.labels_matched  # the scan satisfies the case's own label
 
 
 # ── policy 1 on case labels ──────────────────────────────────────────────
+
+import dataclasses  # noqa: E402
 
 from caselib.model import expect  # noqa: E402
 from scorecard.pattern_recall import label_changes, policy1_label  # noqa: E402
@@ -256,10 +259,16 @@ def test_label_changes_cover_known_gaps_and_settle_mixed_cases_by_scan():
         "mixed.settled": _Case("leak", (cls, val), review),
         "mixed.unscanned": _Case("leak", (cls, val), review),
     }
-    scanned = {"mixed.settled": _o(("ssn", {"uuid"}), cid="mixed.settled", exit_today=2, p1=2)}
-    out = label_changes(registry, scanned)
+    registry["mixed.exit-only"] = _Case("leak", (cls, val), review)
+    settled = _o(("ssn", {"uuid"}), cid="mixed.settled", exit_today=2, p1=2)
+    settled = dataclasses.replace(settled, labels_matched=frozenset({"expected"}))
+    # Same exit as the label, but the scan does not match it exactly.
+    exit_only = _o(("ssn", {"uuid"}), cid="mixed.exit-only", exit_today=2, p1=2)
+    out = label_changes(registry, {"mixed.settled": settled, "mixed.exit-only": exit_only})
     assert out["changed"] == ["gap.class-only [leak] expected: 2 -> 0"]
-    assert out["undetermined"] == ["mixed.unscanned [leak] expected: 2 -> ?"]
+    assert out["undetermined"] == ["mixed.exit-only [leak] expected: 2 -> ?",
+                                   "mixed.unscanned [leak] expected: 2 -> ?"]
+    assert out["settled_by_scan"] == ["mixed.settled [leak] expected: 2 -> 2"]
 
 
 def test_policy1_on_an_error_report_never_certifies():

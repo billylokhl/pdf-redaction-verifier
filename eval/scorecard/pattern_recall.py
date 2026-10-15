@@ -94,6 +94,9 @@ class CaseOutcome:
     truth: str = "leak"
     policy1_exit: int | None = None  # the exit with class matches informational only
     unattributed: int = 0  # warnings naming a class rule in text but not in `rule`
+    # The case labels ("expected", "known_gap.today", "older_macos.today")
+    # this scan's report satisfies exactly (caselib.run.judge).
+    labels_matched: frozenset[str] = frozenset()
 
 
 def policy1_exit(report: Mapping[str, Any], class_names: frozenset[str],
@@ -150,6 +153,7 @@ def label_changes(registry: Mapping[str, Any],
     scanned = scanned or {}
     changed: list[str] = []
     unknown: list[str] = []
+    settled: list[str] = []
     for cid, case in sorted(registry.items()):
         class_names = frozenset(r["name"] for r in case.rules if r.get("class") in CLASSES)
         if not class_names:
@@ -163,14 +167,18 @@ def label_changes(registry: Mapping[str, Any],
         for which, label in labels:
             new = policy1_label(label, class_names, class_only)
             o = scanned.get(cid)
-            if new is None and o is not None and o.exit_today == label.exit:
+            if new is None and o is not None and which in o.labels_matched:
+                # The scan reports exactly what the label expects, and the
+                # report names each warning's rule: policy 1 on it is the
+                # label's policy 1.
                 new = o.policy1_exit
+                settled.append(f"{cid} [{case.truth}] {which}: {label.exit} -> {new}")
                 which += " (settled by this scan)"
             if new is None:
                 unknown.append(f"{cid} [{case.truth}] {which}: {label.exit} -> ?")
             elif new != label.exit:
                 changed.append(f"{cid} [{case.truth}] {which}: {label.exit} -> {new}")
-    return {"changed": changed, "undetermined": unknown}
+    return {"changed": changed, "undetermined": unknown, "settled_by_scan": settled}
 
 
 def unattributed_class_warnings(report: Mapping[str, Any], class_names: frozenset[str]) -> int:
@@ -295,13 +303,22 @@ def _scan_case(case: Any, workdir: Path, have: frozenset[str] | None = None) -> 
             shapes[class_of[name]] = shapes.get(class_of[name], frozenset()) | frozenset(v)
     from .keys import effective_exit
 
+    from caselib.run import judge
+
+    labels = {"expected": case.expected}
+    if case.known_gap is not None:
+        labels["known_gap.today"] = case.known_gap.today
+    if case.older_macos is not None and case.older_macos.today is not None:
+        labels["older_macos.today"] = case.older_macos.today
+    matched = frozenset(which for which, want in labels.items()
+                        if judge(case, s, have, want=want).ok)
     names = frozenset(class_of)
     # The same environment filter on both sides of policy 1's comparison.
     today = effective_exit(s.report, have) if have is not None else s.exit_code
     return CaseOutcome(case.id, case.expected.exit, today, tuple(findings), shapes,
                        other_hard, frozenset(class_of.values()), case.truth,
                        policy1_exit(s.report, names, have),
-                       unattributed_class_warnings(s.report, names))
+                       unattributed_class_warnings(s.report, names), matched)
 
 
 def select_cases(registry: Mapping[str, Any], have: frozenset[str], *,
@@ -332,8 +349,10 @@ def render(agg: Mapping[str, Any]) -> str:
         lab = agg["policy1_labels"]
         lines.append(f"policy 1 on the case labels (every case with a class rule, scanned "
                      f"or not): {len(lab['changed'])} label(s) change, "
-                     f"{len(lab['undetermined'])} undetermined")
+                     f"{len(lab['undetermined'])} undetermined, "
+                     f"{len(lab['settled_by_scan'])} settled by this scan (listed last)")
         lines.extend(f"    {x}" for x in lab["changed"] + lab["undetermined"])
+        lines.extend(f"    settled: {x}" for x in lab["settled_by_scan"])
     p1 = agg["policy1"]
     lines.append(f"policy 1 (class matches informational): {len(p1['leak_to_0'])} leak "
                  f"case(s) to exit 0 (each needs the owner's sign-off), "

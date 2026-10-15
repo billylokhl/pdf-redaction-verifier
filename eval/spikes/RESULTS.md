@@ -770,8 +770,10 @@ and `layout.rotated-split-pages-pattern-only`, which needs `no-ocr` and is
 judged from its label only). In all, 35 leak cases reach exit 0 under
 policy 1; the owner signed off all 35 (ADR 0012). The 31 cases with a
 value rule beside the class rule cannot be judged from their labels (a
-label lists warning codes, not their rule); this scan's reports settle
-them, and none changes.
+label lists warning codes, not their rule); for each, this scan's report
+satisfies the label exactly (`caselib.run.judge`) and names each
+warning's rule, which settles it: none changes (`settled_by_scan` lists
+all 31).
 
 These lists describe macOS 27 with every tool installed: OCR differs by
 macOS version (K43) and a case needing a missing tool is not scanned.
