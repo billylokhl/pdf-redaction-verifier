@@ -216,26 +216,52 @@ Owner decision: "approve all recommendations."
   actually exposes the stage this cross-check compares against; this is
   currently unconfirmed.
 
-## Phase 3a-8 (2026-10-15): pinned, fixture added, stage confirmed
+## Phase 3a-8 (2026-10-15): pinned, fixture added, stage confirmed for encrypted streams
 
 - **Pinned.** `pikepdf` is a runtime dependency in `pyproject.toml`,
   pinned like `pymupdf` (10.16.0 with libqpdf 12.4.2; 10.13.0.post1
   with libqpdf 12.3.2 on Python 3.10). The shipped CLI still does not
   import it until the redesign is wired in (tests/test_import_boundaries.py).
-- **Fixture.** `eval/caselib/families/encrypted.py`, written by pikepdf:
+- **Fixtures.** `eval/caselib/families/encrypted.py`, written by pikepdf:
   one case per standard security handler (RC4-40 R2, RC4-128 R3,
-  AES-128 R4, AES-256 R6), and `revision.encrypted-different-handlers`,
-  whose earlier revision is encrypted with RC4-128 and whose current one
-  with AES-256 under a different owner password, so each revision
-  decrypts only with its own `/Encrypt`. Today's verifier reads the
-  secret left in the earlier revision (exit `1`, superseded storage).
-- **Confirmed.** `tests/test_pikepdf_raw_stage.py`: pikepdf's
-  `Stream.read_raw_bytes()` equals MuPDF's `xref_stream_raw` byte for
-  byte, for every stream of every encrypted case (the fitz-written
-  `revision.encrypted-annotated` included), on the file and on each
-  earlier revision's prefix cut as `verify.scan_earlier_revisions` makes
-  it. Both reads are decrypted (the fixtures' filler is absent from the
-  file's bytes and present in both reads) and not yet unfiltered (a
-  Flate stream is still compressed in both). The cross-check 3a-9 builds
-  compares a real stage, so this ADR stands.
+  AES-128 R4, AES-256 R6); AES-256 with object and cross-reference
+  streams; AES-128 with a plain-text XMP packet (`/EncryptMetadata
+  false`); and `revision.encrypted-different-handlers`, whose earlier
+  revision is encrypted with RC4-128 under its own `/ID` and whose
+  current one with AES-256 under a different owner password, so each
+  revision decrypts only with its own `/Encrypt` and `/ID`. Today's
+  verifier gives each its expected verdict.
+- **Confirmed, for every stream the handler encrypts.**
+  `tests/test_pikepdf_raw_stage.py`: pikepdf's `Stream.read_raw_bytes()`
+  equals MuPDF's `xref_stream_raw` byte for byte, for every such stream
+  of every encrypted case (the fitz-written `revision.encrypted-annotated`
+  included), on the file and on each earlier revision's prefix cut as
+  `verify.scan_earlier_revisions` makes it. Both reads are decrypted (the
+  fixtures' filler is absent from the file's bytes and present in both)
+  and still filtered (every file's Flate content stream is still
+  compressed in both).
+- **Not confirmed -- streams the handler does not encrypt.** For
+  cross-reference streams (never encrypted) and `/Metadata` under
+  `/EncryptMetadata false`, pikepdf returns the stored plaintext, as the
+  spec says, while MuPDF's `xref_stream_raw` decrypts them anyway
+  (garbage under RC4, nothing under AES). The test pins that divergence.
+  A per-stream cross-check that included them would flag nearly every
+  current encrypted file, most of which use cross-reference streams.
 
+## Amendment (2026-10-15): streams the handler does not encrypt
+
+Owner decision, 2026-10-15: approve the carve-out (option a).
+
+- The cross-check compares pikepdf's decrypted read against MuPDF's
+  `xref_stream_raw` **only for streams the standard security handler
+  encrypts**.
+- Streams it does not encrypt -- cross-reference streams, `/Metadata`
+  under `/EncryptMetadata false`, and streams under the `/Identity` crypt
+  filter -- are checked instead as pikepdf's plaintext against the
+  file's own stored bytes, which need no decryption.
+- MuPDF's divergence on those streams (it decrypts them anyway) is pinned
+  with explicit assertions in `tests/test_pikepdf_raw_stage.py`, so a
+  change in either library is seen.
+
+The decision otherwise stands: decryption by pikepdf, cross-checked
+against MuPDF, for every byte the handler actually encrypts.

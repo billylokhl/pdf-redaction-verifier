@@ -29,7 +29,12 @@ def lockable(case: Case) -> bool:
     # qpdf's output depends on the installed version; a perf case is built
     # from scratch every run specifically to be large and slow — locking it
     # would mean building it (at least) three times per lock refresh for a
-    # hash nothing reviews byte-for-byte.
+    # hash nothing reviews byte-for-byte. pikepdf's output also comes from
+    # libqpdf, but each Python's pin (pyproject.toml) fixes its version;
+    # its RC4 cases hash alike on both pins today (its AES ones carry
+    # random IVs, so the lock records them as null). A pin bump that
+    # changes the bytes on one Python shows here: relock, or exclude the
+    # writer like qpdf.
     return case.writer != "qpdf" and not case.perf
 
 
