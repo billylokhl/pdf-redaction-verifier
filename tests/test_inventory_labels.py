@@ -235,6 +235,20 @@ def test_reachable_in_an_encrypted_file_agrees(tmp_path: Path) -> None:
     assert found.agrees and found.encrypted and found.reachable_compared == 1, found
 
 
+@requires_qpdf
+def test_an_embedded_pdf_with_its_own_table_agrees(tmp_path: Path) -> None:
+    # An uncompressed attachment holding a whole PDF (a case-library case):
+    # MuPDF's written file then holds two tables; the gate reads the one
+    # its final startxref names.
+    data = make(catalog=b" /Names << /EmbeddedFiles << /Names [(a.pdf) 6 0 R] >> >>",
+                objects={6: b"<< /Type /Filespec /F (a.pdf) /EF << /F 7 0 R >> >>"},
+                streams={7: (b" /Type /EmbeddedFile", make())})
+    inv = _inventory(data)
+    assert inv.flags == () and _kinds(inv) == {7: {K.EMBEDDED_FILE}}
+    found = compare(data, tmp_path, inv=inv)
+    assert found.agrees and found.reachable_compared == 1, found
+
+
 def _with_reachable(inv: Inventory, revision: int, numbers: frozenset[int]) -> Inventory:
     labels = list(inv.labels)
     labels[revision] = RevisionLabels(numbers, _labels(inv, revision).structural)

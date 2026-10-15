@@ -934,14 +934,22 @@ def _reachable_agree(blob: bytes, path: Path, labels: RevisionLabels | None, rev
     stats.reachable_seconds += time.perf_counter() - started
 
 
+_WRITTEN_TAIL = re.compile(rb"startxref\r?\n(\d+)\r?\n%%EOF\s*\Z")
+_WRITTEN_TABLE = re.compile(rb"xref\r?\n")
 _TABLE_SUBSECTION = re.compile(rb"(\d+) (\d+)\r?\n")
 _TABLE_ENTRY = re.compile(rb"\d{10} \d{5} ([nf])(?: \r| \n|\r\n)")
 
 
 def _in_use(written: bytes) -> set[int]:
-    """The in-use numbers of the one classic table MuPDF wrote."""
-    head = re.search(rb"\nxref\r?\n", written)
-    if head is None or written.find(b"\nxref", head.end()) >= 0:
+    """The in-use numbers of the one classic table MuPDF wrote: the one
+    its final startxref names (a stream's data may hold a table too, an
+    embedded PDF's), with no /Prev."""
+    tail = _WRITTEN_TAIL.search(written, max(0, len(written) - 64))
+    if tail is None:
+        raise ValueError("no startxref")
+    head = _WRITTEN_TABLE.match(written, int(tail.group(1)))
+    trailer = written.find(b"trailer", head.end()) if head is not None else -1
+    if head is None or trailer < 0 or b"/Prev" in written[trailer:tail.start()]:
         raise ValueError("not one classic table")
     found: set[int] = set()
     at = head.end()
