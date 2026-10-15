@@ -970,6 +970,44 @@ match there is never seen. Scratch reports, rules and record files go
 under `real_corpus/pattern-baseline-workdir`. It changes no verdict.
 Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
 
+**Recall cost** (`scorecard.pattern_recall`, Phase 5 PR 2a): the other
+side of the same choice. Every case-library case with a built-in class
+rule is scanned in-process with the recorder installed, and each of ADR
+0012's options is applied to what it saw:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard.pattern_recall [--json OUT]
+```
+
+For ADR 0012's demote-only options (per class, a set of shapes kept hard)
+it prints, per option, the leak cases that exit 1 today and would move to
+exit 2, as two bounds: `moved_at_least` (every class finding demoted
+whichever of its recorded shapes is used, none unknown, and no other match
+of the class in a hard-capable call kept) and `moved_at_most` (each finding
+possibly demoted, an unknown shape counting as demoted); and the same upper
+bound as if the cases' value rules were absent. For the owner's policy 1
+(a class match no longer affects the exit code) it recomputes every case's
+exit from its report without the class findings and class review warnings
+and lists every case whose exit changes; a leak case reaching 0 needs the
+owner's sign-off. It applies policy 1 to every case label too (expected,
+known gap, older macOS; scanned or not): a label lists warning codes, not
+their rule, so a review warning is the class's only when the case's rules
+are all classes, and a label it cannot judge is settled by this scan's
+report when that report satisfies the label exactly (`caselib.run.judge`;
+listed as `settled_by_scan`), or reported as undetermined. It also prints the cases measured per class (a class with
+none has no measured recall), how many exit-1 cases a value rule holds, the
+cases expected at exit 1 that exit otherwise today (not judged), and any
+finding of unknown or ambiguous shape. It exits 1 if a finding's shape is
+unknown, a warning names a class rule without carrying it in `rule`, or a
+label stays undetermined.
+Case ids are fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
+
+`scorecard.pattern_policy1_corpus` recomputes the baseline run's per-file
+reports under the owner's policy 1 (ADR 0012: built-in class matches no
+longer affect the exit code) and prints, per stratum, the exit codes today
+and under policy 1 and the moves between them; counts only, from the
+local reports, scanning nothing.
+
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in

@@ -753,3 +753,94 @@ would cost in recall: a real SSN written next to a label with the space
 lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
 rest. That cost has to be measured on leak cases before any demotion
 ships (Phase 5, PR 2; ADR 0012).
+
+**Policy 1 on the corpus** (ADR 0012; `eval/scorecard/pattern_policy1_corpus.py`
+over the per-file reports of the run above, recomputed without the
+built-in classes' findings and review warnings, which every pattern
+warning names in its `rule` field; 0 unattributed): since the rules were
+the four classes only, each file's exit is then set by its coverage
+warnings alone.
+
+| Text-bearing, 488 | Exit 0 | Exit 1 | Exit 2 |
+| --- | --- | --- | --- |
+| today | 131 (26.8%) | 235 (48.2%) | 122 (25.0%) |
+| policy 1 | 248 (50.8%) | 0 | 240 (49.2%) |
+
+Moves: 111 files 1 → 0, 124 files 1 → 2 (a coverage warning remains), 6
+files 2 → 0. All 2,072 measured files: exit 0 from 1,579 to 1,785, exit 1
+from 337 to 0, exit 2 from 156 to 287 (198 1 → 0, 139 1 → 2, 8 2 → 0).
+
+With `credit-card` in the union (`ssn`, `us-phone` or `credit-card`,
+text-bearing): 139 files (28.5%) today; under the demote-only options A,
+B and C, 25 (5.1%), 5 (1.0%) and 0.
+
+## Phase 5 recall: what each option costs -- eval/scorecard/pattern_recall.py
+
+Measured 2026-10-15 on the case library (fabricated), macOS 27: every case
+with a built-in class rule, scanned with the pattern recorder. 109 are leak
+cases, and **every one names the `ssn` class**: no `us-phone`,
+`credit-card` or `email` leak case exists, so those classes' recall is not
+measured. 52 of the 109 exit 1 today: 43 are held there by a value rule
+(no option touches it) and 9 by `ssn` findings only. One case expected at
+exit 1 cannot be judged here: `page.dense-sideways-scan` (K43) exits 2
+today on macOS 27 (its story says 1 on macOS 26). No finding's shape was
+unknown or ambiguous.
+
+**ADR 0012's demote-only options** (exit 1 → 2; the lower and upper bounds
+agree for every option):
+
+| Option | Leak cases moved 1 → 2 | ... if the cases' value rules were absent |
+| --- | --- | --- |
+| A: demote matches inside a token or a dated run | 0 | 0 |
+| B: A, plus bare digit runs and number lists | 1: `layout.form-boxes-pattern-only` | 4 |
+| C: demote the class | 9 | 24 |
+
+`layout.form-boxes-pattern-only` is an SSN typed one digit per form box,
+which the Text layer reads as a bare `123456789`. The 9 under C are every
+leak case caught at exit 1 by the class rule alone (listed below).
+
+**Policy 1** (the owner's direction of 2026-10-15: a built-in class match
+no longer affects the exit code). 24 leak cases reach exit 0, all `ssn`:
+
+- from exit 1 (9): `page.visible-pattern-rule`, `layout.single-line-pattern-only`,
+  `layout.rotated-pattern-only`, `layout.form-boxes-pattern-only`,
+  `layout.overlapping-values-pattern-only`,
+  `layout.overlapping-split-short-tail-pattern-only`,
+  `document.trailer-key-pattern-rule`, `page.scan-image-sideways-90`,
+  `page.scan-image-sideways-270`;
+- from exit 2 (14; their only warnings were class reviews): `layout.split-lines-pattern-only`,
+  `layout.split-three-lines-pattern-only`, `layout.split-pages-pattern-only`,
+  `layout.split-pages-needs-later-lines-pattern-only`,
+  `layout.split-three-pages-pattern-only`, `layout.split-over-blank-page-pattern-only`,
+  `layout.two-page-breaks-pattern-only`, `layout.overlapping-split-pages-pattern-only`,
+  `layout.repeated-line-wraps-pattern-only`, `layout.several-values-pattern-only`,
+  `layout.table-rows-pattern-only`, `layout.table-rows-split-pages-pattern-only`,
+  `layout.vertical-stack-pattern-only`, `document.trailer-id-digits-pattern-rule`;
+- the known gap `page.dense-sideways-scan` (K43): exit 2 today, 1 expected,
+  0 under policy 1.
+
+Two clean cases change: `document.generated-id-digits` (2 → 0; expected
+0) and `page.digit-column` (2 → 0; expected 2, the clean side of #74).
+
+**Policy 1 on the case labels** (every case with a class rule, scanned or
+not). A label's exit also changes where the label's target was set by the
+class alone: 11 more `ssn` leak cases, all known gaps that exit 0 today and
+are expected at exit 2 only from a class review warning, are expected at
+exit 0 under policy 1. Four are REVIEW_BINARY targets (`document.af-pattern-rule`,
+`document.js-stream-pattern-rule`, `document.piece-info-pattern-rule`,
+`page.hidden-sample-bytes-pattern-rule`). Seven are REVIEW_FUSED_PATTERN
+targets (`layout.form-boxes-split-pages-pattern-only`,
+`layout.rotated270-split-pages-pattern-only`, `layout.split-four-pages-pattern-only`,
+`layout.split-pages-needs-earlier-lines-pattern-only`,
+`layout.vertical-stack-split-pages-pattern-only`, `layout.undashed-ssn-wrapped`,
+and `layout.rotated-split-pages-pattern-only`, which needs `no-ocr` and is
+judged from its label only). In all, 35 leak cases reach exit 0 under
+policy 1; the owner signed off all 35 (ADR 0012). The 31 cases with a
+value rule beside the class rule cannot be judged from their labels (a
+label lists warning codes, not their rule); for each, this scan's report
+satisfies the label exactly (`caselib.run.judge`) and names each
+warning's rule, which settles it: none changes (`settled_by_scan` lists
+all 31).
+
+These lists describe macOS 27 with every tool installed: OCR differs by
+macOS version (K43) and a case needing a missing tool is not scanned.
