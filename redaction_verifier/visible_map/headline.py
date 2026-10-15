@@ -95,7 +95,11 @@ def text(flags: Flags, *, exit_code: int, json_unwritten: bool, codes: Sequence[
 # ── Warning codes, by what they say about the map's completeness ─────────
 # A ratchet test keeps every registered code in exactly one of these; a
 # code missing from all of them counts as document-level (fail closed).
-PAGE_CODES = frozenset({"PAGE_FAILED"})
+# Page coverage: a page the scan did not fully read (PAGE_FAILED), or one
+# carrying a thumbnail image it never reads (PAGE_THUMBNAIL, #133). The
+# map names the code and its pages as an INCOMPLETE reason and shows
+# nothing of the content; storage does not change the level.
+PAGE_CODES = frozenset({"PAGE_FAILED", "PAGE_THUMBNAIL"})
 DOCUMENT_CODES = frozenset({
     "LAYER_CRASHED", "SKIPPED_FAIL_FAST", "OCR_UNAVAILABLE", "EMPTY_DOCUMENT", "XMP_UNREADABLE",
     "TOOL_MISSING", "TOOL_START_FAILED", "TOOL_TIMEOUT", "TOOL_EXIT_NONZERO", "TOOL_NO_OUTPUT",

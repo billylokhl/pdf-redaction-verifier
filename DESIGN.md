@@ -614,7 +614,10 @@ taken through the page's boxes into the glyph frame and displayed — two
 independent routes. An occurrence without a verified box is listed as
 "could not be positioned", which marks the map incomplete. Every --json finding is checked off against the boxes and
 lists, every warning code is classified (a ratchet test keeps the table
-complete; an unclassified code counts as document-level), and the
+complete; an unclassified code counts as document-level; the page
+codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
+never reads, #133), are named with their pages as INCOMPLETE reasons,
+whatever their storage, and nothing of the page's content is shown), and the
 headline is one row of a table a property test proves exclusive.
 Switched-off layers are counted from MuPDF's evaluation *and* the default
 configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
