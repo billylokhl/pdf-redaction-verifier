@@ -254,6 +254,11 @@ def _candidate(u: Unit, secret: str, rules: frozenset[str],
 # from hits.
 PLACE_WARNINGS = {"font": "LEFTOVER_UNDECODABLE_TEXT", "pixels": "LEFTOVER_IMAGE",
                   "container": "LEFTOVER_CONTAINER"}
+# A ⚑ cell whose place warning names a page, not objects (coordinator
+# decision 2026-10-15, extending the owner's rule): it counts as caught
+# only with this code, an expected exit 2, and the instance's exact page
+# named -- another page, or none, is not caught.
+PAGE_PLACE_WARNINGS = {"thumbnail.pixels": "PAGE_THUMBNAIL"}
 _OBJ_IN_EVIDENCE = re.compile(r"\bobj(?:ect)? (\d+)")
 _OBJS_IN_MESSAGE = re.compile(r"\bobjects? ((?:\d+(?:, )?)+)")
 
@@ -282,6 +287,16 @@ def _place_warning(w: Mapping[str, Any], code: str, storages: frozenset[str] | N
     listed = {int(n) for m in _OBJS_IN_MESSAGE.finditer(str(w.get("message", "")))
               for n in m.group(1).split(", ") if n}
     return bool(listed & objects)
+
+
+def _page_place_warning(w: Mapping[str, Any], code: str, storages: frozenset[str] | None,
+                        page: int | None) -> bool:
+    if w.get("code") != code or w.get("rule") is not None:
+        return False
+    if storages is None or w.get("storage") not in storages:
+        return False
+    # The report counts pages from 1, the truth manifest from 0.
+    return page is not None and w.get("page") is not None and w.get("page") == page + 1
 
 
 def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
@@ -326,7 +341,12 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
         mine.sort(key=lambda k: (not units[k].finding, k))
         column = _flagged_column(score.cell)
         place = []
-        if column in PLACE_WARNINGS and score.expected_exit == 2:
+        if column and score.cell in PAGE_PLACE_WARNINGS and score.expected_exit == 2:
+            home = base.get("page") if base else None
+            place = sorted({str(w.get("message", ""))[:80] for w in warnings
+                            if _page_place_warning(w, PAGE_PLACE_WARNINGS[str(score.cell)],
+                                                   storages, home)})
+        elif column in PLACE_WARNINGS and score.expected_exit == 2:
             place = sorted({str(w.get("message", ""))[:80] for w in warnings
                             if _place_warning(w, PLACE_WARNINGS[str(column)], storages,
                                               objects)})

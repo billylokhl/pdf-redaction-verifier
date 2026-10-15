@@ -121,6 +121,10 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         classic().replace(b"/Count 1", b"/Count 2", 1)),
     FlagReason.NAME_TREE: lambda: _inventoried(_written(b" /Names << /Dests [] >>")),
     FlagReason.RESOURCE_SCOPE: lambda: _inventoried(_written(b"", form=True)),
+    FlagReason.FIELD_TREE: lambda: _inventoried(  # a widget that is its own /Parent
+        _annotated(b"<< /Type /Annot /Subtype /Widget /FT /Tx /Parent 4 0 R /Rect [0 0 9 9] >>")),
+    FlagReason.APPEARANCE_UNSUPPORTED: lambda: _inventoried(  # MuPDF builds no /Movie appearance
+        _annotated(b"<< /Type /Annot /Subtype /Movie /Rect [0 0 9 9] >>")),
     FlagReason.COMMENT_LINE: lambda: _inventoried(
         classic().replace(b"%PDF-1.7\n", b"%PDF-1.7\n% 4 0 obj\n", 1)),
 }
@@ -351,4 +355,18 @@ def _written(catalog: bytes, form: bool = False) -> bytes:
     if form:
         table[4] = (1, w.stream(4, b" /Subtype /Form /BBox [0 0 9 9]", b"0 0 m 9 9 l S"), 0)
     w.epilogue(w.table(table, b"/Size %d /Root 1 0 R" % (max(table) + 1)))
+    return bytes(w.out)
+
+
+def _annotated(annotation: bytes) -> bytes:
+    """A one-page file whose page lists annotation 4, *annotation*."""
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources << >>"
+                          b" /Annots [4 0 R] >>"), 0)
+    table[4] = (1, w.obj(4, annotation), 0)
+    w.epilogue(w.table(table, b"/Size 5 /Root 1 0 R"))
     return bytes(w.out)

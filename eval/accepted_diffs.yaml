@@ -694,6 +694,27 @@
     normalise to the same before/after pair.'
   cell: orphaned.font.compact-syntax
   pr: '#13'
+- case: page.memo-with-thumbnail
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - PAGE_THUMBNAIL
+        - Hidden
+        - null
+      - 1
+  reason: 'H1 hotfix, owner decision of 2026-10-14: every page carrying a /Thumb image is
+    flagged (PAGE_THUMBNAIL), whatever the image shows, so a clean memo whose page has a
+    harmless thumbnail now exits 2 (was 0): the documented review-rate cost of the hotfix
+    until Phase 4b reads thumbnails. Stricter only.'
+  cell: thumbnail.pixels
+  pr: '#133'
 - case: page.raw-font-coded-baseline-off-page-far
   old:
     exit: 0
@@ -1453,6 +1474,49 @@
     literal scan from reading it, so the reference (eval-ref-0) exited 0. Stricter only.'
   cell: off-page.font.straddling
   pr: '#68'
+- case: page.thumb-image
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - PAGE_THUMBNAIL
+        - Hidden
+        - null
+      - 1
+  reason: 'H1 hotfix, owner decision of 2026-10-14: a page /Thumb preview image is never
+    decoded or OCR''d, so a redacted page whose thumbnail still shows the SSN exited 0. The
+    Hidden layer now flags every page carrying a /Thumb image (PAGE_THUMBNAIL, coverage,
+    storage live): exit 2 until Phase 4b reads thumbnails (K24, thumbnail.pixels now
+    flagged). Stricter only.'
+  cell: thumbnail.pixels
+  pr: '#133'
+- case: page.thumb-image-on-page-tree
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - PAGE_THUMBNAIL
+        - Hidden
+        - null
+      - 1
+  reason: 'H1 hotfix, owner decision of 2026-10-14: the same SSN thumbnail set on the Pages
+    node above the page (not inheritable by the spec, but a reader may still show it) is
+    flagged like a page''s own /Thumb (PAGE_THUMBNAIL), exit 2; the reference exited 0.
+    Stricter only.'
+  cell: thumbnail.pixels
+  pr: '#133'
 - case: revision.earlier-trailer-id
   old:
     exit: 0
