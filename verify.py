@@ -235,6 +235,8 @@ try:
     from redaction_verifier.views import _vision_recognize_batch as _vision_recognize_batch
     from redaction_verifier.views import extract_ocr_text as extract_ocr_text
     from redaction_verifier.views import extract_visual_text as extract_visual_text
+    from redaction_verifier.visible_map.sink import MapSink as MapSink
+    from redaction_verifier.visible_map.sink import offer as _offer
 except BaseException as exc:  # pragma: no cover
     _fatal_import("redaction_verifier", exc)
 
@@ -339,6 +341,7 @@ def scan_page_layer(
     scatter_readings: Sequence[int] = (),
     scatter_window: int = 5,
     fail_fast: bool = False,
+    sink: MapSink | None = None,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
 
@@ -390,6 +393,10 @@ def scan_page_layer(
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
+
+    *sink* (the visible map only; None in every scan today) receives a copy of each scanned page's
+    truth — rule names per tier — before the fail-fast stop, so the
+    stopping page keeps its own.
     """
     keep = max(matcher.max_len - 1, 0)   # enough of one side to straddle a join
     # Per reading: the last `keep` characters read so far (the tail a match
@@ -562,6 +569,9 @@ def scan_page_layer(
         if patterns:
             cross_page_patterns.feed(
                 "\n" + (variants[cross_page_reading] if len(variants) > cross_page_reading else ""))
+        if sink is not None:
+            _offer(sink, "page", layer, page_no, hard_here, seam_here, page_hard, page_soft,
+                   page_warned, crossing_warned)
         if fail_fast and (report.leaked or layer_hard):
             break
 
@@ -782,11 +792,19 @@ class HiddenItem:
     decoded as text is mojibake that can synthesize matches. Those get
     the manual-review tier the rest of the tool uses for fusion-prone
     surfaces.
+
+    *page* (0-based), *xref* and *kind* ("annotation:content",
+    "field:value", "link:uri", ...) say the same as *location* in plain
+    values, for the visible map; they are filled on every run and never
+    printed.
     """
 
     location: str
     text: str
     hard: bool = True
+    page: int | None = None
+    xref: int | None = None
+    kind: str | None = None
 
 
 def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
@@ -821,7 +839,8 @@ def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
                     "OpenAction/JS", "A/A/JS"):
             body = script_text(xref, key)
             if body:
-                yield HiddenItem(f"JavaScript in object {xref} (/{key})", body)
+                yield HiddenItem(f"JavaScript in object {xref} (/{key})", body,
+                                 xref=xref, kind="javascript")
 
     try:
         catalog = doc.pdf_catalog()
@@ -874,7 +893,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         for key in ("filename", "ufilename", "description"):
             value = info.get(key)
             if value:
-                yield HiddenItem(f"{where} ({key})", str(value))
+                yield HiddenItem(f"{where} ({key})", str(value), kind=f"attachment:{key}")
         # 'size' is the uncompressed length; 'length' is the compressed
         # stream, so only 'size' bounds what reading will allocate.
         declared = info.get("size") or 0
@@ -939,6 +958,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 f"{where} (content)",
                 content.decode("utf-8", errors="replace"),
                 hard=False,
+                kind="attachment:content",
             )
 
     for page_index in range(doc.page_count):
@@ -979,7 +999,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 value = info.get(key)
                 if value:
                     yield HiddenItem(
-                        f"annotation {xref} on page {human_page} ({key})", str(value)
+                        f"annotation {xref} on page {human_page} ({key})", str(value),
+                        page=page_index, xref=xref, kind=f"annotation:{key}",
                     )
             # A /FileAttachment annotation carries its payload on the
             # page, outside the document-level EmbeddedFiles tree.
@@ -1016,6 +1037,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                     f"file attached to annotation {xref} on page {human_page}",
                     payload.decode("utf-8", errors="replace"),
                     hard=False,
+                    page=page_index, xref=xref, kind="annotation:file",
                 )
         try:
             widgets = list(page.widgets())
@@ -1042,7 +1064,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
             for label, value in pairs:
                 if value:
                     yield HiddenItem(
-                        f"form field {xref} on page {human_page} ({label})", str(value)
+                        f"form field {xref} on page {human_page} ({label})", str(value),
+                        page=page_index, xref=xref, kind=f"field:{label}",
                     )
         try:
             links = page.get_links()
@@ -1059,7 +1082,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 value = link.get(key)
                 if value:
                     yield HiddenItem(
-                        f"link #{n} on page {human_page} ({key})", str(value)
+                        f"link #{n} on page {human_page} ({key})", str(value),
+                        page=page_index, xref=link.get("xref"), kind=f"link:{key}",
                     )
 
     try:
@@ -1085,7 +1109,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     for xref, ocg in ocgs.items():
         name = ocg.get("name") if isinstance(ocg, dict) else None
         if name:
-            yield HiddenItem(f"optional-content group {xref}", str(name))
+            yield HiddenItem(f"optional-content group {xref}", str(name), xref=xref,
+                             kind="layer:name")
 
 
 def scan_hidden_objects(
@@ -1093,6 +1118,7 @@ def scan_hidden_objects(
     matcher: SecretMatcher,
     patterns: Sequence[PatternRule],
     report: ScanReport,
+    sink: MapSink | None = None,
 ) -> None:
     """Scan attachments, annotations, form fields, links, scripts and
     layer names — content no page renders.
@@ -1102,6 +1128,9 @@ def scan_hidden_objects(
     field values are hard findings; attachment bodies are fusion-prone
     runs of text and are demoted to manual-review warnings, like every
     other fusion-prone surface in the tool.
+
+    *sink* (the visible map only; None in every scan today) receives each matching item's page, xref,
+    kind, location, tier and rule names.
     """
     items = _hidden_objects(doc)
     while True:
@@ -1127,6 +1156,9 @@ def scan_hidden_objects(
             continue
         hits = [s.name for s in matcher.search(normalize_string(item.text))]
         samples = match_patterns(item.text, patterns)
+        if sink is not None and (hits or samples):
+            _offer(sink, "hidden", item.page, item.xref, item.kind, item.location, item.hard,
+                   [*hits, *samples])
         if item.hard:
             for name in hits:
                 report.record("Hidden", name, item.location)
