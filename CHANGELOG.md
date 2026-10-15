@@ -109,6 +109,8 @@ Blanking is narrow by design: only a trailer of qpdf's exact shape at the very e
 ### Changed
 **`PAGE_FAILED` warnings carry storage `live`** (#128): the JSON report's `storage` field for a page the Text or OCR layer failed to read, or OCR could not read whole, is now `live` (the page's own content); it was null. No verdict change.
 
+**CI: full-macos time limit 25 → 35 minutes** (`.github/workflows/tests.yml`, H3): the full suite takes about 21 minutes on main, 84% of the old limit. With the Phase 5 recorder-parity test (#134) a branch run took 23.8 minutes and the next was cancelled at the 25-minute limit (run 38737399523). No test or verdict change.
+
 **Docs: name forms in the rules file** (docs only). README's Rules file section now tells users to list every written form of a secret as its own value ("Testperson, Jordan Q." and "Jordan Q. Testperson", with and without a middle initial, email and username forms), and says which variants matching already treats as one (case, punctuation, spacing, accents, fullwidth). README Known gaps and COVERAGE's Matching limits list two accepted gaps found by the real-redactor measurement: a reordered name and a fragment of a name are not found unless listed (owner decision, 2026-10-15). Verdict changes: none.
 
 **Operating rules adopted** (docs only): `docs/REDESIGN.md` §6 names the triggers (H1-H5) for bringing a legacy fix to the owner and the rule for any loosening; a new §7a sets milestones U and R with measurable criteria, the review policy (amending "fix all majors"), the PR scope rule, the real-redactor set, feature-work and coordination rules, and records the owner's decisions of 2026-10-12 and 2026-10-14 (review evidence in every PR body; U3 target 100%). Verdict changes: none.
