@@ -1148,12 +1148,14 @@ class TestMaskedLabels:
         ("Example_Jane_records.pdf", "target"),
         ("x" * 70 + ".pdf", "x" * 59 + "…"),        # cut to NAME_CAP
         ("quarterly.pdf", "quarterly.pdf"),
+        ("文書.pdf", "target"),                     # drawn \u{6587}...: 6587 of a value
     ])
     def test_a_target_name_sharing_part_of_a_value_is_not_shown(
             self, tmp_path, monkeypatch, name, shown) -> None:
         pdf = _value_pdf(tmp_path / name)
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
-                                [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME}])
+                                [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME},
+                                 {"name": "ref", "value": "65871234"}])
         assert the_plan.target_name == shown
 
 

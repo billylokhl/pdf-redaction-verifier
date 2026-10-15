@@ -16,7 +16,8 @@ command-line flag that runs it in a child process come later):
 - sink.py:     what the scan hands over (copies of its own per-page truth);
 - locate.py:   positions — text glyphs and annotation rectangles;
 - plan.py:     what the map says: boxes, lists and flags, from the scan;
-- headline.py: the one-line summary and the incompleteness-code table.
+- headline.py: the one-line summary and the incompleteness-code table;
+- latin.py:    text as the map draws it (Latin-1, escapes).
 
 Nothing here is imported by a scan except sink.py, whose `offer`
 verify.py calls only when a sink exists (never, today). This package

@@ -25,6 +25,7 @@ from redaction_verifier.model import Secret
 from redaction_verifier.report.text import _sanitize_report_text, rule_label
 from redaction_verifier.rules import RuleLabel, RuleSet
 from redaction_verifier.visible_map import headline, locate
+from redaction_verifier.visible_map.latin import latin
 
 MAX_BOXES_PER_PAGE = 200
 NAME_CAP = 60               # characters of the target's name kept
@@ -196,16 +197,19 @@ class Rules:
         """*text* (free text from outside the tool, such as the target's
         file name), cut to *cap* characters, or *neutral* when the cut
         form could show part of an exact value: any two consecutive
-        normalized characters of it occur together in one (the rule
-        masked() applies to a sample's tail), or a rule matches it
-        (clean). The cut comes first, so the form checked is the form
+        normalized characters of it, as written or as drawn (latin),
+        occur together in one (the rule masked() applies to a sample's
+        tail), or a rule matches it (clean). The cut comes first, so the form checked is the form
         drawn."""
         if len(text) > cap:
             text = text[:cap - 1] + "…"
-        norm = normalize_string(text)
         values = [s.normalized for s in self.secrets.values()]
-        if any(norm[i:i + 2] in v for i in range(len(norm) - 1) for v in values):
-            return self.clean(neutral)
+        # Checked as written and as drawn: escaping a character outside
+        # Latin-1 (文 as \u{6587}) adds hex digits the name did not have.
+        for form in (text, latin(text)):
+            norm = normalize_string(form)
+            if any(norm[i:i + 2] in v for i in range(len(norm) - 1) for v in values):
+                return self.clean(neutral)
         return self.clean(text, neutral)
 
     def masked(self, shown: str, matched: str = "") -> str:
