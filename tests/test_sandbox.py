@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -89,8 +88,10 @@ def test_the_memory_watchdog_kills_a_child_over_its_cap(pdf):
 
 
 def test_the_cpu_rlimit_stops_a_spinning_child(pdf):
+    # SIGXCPU at the soft limit (macOS); Linux enforces the hard limit, a
+    # second later, with SIGKILL.
     r = sb.run("while True:\n    pass\n", pdf, limits=sb.Limits(cpu_s=1, wall_clock_s=20))
-    assert r.killed is None and r.returncode == -signal.SIGXCPU
+    assert r.killed is None and r.returncode in (-signal.SIGXCPU, -signal.SIGKILL)
 
 
 def test_the_file_size_rlimit_stops_a_large_write(pdf):
@@ -111,8 +112,92 @@ def test_output_past_its_cap_is_dropped_and_reported(pdf):
     assert r.stdout_truncated and len(r.stdout) == 100000 and not r.ok
 
 
-@pytest.mark.skipif(sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"),
-                    reason="the OS sandbox is macOS sandbox-exec")
+def test_stderr_keeps_its_tail(pdf):
+    code = ("import sys\nsys.stderr.write('HEAD' + 'x' * (200 << 10) + 'TAIL')\n")
+    r = sb.run(code, pdf, limits=FAST)
+    assert r.stderr_tail.endswith("TAIL") and not r.stderr_tail.startswith("HEAD")
+    assert r.stderr_truncated and len(r.stderr_tail) <= sb.STDERR_BYTES
+
+
+def test_an_exception_in_the_parent_kills_the_child(pdf, tmp_path, monkeypatch):
+    # Ctrl-C (or anything) while the parent waits must not leave the child.
+    pid_file = tmp_path / "pid"
+    code = (f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n")
+    real_sleep = time.sleep
+
+    def interrupted(seconds: float) -> None:
+        if pid_file.exists():
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(sb.time, "sleep", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        sb.run(code, pdf, limits=FAST)
+    monkeypatch.undo()
+    time.sleep(0.3)
+    assert not _alive(int(pid_file.read_text()))
+
+
+def test_a_child_that_leaves_its_group_is_reported_not_passed(pdf, tmp_path):
+    # Without the OS sandbox a setsid'd grandchild is out of the group
+    # kill's reach: it is detected (it holds the pipes) and the result is
+    # not ok, never a silent success with lost output.
+    pid_file = tmp_path / "stray"
+    code = ("import os, time\n"
+            "if os.fork() == 0:\n"
+            "    os.setsid()\n"
+            f"    open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "    time.sleep(30)\n"
+            "    os._exit(0)\n"
+            "print('parent done', flush=True)\n")
+    try:
+        r = sb.run(code, pdf, limits=FAST)
+        assert r.killed == "stray" and not r.ok
+        assert r.stdout == b"parent done\n"
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_a_locked_subdirectory_is_still_removed(pdf):
+    r = sb.run("import os\nos.mkdir('d')\nopen('d/x', 'w').write('x')\nos.chmod('d', 0)\n",
+               pdf, limits=FAST)
+    assert r.private_dir_removed and r.ok
+
+
+def test_a_requested_os_sandbox_is_never_silently_dropped(pdf, monkeypatch):
+    monkeypatch.setattr(sb, "os_sandbox_available", lambda: False)
+    with pytest.raises(sb.SandboxUnavailable):
+        sb.run("print(1)", pdf, limits=sb.Limits(os_sandbox=True))
+
+
+MACOS_SANDBOX = pytest.mark.skipif(not sb.os_sandbox_available(),
+                                   reason="the OS sandbox is macOS sandbox-exec")
+
+
+@MACOS_SANDBOX
+def test_the_os_sandbox_denies_fork_exec_and_writes_by_proxy(pdf):
+    code = ("import os, subprocess\n"
+            "try:\n"
+            "    os.fork(); print('forked')\n"
+            "except OSError:\n"
+            "    print('fork denied')\n"
+            "try:\n"
+            "    subprocess.run(['/usr/bin/defaults', 'write', 'com.example.prv-sandbox-test',"
+            " 'k', 'v']); print('exec ran')\n"
+            "except OSError:\n"
+            "    print('exec denied')\n")
+    r = sb.run(code, pdf, limits=sb.Limits(os_sandbox=True, wall_clock_s=20))
+    assert r.os_sandboxed
+    assert r.stdout.decode().splitlines() == ["fork denied", "exec denied"]
+    assert not Path("~/Library/Preferences/com.example.prv-sandbox-test.plist").expanduser().exists()
+
+
+@MACOS_SANDBOX
 def test_the_os_sandbox_denies_network_and_writes_outside_its_directory(pdf, tmp_path):
     outside = tmp_path / "escape.txt"
     code = ("import socket\n"
