@@ -41,23 +41,23 @@ def _library_cases() -> list[str]:
 
 @pytest.mark.parametrize("case_id", _library_cases())
 def test_the_interface_reads_what_the_scan_reads_on_the_case_library(case_id, tmp_path) -> None:
+    """No page is skipped silently: where the scan's reading raises, the
+    interface must raise the same way."""
     from caselib import REGISTRY
     from caselib.run import build
 
     pdf = build(REGISTRY[case_id], tmp_path / "case.pdf")
-    try:
-        doc = fitz.open(pdf)
-    except Exception:
-        pytest.skip("not openable: no page text to compare")
-    with doc:
-        if doc.needs_pass:
-            pytest.skip("password-protected: the scan reads no page text")
+    with fitz.open(pdf) as doc:
+        assert not doc.needs_pass, "a password-protected case: compare its pages some other way"
+        assert doc.page_count, "a case with no pages compares nothing"
         for page_index in range(doc.page_count):
+            page = doc.load_page(page_index)
             try:
-                page = doc.load_page(page_index)
                 extract_visual_text(page)
-            except Exception:
-                continue            # a page the scan itself cannot read
+            except Exception as exc:
+                with pytest.raises(type(exc)):
+                    visual_text_glyphs(page)
+                continue
             _same_readings(page)
 
 
@@ -89,6 +89,45 @@ def test_the_interface_names_each_glyph_and_its_visibility(tmp_path, rotate) -> 
     across = [line for line in tagged.readings[4]
               if "123-45-6789" in tagged.line_text(line) and "edge" in tagged.line_text(line)]
     assert across and {tagged.visible[g] for g in across[0]} == {True, False}
+
+
+def _raw_boxes(page: fitz.Page) -> list[tuple[float, float, float, float]]:
+    raw = page.get_text("rawdict", clip=fitz.INFINITE_RECT(),
+                        flags=fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_MEDIABOX_CLIP)
+    return [tuple(ch["bbox"]) for b in raw["blocks"] for ln in b.get("lines", [])
+            for sp in ln["spans"] for ch in sp["chars"] if ch["c"] and not ch["c"].isspace()]
+
+
+@pytest.mark.parametrize("user_unit", [1, 2])
+@pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+def test_each_glyph_keeps_its_own_box(tmp_path, rotate, user_unit) -> None:
+    """boxes[g] is glyph g's own rawdict box, and visible[g] says whether
+    its centre lies in the visible area (unrotated, at the origin, of
+    page.rect's derotated size)."""
+    page = _page_with(tmp_path, rotate)
+    if user_unit != 1:
+        doc = page.parent
+        doc.xref_set_key(page.xref, "UserUnit", str(user_unit))
+        path = tmp_path / f"uu{rotate}.pdf"
+        doc.save(path)
+        page = fitz.open(path)[0]
+    tagged = visual_text_glyphs(page)
+    assert tagged is not None
+    assert list(tagged.boxes) == _raw_boxes(page)
+    area = page.rect * page.derotation_matrix
+    for (x0, y0, x1, y1), shown in zip(tagged.boxes, tagged.visible):
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        assert shown == (0 <= cx <= area.width and 0 <= cy <= area.height)
+    assert True in tagged.visible and False in tagged.visible
+    # Every glyph's box is its own: the characters a line names sit in
+    # reading order along the line's boxes.
+    (line,) = [ln for ln in tagged.readings[0] if tagged.line_text(ln) == "SSN123-45-6789"]
+    assert len({tagged.boxes[g] for g in line}) == len(line)
+
+
+def test_a_character_that_is_not_a_tag_raises() -> None:
+    with pytest.raises(ValueError):
+        views_text._glyph_indices(chr(views_text.TAG_BASE) + "-")
 
 
 def test_an_empty_page_has_no_readings() -> None:

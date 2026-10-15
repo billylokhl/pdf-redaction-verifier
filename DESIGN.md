@@ -468,7 +468,8 @@ tagged readings are the real ones line for line. It is for callers that
 must say *where* the scan read something (the visible map) without a
 second copy of the reading code; nothing in the scan calls it, and a test
 checks its text equals `extract_visual_text`'s, reading for reading, on
-every page of every case in the case library.
+every page of every case in the case library and on fabricated pages at
+every rotation.
 
 ## Bounded resources
 

@@ -359,7 +359,7 @@ def _visual_readings(page: fitz.Page, tagged: _Tagged | None) -> list[str]:
             across, across_down, across_up, all_down, all_up, whole_lines]
 
 
-# ── The readings with their glyphs (for the --visible-map) ─────────────
+# ── The readings with their glyphs (for the planned visible map) ───────
 # Each glyph is tagged with one code point from TAG_BASE on: never "\n",
 # never a surrogate, and one character per glyph.
 TAG_BASE = 0x10000
@@ -385,10 +385,14 @@ class GlyphReadings:
     the indices of the glyphs it was read from, in reading order.
 
     *chars*, *boxes* and *visible* are per glyph: its character, its box
-    (in the frame PyMuPDF reports glyphs in: unrotated, origin at the
-    visible area's top-left) and whether its centre lies in the visible
-    area. *readings[r]* is reading r's lines, split at "\n" exactly as
-    extract_visual_text's text is, so text(r) == extract_visual_text(page)[r].
+    as PyMuPDF reports it (the rawdict bbox: unrotated, origin at the
+    visible area's top-left, scaled by /UserUnit, and in MuPDF's 612x792
+    fallback frame when the crop box misses the media box) and whether
+    its centre lies in the visible area, exactly as extract_visual_text
+    decides it. *readings[r]* is reading r's lines, split at "\n" exactly
+    as extract_visual_text's text is, so text(r) ==
+    extract_visual_text(page)[r]; an empty reading is one empty line,
+    ((),), as "".split("\n") is [""].
     """
 
     chars: tuple[str, ...]
@@ -403,6 +407,16 @@ class GlyphReadings:
         return "\n".join(self.line_text(line) for line in self.readings[reading])
 
 
+def _glyph_indices(line: str) -> tuple[int, ...]:
+    """The glyph index each character of a tagged line names. Anything
+    but a tag (a separator the readings might one day insert) raises,
+    rather than resolve to the wrong glyph."""
+    indices = tuple(ord(ch) - TAG_BASE for ch in line)
+    if any(i < 0 for i in indices):
+        raise ValueError("a tagged reading holds a character that is not a glyph tag")
+    return indices
+
+
 def visual_text_glyphs(page: fitz.Page) -> GlyphReadings | None:
     """The page's visual readings with their glyphs: the same readings,
     in the same order, as extract_visual_text (an empty tuple where it
@@ -414,8 +428,7 @@ def visual_text_glyphs(page: fitz.Page) -> GlyphReadings | None:
         texts = _visual_readings(page, tagged)
     except _TooManyGlyphs:
         return None
-    readings = tuple(
-        tuple(tuple(ord(ch) - TAG_BASE for ch in line) for line in text.split("\n"))
-        for text in texts)
+    readings = tuple(tuple(_glyph_indices(line) for line in text.split("\n"))
+                     for text in texts)
     return GlyphReadings(tuple(tagged.chars), tuple(tagged.boxes), tuple(tagged.visible),
                          readings)
