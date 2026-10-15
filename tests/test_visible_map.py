@@ -1186,8 +1186,10 @@ class TestMaskedLabels:
                                  {"name": "pair", "pattern": r"\d\d"}])
         pairs = [b for b in the_plan.boxes if b.label.startswith("pattern rule #1")]
         assert pairs and {b.label for b in pairs} == {"pattern rule #1 ****"}
-        assert all("****" == i.label.split(" ")[-1] for i in the_plan.listed
-                   if i.label.startswith("pattern rule #1"))
+        # Other \d\d matches (in the file's random /ID, say) may show a
+        # digit, but never one of the value's.
+        assert not any(set(i.label.split(" ")[-1][4:]) & set(SSN) for i in the_plan.listed
+                       if i.label.startswith("pattern rule #1"))
 
     def test_a_one_character_report_sample_on_a_value_is_hidden(self) -> None:
         rules = plan.Rules({"secrets": [["ssn", "123456789"]], "patterns": [],
