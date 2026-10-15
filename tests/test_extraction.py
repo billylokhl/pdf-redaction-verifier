@@ -783,26 +783,46 @@ class TestScatteredValues:
     def test_matcher_cost_grows_linearly_with_lines(self) -> None:
         # A dense numeric page with many value rules: eight times the lines
         # must cost about eight times as much, not sixty-four (the window
-        # bounds the pairs each line is compared with). Generous bound
-        # against timing noise: under sixteen times, best of three.
+        # bounds the pairs each line is compared with). Deterministic: the
+        # cost is the count of line reads (indexing and iteration) and of
+        # prefix/suffix comparisons, not wall-clock time, so machine load
+        # cannot flake it. Bound: under sixteen times (linear is eight).
         import random
-        import time
         rng = random.Random(1)
         m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
+        ops = [0]
 
-        def lines(count: int) -> list[str]:
-            return ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+        class CountedStr(str):
+            __slots__ = ()
 
-        def cost(ls: list[str]) -> float:
-            best = math.inf
-            for _ in range(3):
-                start = time.perf_counter()
-                m.scattered(ls, 5)
-                best = min(best, time.perf_counter() - start)
-            return best
+            def endswith(self, *args: Any) -> bool:  # type: ignore[override]
+                ops[0] += 1
+                return super().endswith(*args)
 
-        small, large = lines(500), lines(4000)
-        assert cost(large) < 16 * cost(small) + 0.05
+            def startswith(self, *args: Any) -> bool:  # type: ignore[override]
+                ops[0] += 1
+                return super().startswith(*args)
+
+        class CountedList(list[str]):
+            def __getitem__(self, i: Any) -> Any:
+                ops[0] += 1
+                return super().__getitem__(i)
+
+            def __iter__(self) -> Any:
+                for x in super().__iter__():
+                    ops[0] += 1
+                    yield x
+
+        def cost(count: int) -> int:
+            ls = CountedList(CountedStr("%d" % rng.randrange(10 ** rng.randint(1, 8)))
+                             for _ in range(count))
+            ops[0] = 0
+            m.scattered(ls, 5)
+            return ops[0]
+
+        small, large = cost(500), cost(4000)
+        assert small > 0
+        assert large < 16 * small
 
     def test_matcher_bounds(self) -> None:
         m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
