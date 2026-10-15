@@ -177,6 +177,10 @@ def _stored_text(raw: bytes) -> tuple[list[tuple[str, str]], list[str]]:
                 if obj.get("/Type") == "/Metadata":
                     text = obj.read_bytes().decode("utf-8", "replace")
                     xmp += [t.strip() for t in re.findall(r">([^<]+)<", text) if t.strip()]
+                    # Attributes too, outside the <?xpacket ...?> framing.
+                    body = re.sub(r"<\?.*?\?>", "", text, flags=re.S)
+                    xmp += [v for k, v in re.findall(r'([\w:]+)="([^"]*)"', body)
+                            if v and not k.startswith("xmlns")]
                 continue
             if isinstance(obj, pikepdf.Dictionary) and not \
                     {"/Type", "/Subtype", "/FT", "/S", "/Fields", "/DA"} & set(obj.keys()):
@@ -199,6 +203,10 @@ def _allowed_value(value: str) -> bool:
         rest = rest.replace(v, " ")
     if rest == value or not re.fullmatch(r"[A-Za-z0-9 .\-]*", rest):
         return False
+    # Beside persona values, only a four-digit year: never an SSN, a
+    # phone or an address-like number of its own.
+    if any(not re.fullmatch(r"(19|20)\d\d", run) for run in re.findall(r"\d+", rest)):
+        return False
     return all(w.lower() in _TEMPLATE_WORDS for w in re.findall(r"[A-Za-z]+", rest))
 
 
@@ -208,6 +216,9 @@ def test_the_value_allowlist_refuses_a_path_beside_a_persona_value():
     assert not _allowed_value("/Users/someone/Jordan Q. Testperson.pdf")
     assert not _allowed_value("Jordan Q. Testperson (someone@host.local)")
     assert not _allowed_value("2025 tax summary")          # no persona value, no producer
+    assert not _allowed_value("Jordan Q. Testperson 123-45-6789")
+    assert not _allowed_value("Jordan Q. Testperson 415-555-0100")
+    assert not _allowed_value("Jordan Q. Testperson 192.168.1.20")
 
 
 @pytest.mark.parametrize("stem", sorted(SIDECARS))

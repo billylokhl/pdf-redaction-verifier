@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 from pathlib import Path
 
 from . import generate as gen
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--pick", action="append", required=True,
                            help="NAME=STEM:METHOD:CASE_ID (repeatable)")
             p.add_argument("--run-date", required=True,
+                           type=lambda d: datetime.date.fromisoformat(d).isoformat(),
                            help="the day the tool was run (YYYY-MM-DD, owner's local date)")
         if name == "adjudicate":
             p.add_argument("action", choices=("draft", "lock", "verify"))
