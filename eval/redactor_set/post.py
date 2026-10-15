@@ -114,7 +114,7 @@ def concatenate(parts: list[Path], out: Path) -> None:
         for extra in parts[1:]:
             with pikepdf.open(extra) as other:
                 first.pages.extend(other.pages)
-        first.save(out)
+        save(first, out)
 
 
 def edit(path: Path, out: Path | None = None) -> pikepdf.Pdf:

@@ -227,9 +227,14 @@ def p1(work: Path, rng: random.Random) -> Built:
 
 
 def q1(work: Path, rng: random.Random) -> Built:
+    raw = work / "q1-quartz.pdf"
+    producers.quartz_text_pdf(f"Probe letter\n\nSSN {V['SSN1']}\n", raw)
+    pdf = post.edit(raw)
+    post.set_info(pdf, {"Title": "Probe"})
     out = work / "q1.pdf"
-    producers.quartz_text_pdf(f"Probe letter\n\nSSN {V['SSN1']}\n", out, title="Probe")
-    return Built(out, "quartz", "Probe", text=[TextSpec("SSN1", V["SSN1"], "Q1", 1)])
+    post.save(pdf, out)
+    pdf.close()
+    return Built(out, "quartz+pikepdf", "Probe", text=[TextSpec("SSN1", V["SSN1"], "Q1", 1)])
 
 
 PROBES: dict[str, Callable[[Path, random.Random], Built]] = {

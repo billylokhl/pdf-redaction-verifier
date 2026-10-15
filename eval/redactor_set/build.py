@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import random
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -95,8 +96,13 @@ def _occurrences(pages: list[list[locate.Line]]) -> dict[str, int]:
 
 
 def finalize(doc_id: str, seed: int, built: Built) -> DocTruth:
-    """Locate every declared page-text value, check nothing undeclared
-    was drawn, and build the truth manifest."""
+    """Locate every declared page-text value and build the truth
+    manifest, checking that the document's text holds exactly what was
+    declared: page text (every occurrence of every written form), every
+    other place text is stored (string objects, XMP, attachments,
+    annotation and field appearances; see _store_check), and no
+    residue-shaped piece of a secret in page text outside a declared
+    value (_residue_check). Pixels are declared, not checked."""
     pages = locate.page_lines(built.pdf)
     instances: list[Instance] = []
     with pikepdf.open(built.pdf) as pdf:
@@ -124,8 +130,7 @@ def finalize(doc_id: str, seed: int, built: Built) -> DocTruth:
                 prints.extend(locate.fingerprints(pdf, page_no, part))
             instances.append(Instance(
                 split.secret, split.written, split.loc, "page-text", first_page,
-                None, parts=list(split.parts), fingerprints=prints,
-                note="part page and box: " + "; ".join(",".join(f"{v:g}" for v in b) for b in boxes)))
+                None, parts=list(split.parts), part_boxes=boxes, fingerprints=prints))
     # Nothing drawn that was not declared: every written form's page-text
     # occurrences are exactly the declared ones.
     declared: dict[str, int] = {}
@@ -145,10 +150,160 @@ def finalize(doc_id: str, seed: int, built: Built) -> DocTruth:
         raise PlantError(f"{doc_id}: {form!r} appears {seen} times in page text, "
                          f"declared {declared.get(form, 0)}")
     instances.extend(built.other)
+    instances.extend(_residue_check(doc_id, pages, built, instances))
+    _store_check(doc_id, built.pdf, instances)
     if not instances and not built.clean_control:
         raise PlantError(f"{doc_id}: no secret planted")
     return DocTruth(doc_id, seed, built.producer, n_pages, built.title, instances,
                     clean_control=built.clean_control)
+
+
+def _residue_check(doc_id: str, pages: list[list[locate.Line]], built: Built,
+                   instances: list[Instance]) -> list[Instance]:
+    """Refuse page text holding a residue-shaped piece of a secret
+    (persona.residue_in) outside a declared value: filler must not look
+    like a partial leak. In an OCR engine's text layer such a piece is
+    the engine's (mis)reading of a declared value, so it is recorded as
+    a partial S2 instance instead."""
+    blank = sorted({i.written for i in instances} | {p for i in instances for p in i.parts}
+                   | set(persona.written_forms()), key=len, reverse=True)
+    extra: list[Instance] = []
+    for page_no, lines in enumerate(pages):
+        for line in lines:
+            text = line.text
+            for value in blank:
+                text = text.replace(value, " " * len(value))
+            for piece in persona.residue_in(text):
+                owner = next(sid for form, sid in persona.written_forms().items()
+                             if piece.lower() in form.lower() or piece in re.sub(r"\D", "", form))
+                if built.ocr_text_layer:
+                    extra.append(Instance(owner, piece, "S2", "page-text", page_no, None,
+                                          note="partial: the OCR text layer's reading"))
+                    continue
+                raise PlantError(f"{doc_id}: page {page_no + 1} text holds {piece!r}, a piece "
+                                 f"of {owner} outside any declared value")
+    return extra
+
+
+def _page_stream_ids(pdf: pikepdf.Pdf) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """(page content and drawn form XObjects, annotation appearance streams
+    and the forms they draw)."""
+    def forms(resources: object, into: set[tuple[int, int]]) -> None:
+        if not isinstance(resources, pikepdf.Dictionary):
+            return
+        xobjects = resources.get("/XObject")
+        if isinstance(xobjects, pikepdf.Dictionary):
+            for k in xobjects.keys():
+                xo = xobjects[k]
+                if isinstance(xo, pikepdf.Stream) and xo.get("/Subtype") == "/Form" \
+                        and xo.objgen not in into:
+                    into.add(xo.objgen)
+                    forms(xo.get("/Resources"), into)
+
+    page_ids: set[tuple[int, int]] = set()
+    ap_ids: set[tuple[int, int]] = set()
+    for page in pdf.pages:
+        contents = page.obj.get("/Contents")
+        for c in (contents if isinstance(contents, pikepdf.Array) else [contents]):
+            if isinstance(c, pikepdf.Stream):
+                page_ids.add(c.objgen)
+        forms(page.obj.get("/Resources"), page_ids)
+        for annot in page.obj.get("/Annots", pikepdf.Array()):
+            ap = annot.get("/AP")
+            if not isinstance(ap, pikepdf.Dictionary):
+                continue
+            for key in ap.keys():
+                entry = ap[key]
+                streams = [entry] if isinstance(entry, pikepdf.Stream) else (
+                    [entry[k] for k in entry.keys()] if isinstance(entry, pikepdf.Dictionary)
+                    else [])
+                for st in streams:
+                    if isinstance(st, pikepdf.Stream):
+                        ap_ids.add(st.objgen)
+                        forms(st.get("/Resources"), ap_ids)
+    return page_ids, ap_ids
+
+
+def store_occurrences(path: Path) -> set[tuple[str, str]]:
+    """(written form, store kind) for every secret form found outside page
+    content: in a string object ("string"), an XMP stream ("xmp"), an
+    embedded file ("embedded"), an annotation or field appearance
+    ("appearance"), or any other decodable stream ("other"). Font
+    programs and images are the preflight's concern."""
+    forms = list(persona.written_forms())
+    found: set[tuple[str, str]] = set()
+    with pikepdf.open(path) as pdf:
+        page_ids, ap_ids = _page_stream_ids(pdf)
+
+        def walk(obj: object, depth: int = 0) -> None:
+            if depth > 12:
+                return
+            if isinstance(obj, pikepdf.String):
+                text = str(obj)
+                found.update((f, "string") for f in forms if f in text)
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    if not (isinstance(item, pikepdf.Object) and item.is_indirect):
+                        walk(item, depth + 1)
+            elif isinstance(obj, pikepdf.Dictionary):
+                for k in obj.keys():
+                    item = obj[k]
+                    if not (isinstance(item, pikepdf.Object) and item.is_indirect):
+                        walk(item, depth + 1)
+
+        for obj in pdf.objects:
+            if isinstance(obj, pikepdf.Stream):
+                walk(obj.stream_dict)
+                if obj.objgen in page_ids or obj.get("/Subtype") == "/Image":
+                    continue
+                if obj.get("/Type") == "/Metadata":
+                    kind = "xmp"
+                elif obj.get("/Type") == "/EmbeddedFile":
+                    kind = "embedded"
+                elif obj.objgen in ap_ids:
+                    kind = "appearance"
+                else:
+                    kind = "other"
+                try:
+                    data = obj.read_bytes()
+                except pikepdf.PdfError:
+                    continue
+                for f in forms:
+                    if f.encode() in data or f.encode("utf-16-be") in data:
+                        found.add((f, kind))
+            else:
+                walk(obj)
+        walk(pdf.trailer)
+    return found
+
+
+# Which declared instances may account for a form found in each store.
+_STORE_ACCOUNTS = {
+    "string": lambda i: i.encoding in ("string", "embedded"),
+    "xmp": lambda i: i.encoding == "xmp",
+    "embedded": lambda i: i.encoding == "embedded",
+    "appearance": lambda i: i.encoding == "string" and i.loc in ("F1", "F2", "A1", "A1x"),
+}
+# Where a declared instance of each encoding may be found.
+_INSTANCE_STORES = {"string": {"string", "appearance"}, "xmp": {"xmp"},
+                    "embedded": {"embedded", "string"}}
+
+
+def _store_check(doc_id: str, path: Path, instances: list[Instance]) -> None:
+    """Every secret stored outside page content is declared, and every
+    declared non-page instance is really stored: the truth manifest is
+    complete for text (an oracle trusts it to be)."""
+    found = store_occurrences(path)
+    for form, kind in sorted(found):
+        accounts = _STORE_ACCOUNTS.get(kind)
+        if accounts is None or not any(i.written == form and accounts(i) for i in instances):
+            raise PlantError(f"{doc_id}: {form!r} is stored in a {kind} store no declared "
+                             "instance accounts for")
+    for inst in instances:
+        stores = _INSTANCE_STORES.get(inst.encoding)
+        if stores and not any((inst.written, k) in found for k in stores):
+            raise PlantError(f"{doc_id}: declared {inst.secret} ({inst.loc}) is not stored "
+                             "anywhere in the file")
 
 
 # ── Chrome documents ───────────────────────────────────────────────────

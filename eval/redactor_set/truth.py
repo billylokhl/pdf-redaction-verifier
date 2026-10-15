@@ -40,7 +40,7 @@ LOCATIONS: dict[str, str] = {
     "S2": "scanned page with an invisible OCR text layer",
     "I1": "raster image on a text page",
     "P1": "page thumbnail (/Thumb)",
-    "Q1": "Quartz-encoded page text",
+    "Q1": "macOS Quartz page text (simple font, MacRoman literal strings)",
 }
 
 # How the instance's bytes are stored in the input.
@@ -62,6 +62,8 @@ class Instance:
     page: int | None = None          # 0-based page index, None if not on a page
     bbox: list[float] | None = None  # [x0, y0, x1, y1], points, top-left origin
     parts: list[str] = field(default_factory=list)   # pieces, for a split value
+    # Per part: [page, x0, y0, x1, y1] (same frame as bbox).
+    part_boxes: list[list[float]] = field(default_factory=list)
     # Hex of the byte sequences that encode `written` (or each part) in
     # the input's own content streams, one per candidate font; empty
     # for instances not stored as drawn text.

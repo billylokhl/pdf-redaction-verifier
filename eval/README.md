@@ -163,8 +163,8 @@ writes lives under the gitignored `eval/scorecard/redactor_set_local/`
 small, scrubbed subset will join `caselib/real/` with the usual sidecars.
 
 ```bash
-uv sync --extra test --extra redactor-set     # reportlab, Pillow, pdfminer.six
-PYTHONPATH=eval:. python -m redactor_set generate        # 20 documents -> inputs/
+uv sync --extra test --extra redactor-set     # + reportlab, Pillow
+PYTHONPATH=eval:. python -m redactor_set generate        # 20 documents -> inputs/<id>-s<seed>.pdf
 PYTHONPATH=eval:. python -m redactor_set probes          # 22 probes   -> probes/
 REDACTOR_CMD=... REDACTOR_PYTHON=... \
   PYTHONPATH=eval:. python -m redactor_set run --set inputs   # or --set probes
@@ -179,9 +179,12 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   annotations, document Info and XMP, bookmarks, an attachment, page
   thumbnails, values in another format, and a clean control. Five
   producers write them — Chrome (`--no-pdf-header-footer`, a throwaway
-  profile), reportlab, tesseract, macOS `cupsfilter` and pikepdf — and
-  none is PyMuPDF, the library the verifier reads with. Needs Chrome
-  (`CHROME` to override its path), poppler, tesseract and macOS.
+  profile), reportlab, tesseract, macOS `cupsfilter` (Quartz: a simple
+  font, literal strings) and pikepdf — and none is PyMuPDF, the library
+  the verifier reads with. A producer's own `/Producer` string (a Chrome
+  milestone, a macOS build) is kept; the committed subset's scrub must
+  cover it. Needs Chrome (`CHROME` to override its path), poppler,
+  tesseract and macOS.
 - **Secrets** (`persona.py`): one fabricated household, every value
   unissuable (SSN area 666 or the repo's 123-45-6789, EIN prefix 00, an
   unassigned routing prefix, the card networks' test number,
@@ -189,29 +192,49 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   with a real config's structure (exact values, patterns, entity types;
   LLM detection off), written to `config/redact.yaml`, drives every
   document and is also the verifier's `--secrets`.
-- **Truth** (`truth.py`, `<doc>.truth.json`): every place a secret was
-  written — its location code (live text, a variant format, a split
-  value, a form field, each annotation kind, Info, XMP, an outline, an
-  attachment, scan pixels, an OCR text layer, an image, a thumbnail),
-  page, box (points, top-left origin) and, for drawn text, the bytes its
-  own fonts encode it with once a text block's string operands are
-  joined (`locate.py`, through each font's ToUnicode map, pdfminer.six
-  for positions). Generation fails if a declared value is drawn a
-  different number of times, or a secret appears anywhere undeclared.
-- **Preflight** (`generate.py`): a document is refused if it carries
-  this machine's login name or home path (raw or decoded), a secret's
-  bytes inside a font program or image samples (a coincidence an oracle
-  would report as a leak), or a trailer `/ID` the config's patterns
-  match.
+- **Truth** (`truth.py`, `<id>-s<seed>.truth.json`): every place a
+  secret was written — its location code (live text, a variant format, a
+  split value, a form field, each annotation kind, Info, XMP, an outline,
+  an attachment, scan pixels, an OCR text layer, an image, a thumbnail),
+  page and box (points, top-left origin; per part, for a split value),
+  and, for drawn text, its fingerprints (`locate.py`): the codes the
+  page's own fonts would use to draw it, one sequence per font that can
+  draw every character, found through each font's ToUnicode map. Drawn
+  text is often shown a glyph or a word at a time, so a fingerprint
+  appears in a content stream only once a text block's string operands
+  are joined (kerning numbers dropped); pdfminer.six gives positions.
+- **Planting checks** (`build.py`): generation fails unless the document
+  holds exactly what its builder declared — every written form's page
+  text occurrences (pdfminer.six) are the declared ones; every secret
+  stored as text anywhere else (a string object, XMP, an attachment, an
+  annotation or field appearance, any other decodable stream) is
+  accounted for by a declared instance of that kind, and every declared
+  one is really stored; and page text outside declared values holds no
+  piece of a secret four or more characters long (a run of a number's
+  digits, or a whole word of a name or address), which an oracle could
+  not tell from a redaction that left part of a value behind (partial
+  residue counts as a leak). Filler amounts and dates are redrawn until
+  they hold none. Pixels (scans, images, thumbnails) are declared, not
+  checked; an OCR text layer's own readings are recorded as instances.
+- **Preflight** (`generate.py`): a document is refused if it carries,
+  in any case, this machine's login name, the user's full name or any
+  part of it, the home path, the hostname, or a `file://` URL — in its
+  objects, its decoded streams, or its extracted page text (text drawn
+  in glyph codes, such as a browser's header, is readable only there) —
+  or a secret's bytes inside a font program or image samples, or a
+  trailer `/ID` whose hex, as written, the config's patterns match.
 - **Probes** (`probes.py`): one location per document, to see what the
   tool does to each place alone before the full set is trusted.
 - **Runner** (`run.py`): method 1 is the tool exactly as it is run day
   to day, `$REDACTOR_CMD <file> --config <yaml>`; method 2 re-saves
   method 1's output with garbage collection (`garbage=4, deflate=True`)
   in the tool's own Python, `$REDACTOR_PYTHON`. The tool is named
-  nowhere in the repo, only by these environment variables.
+  nowhere in the repo, only by these environment variables. A run that
+  times out is recorded as such, and an earlier run's outputs are
+  removed first, so they can never stand in for a failed one
+  (`work/<set>/run.json`).
 
-Nothing in `redactor_set/` imports the verifier
+Nothing in `redactor_set/` imports the verifier or PyMuPDF
 (`tests/test_redactor_set_generator.py` checks it).
 
 ### The blind red-team slot (`caselib/redteam/`)

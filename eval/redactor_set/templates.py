@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import post, producers
+from . import persona, post, producers
 from .build import (Built, Field, SplitSpec, TextSpec, chrome, esc, form_pdf,
                     scan_pages)
 from .persona import BY_ID
@@ -28,20 +28,32 @@ V = {k: s.value for k, s in BY_ID.items()}
 CITY = "Springfield, ZZ 00000"
 
 
+def _safe(make: Callable[[], str]) -> str:
+    """Draw filler until it holds no residue-shaped piece of a secret
+    (persona.residue_in): a chance "4857" in an amount would read as an
+    EIN left behind."""
+    for _ in range(1000):
+        text = make()
+        if not persona.residue_in(text):
+            return text
+    raise RuntimeError("could not draw filler free of secret residue")
+
+
 def _money(rng: random.Random, lo: float, hi: float) -> str:
-    return f"{rng.uniform(lo, hi):,.2f}"
+    return _safe(lambda: f"{rng.uniform(lo, hi):,.2f}")
+
+
+def _date(rng: random.Random) -> str:
+    return _safe(lambda: f"{rng.randint(1, 12):02d}/{rng.randint(1, 28):02d}")
 
 
 def _transactions(rng: random.Random, n: int, extra: list[str] | None = None) -> str:
     memos = ["GROCERY MARKET #0042", "CITY WATER UTILITY", "PAYROLL DEPOSIT", "COFFEE SHOP",
              "ONLINE TRANSFER", "PHARMACY", "FUEL STATION", "BOOKSTORE", "INSURANCE PREMIUM",
              "ATM WITHDRAWAL", "PARKING", "HARDWARE STORE"]
-    rows = [(f"{rng.randint(1, 12):02d}/{rng.randint(1, 28):02d}", rng.choice(memos),
-             _money(rng, 4, 900)) for _ in range(n)]
+    rows = [(_date(rng), rng.choice(memos), _money(rng, 4, 900)) for _ in range(n)]
     for memo in extra or []:
-        rows.insert(rng.randint(0, len(rows)), (f"{rng.randint(1, 12):02d}/"
-                                                f"{rng.randint(1, 28):02d}", memo,
-                                                _money(rng, 20, 400)))
+        rows.insert(rng.randint(0, len(rows)), (_date(rng), memo, _money(rng, 20, 400)))
     body = "".join(f"<tr><td>{d}</td><td>{esc(m)}</td><td class='num'>{a}</td></tr>"
                    for d, m, a in rows)
     return f"<table><tr><th>Date</th><th>Description</th><th class='num'>Amount</th></tr>{body}</table>"
@@ -60,7 +72,7 @@ def d01_w2(work: Path, rng: random.Random) -> Built:
         "<div class='grid'>"
         f"<div><span class='label'>a Employee's social security number</span>{V['SSN1']}</div>"
         f"<div><span class='label'>b Employer identification number</span>{V['EIN']}</div>"
-        "<div><span class='label'>c Employer's name and address</span>Example Payroll Services LLC"
+        "<div><span class='label'>c Employer's name and address</span>Anytown Payroll Services LLC"
         "<br>PO Box 0000, Anytown, ZZ 00000</div>"
         f"<div><span class='label'>1 Wages, tips, other compensation</span>{_money(rng, 40000, 90000)}</div>"
         f"<div><span class='label'>e Employee's name</span>{esc(V['NAME1'])}</div>"
@@ -79,7 +91,7 @@ def d02_1099int(work: Path, rng: random.Random) -> Built:
     page = (
         "<h1>Form 1099-INT (fabricated sample) &mdash; Interest Income 2025</h1>"
         "<div class='grid'>"
-        "<div><span class='label'>PAYER'S name</span>Fictional Federal Bank<br>PO Box 0000, "
+        "<div><span class='label'>PAYER'S name</span>Anytown Federal Bank<br>PO Box 0000, "
         "Anytown, ZZ 00000</div>"
         f"<div><span class='label'>1 Interest income</span>{_money(rng, 10, 900)}</div>"
         f"<div><span class='label'>RECIPIENT'S TIN</span>{V['SSN1']}</div>"
@@ -131,7 +143,7 @@ def d03_1040_fillable(work: Path, rng: random.Random) -> Built:
 def d04_1040_printed(work: Path, rng: random.Random) -> Built:
     title = "Individual income tax return 2025 (print)"
     head = f"<div class='runhead'>{esc(V['NAME1'])} &nbsp;&nbsp; {V['SSN1']}</div>"
-    deps = (f"<table><tr><th>Dependent</th><th>SSN</th><th>Relationship</th></tr>"
+    deps = (f"<table><tr><th>Spouse</th><th>SSN</th><th>Relationship</th></tr>"
             f"<tr><td>{esc(V['NAME2'])}</td><td>{V['SSN2']}</td><td>Spouse</td></tr></table>")
     pages = [
         head + "<h1>Form 1040-style return (fabricated sample) 2025</h1>"
@@ -166,7 +178,7 @@ def d05_state(work: Path, rng: random.Random) -> Built:
 # ── Statements ─────────────────────────────────────────────────────────
 
 def _statement_head(rng: random.Random, page: int, pages: int) -> str:
-    return (f"<div class='runhead'>Fictional Federal Bank &mdash; Account {V['ACCT']} "
+    return (f"<div class='runhead'>Anytown Federal Bank &mdash; Account {V['ACCT']} "
             f"<span class='small'>&nbsp; page {page} of {pages}</span></div>")
 
 
@@ -271,9 +283,8 @@ def d08_card(work: Path, rng: random.Random) -> Built:
 
 
 def d09_brokerage_columns(work: Path, rng: random.Random) -> Built:
-    """Two split values: one across two table columns (T3b; a probe saw
-    the tool's search join them), one across a page break (T3c; a probe
-    saw it survive)."""
+    """Two split values: one across two table columns (T3b), one across a
+    page break (T3c)."""
     title = "Brokerage account statement"
     holdings = "".join(f"<tr><td>FUND {c}</td><td class='num'>{_money(rng, 100, 9000)}</td></tr>"
                        for c in "ABCDE")
@@ -404,15 +415,20 @@ def d13_benefits_form(work: Path, rng: random.Random) -> Built:
 def d14_quartz_letter(work: Path, rng: random.Random) -> Built:
     title = "Employment verification"
     text = (
-        "Example Payroll Services LLC\nPO Box 0000, Anytown, ZZ 00000\n\n"
+        "Anytown Payroll Services LLC\nPO Box 0000, Anytown, ZZ 00000\n\n"
         "EMPLOYMENT VERIFICATION\n\nTo whom it may concern,\n\n"
         f"This letter confirms that {V['NAME1']}\n"
         f"(SSN {V['SSN1']}) of {V['ADDR']}\n"
-        f"has been employed with us since {rng.randint(2010, 2020)}.\n\n"
+        f"has been employed with us since {_safe(lambda: str(rng.randint(2010, 2020)))}.\n\n"
         "Sincerely,\nHuman Resources\n")
+    raw = work / "d14-quartz.pdf"
+    producers.quartz_text_pdf(text, raw)
+    pdf = post.edit(raw)
+    post.set_info(pdf, {"Title": title})
     out = work / "d14.pdf"
-    producers.quartz_text_pdf(text, out, title=title)
-    return Built(out, "quartz", title,
+    post.save(pdf, out)
+    pdf.close()
+    return Built(out, "quartz+pikepdf", title,
                  text=[TextSpec(k, V[k], "T1", 1) for k in ("NAME1", "SSN1", "ADDR")])
 
 

@@ -57,29 +57,38 @@ def run_set(root: Path, set_name: str, config: Path, *, timeout: float = 300.0) 
         doc_dir.mkdir(parents=True)
         inp = doc_dir / pdf.name
         shutil.copyfile(pdf, inp)
+        m1, m2 = m1_dir / f"{stem}.pdf", m2_dir / f"{stem}.pdf"
+        for stale in (m1, m2):            # never let an older run's output stand in
+            stale.unlink(missing_ok=True)
         started = time.monotonic()
-        proc = subprocess.run([*cmd, str(inp), "--config", str(config)], cwd=doc_dir,
-                              capture_output=True, text=True, timeout=timeout)
-        elapsed = round(time.monotonic() - started, 2)
-        (doc_dir / "stdout.txt").write_text(proc.stdout)
-        (doc_dir / "stderr.txt").write_text(proc.stderr)
+        entry: dict[str, object] = {"exit": None, "seconds": None, "m1": None, "m2": None}
+        try:
+            proc = subprocess.run([*cmd, str(inp), "--config", str(config)], cwd=doc_dir,
+                                  capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            entry["exit"] = "timeout"
+        else:
+            entry["exit"] = proc.returncode
+            (doc_dir / "stdout.txt").write_text(proc.stdout)
+            (doc_dir / "stderr.txt").write_text(proc.stderr)
+        entry["seconds"] = round(time.monotonic() - started, 2)
         out = doc_dir / f"{stem}_redacted.pdf"
-        entry: dict[str, object] = {"exit": proc.returncode, "seconds": elapsed,
-                                    "m1": None, "m2": None}
-        if proc.returncode == 0 and out.exists():
-            m1 = m1_dir / f"{stem}.pdf"
+        if entry["exit"] == 0 and out.exists():
             shutil.copyfile(out, m1)
             entry["m1"] = str(m1.relative_to(root))
-            m2 = m2_dir / f"{stem}.pdf"
-            gc = subprocess.run([gc_python, "-I", "-c", GC_SCRIPT, str(m1), str(m2)],
-                                capture_output=True, text=True, timeout=timeout)
-            if gc.returncode == 0:
-                entry["m2"] = str(m2.relative_to(root))
-                gc_pymupdf = gc.stdout.strip()
+            try:
+                gc = subprocess.run([gc_python, "-I", "-c", GC_SCRIPT, str(m1), str(m2)],
+                                    capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                entry["m2_error"] = "timeout"
             else:
-                entry["m2_error"] = gc.stderr.strip()[-500:]
+                if gc.returncode == 0:
+                    entry["m2"] = str(m2.relative_to(root))
+                    gc_pymupdf = gc.stdout.strip()
+                else:
+                    entry["m2_error"] = gc.stderr.strip()[-500:]
         docs[stem] = entry
-        print(f"{stem}: exit {proc.returncode}, {elapsed}s, "
+        print(f"{stem}: exit {entry['exit']}, {entry['seconds']}s, "
               f"m1 {'ok' if entry['m1'] else 'MISSING'}, m2 {'ok' if entry['m2'] else 'MISSING'}")
     record["documents"] = docs
     record["gc_pymupdf"] = gc_pymupdf

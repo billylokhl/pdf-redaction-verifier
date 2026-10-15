@@ -4,8 +4,7 @@ local-root guard, the runner, and its independence from the verifier.
 
 Generating real documents needs Chrome, poppler, tesseract and macOS's
 cupsfilter, so it is never run here; the pieces it is built from are.
-Tests that need the ``redactor-set`` extra (reportlab, pdfminer.six)
-skip without it, with the reason shown.
+Everything here needs only the ``test`` extra (pdfminer.six is in it).
 """
 
 from __future__ import annotations
@@ -141,6 +140,33 @@ def _type0_pdf(path: Path) -> None:
     pdf.save(path)
 
 
+def _identity_h_page(path: Path, text: str) -> None:
+    """A page drawing *text* in a font-program-less Identity-H font whose
+    codes are 1..n (so the bytes never spell the text)."""
+    pdf = pikepdf.new()
+    codes = {c: i + 1 for i, c in enumerate(dict.fromkeys(text))}
+    cmap = ("/CIDInit /ProcSet findresource begin begincmap\n"
+            "1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+            f"{len(codes)} beginbfchar\n"
+            + "".join(f"<{n:04X}> <{ord(c):04X}>\n" for c, n in codes.items())
+            + "endbfchar endcmap\n").encode()
+    cid = pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.CIDFontType2,
+                             BaseFont=pikepdf.Name("/AAAAAA+Fab"), DW=500,
+                             CIDSystemInfo=pikepdf.Dictionary(Registry=pikepdf.String("Adobe"),
+                                                              Ordering=pikepdf.String("Identity"),
+                                                              Supplement=0))
+    font = pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type0,
+                              BaseFont=pikepdf.Name("/AAAAAA+Fab"),
+                              Encoding=pikepdf.Name("/Identity-H"),
+                              DescendantFonts=pikepdf.Array([pdf.make_indirect(cid)]),
+                              ToUnicode=pdf.make_stream(cmap))
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font))
+    hexed = "".join(f"{codes[c]:04X}" for c in text)
+    page.obj.Contents = pdf.make_stream(f"BT /F1 12 Tf 72 700 Td <{hexed}> Tj ET".encode())
+    pdf.save(path)
+
+
 class TestFingerprints:
     def test_parse_tounicode(self) -> None:
         m = locate.parse_tounicode(CMAP)
@@ -200,6 +226,22 @@ class TestPreflight:
         with pytest.raises(gen.PreflightError, match="login name"):
             gen.preflight(tmp_path / "bad.pdf", _truth())
 
+    def test_refuses_a_needle_drawn_in_glyph_codes(self, tmp_path, monkeypatch) -> None:
+        """Chrome's default header prints the file URL in an Identity-H
+        font: no raw or decoded byte holds the text, only the extracted
+        page text does (and in another case than the needle's)."""
+        monkeypatch.setattr(gen, "private_needles", lambda: ["fabuser"])
+        _identity_h_page(tmp_path / "hdr.pdf", "FabUser")
+        raw = (tmp_path / "hdr.pdf").read_bytes().lower()
+        assert b"fabuser" not in raw and "fabuser".encode("utf-16-be") not in raw
+        with pytest.raises(gen.PreflightError, match="login name"):
+            gen.preflight(tmp_path / "hdr.pdf", _truth())
+
+    def test_needles_cover_file_urls_and_this_account(self) -> None:
+        needles = gen.private_needles()
+        assert "file://" in needles and getpass.getuser().lower() in needles
+        assert all(n == n.lower() and len(n) >= 3 for n in needles)
+
     def test_refuses_a_secret_inside_a_font_program(self, tmp_path) -> None:
         pdf = pikepdf.new()
         page = pdf.add_blank_page()
@@ -212,6 +254,15 @@ class TestPreflight:
         pdf.save(tmp_path / "font.pdf")
         with pytest.raises(gen.PreflightError, match="font stream"):
             gen.preflight(tmp_path / "font.pdf", _truth())
+
+    def test_a_real_16_byte_static_id_passes(self, tmp_path) -> None:
+        # qpdf's static /ID is 32 hex digits in a row: the config's card
+        # pattern needs a word boundary after 16 digits, so it cannot match.
+        pdf = pikepdf.new()
+        pdf.add_blank_page()
+        pdf.save(tmp_path / "static.pdf", static_id=True)
+        assert b"<31415926535897932384626433832795>" in (tmp_path / "static.pdf").read_bytes()
+        gen.preflight(tmp_path / "static.pdf", _truth())
 
     def test_refuses_an_id_a_card_pattern_matches(self, tmp_path) -> None:
         pdf = pikepdf.new()
@@ -239,7 +290,6 @@ class TestFinalize:
         pdf.save(path)
 
     def test_declared_value_is_located(self, tmp_path) -> None:
-        pytest.importorskip("pdfminer", reason="needs the redactor-set extra")
         from redactor_set.build import Built, TextSpec, finalize
         self._page_with(tmp_path / "a.pdf", "SSN 123-45-6789")
         truth = finalize("X", 0, Built(tmp_path / "a.pdf", "test", "t",
@@ -251,7 +301,6 @@ class TestFinalize:
         assert inst.bbox is not None and 78 < inst.bbox[1] < 92 < inst.bbox[3]
 
     def test_undeclared_or_miscounted_values_are_refused(self, tmp_path) -> None:
-        pytest.importorskip("pdfminer", reason="needs the redactor-set extra")
         from redactor_set.build import Built, PlantError, TextSpec, finalize
         self._page_with(tmp_path / "b.pdf", "SSN 123-45-6789 acct 731904628155")
         with pytest.raises(PlantError, match="731904628155"):
@@ -261,6 +310,50 @@ class TestFinalize:
             finalize("X", 0, Built(tmp_path / "b.pdf", "test", "t",
                                    text=[TextSpec("SSN1", "123-45-6789", "T1", 2),
                                          TextSpec("ACCT", "731904628155", "T1", 1)]))
+
+
+    def test_filler_holding_a_secret_digit_run_is_refused(self, tmp_path) -> None:
+        from redactor_set.build import Built, PlantError, finalize
+        self._page_with(tmp_path / "c.pdf", "Wages 62,048.57")      # the EIN's 4857
+        with pytest.raises(PlantError, match="piece of EIN"):
+            finalize("X", 0, Built(tmp_path / "c.pdf", "test", "t", clean_control=True))
+
+    def test_a_declared_value_is_not_residue(self, tmp_path) -> None:
+        from redactor_set.build import Built, TextSpec, finalize
+        self._page_with(tmp_path / "d.pdf", "EIN 00-4857261")
+        finalize("X", 0, Built(tmp_path / "d.pdf", "test", "t",
+                               text=[TextSpec("EIN", "00-4857261", "T1", 1)]))
+
+    def test_an_undeclared_string_is_refused(self, tmp_path) -> None:
+        from redactor_set.build import Built, PlantError, finalize
+        self._page_with(tmp_path / "e.pdf", "Nothing here")
+        with pikepdf.open(tmp_path / "e.pdf", allow_overwriting_input=True) as pdf:
+            pdf.docinfo["/Author"] = "Jordan Q. Testperson"
+            pdf.save(tmp_path / "e.pdf")
+        with pytest.raises(PlantError, match="string store"):
+            finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", clean_control=True))
+        # Declared, it passes; declared but absent, it is refused.
+        ok = Instance("NAME1", "Jordan Q. Testperson", "M1", "string")
+        finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", other=[ok]))
+        ghost = Instance("SSN1", "123-45-6789", "M1", "string")
+        with pytest.raises(PlantError, match="not stored"):
+            finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", other=[ok, ghost]))
+
+
+class TestFiller:
+    def test_money_and_dates_never_hold_secret_residue(self) -> None:
+        import random
+
+        from redactor_set.templates import _date, _money
+        rng = random.Random(0)
+        for _ in range(3000):
+            assert not persona.residue_in(_money(rng, 0, 90000))
+            assert not persona.residue_in(_date(rng))
+
+    def test_residue_detection_is_live(self) -> None:
+        assert persona.residue_in("62,048.57") and persona.residue_in("03/14")
+        assert persona.residue_in("Fictional Federal Bank")
+        assert not persona.residue_in("Anytown Federal Bank 11/19 1,042.50")
 
 
 # ── Local root and runner ──────────────────────────────────────────────
@@ -283,7 +376,7 @@ FAKE_TOOL = """import shutil, sys
 from pathlib import Path
 src = Path(sys.argv[1]); assert sys.argv[2] == "--config" and Path(sys.argv[3]).exists()
 shutil.copyfile(src, src.with_name(src.stem + "_redacted.pdf"))
-print("Redacted 0 items across 1 pages.")
+print("fake tool: done")
 """
 
 
@@ -312,20 +405,34 @@ class TestRunner:
 
 # ── Independence and hygiene ───────────────────────────────────────────
 
-class TestIndependence:
-    FORBIDDEN = ("redaction_verifier", "verify", "caselib", "scorecard")
+# The verifier and the library it (and the redaction tool) reads with:
+# the generator writes nothing with PyMuPDF, so its inputs are not all
+# shaped the way both readers expect.
+FORBIDDEN = ("redaction_verifier", "verify", "caselib", "scorecard", "pymupdf", "fitz")
 
-    def test_imports_nothing_from_the_verifier(self) -> None:
+
+def _forbidden_imports(source: str) -> list[str]:
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        found += [n for n in names if n.split(".")[0] in FORBIDDEN]
+    return found
+
+
+class TestIndependence:
+    def test_imports_nothing_from_the_verifier_or_pymupdf(self) -> None:
         for path in sorted(PKG.glob("*.py")):
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                names = []
-                if isinstance(node, ast.Import):
-                    names = [a.name for a in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                    names = [node.module]
-                for name in names:
-                    assert name.split(".")[0] not in self.FORBIDDEN, f"{path.name}: {name}"
+            assert _forbidden_imports(path.read_text()) == [], path.name
+
+    @pytest.mark.parametrize("source", [
+        "import fitz", "import pymupdf as m", "from redaction_verifier.model import X",
+        "def f():\n    import verify", "from caselib import model"])
+    def test_the_guard_catches_each_form(self, source) -> None:
+        assert _forbidden_imports(source)
 
     def test_no_local_paths_in_the_source(self) -> None:
         for path in sorted(PKG.glob("*.py")):

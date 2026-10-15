@@ -8,9 +8,13 @@ macOS Quartz via cupsfilter, and pikepdf (libqpdf) for post-processing
 in ``post.py``. PyMuPDF writes nothing here.
 
 Every external program is found on PATH or through an environment
-variable; no path is hard-coded. Every producer is given a fabricated
-title and author, so nothing from this machine (a file name, a URL, a
-login name) reaches a document's metadata.
+variable; no path but Chrome's default location is written here. Each
+producer is set up so that nothing from this machine (a file name, a
+URL, a login name) should reach a document -- fabricated titles, no
+Chrome header or footer, a fabricated CUPS user -- and generate.py's
+preflight refuses any document where one does. A producer's own
+/Producer string (a Chrome milestone, a macOS build) does reach the
+document; the committed subset's scrub must cover it.
 """
 
 from __future__ import annotations
@@ -103,9 +107,18 @@ def chrome_pdf(html: str, out: Path, *, timeout: float = 60.0) -> None:
                 os.killpg(proc.pid, signal.SIGTERM)
                 proc.wait(timeout=10)
             except (ProcessLookupError, subprocess.TimeoutExpired):
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=10)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    pass
         shutil.rmtree(html_dir, ignore_errors=True)
-        shutil.rmtree(profile, ignore_errors=True)
+        # Chrome's helpers may still be flushing the profile as they exit.
+        for _ in range(10):
+            shutil.rmtree(profile, ignore_errors=True)
+            if not profile.exists():
+                break
+            time.sleep(0.3)
 
 
 def chrome_version() -> str:
@@ -211,16 +224,18 @@ def tesseract_version() -> str:
 
 # ── Quartz (macOS) ─────────────────────────────────────────────────────
 
-def quartz_text_pdf(text: str, out: Path, *, title: str) -> None:
+def quartz_text_pdf(text: str, out: Path) -> None:
     """Plain text printed to PDF by macOS's cupsfilter (Quartz
-    PDFContext, the producer of "Save as PDF"). The fabricated user name
-    and title replace the CUPS defaults (the login name, the job name)."""
+    PDFContext, the producer of "Save as PDF"): a simple TrueType font
+    with MacRoman codes, drawn as literal strings. cupsfilter writes no
+    /Title or /Author; ``-U`` gives its filters a fabricated user name
+    instead of the login name. Callers set a title with post.py."""
     work = Path(tempfile.mkdtemp(prefix="rs-cups-"))
     try:
         src = work / "letter.txt"
         src.write_text(text, encoding="utf-8")
         with open(out, "wb") as fh:
-            subprocess.run([_require("cupsfilter"), "-U", CUPS_USER, "-t", title,
+            subprocess.run([_require("cupsfilter"), "-U", CUPS_USER,
                             "-i", "text/plain", "-m", "application/pdf", str(src)],
                            stdout=fh, stderr=subprocess.DEVNULL, check=True)
     finally:

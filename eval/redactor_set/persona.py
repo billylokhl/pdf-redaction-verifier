@@ -107,3 +107,42 @@ def shared_digit_runs() -> list[tuple[str, str, str]]:
             for run in sorted(digit_runs(a) & digit_runs(b)):
                 found.append((a_id, b_id, run))
     return found
+
+
+# Partial residue (an owner decision: it counts as a leak) is any run of
+# four or more consecutive characters of a secret -- digits only, for a
+# number. Generated filler must therefore never hold one by chance: an
+# amount such as 62,048.57 holds the EIN's 4857, and an oracle could not
+# tell it from a redaction that left four digits behind.
+RESIDUE_RUN = 4
+
+
+def residue_runs() -> set[str]:
+    """Every run of RESIDUE_RUN digits inside a secret's written forms."""
+    runs: set[str] = set()
+    for form in written_forms():
+        runs |= digit_runs(form, RESIDUE_RUN)
+    return runs
+
+
+def residue_words() -> set[str]:
+    """Every word of four or more letters in a secret's written forms,
+    lower-cased (a stray "Fictional" reads as part of the address)."""
+    words: set[str] = set()
+    for form in written_forms():
+        words |= {w.lower() for w in re.findall(r"[A-Za-z]{%d,}" % RESIDUE_RUN, form)}
+    return words
+
+
+def residue_in(text: str) -> list[str]:
+    """The residue-shaped pieces of *text*: digit runs (per
+    whitespace-separated token, separators dropped) and words."""
+    found = []
+    runs = residue_runs()
+    for token in text.split():
+        digits = re.sub(r"\D", "", token)
+        found += sorted(r for r in digit_runs(digits, RESIDUE_RUN) if r in runs)
+    words = residue_words()
+    found += [w for w in re.findall(r"[A-Za-z]+", text) if w.lower() in words]
+    return found
+

@@ -1068,12 +1068,12 @@ dependencies = [
 
 [package.optional-dependencies]
 redactor-set = [
-    { name = "pdfminer-six" },
     { name = "pillow" },
     { name = "reportlab" },
 ]
 test = [
     { name = "hypothesis" },
+    { name = "pdfminer-six" },
     { name = "pikepdf", version = "10.13.0.post1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pikepdf", version = "10.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
@@ -1089,7 +1089,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hypothesis", marker = "extra == 'test'", specifier = "==6.168.2" },
-    { name = "pdfminer-six", marker = "extra == 'redactor-set'", specifier = "==20260107" },
+    { name = "pdfminer-six", marker = "extra == 'test'", specifier = "==20260107" },
     { name = "pikepdf", marker = "python_full_version >= '3.11' and extra == 'test'", specifier = "==10.16.0" },
     { name = "pikepdf", marker = "python_full_version < '3.11' and extra == 'test'", specifier = "==10.13.0.post1" },
     { name = "pillow", marker = "extra == 'redactor-set'", specifier = "==12.3.0" },
