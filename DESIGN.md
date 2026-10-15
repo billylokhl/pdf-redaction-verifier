@@ -437,6 +437,27 @@ Outside the grids, `page.digit-column` (clean: a lone digit column) and
 image) pin both sides: no hard finding from a misread column, and a hard
 one from a genuine sideways scan.
 
+A page with any line read vertically gets two more reconstructed
+readings, which can turn some of what Vision misses there into manual
+review (measured on macOS 27; not all of it, see the counts below).
+The page is read again turned 90° and 270°: on macOS 27 Vision reads
+sideways text in a page image only in part (a dense page of 40 lines
+lost 14–21; the same page at 200 or 400 dpi, none) and reads it whole
+turned upright (#67). Turning also makes a one-character-per-line stack a row
+of sideways glyphs, which Vision misread as a number in 13 of 48 stack
+pages, so a turned reading is never hard. And each vertical line no
+re-read confirmed is unstacked: the runs of inked pixel rows in its box
+are laid out left to right as one line and read (#61). In a stack
+Vision reports as a line, that reads the value as written (21 of 23
+generated stacks); in 25 of 48 stack pages Vision reported no vertical
+line at all, and those are not read (#81). These counts are macOS 27's;
+on CI's macOS 26, Vision reads `layout.scanned-vertical-stack` so that
+it still passes as clean, and reads `page.dense-sideways-scan`'s SSN
+line whole (a hard finding). The cost is noise on some
+clean scans: turned, a column of repeated digits reads as a row, so a
+questionnaire with sideways headers and answer columns of 1–5 matched
+the phone pattern (manual review; 1 of 14 generated clean scans moved).
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
@@ -461,6 +482,11 @@ text costs about 8–11 s and one of text slanted near 45°, whose crops
 are squares around whole lines, about a minute, instead of under half a
 second (measured on macOS 27), so a long sideways scan is slow, not
 unbounded.
+A page with a vertical line also costs two Vision calls on the whole
+page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
+the #67 page about 0.3 s more than before, of about 5 s). The worst
+case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
+16 unstacked.
 Vision calls themselves have no deadline (as before the re-reads).
 
 The subprocesses themselves are launched defensively, not just bounded:
@@ -530,7 +556,10 @@ the gap is stated rather than implied away.
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
   as clean (#67: on macOS 27, a dense sideways scan whose SSN line
-  Vision drops exits `0`). Today only running OCR tests (the case
+  Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
+  docs/REDESIGN.md §8, now manual review through the turned readings
+  above, which only a page with a vertical line gets; a raster check is
+  #82). Today only running OCR tests (the case
   library, the OCR unit tests) on that OS can catch it, and only for the
   content they cover. A change in *how* Vision reads can also move
   verdicts: on macOS 27 Vision reads a one-character-per-line stack as
