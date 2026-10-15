@@ -784,45 +784,57 @@ class TestScatteredValues:
         # A dense numeric page with many value rules: eight times the lines
         # must cost about eight times as much, not sixty-four (the window
         # bounds the pairs each line is compared with). Deterministic: the
-        # cost is the count of line reads (indexing and iteration) and of
-        # prefix/suffix comparisons, not wall-clock time, so machine load
-        # cannot flake it. Bound: under sixteen times (linear is eight).
+        # cost is the number of source lines executed in the matcher's
+        # module (every loop iteration there, whatever it touches), not
+        # wall-clock time, so machine load cannot flake it. Bound: under
+        # twelve times (linear is eight) at each of two steps, 62 -> 500 ->
+        # 4000 lines; each run stops once past the bound, so a quadratic
+        # fails in seconds instead of running for minutes.
         import random
+        import sys
+        from types import FrameType
+
+        from redaction_verifier.matching import values
+
         rng = random.Random(1)
         m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
-        ops = [0]
+        source = values.__file__
+        executed = [0]
+        budget = [math.inf]
 
-        class CountedStr(str):
-            __slots__ = ()
+        class OverBudget(Exception):
+            pass
 
-            def endswith(self, *args: Any) -> bool:  # type: ignore[override]
-                ops[0] += 1
-                return super().endswith(*args)
+        def local(frame: FrameType, event: str, arg: Any) -> Any:
+            if event == "line":
+                executed[0] += 1
+                if executed[0] > budget[0]:
+                    raise OverBudget
+            return local
 
-            def startswith(self, *args: Any) -> bool:  # type: ignore[override]
-                ops[0] += 1
-                return super().startswith(*args)
-
-        class CountedList(list[str]):
-            def __getitem__(self, i: Any) -> Any:
-                ops[0] += 1
-                return super().__getitem__(i)
-
-            def __iter__(self) -> Any:
-                for x in super().__iter__():
-                    ops[0] += 1
-                    yield x
+        def outer(frame: FrameType, event: str, arg: Any) -> Any:
+            return local if frame.f_code.co_filename == source else None
 
         def cost(count: int) -> int:
-            ls = CountedList(CountedStr("%d" % rng.randrange(10 ** rng.randint(1, 8)))
-                             for _ in range(count))
-            ops[0] = 0
-            m.scattered(ls, 5)
-            return ops[0]
+            ls = ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+            executed[0] = 0
+            previous = sys.gettrace()
+            sys.settrace(outer)
+            try:
+                m.scattered(ls, 5)
+            except OverBudget:
+                pass
+            finally:
+                sys.settrace(previous)
+            return executed[0]
 
-        small, large = cost(500), cost(4000)
-        assert small > 0
-        assert large < 16 * small
+        tiny = cost(62)
+        assert tiny > 0
+        budget[0] = 12 * tiny
+        small = cost(500)
+        assert small < 12 * tiny
+        budget[0] = 12 * small
+        assert cost(4000) < 12 * small
 
     def test_matcher_bounds(self) -> None:
         m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
