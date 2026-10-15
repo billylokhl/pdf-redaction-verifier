@@ -492,6 +492,10 @@ PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
 ```
 
+`tests/test_views_text_readings.py` also builds every case (`perf` ones
+included) and checks, page by page, that `views.text.visual_text_glyphs`
+reads exactly what `extract_visual_text` reads.
+
 ## The build lock
 
 `caselib/cases.lock.json` holds each case's PDF hash, so a change in what
