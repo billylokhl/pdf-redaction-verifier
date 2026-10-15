@@ -119,8 +119,7 @@ def test_each_glyph_keeps_its_own_box(tmp_path, rotate, user_unit) -> None:
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         assert shown == (0 <= cx <= area.width and 0 <= cy <= area.height)
     assert True in tagged.visible and False in tagged.visible
-    # Every glyph's box is its own: the characters a line names sit in
-    # reading order along the line's boxes.
+    # Every glyph's box is its own: no two glyphs of a line share one.
     (line,) = [ln for ln in tagged.readings[0] if tagged.line_text(ln) == "SSN123-45-6789"]
     assert len({tagged.boxes[g] for g in line}) == len(line)
 
