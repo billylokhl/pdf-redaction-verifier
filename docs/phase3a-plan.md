@@ -615,9 +615,23 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     - lines per charged unit at most about 12, not growing from n to 8n (walk_only);
     - retained memory 0.50-0.63 bytes per unit of the labels' own work, the per-body
       labels 0.24-0.76.
-    Mutants: 43 tried, all caught but four charge mutants (a node's pop, a body lookup,
-    the decision index, the reuse comparison). Each stays under 15 lines per unit,
-    without growth, covered by another charge on the same loop.
+    Mutants (after review round 1): 51 tried, all caught but three charge mutants (a
+    node's pop, a body lookup, the reuse comparison), each at most 13.7 lines per unit
+    without growth, covered by another charge on the same loop. (Round 1 found the
+    decision index's charge is not so covered: one image with n direct entries grew
+    4.45x; the big-dictionary shape now catches it.)
+    Review of #158, round 1: (B1, B1b) a stream counts only one reference away, as
+    MuPDF's pdf_is_stream reads it -- an /N naming an object whose value is a reference
+    to a stream is synthesized by MuPDF (3a-7d called it stored: fixed here, its own
+    CHANGELOG line), a state entry so given draws nothing; names and dictionaries are
+    read through references. (B2) A form's /Subtype2 replaces its /Subtype (MuPDF's Do
+    operator). (B3) A font is Type3 as pdf_load_font decides (/CharProcs under an
+    unknown or absent /Subtype guesses it); a descendant is a CID font. Names deciding
+    a role are read through up to nine references, as MuPDF reads a name. Each pinned
+    by MuPDF's drawing. (B4) The ICC /Alternate gap recorded in ADR 0011's Q2 note, not
+    widened; what the closure-gap measure cannot see stated; a "wider than MuPDF" note
+    for 3b and 4a/4b. (B5) The big-dictionary shape. (B6) Reuse across a revision
+    without a page list tested.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page

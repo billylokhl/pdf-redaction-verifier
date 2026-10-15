@@ -626,28 +626,63 @@ rule is unchanged.
   that way, only `/Functions` (each a function), `/Colorants` (each entry
   a colour space) and `/Process` (its `/ColorSpace`) are followed. So an
   ICC profile's `/Alternate` and `/Metadata`, and a function's other keys,
-  lead nowhere drawable and fail closed. Measured: no gap (below).
+  lead nowhere drawable and fail closed.
+  **Measured gap** (the review of #158; recorded, not widened): MuPDF
+  draws an ICC profile's `/Alternate` when the profile is broken
+  ("ignoring broken ICC profile"). A Separation's tint function there,
+  or an Indexed lookup there, is drawn by MuPDF -- its drawing changes
+  with the stream -- while we label it `ORPHANED`. That fails closed (an
+  orphan is `FLAGGED`), so it costs a verdict, never a miss.
 - **The drawn appearance** (coordinator decision Q3).
   `Annotation.appearance` records the stream MuPDF draws for an
   annotation it does not synthesize: a stream `/AP /N`, or the stream
-  that `/AS` names in an `/N` state dictionary, through up to nine
-  references. It is pinned against MuPDF's `pdf_annot_ap` on every 3a-7d
-  classification fixture, a signed signature field's stored appearance
-  included. A synthesized annotation, and an `/AS` entry that is not a
-  stream, have none. The walk starts there, so it never re-derives
-  MuPDF's `/AS` and reference rules.
-- **Roles decided by a value.**
-  - An XObject is a form or an image by its `/Subtype`, read through one
-    reference. It is either only when it is a stream, since MuPDF draws no
-    other. An XObject that is neither is itself `DRAWABLE` (the upper
-    bound) and follows nothing.
-  - A font is Type3 by its `/Subtype`; only a Type3 font follows
-    `/CharProcs` and `/Resources`.
+  that `/AS` names in an `/N` state dictionary. A stream counts only one
+  reference away: MuPDF's `pdf_is_stream` follows no chain, while
+  dictionaries and names (`/AP`, an `/N` dictionary, `/AS`) are read
+  through up to nine references (the review of #158). An `/N` naming an
+  object whose value is a reference to a stream is no stream: MuPDF
+  synthesizes that annotation (3a-7d called it stored, its unit missing;
+  fixed here). A state entry so given draws nothing ("content stream is
+  not a stream"): not synthesized, no appearance. The field is pinned
+  against `pdf_annot_ap` with `pdf_is_stream` on every 3a-7d
+  classification fixture and on chains at `/AS`, `/AP`, `/N` and a state
+  entry, a signed signature field's stored appearance included; the
+  classification of chains at `/N`, a state entry and `/AS`, with and
+  without `/NeedAppearances`, against MuPDF's drawing. A synthesized
+  annotation, and an `/AS` entry that is not a stream, have none. The
+  walk starts there, so it never re-derives MuPDF's `/AS` and reference
+  rules.
+- **Roles decided by a value**, as MuPDF reads them (each pinned by
+  MuPDF's drawing; names read through up to nine references, as MuPDF
+  resolves a name).
+  - An XObject is a form or an image by its `/Subtype`; on a `/Form`, a
+    `/Subtype2`, when present, replaces it (MuPDF's `Do` operator:
+    `/Subtype2 /Image` draws an image, `/Subtype2 /PS` nothing, "ignoring
+    XObject with subtype PS"; on an `/Image` it is ignored). It is either
+    only when it is a stream, since MuPDF draws no other. An XObject that
+    is neither is itself `DRAWABLE` (the upper bound) and follows
+    nothing.
+  - A font is Type3 as MuPDF's `pdf_load_font` decides: `/Subtype
+    /Type3`, or a `/Subtype` other than `Type0`, `Type1`, `MMType1` and
+    `TrueType` (or none) with `/CharProcs` ("unknown font format,
+    guessing type3"). Only a Type3 font follows `/CharProcs` and
+    `/Resources`. A Type0 font's descendant is a CID font, never Type3.
+    (The scopes' side, a guessed Type3 needing `/Resources`, is issue
+    #159.)
   - A halftone is type 5 by its `/HalftoneType`.
   - A value the walk cannot read gets the narrower reading, failing
-    closed: one two references away, or a direct font or halftone inside
+    closed: one past nine references, or a direct font or halftone inside
     an array. That is an XObject that follows nothing, a font that is not
     Type3, a halftone that is not type 5.
+- **Wider than MuPDF** (the review of #158; for 3b and 4a/4b: `DRAWABLE`
+  is item 5's upper bound, not "used"). MuPDF 1.28 never draws with, and
+  but for `/TR` never loads: a graphics state's `/TR`, `/TR2`, `/BG`,
+  `/UCR`, `/HT` (type 6 halftone streams included); a DeviceN
+  `/Colorants` and `/Process`; a shading pattern's `/ExtGState`;
+  `/JBIG2Globals` without `/JBIG2Decode`; a font descriptor's `/CIDSet`;
+  and the `/AcroForm /DR` fonts of a `/NeedAppearances` text widget (it
+  draws built-in Helvetica). The lists stay as item 5 gives them; a
+  decoder or a content run must not take `DRAWABLE` for drawn.
 - **How the lists are read.**
   - A direct value is read in place.
   - A function given as an array (a shading's `/Function`, `/TR`) is
@@ -670,10 +705,12 @@ rule is unchanged.
   Per revision, `ORPHANED` is derived (`Inventory.orphaned`), not stored.
 - **Found while implementing (measured on the 1,920 unflagged corpus
   files; each fails closed, none widens a list).**
-  - The closure gap is 0. MuPDF lists 5,875 streams on the current
-    revisions' pages: contents, images and their soft masks, form
+  - The closure gap, as measured, is 0. MuPDF lists 5,875 streams on the
+    current revisions' pages: contents, images and their soft masks, form
     XObjects, and drawn appearances. Every one is `DRAWABLE`. The case
-    library and the fuzz set have no gap either.
+    library and the fuzz set have no gap either. The measure does not see
+    colour spaces, fonts, patterns or shadings (PyMuPDF lists none of
+    their streams), so it cannot show the ICC `/Alternate` gap above.
   - Orphans in the current revisions: 294 files, 3,056 streams. Each is
     classed by the use kind of the path that first reaches it from the
     trailer:
