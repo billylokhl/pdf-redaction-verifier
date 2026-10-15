@@ -41,6 +41,11 @@ def redacted_no_gc(path):
 - **`known_gap`**: `KnownGap(cell, today=expect(...))` when today's tool
   gets it wrong. The case is judged against `today`, so a fix, a partial
   fix or a broken generator fails the test until the label is updated.
+- **`older_macos`** (OCR cases only): `OlderMacOS(27, today)` when
+  Vision on a macOS older than the owner's 27 reads the case's page
+  differently; there it replaces `known_gap` (`today`, or `None` when
+  `expected` holds there). `before` must be 27, so it never changes a
+  label on the owner's macOS.
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
   `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
@@ -318,6 +323,10 @@ PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
 ```
 
+`tests/test_views_text_readings.py` also builds every case (`perf` ones
+included) and checks, page by page, that `views.text.visual_text_glyphs`
+reads exactly what `extract_visual_text` reads.
+
 ## The build lock
 
 `caselib/cases.lock.json` holds each case's PDF hash, so a change in what
@@ -502,8 +511,25 @@ or pasted anywhere. Only the coarse producer *family* (e.g. `"acrobat"`,
 and discarded on the spot, since real producer apps sometimes embed a
 username, hostname, or email address in it.
 
-`corpus build` picks up only files named `*.pdf` in lower case: rename or
-link any `.PDF` files first, or they are silently left out.
+`corpus build` records every regular file under the root whose name ends
+in `.pdf` in any case (`.PDF`, `.Pdf`, ...); a symbolic link to a file
+counts as that file. It prints how many entries it left out, by kind and
+never by name: files without a `.pdf` extension, entries named `.pdf`
+that are not regular files (a broken link, say), symbolic links to
+directories (not followed, so a link cycle cannot loop the walk),
+directories it could not list, and `.pdf` files it could not read (any
+I/O error, a permission error say: such a file cannot be hashed, so it
+is left out, and the error's message, which names the file, is never
+printed). A `--root` that does not exist, is not a directory, or cannot
+be accessed or listed is refused, and so is a root with no readable PDF:
+the build never replaces a manifest with an empty one, and leaves the
+existing one as it was. The manifest is written to a fresh temporary
+file beside it (mode 0600, or the existing manifest's mode) and renamed
+into place. It is replaced, not rewritten (a second hard link to it
+keeps the old content), so a failed write leaves the old manifest and no
+temporary file; a symbolic link at `--manifest` is written through. A
+write-protected manifest, or one in a directory that cannot be written,
+is refused and left as it was.
 
 A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
 abort on the first password-protected or corrupt file, so the exemption
@@ -522,20 +548,20 @@ CLI's error report on it has no findings, so there it would only add an
 unscanned file to the false-hard denominator: as text-bearing, of the
 stratum the redesign's targets are measured on. `all` does include them,
 so its false-hard denominator counts files nothing scanned: read false
-hard on a measured stratum.
+hard on a measured stratum. A `"text-unreadable"` file is scanned, but
+no text stratum can hold it, so it is its own counted group (owner
+decision, 2026-10-12): `all`, `text-unknown` and `probe:text-unreadable`
+only, and the run passes. `probe:text-unreadable` is always in the
+table and `--json`, even at 0, and the run always prints the count.
 
 That placement is decided by the build-time probe, so `corpus run` exits
 1 when the scan does not bear the probe out, listing each such file by
 SHA-256 prefix (`probe` lines): a `"password"` or `"unreadable"` file the
 CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
 upgrade can make a file readable, and its findings would otherwise
-vanish from every measured stratum), an `"ok"` file the CLI could not
-open, and every `"text-unreadable"` file, which the CLI scans but no
-text stratum can hold. Rebuild the manifest for the first two. A
-text-unreadable file keeps the run failing until the owner decides how
-to count it: open an issue rather than deleting the file, since dropping
-every file the tool struggles with would bias the corpus toward easy
-files and flatter the rates. The build
+vanish from every measured stratum), and an `"ok"` or
+`"text-unreadable"` file the CLI could not open. Rebuild the manifest
+for them. The build
 prints only how many there were, never which, and never keeps the
 exception's message (it can name the path). A manifest written before
 the field existed loads with `probe` `"ok"`; one written now does not
@@ -637,13 +663,25 @@ What each part of the output means:
   against MuPDF's own inheritance and a second libqpdf instance that
   pushes them to the pages, owner decision 9; and the page as MuPDF
   shows it -- media box, crop box, rotation, rectangle -- against what
-  those attributes say it is), `oracle_error`, `tiling`),
+  those attributes say it is), `name_tree` (since 3a-7c: each
+  revision's `/EmbeddedFiles` entries, keys as text and values as
+  written, against MuPDF's `pdf_load_name_tree` and libqpdf's name-tree
+  helper; an encrypted revision's keys are not compared until 3a-9, and
+  its non-empty name trees are flagged), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
-  a user password is an unflagged `needs_password` disagreement, so it
-  fails the gate. `corpus build` can now record such a file (above),
-  where it used to abort, so a corpus holding one fails `inventory run`
-  instead of never reaching it; how the gate should count it is still
-  open (issue #48, item 3).
+  a user password cannot be certified, so it is **flagged**, not a
+  disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
+  it no longer fails the gate. It is reported under the reason
+  `needs_password` in `flags`, or under the inventory's own reasons when
+  it has any, so `files_by_reason.needs_password` counts only files with
+  no other flag. The oracle stops at the first revision that needs a
+  password, so nothing after it is compared; the file fails the gate
+  only if it does not tile (a disagreement, listed under
+  `needs_password` here) or the two children flag it differently
+  (`inconsistent`). The oracle reports `needs_password` only when our
+  trailer also reads that revision encrypted; a file MuPDF wants a
+  password for that our trailer reads as plain is an `encryption`
+  disagreement, which gates.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and
@@ -714,6 +752,13 @@ And one whole-line entry on qpdf's own line, which carries no path
 byte 0, which qpdf prints with no offset, `page object N G stream N G
 (content): ...` (one stream or an array of them; `CONTENT_AT_ZERO`) --
 content syntax is Phase 4's, as for the `(content, offset N)` form.
+Since 3a-7c, qpdf's warning on an empty name- or number-tree root
+(`name/number tree node has neither non-empty /Names nor /Kids`, or
+`/Nums`; `EMPTY_TREE_ROOT`, whole line on the exact path): both readers
+read such a root as empty (owner decision R5), and the inventory flags
+any empty node below a root, so on an unflagged file the line is a
+root's; reader-agreement tests for `/EmbeddedFiles`, `/Dests` and
+`/PageLabels` in `tests/test_inventory_trees.py`.
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader
@@ -757,6 +802,20 @@ own machine (`sha256sum`) when a number needs explaining.
   - `page.scan-image-sideways-90` and `-270`, `requires: ocr`: an SSN
     that exists only as a turned image must stay a hard OCR finding. CI
     guards this side on every PR.
+
+  Separately, two OCR cases on scanned pages, `layout.scanned-vertical-stack`
+  (K42, fixed) and the known gap `page.dense-sideways-scan` (K43)
+  (`families/ocr_misses.py`), pin what Vision on macOS 27 returns. They
+  are not grid cases, so `full-macos` runs them on macOS 26 too, where
+  Vision reads both pages differently: K42 still exits `0` there and
+  K43 exits `1`. Each case says so in its `older_macos` label
+  (`OlderMacOS(27, today)` in `caselib/model.py`), which replaces its
+  `known_gap` on a macOS older than 27: `today` is the wrong answer pinned
+  there, or `None` when the case's `expected` holds there. So CI guards
+  what macOS 26 gives and a local macOS 27 run what the owner gets; a
+  change on either side fails until the label is updated. The gallery
+  does not read `older_macos`: built from a macOS 26 scorecard, it would
+  show K42 as a miss with no known gap.
 - **Local**: the real-world corpus (above) — never in CI, since the
   files never leave your machine.
 

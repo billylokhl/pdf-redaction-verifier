@@ -21,8 +21,12 @@ local-only file.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -124,8 +128,9 @@ def classify(pdf_path: Path) -> tuple[bool | None, bool, str, str]:
     text-bearing adds an unscanned file to the false-hard denominator of
     the stratum the redesign's targets are measured on, and counting it as
     text-free does the same there. A "text-unreadable" file is scanned by
-    the CLI, so its verdict is real but has no known stratum: `corpus run`
-    refuses it (`probe_mismatches`). Its producer family is "unknown", since its
+    the CLI, so its verdict is real but has no known text stratum: it is
+    its own counted group, `probe:text-unreadable`, reported on every run
+    (owner decision, 2026-10-12). Its producer family is "unknown", since its
     metadata was not read. multi_revision is still measured, from the raw
     bytes, which need no parser."""
     import pymupdf as fitz
@@ -151,17 +156,109 @@ def classify(pdf_path: Path) -> tuple[bool | None, bool, str, str]:
     return text_bearing, multi_revision, producer_family(raw_producer), "ok"
 
 
-def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
-    """Scan *root* for `*.pdf` files, hash and classify each, and write the
-    manifest. Re-running replaces it entirely, so a file removed from
-    *root* is dropped and a changed file's hash and strata are refreshed.
-    A file the probe cannot read is recorded with its text layer unknown
-    (see `classify`), never skipped and never fatal."""
+@dataclass(frozen=True)
+class CorpusFiles:
+    """What a walk of the corpus root found: the PDFs to record, and counts
+    — never names — of everything it left out, so nothing is left out
+    silently."""
+
+    pdfs: tuple[Path, ...]
+    other_files: int = 0  # files without a .pdf extension (any case)
+    not_regular: int = 0  # *.pdf entries that are not files: broken links, sockets, ...
+    linked_dirs: int = 0  # symbolic links to directories: not followed
+    unreadable_dirs: int = 0  # directories the walk could not list
+    unreadable_files: int = 0  # *.pdf entries the walk could not even stat
+
+    def skipped(self, unread: int = 0) -> dict[str, int]:
+        """Counts by kind; *unread* adds files `build_manifest` could not
+        read, which it leaves out of the manifest."""
+        return {
+            "file(s) without a .pdf extension": self.other_files,
+            "entr(y/ies) named .pdf but not a regular file": self.not_regular,
+            "symlinked dir(s) not followed": self.linked_dirs,
+            "unreadable dir(s)": self.unreadable_dirs,
+            "unreadable file(s)": self.unreadable_files + unread,
+        }
+
+
+def find_pdfs(root: Path) -> CorpusFiles:
+    """Every regular file under *root* whose name ends in `.pdf` in any
+    case (`.PDF`, `.Pdf`, ...), sorted, plus counts of what was skipped.
+    A symbolic link to a file counts as that file; a link to a directory
+    is not followed (a link cycle could otherwise loop), but is counted."""
+    try:  # the caller supplied the path, but it is still never echoed
+        is_dir = stat.S_ISDIR(root.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_dir = False
+    except OSError:  # Path.is_dir() raises here before 3.14 and its message names the path
+        raise SystemExit("refusing to build: --root cannot be accessed") from None
+    if not is_dir:
+        raise SystemExit("refusing to build: --root is not an existing directory")
+    try:  # os.walk would report an unlistable root as one skipped directory
+        os.scandir(root).close()
+    except OSError:
+        raise SystemExit("refusing to build: --root cannot be listed") from None
+    pdfs: list[Path] = []
+    other = not_regular = linked = unreadable = unreadable_files = 0
+
+    def on_error(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable += 1
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
+        linked += sum(os.path.islink(os.path.join(dirpath, d)) for d in dirnames)
+        for name in filenames:
+            path = Path(dirpath) / name
+            if not name.lower().endswith(".pdf"):
+                other += 1
+            else:
+                # stat() rather than is_file(): from 3.14 is_file() returns
+                # False on any OSError, and before it raises with a message
+                # naming the path. A missing target (a broken link) or a link
+                # loop is not a regular file; any other error is unreadable.
+                try:
+                    regular = stat.S_ISREG(path.stat().st_mode)
+                except (FileNotFoundError, NotADirectoryError):
+                    regular = False
+                except OSError as error:
+                    if error.errno != errno.ELOOP:
+                        unreadable_files += 1
+                        continue
+                    regular = False
+                if regular:
+                    pdfs.append(path)
+                else:
+                    not_regular += 1
+    return CorpusFiles(tuple(sorted(pdfs)), other, not_regular, linked, unreadable,
+                       unreadable_files)
+
+
+def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST,
+                   files: CorpusFiles | None = None) -> list[CorpusEntry]:
+    """Hash and classify every PDF `find_pdfs` finds under *root* (or the
+    already-walked *files*), and write the manifest. Re-running replaces
+    it entirely, so a file removed from *root* is dropped and a changed
+    file's hash and strata are refreshed. A file the probe cannot parse is
+    recorded with its text layer unknown (see `classify`). A file that
+    cannot be read at all (any I/O error: a permission error, say) cannot
+    be hashed, so it is left out and counted — `len(files.pdfs) - len(entries)` — never
+    raised on: the exception's message names the path.
+
+    Refuses (SystemExit, nothing written) when no file could be recorded:
+    a mistyped or unmounted root would otherwise replace a good manifest
+    with an empty one. The manifest is written to a fresh temporary file
+    beside it and renamed into place, so a failed write never leaves half
+    of one or a stray copy (see `_write_atomically`)."""
+    if files is None:
+        files = find_pdfs(root)
     entries: list[CorpusEntry] = []
-    for path in sorted(root.rglob("*.pdf")):
-        data = path.read_bytes()
+    for path in files.pdfs:
+        try:
+            data = path.read_bytes()
+            text_bearing, multi_revision, family, probe = classify(path)
+        except OSError:
+            continue  # counted by the caller; the message is never kept
         sha256 = hashlib.sha256(data).hexdigest()
-        text_bearing, multi_revision, family, probe = classify(path)
         entries.append(
             CorpusEntry(
                 sha256=sha256,
@@ -172,10 +269,51 @@ def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> lis
                 probe=probe,
             )
         )
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if not entries:
+        counts = ", ".join(f"{n} {what}" for what, n in
+                           files.skipped(len(files.pdfs)).items() if n) or "nothing found"
+        raise SystemExit("refusing to write an empty manifest: no readable PDF under --root "
+                         f"({counts}); any existing manifest is left as it was")
     payload = {"entries": [vars(e) for e in entries]}
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _write_atomically(manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return entries
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Replace *path*'s content with *text* all at once. The temporary file
+    is created exclusively (never clobbering or following anything already
+    there) with mode 0600, or the existing file's mode; it is removed if
+    anything fails. A write-protected manifest, or one in a directory that
+    cannot be written, is refused without a path (the cause by its errno
+    name only). A symbolic link at *path* is written through, as a plain
+    write would (`ensure_local_only` checked where it resolves)."""
+    target = Path(os.path.realpath(path))
+    try:
+        # The link's own directory, as a plain write would create; a link
+        # to a missing directory then fails at mkstemp (ENOENT), as it did.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            mode: int | None = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        # A write-protected manifest is refused, as a plain write would be:
+        # renaming over it would replace a file the user protected.
+        if mode is not None and not os.access(target, os.W_OK):
+            raise SystemExit("refusing to write: --manifest is write-protected")
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.",
+                                   suffix=".partial")
+    except OSError as error:  # the cause by name only: the message would name the path
+        cause = errno.errorcode.get(error.errno or 0, type(error).__name__)
+        raise SystemExit(f"refusing to write --manifest ({cause})") from None
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
@@ -278,12 +416,13 @@ PROBE_ERROR_CODES = {"password": "PDF_PASSWORD", "unreadable": "PDF_UNREADABLE"}
 def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]:
     """(SHA-256 prefix, probe, CLI error code) for every scanned file whose
     stratum the build probe cannot vouch for. `stratify` places a file by
-    its build-time probe, so a file the probe could not read but the CLI
+    its build-time probe, so a file the probe could not open but the CLI
     scanned (after a PyMuPDF upgrade, say) would have its verdict, hard
     findings included, left out of every measured stratum; and a file the
-    probe read but the CLI could not open would pad a measured stratum's
-    false-hard denominator. A "text-unreadable" file is always listed: the
-    CLI scans it, but its text stratum is unknown. A crash, a timeout or a
+    probe opened but the CLI could not would pad a measured stratum's
+    false-hard denominator. A "text-unreadable" file opened, so only a CLI
+    that could not open it contradicts the probe; otherwise it is its own
+    counted group (owner decision, 2026-10-12). A crash, a timeout or a
     run-level error code (INTERNAL_ERROR, ...) is left to the run's own
     unmeasured check, which already fails it."""
     found = []
@@ -294,10 +433,8 @@ def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]
         if code is not None and code not in PROBE_ERROR_CODES.values():
             continue  # a run-level error: the run's unmeasured check lists it
         probe = run.entry.probe
-        if probe == "text-unreadable" or (
-            code != PROBE_ERROR_CODES[probe] if probe in PROBE_ERROR_CODES
-            else code in PROBE_ERROR_CODES.values()
-        ):
+        expected = PROBE_ERROR_CODES.get(probe)
+        if code != expected:
             found.append((run.entry.sha256[:16], probe, code))
     return found
 
@@ -310,11 +447,14 @@ def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[
     "text-unknown" and its own `probe:password`, `probe:unreadable` or
     `probe:text-unreadable` stratum, never in a measured one — which is
     safe only when the CLI agreed with the probe: check `probe_mismatches`.
+    `probe:text-unreadable` is always present, even empty, so its count is
+    reported on every run.
     *have* drops environmental warnings (e.g. no OCR on this machine) the
     same way the differential does, so a run on a partial environment
     does not inflate the review rate — pass `caselib.run.available()` for that;
     omit it to use the exit code exactly as reported."""
-    strata: dict[str, list[CorpusRun]] = {"all": list(runs)}
+    # Always present, even empty: the owner asked for this count every run.
+    strata: dict[str, list[CorpusRun]] = {"all": list(runs), "probe:text-unreadable": []}
     for run in runs:
         if run.entry.probe != "ok":
             # Unread: nothing measured its text layer or producer, and its

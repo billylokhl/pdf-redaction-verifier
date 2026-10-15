@@ -305,11 +305,20 @@ flattened to images, text converted to vector outlines.
   readings, a match in an unconfirmed line is only ever a manual-review
   warning. A page gets at most 64 re-reads, retries included; vertical
   lines past that are manual review, and so, sometimes, is small slanted
-  text near a page edge whose re-read does not match.
+  text near a page edge whose re-read does not match. A page with any
+  vertical line is also read turned 90° and 270° (Vision drops lines of
+  sideways text), and each unconfirmed vertical line is unstacked into
+  one line and read; both only ever give manual-review warnings.
 - **Not yet covered:** OCR reads the rendered page, so a box drawn *over*
   a scanned image hides the pixels underneath from it, even though they
   are still stored in the file. An image placed outside the visible page
-  area is not rendered, so OCR does not see it either.
+  area is not rendered, so OCR does not see it either. A scanned value
+  written one character per line that Vision does not report as a line
+  at all passes as clean with a value rule (#81); on macOS 26 so does
+  the stack that macOS 27 unstacks (`layout.scanned-vertical-stack`,
+  K42), since Vision there reads it differently; a page Vision reads
+  with lines missing passes too, unless a line on it is read vertically
+  (#67, #82).
 
 ### 6. Binary — the raw decompressed file
 
@@ -455,7 +464,7 @@ not check `exact_values` for this at all.
 
 ## Installation
 
-Python 3.10+ (CI tests 3.10 and 3.12); dependencies, including the
+Python 3.10+ (CI tests 3.10, 3.12, 3.13 and 3.14); dependencies, including the
 macOS-only Apple Vision OCR bridge, are declared in `pyproject.toml`. The
 Metadata and Binary layers shell out to `exiftool` and `qpdf`; without
 them those layers degrade and the run exits `2` rather than certifying
@@ -469,7 +478,7 @@ conda env create -f environment.yml && conda activate pdf-redaction-verifier
 ```
 
 Dependencies are hash-locked in `uv.lock`, resolved for macOS and Linux on
-Python 3.10–3.13 (the pyobjc packages stay macOS-only via their markers).
+Python 3.10–3.14 (the pyobjc packages stay macOS-only via their markers).
 With [uv](https://docs.astral.sh/uv/), install the two binaries separately:
 
 ```bash

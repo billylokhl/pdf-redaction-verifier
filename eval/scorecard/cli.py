@@ -110,8 +110,13 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
 
 def _cmd_corpus_build(args: argparse.Namespace) -> int:
     manifest = corpus_mod.ensure_local_only(args.manifest, allow_outside=args.allow_outside)
-    entries = corpus_mod.build_manifest(args.root, manifest_path=manifest)
+    files = corpus_mod.find_pdfs(args.root)
+    entries = corpus_mod.build_manifest(args.root, manifest_path=manifest, files=files)
     print(f"wrote {len(entries)} entries to {manifest}")
+    unread_files = len(files.pdfs) - len(entries)  # files build_manifest could not read
+    skipped = {what: n for what, n in files.skipped(unread_files).items() if n}
+    if skipped:  # counts only, never which entries
+        print("skipped: " + ", ".join(f"{n} {what}" for what, n in skipped.items()))
     # Counts only, never which files (corpus.classify, corpus.stratify).
     unread = {o: sum(e.probe == o for e in entries)
               for o in corpus_mod.PROBE_OUTCOMES if o != "ok"}
@@ -180,14 +185,17 @@ def _cmd_corpus_run(args: argparse.Namespace) -> int:
         if row.error_code in FILE_VERDICT_ERRORS:
             print(f"note: {row.case_id} could not be opened ({row.error_code}); "
                   "counted as a review verdict (exit 2)", file=sys.stderr)
+    # Its own counted group, reported on every run (owner decision, 2026-10-12).
+    text_unreadable = sum(r.entry.probe == "text-unreadable" for r in runs)
+    print(f"note: {text_unreadable} text-unreadable file(s) (opened, but a page's text "
+          "could not be read): counted only in all, text-unknown and "
+          "probe:text-unreadable", file=sys.stderr)
     mismatched = corpus_mod.probe_mismatches(runs)
     if mismatched:
         # By SHA-256 prefix only, like the lines above.
         print(f"ERROR: {len(mismatched)} file(s) whose build-time probe the scan does not "
               "bear out, so the strata cannot place them; rebuild the manifest with "
-              "`corpus build`. A text-unreadable file stays unplaceable and blocks a "
-              "passing run until the owner decides how to count it (open an issue; do "
-              "not just delete it, which would bias the corpus toward easy files):",
+              "`corpus build`:",
               file=sys.stderr)
         for sha, probe, code in mismatched:
             print(f"  probe      {sha} ({probe}; CLI error {code or 'none'})", file=sys.stderr)
