@@ -13,6 +13,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Collection, Iterable, Sequence
 
+from redaction_verifier.matching.values import normalize_string
 from redaction_verifier.model import MaskIndex, fold_wide
 from redaction_verifier.matching.validators import (
     _valid_card,
@@ -94,18 +95,24 @@ def mask(matched: str, exact: MaskIndex | Iterable[str] = ()) -> str:
         return "****"
     index = exact if isinstance(exact, MaskIndex) else MaskIndex(exact)
     if index:
-        if index.contained_in(fold_wide(matched)):
-            return "****"
-        tail = fold_wide(matched[-reveal:])
-        if len(tail) == 1:
-            if tail in index.chars:
+        # Both foldings: the wide one, and the matcher's own (which drops
+        # non-ASCII characters interleaved in a match, so a value can span
+        # them in the matcher's view only).
+        tail_raw = matched[-reveal:]
+        for sample_f, tail in ((fold_wide(matched), fold_wide(tail_raw)),
+                               (normalize_string(matched), normalize_string(tail_raw))):
+            if index.contained_in(sample_f):
                 return "****"
-        elif any(tail[i : i + 2] in index.pairs for i in range(len(tail) - 1)):
-            return "****"
-        # A one-character overlap at the edge of the match: the tail ends
-        # with an exact value's first character or begins with its last.
-        if tail and (tail[-1] in index.firsts or tail[0] in index.lasts):
-            return "****"
+            if len(tail) == 1:
+                if tail in index.chars:
+                    return "****"
+            elif any(tail[i : i + 2] in index.pairs for i in range(len(tail) - 1)):
+                return "****"
+            # A one-character overlap at the edge of the match: the tail
+            # ends with an exact value's first character or begins with
+            # its last.
+            if tail and (tail[-1] in index.firsts or tail[0] in index.lasts):
+                return "****"
     return "****" + matched[-reveal:]
 
 

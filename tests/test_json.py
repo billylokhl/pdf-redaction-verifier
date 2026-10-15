@@ -797,6 +797,8 @@ class TestMaskNonAsciiAndCost:
         ("kod-中文", "中文 12", "****"),              # CJK
         ("abc-жук", "жук 5", "****"),   # Cyrillic
         ("SSN \u0661\u0662\u0663-\u0664\u0665-\u0666\u0667\u0668\u0669", "123-45-6789", "****"),
+        ("123-99-5\u06606\u0660", "9956", "****"),          # matcher drops the interleaved digits
+        ("x1234\u4e2d5", "12345678", "****"),                # sample and tail in the matcher form
         ("555-55-6712", ("1\u00d82", "12"), "****"),   # plus the matcher form "12"
         ("123-45-6781", ("\u738b12", "12"), "****"),   # edge overlap, CJK lead
         ("ABC-Ø", "Zebra 12", "****-Ø"),                    # control: kept

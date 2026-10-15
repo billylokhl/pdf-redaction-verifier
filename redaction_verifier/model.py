@@ -47,7 +47,14 @@ class MaskIndex:
 
     def __init__(self, values: Iterable[str] = ()) -> None:
         self.values: frozenset[str] = frozenset(v for v in map(fold_wide, values) if v)
-        self.lengths: tuple[int, ...] = tuple(sorted({len(v) for v in self.values}))
+        lengths: dict[str, set[int]] = {}
+        for v in self.values:
+            lengths.setdefault(v[0], set()).add(len(v))
+        # Value lengths by first character: a window only tries lengths of
+        # values that start with its first character.
+        self.lengths_by_first: dict[str, tuple[int, ...]] = {
+            c: tuple(sorted(ns)) for c, ns in lengths.items()
+        }
         self.chars: frozenset[str] = frozenset(c for v in self.values for c in v)
         self.pairs: frozenset[str] = frozenset(
             v[i : i + 2] for v in self.values for i in range(len(v) - 1)
@@ -62,9 +69,9 @@ class MaskIndex:
         """True when some exact value occurs inside *folded*."""
         return any(
             folded[i : i + n] in self.values
-            for n in self.lengths
-            if n <= len(folded)
-            for i in range(len(folded) - n + 1)
+            for i, c in enumerate(folded)
+            for n in self.lengths_by_first.get(c, ())
+            if i + n <= len(folded)
         )
 
 
@@ -76,7 +83,7 @@ class Secret:
     normalized: str
     # The value folded for report masking only: like *normalized* but it
     # keeps every letter and digit of any script (see fold_wide). Empty
-    # means "use normalized".
+    # means not computed (the mask index then relies on *normalized*).
     folded: str = field(default="", compare=False)
 
 
