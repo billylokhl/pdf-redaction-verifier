@@ -493,6 +493,44 @@ def test_an_xobject_is_drawn_as_mupdf_reads_its_subtype(subtype: bytes,
         == (7 in drawn)
 
 
+def _broken_icc(alternate: bytes, stream: tuple[bytes, bytes]) -> bytes:
+    """A page filling with colour space [/ICCBased 4 0 R], profile 4
+    unreadable (MuPDF: "ignoring broken ICC profile", so it draws with the
+    /Alternate), whose /Alternate names stream 7."""
+    return page(b"/ColorSpace << /C0 [/ICCBased 4 0 R] >>", streams={
+        5: (b"", b"/C0 cs 1 scn 0 0 100 100 re f"),
+        4: (b" /N 1 /Alternate " + alternate, b"icc"), 7: stream})
+
+
+_TINT = b" /FunctionType 4 /Domain [0 1] /Range [0 1 0 1 0 1]"
+BROKEN_ICC = [
+    ("separation-tint-function", b"[/Separation /A /DeviceRGB 7 0 R]",
+     (_TINT, b"{ pop 1 0 0 }"), (_TINT, b"{ pop 0 0 1 }")),
+    ("indexed-lookup", b"[/Indexed /DeviceRGB 1 7 0 R]",
+     (b"", b"\x00\x00\x00\xff\x00\x00"), (b"", b"\x00\x00\x00\x00\x00\xff")),
+]
+
+
+@pytest.mark.parametrize(("alternate", "stream", "mutated"),
+                         [(a, s, m) for _, a, s, m in BROKEN_ICC],
+                         ids=[n for n, _, _, _ in BROKEN_ICC])
+def test_known_gap_a_broken_icc_profiles_alternate_is_drawn_but_orphaned(
+        alternate: bytes, stream: tuple[bytes, bytes], mutated: tuple[bytes, bytes]) -> None:
+    # KNOWN GAP, recorded in ADR 0011's note on a colour-space array's
+    # elements (Q2, coordinator decision 2026-10-15: measured gaps go to
+    # notes, never silent widening). An ICC profile's /Alternate is not
+    # followed, so a stream there is ORPHANED -- failing closed -- though
+    # MuPDF draws it when the profile is broken. Fails if the lists are
+    # widened (update the note with them) or if MuPDF stops drawing it
+    # (the note is then stale).
+    data = _broken_icc(alternate, stream)
+    inv = _inventory(data)
+    assert inv.flags == ()
+    assert 4 in _drawn(inv) and 7 not in _drawn(inv)  # (a) ours: orphaned
+    assert 7 in _orphans(inv)
+    assert _pixels(_broken_icc(alternate, mutated)) != _pixels(data)  # (b) MuPDF draws it
+
+
 T3_ = (b"<< /Type /Font %s /FontBBox [0 0 10 10] /FontMatrix [0.1 0 0 0.1 0 0]"
        b" /CharProcs << /a 6 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97"
        b" /LastChar 97 /Widths [10] /Resources << >> >>")
