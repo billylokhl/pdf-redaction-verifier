@@ -147,6 +147,10 @@ class RuleSet:
     # types were checked by default rather than because the user listed
     # them.
     entity_types_by_default: bool = False
+    # Class rules marked "strict": true (ADR 0012): their matches decide the
+    # verdict as before, even when the scan's default leaves classes
+    # informational.
+    strict_rules: frozenset[str] = field(default_factory=frozenset)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
@@ -402,6 +406,7 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
     secrets: list[Secret] = []
     patterns: list[PatternRule] = []
     labels: dict[str, RuleLabel] = {}
+    strict_rules: set[str] = set()
     seen_names: set[str] = set()
     for i, entry in enumerate(payload):
         if not isinstance(entry, dict) or "name" not in entry:
@@ -426,6 +431,19 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
                 f"got {type(spec).__name__}"
             )
 
+        if "strict" in entry:
+            if kind != "class":
+                raise VerifyError(
+                    f"rules entry {i} ({name!r}): 'strict' applies only to a 'class' rule"
+                )
+            if not isinstance(entry["strict"], bool):
+                raise VerifyError(
+                    f"rules entry {i} ({name!r}): 'strict' must be true or false, "
+                    f"got {type(entry['strict']).__name__}"
+                )
+            if entry["strict"]:
+                strict_rules.add(name)
+
         labels[name] = RuleLabel(kind, repr(name))
         if kind == "value":
             secrets.append(_make_value_rule(name, spec, f"secret {name!r}"))
@@ -440,4 +458,5 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
 
     if not secrets and not patterns:
         raise VerifyError("the rules file contains no rules")
-    return RuleSet(secrets=secrets, patterns=patterns, labels=labels)
+    return RuleSet(secrets=secrets, patterns=patterns, labels=labels,
+                   strict_rules=frozenset(strict_rules))

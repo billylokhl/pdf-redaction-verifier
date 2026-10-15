@@ -77,8 +77,23 @@ truncated summary, never raw document content. The file is replaced
 atomically and removed at the start of each run, so a run that dies
 leaves no report rather than an old one — but the exit code stays the
 authority. The format is experimental; `schema_version` changes if a
-field is renamed or removed. `--version` (on its own) prints the tool
-version.
+field is renamed or removed (2 since `notices`, below). `--version` (on its
+own) prints the tool version.
+
+**Built-in classes** (`ssn`, `credit-card`, `email`, `us-phone`) match any
+value of that shape, not a secret you listed. With `--no-strict-classes`
+their matches are reported in a separate section after the verdict, "Not
+counted in the verdict", and in the JSON report's `notices` array (`kind:
+"class-match"`, the same fields as a finding or warning, `tier` `hard` or
+`review`), and they never change the exit code: exit `0` then means that
+none of the values you listed, and none of your own `pattern` rules, was
+found in any layer the tool read, and that nothing stopped it reading a
+layer -- it says nothing about other SSN-, card-, email- or phone-shaped
+values in the file, which the notices show. Strict mode
+(`--strict-classes`, the default for now; or `"strict": true` on a class
+rule) counts class matches like any rule, as before. The default changes
+to `--no-strict-classes` in a later release
+([ADR 0012](docs/adr/0012-pattern-classes-inform.md)).
 
 ## How it works
 
@@ -515,6 +530,8 @@ Each entry has a `name` and exactly one of:
 
 - `"value"` — a known secret string, matched through normalization.
 - `"class"` — a built-in class: `ssn`, `credit-card`, `email`, `us-phone`.
+  Optional `"strict": true` keeps this class's matches in the verdict even
+  under `--no-strict-classes` (ADR 0012).
 - `"pattern"` — a custom regex (`re.MULTILINE`; names must be unique).
 
 ### Shared YAML config
