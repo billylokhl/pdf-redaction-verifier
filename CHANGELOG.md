@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Redesign Phase 3d groundwork: a child-process sandbox prototype** (`redaction_verifier/sandbox.py`, not wired in; REDESIGN §3 rule 4 and §4). `sandbox.run` runs Python in a contained child: spawned, not forked, as an isolated interpreter with an empty environment; the input handed over as a read-only open descriptor, never a path; a private `0700` working directory removed afterwards; the child's own rlimits on CPU time and file size, core dumps off; a parent-side wall-clock kill and a memory watchdog on the child's physical footprint (macOS ignores memory rlimits), either of which kills the child's whole process group; capped output; and optionally, on macOS, `sandbox-exec` with no network and no writes outside the private directory. `tests/test_sandbox.py` exercises each limit; the CLI does not load it yet (tests/test_import_boundaries.py). Verdict changes: none.
 - **Real-redactor set measurement: page thumbnails** (`eval/scorecard/redactor_set.py`). After #133 made page thumbnails a flagged (⚑) cell, `scorecard redactor-set run` counts a thumbnail instance as caught when the verifier's `PAGE_THUMBNAIL` warning names its exact page and review (exit 2) is expected (coordinator decision, 2026-10-15, extending the owner's ⚑ rule); another page, or none, is a miss. Verdict changes: none.
 - `--json` report output format for machine-readable scan results
 - `--version` flag to display tool version

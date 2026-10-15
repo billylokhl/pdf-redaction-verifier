@@ -9,9 +9,10 @@ Phase 3d's integration use it. It gives one primitive, ``run``:
   **empty environment** apart from a private ``TMPDIR``;
 - its working directory is a **private ``0700`` temporary directory**,
   removed when it ends, whatever happened;
-- the input file is handed over as an **open descriptor** (``fd 3``),
-  never as a path, and the child holds nothing else of the parent's
-  (``close_fds``; stdin is ``/dev/null``);
+- the input file is handed over as an **open, read-only descriptor**,
+  never as a path: the child finds its number in ``INPUT_FD`` (set by the
+  preamble from its first argument) and holds nothing else of the
+  parent's (``close_fds``; stdin is ``/dev/null``);
 - the child sets its own **rlimits** before running anything: CPU time,
   file size, core dumps off (``limits_preamble``);
 - the parent enforces a **wall-clock limit** and a **memory watchdog**
@@ -38,7 +39,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import IO, Sequence
 
 # Defaults: named, each with its reason (REDESIGN §3 rule 9).
 WALL_CLOCK_S = 300.0         # backstop only: limits are work-based (rule 6)
@@ -49,7 +50,6 @@ OUTPUT_BYTES = 64 << 20      # cap on what is read back from the child's stdout
 STDERR_BYTES = 64 << 10      # stderr is diagnostics only: keep its tail
 POLL_S = 0.05                # watchdog interval
 
-INPUT_FD = 3                 # where the child finds the input file
 
 
 @dataclass(frozen=True)
@@ -79,9 +79,11 @@ class Result:
 
 def limits_preamble(limits: Limits) -> str:
     """Python the child runs first, before any untrusted work: its own
-    rlimits (CPU time, file size, no core dumps)."""
+    rlimits (CPU time, file size, no core dumps), and ``INPUT_FD``, the
+    input's descriptor, taken off its arguments."""
     return (
-        "import resource\n"
+        "import resource, sys\n"
+        "INPUT_FD = int(sys.argv.pop(1))\n"
         f"resource.setrlimit(resource.RLIMIT_CPU, ({limits.cpu_s}, {limits.cpu_s}))\n"
         f"resource.setrlimit(resource.RLIMIT_FSIZE, ({limits.file_bytes}, {limits.file_bytes}))\n"
         "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
@@ -148,7 +150,7 @@ def _group_footprint(pgid: int, leader: int) -> int:
     return sum(footprint_bytes(p) for p in pids or [leader])
 
 
-def _read_capped(stream, cap: int, sink: list[bytes], over: list[bool]) -> None:
+def _read_capped(stream: IO[bytes], cap: int, sink: list[bytes], over: list[bool]) -> None:
     total = 0
     while True:
         chunk = stream.read(65536)
@@ -164,24 +166,22 @@ def _read_capped(stream, cap: int, sink: list[bytes], over: list[bool]) -> None:
 def run(child_code: str, input_path: Path, args: Sequence[str] = (),
         limits: Limits = Limits()) -> Result:
     """Run *child_code* (Python source) in a contained child process with
-    *input_path* open on fd ``INPUT_FD``. The child sees *args* as
-    ``sys.argv[1:]``. Never raises for anything the child does."""
+    *input_path* open read-only on descriptor ``INPUT_FD``. The child sees
+    *args* as ``sys.argv[1:]``. Never raises for anything the child does."""
     private = Path(tempfile.mkdtemp(prefix="prv-child-"))
     os.chmod(private, 0o700)
     try:
         source = private / "child.py"
         source.write_text(limits_preamble(limits) + child_code)
-        argv = [sys.executable, "-I", str(source), *args]
-        if limits.os_sandbox and sys.platform == "darwin" and shutil.which("sandbox-exec"):
-            argv = ["sandbox-exec", "-p", _sandbox_profile(private.resolve()), *argv]
         with open(input_path, "rb") as handle:
-            os.set_inheritable(handle.fileno(), True)
+            argv = [sys.executable, "-I", str(source), str(handle.fileno()), *args]
+            if limits.os_sandbox and sys.platform == "darwin" and shutil.which("sandbox-exec"):
+                argv = ["sandbox-exec", "-p", _sandbox_profile(private.resolve()), *argv]
             started = time.monotonic()
             proc = subprocess.Popen(
                 argv, cwd=private, env={"TMPDIR": str(private)},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                pass_fds=(), close_fds=True, start_new_session=True,
-                **_fd3(handle.fileno()))
+                pass_fds=(handle.fileno(),), close_fds=True, start_new_session=True)
         out: list[bytes] = []
         over: list[bool] = []
         err: list[bytes] = []
@@ -213,16 +213,7 @@ def run(child_code: str, input_path: Path, args: Sequence[str] = (),
         shutil.rmtree(private, ignore_errors=True)
 
 
-def _fd3(fd: int) -> dict:
-    """Popen arguments that put *fd* at INPUT_FD in the child. Popen has no
-    fd-remapping option, so the descriptor is duplicated to INPUT_FD in
-    the parent for the duration of the spawn and passed through."""
-    if fd != INPUT_FD:
-        os.dup2(fd, INPUT_FD, inheritable=True)
-    return {"pass_fds": (INPUT_FD,)}
-
-
-def _kill_group(proc: subprocess.Popen) -> None:
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
