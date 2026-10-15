@@ -89,6 +89,7 @@ def oracle_block(record: dict[str, Any], truth: dict[str, Any], lock_sha: str) -
         entry = {
             "secret": row["secret"], "loc": row["loc"], "class": cls,
             "written": base["written"] if base else None,
+            "encoding": base["encoding"] if base else None,
             "fingerprints": base.get("fingerprints", []) if base else [],
             "channels": whole,
             "r1_witness": "R1" in whole,
@@ -160,6 +161,12 @@ def write(root: Path, set_name: str, picks: dict[str, tuple[str, str]], real_dir
                                "expected_exit": record["expected_exit"]},
         }
         side = real_dir / f"{name}.json"
+        if side.exists():
+            # A reviewed privacy allowlist (eval/caselib/model.py) survives a
+            # rewrite; the scrub test drops any entry no finding matches.
+            kept = json.loads(side.read_text()).get("privacy_allowlist")
+            if kept:
+                sidecar["privacy_allowlist"] = kept
         side.write_text(json.dumps(sidecar, indent=2) + "\n")
         written += [dst, side]
     return written

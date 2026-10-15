@@ -98,6 +98,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "666-51-4073",
+        "encoding": "page-text",
         "fingerprints": [
           "001900190019001000180014001000170013001a0016"
         ],
@@ -109,6 +110,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "00-4857261",
+        "encoding": "page-text",
         "fingerprints": [
           "0013001300100017001b0018001a001500190014"
         ],
@@ -120,6 +122,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "Jordan Q. Testperson",
+        "encoding": "page-text",
         "fingerprints": [
           "002d0052005500470044005100030034001100030037004800560057005300480055005600520051"
         ],
@@ -131,6 +134,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "1600 Fictional Ave",
+        "encoding": "page-text",
         "fingerprints": [
           "001400190013001300030029004c00460057004c005200510044004f0003002400590048"
         ],

@@ -98,6 +98,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "731904628155",
+        "encoding": "page-text",
         "fingerprints": [
           "001a00160014001c0013001700190015001b001400180018"
         ],
@@ -109,6 +110,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "731904628155",
+        "encoding": "page-text",
         "fingerprints": [
           "001a00160014001c0013001700190015001b001400180018"
         ],
@@ -120,6 +122,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "731904628155",
+        "encoding": "page-text",
         "fingerprints": [
           "001a00160014001c0013001700190015001b001400180018"
         ],
@@ -131,6 +134,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "Jordan Q. Testperson",
+        "encoding": "page-text",
         "fingerprints": [
           "002d0052005500470044005100030034001100030037004800560057005300480055005600520051"
         ],
@@ -142,6 +146,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "1600 Fictional Ave",
+        "encoding": "page-text",
         "fingerprints": [
           "001400190013001300030029004c00460057004c005200510044004f0003002400590048"
         ],
@@ -153,6 +158,7 @@
         "loc": "T1",
         "class": "removed",
         "written": "Avery R. Samplename",
+        "encoding": "page-text",
         "fingerprints": [
           "0024005900480055005c00030035001100030036004400500053004f00480051004400500048"
         ],

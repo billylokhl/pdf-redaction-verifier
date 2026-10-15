@@ -97,6 +97,7 @@
         "loc": "S1",
         "class": "recoverable-visible",
         "written": "Jordan Q. Testperson",
+        "encoding": "pixels",
         "fingerprints": [],
         "channels": [
           "R2",
@@ -115,6 +116,7 @@
         "loc": "S1",
         "class": "recoverable-visible",
         "written": "Jordan Q. Testperson",
+        "encoding": "pixels",
         "fingerprints": [],
         "channels": [
           "R2",
@@ -133,6 +135,7 @@
         "loc": "S1",
         "class": "recoverable-visible",
         "written": "666-51-4073",
+        "encoding": "pixels",
         "fingerprints": [],
         "channels": [
           "R2",
@@ -151,6 +154,7 @@
         "loc": "S1",
         "class": "recoverable-visible",
         "written": "1600 Fictional Ave",
+        "encoding": "pixels",
         "fingerprints": [],
         "channels": [
           "R2",
@@ -172,5 +176,42 @@
       "live.pixels"
     ],
     "expected_exit": 1
-  }
+  },
+  "privacy_allowlist": [
+    {
+      "kind": "email",
+      "text": "t7VODX1%n6d@2.OWe",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": "X@E4qVa.Mf",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": "F3s@kugl.cH",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": ".L@QD06JYjGD.bMtQbErC",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": "s@A.OkK",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": "Xh8FVuf@hjOp.oXK",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    },
+    {
+      "kind": "email",
+      "text": "V0ktJXh8FVuf@hjOp.oXK",
+      "reason": "bytes of the scan's JPEG samples that happen to match the email pattern; not an address"
+    }
+  ]
 }
