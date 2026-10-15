@@ -102,6 +102,8 @@ class FlagReason(Enum):
     PAGE_TREE = "page_tree"            # a page tree or page attribute off the canonical shape
     NAME_TREE = "name_tree"            # a name or number tree off the canonical shape
     RESOURCE_SCOPE = "resource_scope"  # a form, pattern, Type3 font or appearance without /Resources
+    FIELD_TREE = "field_tree"          # a /Parent cycle among form fields (owner decision P5)
+    APPEARANCE_UNSUPPORTED = "appearance_unsupported"  # MuPDF would synthesize it but cannot (#106)
 
 
 Reason: TypeAlias = NAReason | FlagReason

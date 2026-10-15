@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from redaction_verifier.matching import mask
-from redaction_verifier.model import Finding, ScanReport
+from redaction_verifier.model import Finding, MaskIndex, ScanReport
 
 if TYPE_CHECKING:
     from redaction_verifier.rules import RuleSet
@@ -126,14 +126,15 @@ _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
 _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
 
 
-def _label(finding: Finding, rules: RuleSet | None) -> str:
+def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = None) -> str:
     label = rules.labels.get(finding.secret_name) if rules is not None else None
     text = repr(finding.secret_name) if label is None else label.text
     text = _sanitize_report_text(text)
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
-        text += f" {mask(finding.sample)}"
+        full = finding.layer == "OCR"
+        text += f" {mask(finding.sample, exact if exact is not None else (), full=full)}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
 
@@ -211,6 +212,9 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     certified (exit 2).
     """
     name = _sanitize_report_text(pdf_path.name)
+    exact = report.exact_index
+    if rules is not None:
+        exact = MaskIndex([*exact.values, *(f for s in rules.secrets for f in (s.normalized, s.folded) if f)])
     print(f"\n{_BAR}")
     if report.leaked:
         print(f"  [FAIL]  SECRETS ARE STILL IN THIS FILE: {name}")
@@ -228,7 +232,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
         print(_BAR)
         for f in report.findings:
             tag, _ = _where(f)
-            line = (f"  ✖ STILL PRESENT | {_label(f, rules):<36} | {f.layer:<8} | {tag:<15} | "
+            line = (f"  ✖ STILL PRESENT | {_label(f, rules, exact):<36} | {f.layer:<8} | {tag:<15} | "
                     f"{f.location}")
             print(_sanitize_report_text(line))
         _print_meaning(report, rules)
@@ -269,7 +273,9 @@ def _print_notices(report: ScanReport, rules: RuleSet | None) -> None:
     for n in report.notices:
         if isinstance(n, Finding):
             tag, _ = _where(n)
-            line = f"    · {_label(n, rules):<36} | {n.layer:<8} | {tag:<15} | {n.location}"
+            # Masked like a finding: never a tail that is part of a listed value.
+            line = (f"    · {_label(n, rules, report.exact_index):<36} | {n.layer:<8} | "
+                    f"{tag:<15} | {n.location}")
         else:
             line = f"    · {n}"
         print(_sanitize_report_text(line))

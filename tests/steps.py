@@ -6,8 +6,9 @@ linearity tests exist for (ADR 0010: "work counting alone cannot see
 uncharged work"). Counting the lines Python executes in the inventory's
 modules sees every Python loop, charged or not, and is the same on every
 machine and under coverage. It cannot see work done inside C (a linear
-`in` on a list, a copy, a sort): the tests keep a coarse wall-clock
-backstop for that, with a margin wide enough not to flake."""
+`in` on a list, a copy, a sort) or Python outside those modules (a
+dataclass's generated __eq__): the graph and page-walk tests keep a
+wall-clock backstop for that, sized not to flake; the trees tests do not."""
 
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import sys
 from collections.abc import Callable
 from types import FrameType
 from typing import Any, TypeVar
+
+from redaction_verifier.budget import Budget
 
 T = TypeVar("T")
 
@@ -54,16 +57,18 @@ def lines_executed(files: set[str], call: Callable[[], T]) -> tuple[T, int]:
     return result, count
 
 
-def charged_steps(data: bytes, entry: str) -> tuple[int, int, Any]:
+def charged_steps(data: bytes, entry: str,
+                  budget: Budget | None = None) -> tuple[int, int, Any]:
     """Build *data*'s inventory; return (the work charged inside
     build.<entry> -- one part of the inventory, e.g. "build_graph" --, the
     lines executed in every inventory module and the budget while that
     part ran -- the callbacks it makes into build.py included --, the
-    inventory)."""
+    inventory). *budget*, if given, is the one the whole build charges
+    (its total work is the caller's to read)."""
     import redaction_verifier.inventory.build as build_module
-    from redaction_verifier.budget import Budget
     from redaction_verifier.inventory import build_inventory
-    budget = Budget(file_size=len(data))
+    if budget is None:
+        budget = Budget(file_size=len(data))
     files = _inventory_files()
     measured: list[tuple[int, int]] = []
     real = getattr(build_module, entry)
@@ -80,3 +85,33 @@ def charged_steps(data: bytes, entry: str) -> tuple[int, int, Any]:
         setattr(build_module, entry, real)
     work, lines = measured[0]
     return work, lines, inv
+
+
+def step_cost(data: bytes, entry: str) -> tuple[float, int]:
+    """(process time, work charged) of build.<entry> while *data*'s
+    inventory is built, untraced: time per charged unit, which grows with
+    the input only through work no charge pays for -- inside C, which no
+    line count sees (#94)."""
+    import time
+
+    import redaction_verifier.inventory.build as build_module
+    from redaction_verifier.budget import Budget, Counter
+    from redaction_verifier.inventory import build_inventory
+    budget = Budget(file_size=len(data))
+    taken: list[tuple[float, int]] = []
+    real = getattr(build_module, entry)
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        before, started = budget.work, time.process_time()
+        try:
+            return real(*args, **kwargs)
+        finally:
+            taken.append((time.process_time() - started, budget.work - before))
+    setattr(build_module, entry, wrapped)
+    try:
+        build_inventory(data, budget=budget)
+    finally:
+        setattr(build_module, entry, real)
+    # Spent, the step stops early: its time per unit would mean nothing.
+    assert not budget.exhausted(Counter.WORK), "the budget ran out"
+    return taken[0]

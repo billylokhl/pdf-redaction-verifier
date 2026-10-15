@@ -186,6 +186,17 @@ All recommendations adopted, relayed by the coordinator:
 7. **Case library:** strict-mode runs keep today's expectations; default
    mode expects exit 0 plus a notice.
 
+**Owner decision 2026-10-15 (policy 1 explicitly framed as covering YAML
+`entity_types`), recorded by the coordinator:** the `entity_types` of a
+redactor config (listed, or all of them when the key is omitted) that map
+to a built-in class are class rules, so in the default mode their matches
+are notices like any class's; `--strict-classes` makes them count. One rule
+for every rules format: the same SSN-shaped value never gives exit 1 in one
+format and 0 in the other. The scope warnings for entity types with no
+class, or only partly covered by one, are unchanged. (The redactor's YAML
+format has no per-type key, so `--strict-classes` is how a YAML config
+makes them count.)
+
 ## Coordinator decision (2026-10-15, owner informed)
 
 Strict mode's "today's behaviour exactly" means exit codes, tiers, findings

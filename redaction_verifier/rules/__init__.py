@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES, PatternRule, normalize_string
-from redaction_verifier.model import Secret, VerifyError, Warn, WarnList
+from redaction_verifier.model import Secret, VerifyError, Warn, WarnList, fold_wide
 
 # Upstream (the redactor's) entity types this tool's rules format can be
 # asked to verify. Kept separate from ENTITY_TYPE_TO_CLASS below: an entity
@@ -72,7 +72,7 @@ def _make_value_rule(name: str, spec: str, label: str = "") -> Secret:
             f"{label or name} normalizes to an empty string — it would "
             "match everything or nothing; refusing to scan"
         )
-    return Secret(name, normalized)
+    return Secret(name, normalized, fold_wide(spec))
 
 
 def _make_pattern_rule(

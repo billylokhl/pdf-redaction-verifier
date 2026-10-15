@@ -78,6 +78,28 @@ MAX_UNSTACKS = 16
 # MuPDF refuses an overly large image (a box holding a photo and many
 # thin rules, say).
 MAX_UNSTACK_PIXELS = 4_000_000
+# The longest side, in pixels, of a page render OCR treats as readable
+# whole (#128). A page whose render is longer is still read, so whatever
+# Vision finds on it counts, but it is also flagged as not fully read
+# (ocr_page_too_large: PAGE_FAILED, so it never exits 0). On a larger
+# render Vision drops more and more of the smaller print, whole blocks
+# of it, and then everything, and reports success: a 2400 x 3200 pt page
+# (10000 x 13334 px) holding ten lines of 8 pt text came back without
+# any of them. The longest side decides, not the pixel count. Measured
+# on macOS 27 (eval/spikes/ocr_render_size.py): blocks of 10 lines of 8
+# and 10 pt at a corner, the centre and the opposite corner, on
+# portrait, landscape, square and narrow pages, rendered as OCR renders
+# them. At 3500 and 3509 px every block was read whole on every shape;
+# at 3600 px some whole 8 pt blocks of identical lines were lost (0 of
+# 20; the same blocks with distinct lines were read), from 3900 px more
+# of them, and 10 pt blocks from 4250 px. 3510 px (just over A4's 3509,
+# about 11.7 in at 300 dpi) keeps letter and A4 pages below it; legal
+# (4200 px) and larger pages are flagged. This is a heuristic, not a
+# guarantee: the losses do not grow steadily with size and depend on
+# the content (one 8 pt block lost 8 of 20 lines at 3400 px, and a
+# 10 pt one 6 of 20 on a landscape letter page), so Vision can still
+# drop text below the cap (COVERAGE, note 12).
+MAX_OCR_RENDER_SIDE = 3510
 
 # How long one Vision call (_vision_recognize_batch: both passes on one
 # image) may take before its page fails (PAGE_FAILED, never a pass).
@@ -93,6 +115,27 @@ VISION_CALL_TIMEOUT_S: float = 120.0
 # Vision costs one deadline per run, not one per call.
 _stalled: list[threading.Thread] = []
 _stalled_lock = threading.Lock()
+
+
+def ocr_render_size(page: fitz.Page) -> tuple[int, int]:
+    """The width and height, in pixels, of the page's OCR render
+    (page.get_pixmap at OCR_DPI), computed without rendering it."""
+    zoom = OCR_DPI / 72
+    rect = (page.rect * fitz.Matrix(zoom, zoom)).irect
+    return rect.width, rect.height
+
+
+def ocr_page_too_large(page: fitz.Page) -> str | None:
+    """Why OCR cannot read *page* whole, from its size alone (never from
+    what Vision returns: a blank page reads as no lines too), or None.
+    Its render longer than MAX_OCR_RENDER_SIDE on a side is read only in
+    part, without an error (#128)."""
+    width, height = ocr_render_size(page)
+    if max(width, height) <= MAX_OCR_RENDER_SIDE:
+        return None
+    return (f"page too large for OCR: its {OCR_DPI} dpi render is {width} x {height} px, "
+            f"and Vision reads a render longer than {MAX_OCR_RENDER_SIDE} px on a side only "
+            "in part, without an error")
 
 
 class VisionTimeout(Exception):
@@ -545,6 +588,9 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
     in it is a hard finding; then reconstructions, which only give manual
     review: each pass exactly as Vision returned it, and each pass's
     turned and unstacked reads (_extra_readings).
+
+    A page too large for Vision to read whole is read all the same; the
+    caller flags it (ocr_page_too_large).
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
     width, height = pix.width, pix.height
