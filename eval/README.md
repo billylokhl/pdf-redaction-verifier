@@ -904,7 +904,7 @@ way as `--manifest`) for exactly this reason.
 `123-45-6789`, is deliberately easy to read, but its digits are in order,
 and real files hold digit tables: a hex string that decodes to a character
 table beginning `0123456789`, or a run of one-character strings `1`, `2`,
-... `9` (a font's character-code table), which the Objects layer reads back
+... `9` (for example, a font's character-code table), which the Objects layer reads back
 to back so that a value split across strings is still caught. Both contain
 `123456789`, so a corpus run with the case library's value reports false
 hard findings that a real value never would (eval/spikes/RESULTS.md,

@@ -862,6 +862,9 @@ the 15, one hex string decodes to a character table beginning
 `0123456789`; in the other 3, a run of one-character strings decodes to
 `1`, `2`, ... `9` in order. Either way the normalized value `123456789` is
 really there: the matcher is correct, and the false hards come from the
-test value being sequential. Decision (coordinator, 2026-10-15): no matcher
+test value being sequential. The 132 REVIEW_BINARY warnings were not
+traced; they are presumably the same digit-table collision in decompressed
+binary data (a known source of coincidental Binary warnings), and they too
+vanish with the non-sequential value. Decision (coordinator, 2026-10-15): no matcher
 change; corpus false-hard measurements use a non-sequential value.
 
