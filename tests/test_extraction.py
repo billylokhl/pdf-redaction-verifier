@@ -922,6 +922,15 @@ class TestOcrVerticalLines:
         confirmed = self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), fail)
         assert confirmed == [[False, True], []]
 
+    def test_a_mupdf_error_in_a_re_read_fails_the_page(self, monkeypatch) -> None:
+        # As on main: dropping it would move a failed page (exit 2) to
+        # whatever the rest of the page gives, possibly clean (#99).
+        def refuse(call: int) -> tuple[list[str], list[str]]:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        with pytest.raises(fitz.mupdf.FzErrorBase):   # the page fails: PAGE_FAILED
+            self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), refuse)
+
     def test_a_bug_in_a_re_read_is_not_swallowed(self, monkeypatch) -> None:
         def bug(call: int) -> tuple[list[str], list[str]]:
             raise AttributeError("no such method")
@@ -966,6 +975,7 @@ class TestOcrVerticalLines:
                             lambda png: ([HORIZONTAL, STACK, ROTATED_90],) * 2)
         monkeypatch.setattr(ocr, "_upright_reads",
                             lambda image, box: ([ROTATED_90.text, "1 G G"],) * 2)
+        monkeypatch.setattr(ocr, "_extra_readings", lambda *args: ["turned on", "turned off"])
         doc = fitz.open()
         try:
             readings = ocr.extract_ocr_text(doc.new_page())  # A4 by default
@@ -973,18 +983,20 @@ class TestOcrVerticalLines:
             doc.close()
         split = "\n".join([HORIZONTAL.text, *STACK.text, ROTATED_90.text])
         fused = "\n".join([HORIZONTAL.text, STACK.text, ROTATED_90.text])
-        assert len(readings) == 4 and ocr.OCR_GENUINE_READINGS == 2
-        assert readings == [split, split, fused, fused]
+        assert len(readings) == 6 and ocr.OCR_GENUINE_READINGS == 2
+        assert readings == [split, split, fused, fused, "turned on", "turned off"]
 
     def _scan(self, tmp_path, monkeypatch, pages: list[ocr.Observation], rule: dict,
-              upright: str) -> tuple[int, dict]:
+              upright: str, extra: str = "") -> tuple[int, dict]:
         # The CLI end to end, with Vision stubbed: one observation per page,
-        # and *upright* what every upright re-read returns.
+        # *upright* what every upright re-read returns and *extra* each
+        # pass's turned and unstacked reading.
         monkeypatch.setattr(verify, "_OCR_IMPORTS_OK", True)
         per_page = iter(pages)
         monkeypatch.setattr(ocr, "_vision_recognize_batch",
                             lambda png: ([next(per_page)],) * 2)
         monkeypatch.setattr(ocr, "_upright_reads", lambda image, box: ([upright],) * 2)
+        monkeypatch.setattr(ocr, "_extra_readings", lambda *args: [extra, extra])
         doc = fitz.open()
         for _ in pages:
             doc.new_page().insert_text((72, 72), "nothing here")
@@ -1048,6 +1060,174 @@ class TestOcrVerticalLines:
             (w["code"], w["layer"]) for w in data["warnings"]}
 
 
+def _stack_image(digits: str = "123456789") -> tuple[fitz.Document, fitz.Page]:
+    """A page image (one point per pixel, as _extra_readings builds one)
+    of *digits* one per line, rendered at 300 dpi like a scan."""
+    src = fitz.open()
+    page = src.new_page()
+    for i, digit in enumerate(digits):
+        page.insert_text((100, 100 + 14 * i), digit, fontsize=11)
+    pix = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
+    src.close()
+    doc = fitz.open()
+    image = doc.new_page(width=pix.width, height=pix.height)
+    image.insert_image(image.rect, stream=pix.tobytes("png"))
+    return doc, image
+
+
+class TestOcrExtraReadings:
+    """A page Vision reads any line of vertically gets two more
+    reconstructed readings: the page turned 90 and 270 degrees (Vision
+    reads sideways text only in part, #67), and each unconfirmed vertical
+    line unstacked into one line (#61). Never hard. Vision is stubbed."""
+
+    @staticmethod
+    def _png() -> bytes:
+        doc = fitz.open()
+        try:
+            return doc.new_page().get_pixmap().tobytes("png")
+        finally:
+            doc.close()
+
+    def test_a_page_with_no_vertical_line_costs_nothing(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: pytest.fail("no extra Vision call"))
+        passes = ([HORIZONTAL], [HORIZONTAL])
+        assert ocr._extra_readings(self._png(), *A4_PX, passes, [[True], [True]]) == ["", ""]
+
+    def test_turned_and_unstacked_reads_per_pass(self, monkeypatch) -> None:
+        # Calls in order: the page turned 90, turned 270, then one
+        # unstacked line. Turned, a horizontal line of the page is
+        # vertical, and is left out.
+        replies = iter([
+            ([_as(HORIZONTAL, "turned 90 on"), _as(STACK, "page line")],
+             [_as(HORIZONTAL, "turned 90 off")]),
+            ([_as(HORIZONTAL, "turned 270 on")], []),
+            ([_as(HORIZONTAL, "unstacked on")], [_as(HORIZONTAL, "unstacked off")]),
+        ])
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: next(replies))
+        monkeypatch.setattr(ocr, "_unstack", lambda image, box: fitz.Pixmap(
+            fitz.csGRAY, fitz.IRect(0, 0, 4, 4), False))
+        passes = ([HORIZONTAL, STACK], [HORIZONTAL])
+        on, off = ocr._extra_readings(self._png(), *A4_PX, passes, [[True, False], [True]])
+        assert on.split("\n") == ["turned 90 on", "turned 270 on", "unstacked on"]
+        assert off.split("\n") == ["turned 90 off"]   # its pass confirmed every line
+
+    def test_a_failed_extra_read_loses_only_itself(self, monkeypatch) -> None:
+        def fail(png: bytes) -> Any:
+            raise RuntimeError("Apple Vision error")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", fail)
+        passes = ([STACK], [])
+        assert ocr._extra_readings(self._png(), *A4_PX, passes, [[False], []]) == ["", ""]
+
+    def test_past_the_cap_a_line_is_not_unstacked(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "MAX_UNSTACKS", 0)
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: ([], []))
+        monkeypatch.setattr(ocr, "_unstack", lambda image, box: pytest.fail("unstacked"))
+        assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
+
+    def test_unstack_lays_a_column_out_as_one_line(self) -> None:
+        doc, image = _stack_image()
+        try:
+            strip = ocr._unstack(image, image.rect.irect)
+        finally:
+            doc.close()
+        assert strip is not None and strip.width > 3 * strip.height
+        samples, width = strip.samples, strip.width
+        inked = [min(samples[x::width]) < 128 for x in range(width)]
+        glyphs = sum(1 for x in range(width) if inked[x] and (x == 0 or not inked[x - 1]))
+        assert glyphs == 9   # nine digits, side by side
+
+    def test_a_mupdf_error_in_an_unstack_loses_only_that_read(self, monkeypatch) -> None:
+        # MuPDF's errors are not RuntimeErrors: one escaping would fail the
+        # page and drop its genuine hard findings.
+        def refuse(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        monkeypatch.setattr(ocr, "_unstack", refuse)
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: ([], []))
+        assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
+
+    def test_a_tall_run_among_thin_ones_is_no_stack(self) -> None:
+        # A photo-like block and thin rules: laid out, a strip MuPDF may refuse.
+        doc = fitz.open()
+        image = doc.new_page(width=200, height=900)
+        image.draw_rect(fitz.Rect(20, 20, 180, 420), color=(0, 0, 0), fill=(0, 0, 0))
+        for y in range(450, 890, 40):
+            image.draw_line(fitz.Point(20, y), fitz.Point(180, y), width=2)
+        try:
+            assert ocr._unstack(image, image.rect.irect) is None
+        finally:
+            doc.close()
+
+    def test_an_oversized_strip_is_not_built(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "MAX_UNSTACK_PIXELS", 100)
+        doc, image = _stack_image()
+        try:
+            assert ocr._unstack(image, image.rect.irect) is None
+        finally:
+            doc.close()
+
+    def test_a_hyphen_among_digits_is_still_a_stack(self) -> None:
+        # A hyphen is a short run of ink; the median run decides, so a
+        # value with separators is not taken for a photo among rules.
+        doc, image = _stack_image("123-45-6789")
+        try:
+            assert ocr._unstack(image, image.rect.irect) is not None
+        finally:
+            doc.close()
+
+    def test_a_mupdf_error_in_a_turned_reading_loses_only_it(self, monkeypatch) -> None:
+        def refuse(png: bytes) -> Any:
+            raise fitz.mupdf.FzErrorBase(5, "Overly large image")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", refuse)
+        monkeypatch.setattr(ocr, "_unstack", lambda image, box: None)
+        assert ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []]) == ["", ""]
+
+    def test_a_page_image_mupdf_refuses_gives_no_extra_reading(self, monkeypatch) -> None:
+        monkeypatch.setattr(ocr, "_vision_recognize_batch",
+                            lambda png: pytest.fail("no page image, no read"))
+        assert ocr._extra_readings(b"not a png", *A4_PX, ([STACK], []), [[False], []]) \
+            == ["", ""]
+
+    def test_a_bug_in_a_turned_reading_fails_the_page(self, monkeypatch) -> None:
+        def bug(png: bytes) -> Any:
+            raise AttributeError("no such method")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", bug)
+        with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
+            ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
+
+    def test_a_bug_in_an_extra_reading_fails_the_page(self, monkeypatch) -> None:
+        def bug(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap:
+            raise AttributeError("no such method")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", lambda png: ([], []))
+        monkeypatch.setattr(ocr, "_unstack", bug)
+        with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
+            ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
+
+    def test_fewer_than_three_rows_of_ink_is_no_stack(self) -> None:
+        doc, image = _stack_image("12")
+        try:
+            assert ocr._unstack(image, image.rect.irect) is None
+        finally:
+            doc.close()
+
+    def test_an_unstacked_value_is_manual_review(self, tmp_path, monkeypatch) -> None:
+        # Vision misread the stack; unstacked, it reads as written: the
+        # value rule matches there, a reconstruction (#61).
+        exit_code, data = TestOcrVerticalLines()._scan(
+            tmp_path, monkeypatch, [STACK], {"name": "SSN", "value": SSN},
+            upright="", extra="123456789")
+        assert exit_code == 2
+        assert data["findings"] == []
+        assert ("REVIEW_CROSS_LINE", "OCR", "SSN") in {
+            (w["code"], w["layer"], w["rule"]) for w in data["warnings"]}
+
+
 @pytest.mark.skipif(not HAS_OCR, reason="needs the PyObjC Vision bridge (macOS)")
 class TestOcrVerticalLinesWithVision:
     """The re-read with Apple Vision itself, on the text a geometric rule
@@ -1075,7 +1255,10 @@ class TestOcrVerticalLinesWithVision:
         # Vision reads 8 pt spaced digits whole depends on the OS (macOS 27
         # does; on CI's macOS 26 it did not, at 90 or 270 degrees), so the
         # check is the invariant: a line Vision's own reading holds whole,
-        # the genuine readings hold whole too.
+        # the genuine readings hold whole too. Vision's own reading is the
+        # raw readings only: the turned and unstacked reads after them are
+        # of another image (on macOS 26 the page turned holds the line
+        # whole where Vision's own reading does not).
         doc = fitz.open()
         page = doc.new_page()
         page.insert_text(at, "1 2 3 - 4 5 - 6 7 8 9", fontname="cour", fontsize=8,
@@ -1087,7 +1270,7 @@ class TestOcrVerticalLinesWithVision:
         genuine, raw = (
             [normalize_string(ln) for r in part for ln in r.split("\n")]
             for part in (readings[:ocr.OCR_GENUINE_READINGS],
-                         readings[ocr.OCR_GENUINE_READINGS:]))
+                         readings[ocr.OCR_GENUINE_READINGS:2 * ocr.OCR_GENUINE_READINGS]))
         whole = [ln for ln in raw if normalize_string(SSN) in ln]
         assert all(ln in genuine for ln in whole), (raw, genuine)
 
@@ -1168,7 +1351,11 @@ class TestVisionBridge:
         copied = options.mutableCopy()
         copied.removeObjectForKey_(Vision.VNImageOptionProperties)
         copied.removeObjectForKey_(Vision.VNImageOptionCameraIntrinsics)
-        assert all(normalize_string(SSN) in normalize_string(text) for text in readings)
+        # Genuine and raw readings hold it; no line is vertical, so the
+        # turned and unstacked readings are not made.
+        assert all(normalize_string(SSN) in normalize_string(text)
+                   for text in readings[:2 * ocr.OCR_GENUINE_READINGS])
+        assert readings[2 * ocr.OCR_GENUINE_READINGS:] == ["", ""]
 
 
 class _FakeCandidate:

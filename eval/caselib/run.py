@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import platform
 import shutil
 import sys
 import time
@@ -42,6 +43,26 @@ def available() -> frozenset[str]:
         ocr_ok = False
     have.add("ocr" if ocr_ok else "no-ocr")
     return frozenset(have)
+
+
+def macos_major() -> int | None:
+    """This machine's macOS major version (27 for 27.0.1); None elsewhere."""
+    release = platform.mac_ver()[0]
+    return int(release.split(".")[0]) if release else None
+
+
+def today_label(case: Case, major: int | None = None) -> Expect | None:
+    """The wrong answer today's tool gives on this machine, which a known
+    gap is judged against; None when the case's ``expected`` holds here.
+    On a macOS older than ``case.older_macos.before`` that is the older
+    label (Vision there reads the page differently); otherwise the case's
+    own ``known_gap``."""
+    older = case.older_macos
+    if older is not None:
+        major = macos_major() if major is None else major
+        if major is not None and major < older.before:
+            return older.today
+    return case.known_gap.today if case.known_gap else None
 
 
 @contextlib.contextmanager
@@ -175,8 +196,9 @@ def main(argv: list[str] | None = None) -> int:
             continue
         pdf = build(case, out / f"{case.id}.pdf")
         result = scan(case, pdf, out)
-        if case.known_gap:
-            verdict = judge(case, result, want=case.known_gap.today)
+        today = today_label(case)
+        if today is not None:
+            verdict = judge(case, result, want=today)
             status = "gap" if verdict.ok else "GAP MOVED"
         else:
             verdict = judge(case, result)
