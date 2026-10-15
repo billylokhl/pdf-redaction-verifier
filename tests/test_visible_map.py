@@ -1143,9 +1143,9 @@ def _value_pdf(path: Path) -> Path:
 
 class TestMaskedLabels:
     """The plan's masked labels (Rules.label / Rules.masked: main's mask()
-    with the rules' exact values, then the drawn form checked). That
-    nothing of a value reaches the map file is the self-check's job,
-    tested with the rendering."""
+    with the rules' exact values, then the drawn form checked) and the
+    target's name (Rules.free_text). The self-check, tested with the
+    rendering, is the backstop for whole values and masked tails."""
 
     @pytest.mark.parametrize("name, shown", [
         ("Jane Q. Exampl.pdf", "target"),           # 14 of the name value's 15
