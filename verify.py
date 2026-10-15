@@ -3617,7 +3617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ocr_available=_OCR_IMPORTS_OK, private_paths=(pdf_path, args.secrets),
             )
             items = (len(sink.hidden) + len(data["findings"]) + len(data["warnings"])
-                     + sum(len(t) for t in sink.truth.values()))
+                     + len(data["notices"]) + sum(len(t) for t in sink.truth.values()))
             header = {
                 "rules": map_runner.rules_header(rules),
                 # ADR 0012: the rules whose matches are notices; the map

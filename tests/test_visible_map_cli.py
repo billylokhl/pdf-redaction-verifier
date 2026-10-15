@@ -1077,12 +1077,11 @@ def _overhead(target: Path, rules: Path, out: Path, runs: int = 3) -> int:
 def test_the_parent_holds_no_more_memory_however_large_the_target(tmp_path) -> None:
     """The flag's cost to the parent's whole-run peak does not grow with
     the target: the target reaches the child by descriptor and the map
-    comes back in 64 KB chunks. Measured (2026-10-14): about 4 MB at a
-    25 MB target and at a 200 MB one -- the map step's own fixed cost
-    (the planner's imports, the header, spawning the child, the stream
-    buffers), stacked on the scan's memory MuPDF still holds when the map
-    starts, so it shows above the scan's peak. A parent that read the
-    target would grow by its size. Medians of three runs each, because a
+    comes back in 64 KB chunks. What it can cost is the map step's own
+    fixed cost (the planner's imports, the header, spawning the child, the
+    stream buffers), stacked on the scan's memory MuPDF still holds when
+    the map starts, so it can show above the scan's peak (measurements
+    below). A parent that read the target would grow by its size. Medians of three runs each, because a
     scan's own peak varies by several MB from run to run on a loaded
     machine; test_the_map_step_holds_no_more_memory_however_large_the_target
     bounds the step itself.
