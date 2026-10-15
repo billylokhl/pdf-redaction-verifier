@@ -3620,6 +3620,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                      + sum(len(t) for t in sink.truth.values()))
             header = {
                 "rules": map_runner.rules_header(rules),
+                # ADR 0012: the rules whose matches are notices; the map
+                # lists them and never boxes them.
+                "informational": sorted(report.informational),
                 "sink": sink.to_header(),
                 "report": data,
                 "exit_code": final,

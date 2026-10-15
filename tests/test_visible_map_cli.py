@@ -495,6 +495,26 @@ def test_a_failure_after_publishing_still_reports_the_map(tmp_path, monkeypatch)
     assert "[MAP] MAP_WRITTEN" in run.stderr and "a later step failed" in run.stderr
 
 
+def test_notices_reach_the_map_as_notices(tmp_path, monkeypatch) -> None:
+    """ADR 0012 at the CLI: under --no-strict-classes the header names the
+    informational rules, the map lists a class match as a notice, masked,
+    and draws no box; the verdict and stdout are the flag-off run's."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "SSN 234-56-7891 here")
+    pdf = tmp_path / "notice.pdf"
+    doc.save(pdf)
+    rules = write_rules(tmp_path, [{"name": "Any SSN", "class": "ssn"},
+                                   {"name": "Target", "value": "Jane Q. Example"}])
+    run = run_main(monkeypatch, pdf, rules, "--no-strict-classes")
+    _same(run, _baseline(monkeypatch, pdf, rules, "--no-strict-classes"))
+    assert run.code == 2 and run.header is not None
+    assert run.header["informational"] == ["Any SSN"]
+    text = map_text(run.out)
+    assert "VISIBLE SECRETS FOUND" not in text and "Boxes: none" in text
+    assert "p.1 built-in type rule #1 ****7891 -- Text" in text
+    assert "234-56" not in text
+
+
 def test_an_old_map_is_replaced(tmp_path, monkeypatch) -> None:
     pdf = _leaky(tmp_path)
     out = tmp_path / "out.pdf"
@@ -1115,6 +1135,7 @@ _STEP = (
     "offer(sink, 'document', 1)\n"
     "offer(sink, 'page', 'Text', 1, set(), set(), {}, {}, set(), set())\n"
     "header = {'rules': runner.rules_header(load_rules(rules)), 'sink': sink.to_header(),\n"
+    "          'informational': [],\n"
     "          'report': build_json_report(ScanReport(), 0, None, target=target,\n"
     "                                      tool_version='test', ocr_available=True),\n"
     "          'exit_code': 0, 'scan_code': 0, 'target_name': target.name, 'version': 'test'}\n"

@@ -170,7 +170,10 @@ never reads, such as a tooltip shown on hover. A page's content stream
 and every other live object always do. Content stored outside the document (orphaned, unreferenced,
 superseded) and annotations flagged hidden (or "do not show" without
 "print") are only counted, under **Not visible**. Every finding is either
-boxed, listed, or listed as could not be positioned — none is dropped.
+boxed, listed, or listed as could not be positioned — none is dropped. With
+`--no-strict-classes`, a built-in class match that is only a notice (it
+does not count in the verdict) is never boxed: it is listed last, masked
+like any sample, under **Not counted in the verdict**, and sets no flag.
 
 **The headline** at the top of the summary is exactly one of:
 
