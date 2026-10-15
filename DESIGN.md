@@ -667,8 +667,8 @@ the gap is stated rather than implied away.
   secret in them, `ssn` or `us-phone` raised a hard finding on 28.3%,
   mostly digit runs inside hex or alphanumeric ids
   (eval/spikes/RESULTS.md, "Phase 5 baseline"). So a class is not a
-  secret: with `--no-strict-classes` its matches are notices that never
-  change the exit code ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
+  secret: by default its matches are notices that never change the exit
+  code (`--strict-classes` counts them) ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
   `redaction_verifier/matching/policy.py` decides which rules are
   informational, and `ScanReport` routes their findings to its notices as
   they are recorded and their review warnings before the verdict).

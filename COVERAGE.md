@@ -83,7 +83,8 @@ newer revision redefines are compared. Up to 50 revisions: the original
 and the latest 49.
 
 ⁷ A known value is a hard finding; a pattern-class match is manual review
-(IDs and dates in XMP assemble digit runs by coincidence).
+(IDs and dates in XMP assemble digit runs by coincidence) in strict mode,
+and an informational notice by default ([ADR 0012](docs/adr/0012-pattern-classes-inform.md)).
 
 ⁸ Leftover payloads are read up to 16 MB decompressed; a warning says
 when a larger one was cut.
