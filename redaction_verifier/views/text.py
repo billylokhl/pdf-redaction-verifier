@@ -18,6 +18,7 @@ out now that the code that needs it lives in the package.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pymupdf as fitz
@@ -251,6 +252,15 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
     2026-10-11), though the same joins also flag the odd clean page whose
     visible text and an off-page slug happen to form one.
     """
+    return _visual_readings(page, None)
+
+
+def _visual_readings(page: fitz.Page, tagged: _Tagged | None) -> list[str]:
+    """extract_visual_text's readings. With *tagged*, each glyph is read
+    as chr(TAG_BASE + its index) instead of its own character, and its
+    character, box and visibility are recorded in *tagged*: the readings
+    are built from geometry alone, so they come out line for line the
+    same, naming their glyphs."""
     flat: list[Glyph] = []
     rotated: list[Glyph] = []
     off_page: list[Glyph] = []      # in drawing order, both directions
@@ -289,8 +299,16 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
                         continue
                     x0, y0, x1, y1 = char["bbox"]
                     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-                    glyph = (cx, cy, x1 - x0, y1 - y0, c)
                     visible = vx0 <= cx <= vx1 and vy0 <= cy <= vy1
+                    if tagged is not None:
+                        index = len(tagged.chars)
+                        if index >= MAX_TAGGED_GLYPHS:
+                            raise _TooManyGlyphs
+                        tagged.chars.append(c)
+                        tagged.boxes.append((x0, y0, x1, y1))
+                        tagged.visible.append(visible)
+                        c = chr(TAG_BASE + index)
+                    glyph = (cx, cy, x1 - x0, y1 - y0, c)
                     if not visible:
                         off_page.append(glyph)
                     if written_vertically:
@@ -339,3 +357,65 @@ def extract_visual_text(page: fitz.Page) -> list[str]:
                    if off_flat else horizontal)
     return [horizontal, rotated_down, rotated_up, outside,
             across, across_down, across_up, all_down, all_up, whole_lines]
+
+
+# ── The readings with their glyphs (for the --visible-map) ─────────────
+# Each glyph is tagged with one code point from TAG_BASE on: never "\n",
+# never a surrogate, and one character per glyph.
+TAG_BASE = 0x10000
+MAX_TAGGED_GLYPHS = 0x110000 - TAG_BASE
+
+GlyphBox = tuple[float, float, float, float]
+
+
+class _TooManyGlyphs(Exception):
+    pass
+
+
+@dataclass
+class _Tagged:
+    chars: list[str]
+    boxes: list[GlyphBox]
+    visible: list[bool]
+
+
+@dataclass(frozen=True)
+class GlyphReadings:
+    """extract_visual_text's readings for one page, each line given as
+    the indices of the glyphs it was read from, in reading order.
+
+    *chars*, *boxes* and *visible* are per glyph: its character, its box
+    (in the frame PyMuPDF reports glyphs in: unrotated, origin at the
+    visible area's top-left) and whether its centre lies in the visible
+    area. *readings[r]* is reading r's lines, split at "\n" exactly as
+    extract_visual_text's text is, so text(r) == extract_visual_text(page)[r].
+    """
+
+    chars: tuple[str, ...]
+    boxes: tuple[GlyphBox, ...]
+    visible: tuple[bool, ...]
+    readings: tuple[tuple[tuple[int, ...], ...], ...]
+
+    def line_text(self, glyphs: tuple[int, ...] | list[int]) -> str:
+        return "".join(self.chars[g] for g in glyphs)
+
+    def text(self, reading: int) -> str:
+        return "\n".join(self.line_text(line) for line in self.readings[reading])
+
+
+def visual_text_glyphs(page: fitz.Page) -> GlyphReadings | None:
+    """The page's visual readings with their glyphs: the same readings,
+    in the same order, as extract_visual_text (an empty tuple where it
+    returns []), built by the same code. None when the page has more
+    glyphs than can be tagged. Verdict-neutral: nothing in the scan
+    calls it."""
+    tagged = _Tagged([], [], [])
+    try:
+        texts = _visual_readings(page, tagged)
+    except _TooManyGlyphs:
+        return None
+    readings = tuple(
+        tuple(tuple(ord(ch) - TAG_BASE for ch in line) for line in text.split("\n"))
+        for text in texts)
+    return GlyphReadings(tuple(tagged.chars), tuple(tagged.boxes), tuple(tagged.visible),
+                         readings)
