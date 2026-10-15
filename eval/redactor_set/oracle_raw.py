@@ -322,14 +322,13 @@ RESIDUE_RUN = 4
 def residue(text: str, form: str, run: int = RESIDUE_RUN) -> str | None:
     """A partial-residue piece of *form* in *text*, by the same rule the
     generator keeps filler free of (persona.residue_in; a test checks
-    they agree): for a value with six or more digits, a run of *run* of
-    its digits inside one whitespace-separated token of *text*, other
-    characters in the token dropped; for any value, one of its words of
-    *run* or more letters standing as a whole word in *text*, case
-    folded. A whole occurrence of *form* is not residue (the caller
+    they agree; owner decision, 2026-10-14): a run of *run* of the
+    value's digits inside one whitespace-separated token of *text*, other
+    characters in the token dropped; or one of its words of *run* or more
+    letters standing as a whole word in *text*, case folded. A whole occurrence of *form* is not residue (the caller
     removes those first)."""
     digits = re.sub(r"\D", "", form)
-    if len(digits) >= 6:
+    if len(digits) >= run:
         runs = {digits[i:i + run] for i in range(len(digits) - run + 1)}
         for token in text.split():
             t = re.sub(r"\D", "", token)

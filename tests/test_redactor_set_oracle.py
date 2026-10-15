@@ -119,7 +119,8 @@ class TestRawChannel:
 class TestResidueRule:
     @pytest.mark.parametrize("text", [
         "62,048.57", "03/14", "Fictional Federal Bank", "acct 7319", "TESTPERSON",
-        "compensation", "Anytown 11/19 1,042.50", "Samplename spouse", "sample"])
+        "compensation", "Anytown 11/19 1,042.50", "Samplename spouse", "sample",
+        "1600 Main St", "PO Box 0000"])
     def test_agrees_with_the_generators_filler_rule(self, text) -> None:
         """The oracle and the generator must use one definition of partial
         residue: filler the generator accepts is never a partial leak."""
