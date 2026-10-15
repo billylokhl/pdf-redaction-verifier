@@ -61,6 +61,8 @@ def _cells() -> dict[str, Cell]:
                   "vertical line: OCR unstacks it (a reconstruction)", tier="review"),
         "live.pixels.ocr-dropped-line": Cell(
             gap, "a line of pixels OCR reports reading but leaves out of its result"),
+        "live.pixels.oversized-page": Cell(
+            flagged, "pixels on a page whose OCR render is too large for Vision to read whole"),
         # off-page — outside the visible crop/media box
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),

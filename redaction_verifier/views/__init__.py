@@ -32,6 +32,7 @@ from redaction_verifier.views.ocr import (
     _OCR_IMPORTS_OK,
     _vision_recognize_batch,
     extract_ocr_text,
+    ocr_page_too_large,
 )
 from redaction_verifier.views.text import (
     MAX_LINE_TOLERANCE_PT,
@@ -63,5 +64,6 @@ __all__ = [
     "_vision_recognize_batch",
     "extract_ocr_text",
     "extract_visual_text",
+    "ocr_page_too_large",
     "visual_text_glyphs",
 ]
