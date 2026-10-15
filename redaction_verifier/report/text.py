@@ -257,11 +257,11 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
         for w in report.warnings:
             print(_sanitize_report_text(f"    - {w}"))
     if report.notices:
-        _print_notices(report, rules)
+        _print_notices(report, rules, exact)
     print()
 
 
-def _print_notices(report: ScanReport, rules: RuleSet | None) -> None:
+def _print_notices(report: ScanReport, rules: RuleSet | None, exact: MaskIndex) -> None:
     """ADR 0012: built-in class matches that are not counted in the
     verdict -- after the verdict, never mistakable for a finding."""
     print("\n  ℹ NOT COUNTED IN THE VERDICT: values shaped like a built-in class")
@@ -273,8 +273,9 @@ def _print_notices(report: ScanReport, rules: RuleSet | None) -> None:
     for n in report.notices:
         if isinstance(n, Finding):
             tag, _ = _where(n)
-            # Masked like a finding: never a tail that is part of a listed value.
-            line = (f"    · {_label(n, rules, report.exact_index):<36} | {n.layer:<8} | "
+            # Masked like a finding (the same index): never a tail that is
+            # part of a listed value.
+            line = (f"    · {_label(n, rules, exact):<36} | {n.layer:<8} | "
                     f"{tag:<15} | {n.location}")
         else:
             line = f"    · {n}"
