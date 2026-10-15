@@ -100,6 +100,8 @@ class FlagReason(Enum):
     REF_GENERATION = "ref_generation"  # `N G R` naming a live object of another generation
     REF_DANGLING = "ref_dangling"      # `N G R` naming no object (free, missing, object 0)
     PAGE_TREE = "page_tree"            # a page tree or page attribute off the canonical shape
+    NAME_TREE = "name_tree"            # a name or number tree off the canonical shape
+    RESOURCE_SCOPE = "resource_scope"  # a form, pattern, Type3 font or appearance without /Resources
 
 
 Reason: TypeAlias = NAReason | FlagReason

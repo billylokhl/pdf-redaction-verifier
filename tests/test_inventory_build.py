@@ -515,6 +515,8 @@ CASE_SUBSET = ["page.memo-linearized", "page.content-stream-objstm", "document.c
                "leftover.raw-orphaned-objstm", "page.raw-minimal-objstm",
                "attachment.notes-text", "file.after-final-eof", "layout.form-boxes-ssn",
                "revision.encrypted-annotated"]
+FLAGGED_CASES = {"file.after-final-eof", "revision.redacted-incremental",
+                 "revision.encrypted-annotated"}
 
 
 def _case_pdf(case_id: str, tmp: Path) -> bytes:
@@ -528,8 +530,10 @@ def _case_pdf(case_id: str, tmp: Path) -> bytes:
 def test_case_library_files_inventory_and_agree(case_id: str, tmp_path: Path) -> None:
     data = _case_pdf(case_id, tmp_path)
     agreed = inventory_agrees(data, tmp_path)
-    # Only the after-%%EOF leak case is flagged (XREF_TAIL; its tail unclaimed).
-    assert agreed != case_id.startswith("file.after-final-eof"), case_id
+    # Flagged: the after-%%EOF leak case (XREF_TAIL; its tail unclaimed), and
+    # since 3a-7c the two whose annotation appearance stream carries no
+    # /Resources of its own (RESOURCE_SCOPE, ADR 0011 item 3).
+    assert agreed != (case_id in FLAGGED_CASES), case_id
 
 
 @requires_qpdf

@@ -1,6 +1,6 @@
 # 0011. The reference graph: canonical form
 
-Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below)
+Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below) and 2026-10-12 (item 4's text rule, measured in 3a-7c)
 
 ## Context
 
@@ -433,6 +433,45 @@ of its review:
 - **Item 5, field inheritance (P5).** A `/Parent` cycle among AcroForm fields leaves the
   inherited `/FT` and `/V`, so a synthesized appearance's input, undefined: it flags a new
   `FlagReason.FIELD_TREE`. Expected cost 0, measured in 3a-7d.
+
+### Amendment (2026-10-12, measured in 3a-7c): owner decision 10
+
+P3's expected cost of 0 did not hold: on the corpus it flagged 85 files
+(84 otherwise unflagged). 72 of them have plain-encoded keys ending in
+one NUL byte; 10 sort by bytes but not as text (9 mix UTF-16 and
+plain-encoded keys); 3 hold bytes 0x7F-0xA0. The owner allowed the first
+class only, on the condition that both readers resolve such a key to the
+same object, which a reader-agreement test shows
+(`tests/test_inventory_trees.py`): MuPDF reads the key as a C string,
+the NUL cut off, libqpdf keeps it, and each finds the same object for
+the key as written. A printable-ASCII key may therefore end in one NUL
+byte (with a byte at or above 0x80 it flags: MuPDF keeps the NUL when it
+reads the key as PDFDocEncoding and cuts it when it reads UTF-8 -- found
+in 3a-7c's second and third reviews); keys must
+be unique and in order under each reader's reading -- with it cut off
+(MuPDF's) and with it kept (libqpdf's): with keys of mixed encodings one
+does not imply the other (`(a\000)` and `<FEFF00610000>` are one name to
+libqpdf, two to MuPDF); two NULs, a NUL inside, U+0000 in a UTF-16 key,
+or any other control byte still flag. 3a-7c's reviews also found byte
+0xAD, which MuPDF's PDFDocEncoding maps to U+0000 and qpdf does not, and
+U+001B in a UTF-16 key (MuPDF strips a language escape byte-wise, ESC,
+2 or 4 bytes of any value, ESC; libqpdf strips none): both flag. A
+UTF-16 key is read alike only without U+0000 and U+001B. The third
+review found that MuPDF reads a BOM-less key as UTF-8 whenever it parses
+as such (leniently: overlong forms and surrogates included) and libqpdf
+as PDFDocEncoding, so `<C3A9>` is one character to MuPDF and two to
+libqpdf: a key that holds a lead byte 0xC0-0xFF followed by a
+continuation byte 0x80-0xBF flags (failing closed: every UTF-8 reading
+of a high byte holds one). A BOM-less key is read alike only in
+printable ASCII and 0xA1-0xFF but 0xAD, and only when MuPDF cannot read
+it as UTF-8. The other 13 files stay flagged. Known asymmetry, outside
+the key itself: MuPDF also finds the name without its NUL (its lookup
+compares C strings), libqpdf does not. Measured after: 13 files
+`NAME_TREE` (12 otherwise unflagged); corpus 1,920 agree, 153 flagged
+(7.38%). Item 3 (`RESOURCE_SCOPE`) stays strict (0 corpus files); 20
+case-library cases whose annotation appearance streams draw only paths
+and carry no `/Resources` are flagged, and the rule is revisited with
+real redactor output (plan §5, Lane B) before it is enforced.
 
 ## Owner decisions
 
