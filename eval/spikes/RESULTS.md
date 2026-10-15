@@ -693,7 +693,8 @@ and 2 with a punctuated phone number (Text, OCR and Objects): matches that
 look exactly like the real thing.
 
 Reading:
-- 28.3% replaces ADR 0005's 23.1% lower bound.
+- 28.3% replaces ADR 0005's 23.1%, which scanned page text only, on an
+  earlier snapshot of the corpus (2,031 files, 484 text-bearing).
 - A context rule that only demotes matches inside a token, or dates,
   leaves 5.1%, far above the gate.
 - Phase 5's gate (< 1%) is not met by any option short of demoting what
