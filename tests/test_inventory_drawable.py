@@ -103,8 +103,10 @@ DRAWABLE: list[tuple[str, bytes, set[int], set[int]]] = [
                         streams={4: ICC}), {4, 5}, set()),
     # /Group is the page's own, never inherited.
     ("ancestor-group", make(
-        objects={2: PAGES.replace(b">>", b"/Group << /S /Transparency /CS [/ICCBased 4 0 R] >> >>"),
-                 3: PAGE_RES % (b"", b"")}, streams={5: CONTENT, 4: ICC}), {5}, {4}),
+        objects={2: PAGES.replace(b">>", b"/Resources << >> /Group << /S /Transparency /CS"
+                                         b" [/ICCBased 4 0 R] >> >>"),
+                 3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R >>"},
+        streams={5: CONTENT, 4: ICC}), {5}, {4}),
     # ── an image: /SMask, /Mask, /ColorSpace, /DecodeParms /JBIG2Globals
     ("image", page(b"/XObject << /Im 4 0 R >>", streams={
         4: (IMG + b" /SMask 6 0 R /ColorSpace [/ICCBased 7 0 R] /DecodeParms << /JBIG2Globals"
@@ -267,6 +269,11 @@ DRAWABLE: list[tuple[str, bytes, set[int], set[int]]] = [
                                  streams={6: FN, 7: (b" /HalftoneType 6 /Width 1 /Height 1",
                                                      b"\x00"), 8: LEAF_, 9: LEAF_, 10: LEAF_}),
      {5}, {6, 7, 8, 9, 10}),
+    # A type 5 halftone's own keys are not sub-halftones.
+    ("halftone-type5-own-keys", page(b"/ExtGState << /G0 << /HT << /HalftoneType 5"
+                                     b" /HalftoneName 7 0 R /Default 13 0 R >> >> >>",
+                                     streams={7: LEAF_, 13: (b" /HalftoneType 6 /Width 1 /Height 1",
+                                                             b"\x00")}), {5, 13}, {7}),
     ("halftone-type-two-references", page(b"/ExtGState << /G0 << /HT << /HalftoneType 9 0 R"
                                           b" /Default 13 0 R >> >> >>",
                                           objects={9: b"10 0 R", 10: b"5"},
@@ -676,6 +683,25 @@ def _contents_swapped() -> bytes:
                 updates=({3: PAGE_RES.replace(b"5 0 R", b"6 0 R") % (b"", b"")},))
 
 
+def _resources_renamed() -> bytes:
+    """The page's /Resources dictionary 8 (by reference, so the page list
+    is the same records) renames /XObject: the same target, another path."""
+    return page(objects={3: PAGE_RES.replace(b"/Resources << %s >>", b"/Resources 8 0 R")
+                         % b"", 8: b"<< /XObject << /Im 4 0 R >> >>"},
+                streams={4: IMAGE_}, updates=({8: b"<< /Foo << /Im 4 0 R >> >>"},))
+
+
+def _direct_font_retyped() -> bytes:
+    """A font written directly in resource dictionary 8 turns Type3, its
+    references the same: 8 decided a role, in a direct value."""
+    font = (b"<< /Font << /F1 << /Type /Font /Subtype /%s /FontBBox [0 0 1 1]"
+            b" /FontMatrix [1 0 0 1 0 0] /CharProcs << /a 6 0 R >> /Resources << >>"
+            b" /Encoding << /Differences [0 /a] >> /FirstChar 0 /LastChar 0 /Widths [1] >> >> >>")
+    return page(objects={3: PAGE_RES.replace(b"/Resources << %s >>", b"/Resources 8 0 R")
+                         % b"", 8: font % b"TrueType"},
+                streams={6: LEAF_}, updates=({8: font % b"Type3"},))
+
+
 def _default_resources_rewritten() -> bytes:
     """A synthesized widget; the catalog's /AcroForm /DR changes its font
     (the catalog is not read: its /AcroForm as written is compared)."""
@@ -705,6 +731,8 @@ REUSE: list[tuple[str, bytes, list[set[int]], set[FlagReason]]] = [
     ("decided-by-a-target", _subtype_rewritten(), [{4, 5}, {4, 5, 6}], set()),
     ("home", _form_rewritten(packed=True), [{4, 5, 7}, {4, 5, 6}], set()),
     ("labels-shared", _contents_swapped(), [{6}, {4}], set()),
+    ("key-paths", _resources_renamed(), [{5}, {4, 5}], set()),
+    ("decided-in-a-direct-value", _direct_font_retyped(), [{5, 6}, {5}], set()),
 ]
 
 
@@ -827,11 +855,43 @@ def _shared(n: int) -> bytes:
                 updates=tuple({9: b"(%d)" % i} for i in range(n)))
 
 
-SHAPES = [_fan, _deep, _pages, _glyphs, _shared, _page_rewrites]
+def _direct_fonts(n: int) -> bytes:
+    """One /Font dictionary of n fonts written directly, each with its own
+    descriptor: each font's role is decided in place (read once each)."""
+    fonts = b" ".join(b"/F%d << /Subtype /TrueType /FontDescriptor << /FontFile2 %d 0 R >> >>"
+                      % (i, 10 + i) for i in range(n))
+    return page(b"/Font << %s >>" % fonts, streams={10 + i: LEAF_ for i in range(n)})
+
+
+def _catalog_grows(n: int) -> bytes:
+    """A page drawing n images, a synthesized widget (the catalog's /DR
+    joins), and n updates each rewriting the catalog with a new reference
+    elsewhere: its /AcroForm as written is the same, so no walk again."""
+    names = b" ".join(b"/Im%d %d 0 R" % (i, 20 + i) for i in range(n))
+    data = page(b"/XObject << %s >>" % names, extra=b" /Annots [4 0 R]",
+                objects={4: b"<< %s /AP << /N 6 0 R >> >>" % TX, 11: TT % 12, 12: DESC % 13},
+                streams={6: AP_FORM, 7: IMAGE_, 13: LEAF_} | {20 + i: IMAGE_ for i in range(n)},
+                catalog=NEED)
+    for i in range(n):
+        data = _update(data, {1: CAT % (NEED + b" /Last %d 0 R" % (7 if i % 2 else 13))},
+                       20 + n)
+    return data
+
+
+def _wide_rewrites(n: int) -> bytes:
+    """An /XObject dictionary of n images, rewritten n times with the same
+    references: each rewrite's references compared, every one charged."""
+    names = b" ".join(b"/Im%d %d 0 R" % (i, 10 + i) for i in range(n))
+    return page(b"/XObject 8 0 R", objects={8: b"<< %s >>" % names},
+                streams={10 + i: IMAGE_ for i in range(n)},
+                updates=tuple({8: b"<< %s /Pad %d >>" % (names, i)} for i in range(n)))
+
+
+SHAPES = [_fan, _deep, _pages, _glyphs, _shared, _page_rewrites, _direct_fonts]
 
 
 @pytest.mark.parametrize("make_file", SHAPES, ids=["fan", "deep", "pages", "glyphs", "shared",
-                                                   "page-rewrites"])
+                                                   "page-rewrites", "direct-fonts"])
 def test_the_drawing_walk_is_linear(make_file: object, walk_only: None) -> None:
     work = []
     for n in (60, 480):
@@ -840,6 +900,52 @@ def test_the_drawing_walk_is_linear(make_file: object, walk_only: None) -> None:
         work.append((charged, lines))
     _per_unit(work)
     assert work[1][0] <= 10 * work[0][0], work
+
+
+def test_a_catalog_rewritten_elsewhere_is_not_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With a synthesized widget the catalog's /AcroForm /DR is a start; the
+    # catalog is compared by its /AcroForm as written, not read, so updates
+    # rewriting it elsewhere (most do) never walk the drawing again. (The
+    # reachable walk does: its references changed.)
+    from redaction_verifier.inventory import labels
+    walks = []
+    real = labels.Drawing.run
+
+    def run(self: object, starts: list[object]) -> object:
+        walks.append(len(starts))
+        return real(self, starts)  # type: ignore[arg-type]
+    monkeypatch.setattr(labels.Drawing, "run", run)
+    inv = _inventory(_catalog_grows(6))
+    assert inv.flags == () and len(walks) == 1
+    assert all(_labels(inv, r).drawable is _labels(inv, 0).drawable for r in range(7))
+    assert {13, 20} <= _drawn(inv)
+
+
+def test_comparing_rewritten_bodies_is_charged(walk_only: None) -> None:
+    # Each update rewrites a wide /XObject dictionary with the same
+    # references: compared with the old body's, every one charged (the
+    # file grows with them: work linear in the file, not in n).
+    work = []
+    for n in (40, 320):
+        charged, lines, inv = charged_steps(_wide_rewrites(n), "build_labels")
+        assert inv.flags == () and all(_labels(inv, r).drawable is _labels(inv, 0).drawable
+                                       for r in range(inv.revisions))
+        work.append((charged, lines))
+    _per_unit(work)
+
+
+@requires_qpdf
+def test_the_hint_stream_body_is_structural_not_orphaned(tmp_path: Path) -> None:
+    import subprocess
+    (tmp_path / "in.pdf").write_bytes(page())
+    subprocess.run(["qpdf", "--linearize", "--object-streams=disable", str(tmp_path / "in.pdf"),
+                    str(tmp_path / "lin.pdf")], check=True, timeout=60)
+    inv = _inventory((tmp_path / "lin.pdf").read_bytes())
+    assert inv.flags == ()
+    hint = _labels(inv).hint
+    assert hint is not None
+    assert inv.labels_of(hint) == BodyLabels(False, (StructuralKind.HINT_STREAM,))
+    assert hint not in inv.orphaned(0)
 
 
 def test_shared_revisions_walk_the_drawing_once() -> None:

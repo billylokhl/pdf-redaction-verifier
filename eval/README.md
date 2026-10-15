@@ -1153,7 +1153,29 @@ What each part of the output means:
   kind, files whose hint stream sits under a stale `/L` (an updated
   linearized file: coordinator decision Q8), files with a revision
   without labels, and percentiles of `graph_work`, the work the
-  reference graph's stages charged (ADR 0011 item 7).
+  reference graph's stages charged (ADR 0011 item 7). `labels.drawing`
+  (since 3a-7e-2; `scorecard.inventory.drawing_measures`), each as files
+  with any and the total over the unflagged files:
+  - the current revision's live streams, `DRAWABLE` and `ORPHANED`
+    (`streams_current`, `drawable_current`, `orphaned_current`);
+  - per body across revisions: stream bodies, drawable, structural, both,
+    orphaned (`bodies_*`);
+  - orphans for the verdict that the current revision does not call
+    orphaned (`orphaned_older_only`), and the converse
+    (`orphaned_current_labelled_older`);
+  - the current revision's orphans by class (`orphan_class_*`): the use
+    kind of the path that first reaches each from the trailer (thumbnail,
+    piece_info, appearance, properties, ...), `unreachable_source`,
+    `unreferenced`, `objstm` (home to no live entry), and the verdict's
+    `dead_body` and `older_body`;
+  - `/Metadata` streams orphaned on an annotation or an ICC profile
+    (`orphan_metadata_*`, for 3a-7e-3's briefing);
+  - the closure gap, measured and never gated: streams MuPDF lists on the
+    current revision's pages that are not `DRAWABLE` (`closure_gap`, and by
+    listing `closure_gap_contents`, `_images` (with soft masks),
+    `_xobjects` and `_annotations` (`pdf_annot_ap`)), out of
+    `mupdf_listed`. Any gap goes to an ADR 0011 note, never into the
+    lists.
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform

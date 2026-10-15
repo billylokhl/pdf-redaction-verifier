@@ -613,6 +613,78 @@ Recorded with the implementation of reachable and `STRUCTURAL`
   array and its items) may be references; `/Subtype` is read through one
   reference, and anything still unread fails closed.
 
+### Notes on item 5 (2026-10-15, 3a-7e-2; not an amendment)
+
+Recorded with the implementation of `DRAWABLE`, `ORPHANED` and per-body
+labels (`redaction_verifier/inventory/drawable.py`, `labels.py`); item 5's
+rule is unchanged.
+
+- **A colour-space array's elements** (coordinator decision 2026-10-15;
+  owner informed; measured gaps go to notes, never silent widening).
+  Item 5's "every element of its array" names no role for an element.
+  Each is followed as a colour space; in a dictionary or stream reached
+  that way, only `/Functions` (each a function), `/Colorants` (each entry
+  a colour space) and `/Process` (its `/ColorSpace`) are followed. So an
+  ICC profile's `/Alternate` and `/Metadata`, and a function's other keys,
+  lead nowhere drawable and fail closed. Measured: no gap (below).
+- **The drawn appearance** (coordinator decision Q3).
+  `Annotation.appearance` records the stream MuPDF draws for an
+  annotation it does not synthesize: a stream `/AP /N`, or the stream
+  that `/AS` names in an `/N` state dictionary, through up to nine
+  references. It is pinned against MuPDF's `pdf_annot_ap` on every 3a-7d
+  classification fixture, a signed signature field's stored appearance
+  included. A synthesized annotation, and an `/AS` entry that is not a
+  stream, have none. The walk starts there, so it never re-derives
+  MuPDF's `/AS` and reference rules.
+- **Roles decided by a value.**
+  - An XObject is a form or an image by its `/Subtype`, read through one
+    reference. It is either only when it is a stream, since MuPDF draws no
+    other. An XObject that is neither is itself `DRAWABLE` (the upper
+    bound) and follows nothing.
+  - A font is Type3 by its `/Subtype`; only a Type3 font follows
+    `/CharProcs` and `/Resources`.
+  - A halftone is type 5 by its `/HalftoneType`.
+  - A value the walk cannot read gets the narrower reading, failing
+    closed: one two references away, or a direct font or halftone inside
+    an array. That is an XObject that follows nothing, a font that is not
+    Type3, a halftone that is not type 5.
+- **How the lists are read.**
+  - A direct value is read in place.
+  - A function given as an array (a shading's `/Function`, `/TR`) is
+    each element; an image's `/DecodeParms` array is each element; a
+    graphics state's `/Font` array `[font size]` is its font.
+  - `/Group` is the page's own, never inherited, as MuPDF reads it.
+  - A page's inherited `/Resources` comes from the ancestor holding it.
+  - `/AcroForm /DR` joins a revision's closure when any annotation in that
+    revision is synthesized.
+  - Glyphs, content streams and font programs are drawn as they are:
+    their own keys are not followed.
+- **A stream both `STRUCTURAL` and `DRAWABLE`** keeps both labels, and is
+  drawable for 3b: every label's decoder runs and the worst status wins
+  (the plan's 3a-7e entry).
+- **Per body.** `Inventory.body_labels` holds each stream body's labels
+  across the revisions it lives in, by body, never by number. A body is
+  `ORPHANED` for the verdict when no revision it lives in gives it
+  another label. That includes a dead body, a body no live entry names,
+  and a body living only in revisions without labels (no page list).
+  Per revision, `ORPHANED` is derived (`Inventory.orphaned`), not stored.
+- **Found while implementing (measured on the unflagged corpus; failing
+  closed, not widened).**
+  - The closure gap is 0. Of the 5,875 streams MuPDF lists on the current
+    revisions' pages (contents, images and their soft masks, form
+    XObjects, and drawn appearances), none is unlabelled.
+  - The orphans that something reachable references are classed by the
+    use kind of the path that first reaches them: thumbnails (194
+    files), `/PieceInfo` private data (195), annotation states or field
+    widgets on no page (`appearance`, 24), and `/Properties` entries
+    holding forms or `/Contents` (marked-content property lists, which
+    item 5 excludes: 16 files).
+  - The rest: `/AcroForm /DR` XObjects and fonts with no annotation
+    synthesized (4 files), and a form under `/Properties` (1).
+  - Unreferenced or reached only from unreachable objects: 86 files.
+  - `/Metadata` orphaned on an annotation or an ICC profile: 0 streams,
+    for 3a-7e-3's briefing.
+
 ## Owner decisions
 
 Decided 2026-10-04, every one as recommended.

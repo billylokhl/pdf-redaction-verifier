@@ -215,6 +215,8 @@ class Drawing:
         # The numbers a role was decided by: a body whose own value (or a
         # direct value in it) was read, and each reference target read.
         self.decided: set[int] = set()
+        # Each dictionary a decision read, its entries by key (``get``).
+        self.index: dict[int, dict[bytes, PdfValue | None]] = {}
         self.spent = False
 
     def charge(self, n: int = 1) -> bool:
@@ -291,21 +293,35 @@ class Drawing:
         for key in prefix:
             if key == ARRAY or not isinstance(value, PdfDict):
                 return _narrow(role)
-            if not self.charge(len(value.entries) + 1):
-                return _narrow(role)
-            value = value.get(key)
-        if not isinstance(value, PdfDict) or not self.charge(len(value.entries) + 1):
+            value = self.get(value, key)
+        if not isinstance(value, PdfDict):
             return _narrow(role)
         if role == HALFTONE:
-            kind = self.resolve(value.get(b"HalftoneType"))
+            kind = self.resolve(self.get(value, b"HalftoneType"))
             return HALFTONE5 if isinstance(kind, PdfInt) and kind.value == 5 else HALFTONE
-        subtype = self.resolve(value.get(b"Subtype"))
+        subtype = self.resolve(self.get(value, b"Subtype"))
         name = subtype.raw if isinstance(subtype, PdfName) else None
         if role == FONT:
             return TYPE3 if name == b"Type3" else FONT
         if not stream:
             return DRAWN_ONLY  # not a stream (a direct XObject included): nothing drawn
         return FORM if name == b"Form" else IMAGE if name == b"Image" else DRAWN_ONLY
+
+    def get(self, value: PdfDict, key: bytes) -> PdfValue | None:
+        """``value.get(key)``, through an index of *value*'s entries made
+        once per walk and charged by its size (PdfDict.get scans them: a
+        dictionary of n direct fonts would be read n times)."""
+        found = self.index.get(id(value))
+        if found is None:
+            if not self.charge(len(value.entries) + 1):
+                return None
+            found = {}
+            for name, item in value.entries:
+                found.setdefault(name.raw, item)
+            for repeated in value.ambiguous:
+                found[repeated] = None
+            self.index[id(value)] = found
+        return found.get(key)
 
     def resolve(self, value: PdfValue | None) -> PdfValue | None:
         """*value*, through one reference (recorded as read)."""
