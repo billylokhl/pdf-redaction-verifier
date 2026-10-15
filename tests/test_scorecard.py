@@ -1729,8 +1729,8 @@ def test_only_the_dense_sideways_scan_has_its_own_timeout():
     from caselib import REGISTRY, load
 
     load()
-    own = {i for i, c in REGISTRY.items() if c.scan_timeout is not None}
-    assert own == {"page.dense-sideways-scan"}
+    own = {i: c.scan_timeout for i, c in REGISTRY.items() if c.scan_timeout is not None}
+    assert own == {"page.dense-sideways-scan": 300}
 
 # ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
 
