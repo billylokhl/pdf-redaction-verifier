@@ -11,7 +11,7 @@ every layout tested both ways (the owner's decision 7):
   sees no difference on them);
 - each case the owner signed off as reaching exit 0 under policy 1 gets one
   default-mode twin, `<id>-default-mode`: the same file and rules without
-  `"strict"`, truth `clean` (the SSN is not a listed secret), expected
+  `"strict"`, truth `clean` (the value is not a listed secret), expected
   exit 0. Each twin's difference from the reference tool is an accepted,
   `weaker: true` diff citing the sign-off.
 
@@ -55,10 +55,16 @@ SIGNED_OFF_BY_LABEL = (  # 11: known gaps whose target came from the class alone
     "layout.vertical-stack-split-pages-pattern-only", "layout.undashed-ssn-wrapped",
     "layout.rotated-split-pages-pattern-only",
 )
+SIGNED_OFF_OTHER_CLASSES = (  # 3: a second sign-off the same day, same reason
+    # PR 3a's strict-coverage cases for the other classes (owner, 2026-10-15)
+    "page.visible-us-phone-class-rule", "page.visible-credit-card-class-rule",
+    "page.visible-email-class-rule",
+)
 SIGNED_OFF_CLEAN = (  # clean cases whose label the same decision covers
     "document.generated-id-digits", "page.digit-column",
 )
-SIGNED_OFF = SIGNED_OFF_BY_EXIT + SIGNED_OFF_BY_LABEL + SIGNED_OFF_CLEAN
+SIGNED_OFF = (SIGNED_OFF_BY_EXIT + SIGNED_OFF_BY_LABEL + SIGNED_OFF_OTHER_CLASSES
+              + SIGNED_OFF_CLEAN)
 TWIN_SUFFIX = "-default-mode"
 
 _applied = False
@@ -83,8 +89,8 @@ def twin(original: Case, rules: tuple[dict[str, Any], ...]) -> Case:
         cells=(),
         features=original.cells + original.features,
         expected=expect(0),
-        story=(f"{original.story} Default mode (ADR 0012): the SSN is not one of the listed "
-               "secrets, so the class match is an informational notice and the file "
+        story=(f"{original.story} Default mode (ADR 0012): the value is not one of the "
+               "listed secrets, so the class match is an informational notice and the file "
                "certifies."),
         rules=rules,
         known_gap=None,

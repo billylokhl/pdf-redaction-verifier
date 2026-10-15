@@ -16,6 +16,7 @@ from caselib.policy1 import (
     SIGNED_OFF_BY_EXIT,
     SIGNED_OFF_BY_LABEL,
     SIGNED_OFF_CLEAN,
+    SIGNED_OFF_OTHER_CLASSES,
     TWIN_SUFFIX,
 )
 from caselib.run import available, build, scan, today_label
@@ -25,9 +26,11 @@ _HAVE = available()
 
 
 def test_the_sign_off_list_is_the_owners():
-    # 24 by today's exit, 11 known gaps by their label, 2 clean relabels.
-    assert (len(SIGNED_OFF_BY_EXIT), len(SIGNED_OFF_BY_LABEL), len(SIGNED_OFF_CLEAN)) == (24, 11, 2)
-    assert len(set(SIGNED_OFF)) == len(SIGNED_OFF) == 37
+    # 24 by today's exit, 11 known gaps by their label, 3 other-class cases
+    # (a second sign-off), 2 clean relabels: 38 leak cases + 2 clean.
+    assert (len(SIGNED_OFF_BY_EXIT), len(SIGNED_OFF_BY_LABEL), len(SIGNED_OFF_OTHER_CLASSES),
+            len(SIGNED_OFF_CLEAN)) == (24, 11, 3, 2)
+    assert len(set(SIGNED_OFF)) == len(SIGNED_OFF) == 40
 
 
 def test_every_signed_off_case_has_exactly_one_twin_and_nothing_else_does():
