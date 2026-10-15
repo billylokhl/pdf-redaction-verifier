@@ -1708,3 +1708,100 @@ class TestVisionDeadline:
             ("PAGE_FAILED", "OCR", 1), ("PAGE_FAILED", "OCR", 2), ("PAGE_FAILED", "OCR", 3)]
         assert "did not return within" in report.warnings[0]
         assert all("earlier call has not returned" in w for w in report.warnings[1:])
+
+
+class TestOcrPageSize:
+    """Vision reads less and less of a render's smaller print as the
+    render grows, then nothing, and reports success (#128). A page whose
+    300 dpi render is longer than MAX_OCR_RENDER_SIDE on a side is read
+    all the same, and also flagged as not fully read (PAGE_FAILED), from
+    its size alone: a blank page reads as no lines too."""
+
+    @staticmethod
+    def _page(doc: fitz.Document, width: float, height: float) -> fitz.Page:
+        return doc.new_page(width=width, height=height)
+
+    @pytest.mark.parametrize("rotate", [0, 90])
+    @pytest.mark.parametrize("size", [(612, 792), (842.5, 1190.5), (1009.3, 611.7), (73.1, 71.9)])
+    def test_the_size_is_the_renders_without_rendering(self, size, rotate) -> None:
+        doc = fitz.open()
+        page = self._page(doc, *size)
+        page.set_rotation(rotate)
+        page.set_cropbox(fitz.Rect(3.3, 4.4, size[0] - 5.5, size[1] - 6.6))
+        pix = page.get_pixmap(dpi=ocr.OCR_DPI, colorspace=fitz.csGRAY)
+        assert ocr.ocr_render_size(page) == (pix.width, pix.height)
+
+    @pytest.mark.parametrize("size, too_large", [
+        ((612, 792), False),          # letter, 2550 x 3300 px
+        ((792, 612), False),          # letter, landscape
+        ((595, 842), False),          # A4, 3509 px long
+        ((842.4, 595), False),        # 3510 px: the cap itself
+        ((842.6, 595), True),         # 3511 px
+        ((612, 1008), True),          # legal, 4200 px long
+        ((842, 1191), True),          # A3
+        ((792, 1224), True),          # tabloid
+        ((216, 2160), True),          # a long receipt: the longest side counts
+        ((2400, 3200), True),         # the #128 page, 10000 x 13334 px
+    ])
+    def test_the_longest_side_decides(self, size, too_large) -> None:
+        doc = fitz.open()
+        why = ocr.ocr_page_too_large(self._page(doc, *size))
+        assert (why is not None) == too_large
+        if too_large:
+            assert "page too large for OCR" in why
+
+    def _scan(self, size: tuple[float, float], readings: list[str]) -> ScanReport:
+        doc = fitz.open()
+        self._page(doc, *size)
+        report = ScanReport()
+        try:
+            verify.scan_page_layer(
+                doc, SecretMatcher([Secret("SSN", normalize_string(SSN))]), report,
+                layer="OCR", extractor=lambda page: readings, note="test",
+                hard_variants=ocr.OCR_GENUINE_READINGS,
+                incomplete=lambda page: ocr.ocr_page_too_large(page))
+        finally:
+            doc.close()
+        return report
+
+    def test_a_blank_page_of_ordinary_size_is_clean(self) -> None:
+        report = self._scan((595, 842), ["", "", "", "", "", ""])
+        assert not report.findings and not report.warnings
+
+    def test_a_blank_oversized_page_is_flagged(self) -> None:
+        report = self._scan((2400, 3200), ["", "", "", "", "", ""])
+        assert not report.findings
+        assert [(w.code, w.layer, w.fields.get("page"), w.fields.get("storage"))
+                for w in report.warnings] == [("PAGE_FAILED", "OCR", 1, "live")]
+        assert "not fully read (page too large for OCR" in report.warnings[0]
+
+    def test_a_failing_size_check_flags_the_page_and_keeps_its_reading(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(page: fitz.Page) -> str | None:
+            raise ValueError("no size")
+
+        monkeypatch.setattr(ocr, "ocr_page_too_large", broken)
+        report = self._scan((612, 792), [f"SSN {SSN}", "", "", "", "", ""])
+        assert [f.secret_name for f in report.findings] == ["SSN"]
+        assert [w.code for w in report.warnings] == ["PAGE_FAILED"]
+        assert "could not check the page (no size)" in report.warnings[0]
+
+    def test_what_ocr_reads_on_an_oversized_page_still_counts(self) -> None:
+        # Flagging must never lose a finding: exit 1 stays 1, not 2.
+        report = self._scan((2400, 3200), [f"SSN {SSN}", "", "", "", "", ""])
+        assert [f.secret_name for f in report.findings] == ["SSN"]
+        assert [w.code for w in report.warnings] == ["PAGE_FAILED"]
+
+    def test_a_failed_oversized_page_is_one_warning(self) -> None:
+        def broken(page: fitz.Page) -> list[str]:
+            raise RuntimeError("Apple Vision error")
+
+        doc = fitz.open()
+        self._page(doc, 2400, 3200)
+        report = ScanReport()
+        verify.scan_page_layer(
+            doc, SecretMatcher([Secret("SSN", normalize_string(SSN))]), report,
+            layer="OCR", extractor=broken, note="test", incomplete=ocr.ocr_page_too_large)
+        assert [w.code for w in report.warnings] == ["PAGE_FAILED"]
+        assert "failed (Apple Vision error)" in report.warnings[0]

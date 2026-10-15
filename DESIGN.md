@@ -480,7 +480,17 @@ feeds are batched (per-literal regex sweeps measured ~100x slower), rules
 already matched are skipped, and every subprocess has a deadline — qpdf's
 stream is read under `select`, exiftool runs under `communicate(timeout)`
 — so a stalled tool cannot hang the run. Report samples are
-masked — at most four trailing characters, never more than half — and
+masked — at most four trailing characters, never more than half, and
+none at all (just `****`) when the sample contains an exact value or any
+revealed character is a character of one — per character, not per
+position, because the value search assembles values across characters it
+ignores, across lines and down columns, so any revealed character may be a
+piece of a value found elsewhere (compared both as the form the matcher
+searches and as letters and digits of any script, case, accents and
+punctuation ignored, non-ASCII decimal digits as ASCII; look-alike
+characters from other scripts are not recognised, so OCR-layer samples,
+where misreadings happen, never show a tail at all; the index of exact values is
+built once per run) — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 OCR's upright re-reads of vertical lines are capped at 64 per page,
@@ -574,7 +584,19 @@ the gap is stated rather than implied away.
   checks tells an empty or partial reading from a page with that little
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
-  as clean (#67: on macOS 27, a dense sideways scan whose SSN line
+  as clean, except where the page's size alone says so: Vision reads
+  less of a render the smaller its print is against the render's longest
+  side, so a page whose 300 dpi render is longer than 3510 px on a side
+  (`MAX_OCR_RENDER_SIDE`, about 11.7 in: letter and A4 pages are below
+  it) is read but also `PAGE_FAILED` (#128; measured on macOS 27 on four
+  page shapes and three block positions: every block of 8 and 10 pt read
+  at 3500 and 3509 px, some whole 8 pt blocks lost at 3600 px, more from
+  3900 px, 10 pt ones from 4250 px; the pixel count did not decide it).
+  The cap is a heuristic, not a guarantee: the losses do not grow
+  steadily with size and depend on the content. The check is on the
+  page's size, made before the page is read, never on Vision returning
+  no lines, which a blank page also does. Below the cap Vision can still
+  drop part of a block (#67: on macOS 27, a dense sideways scan whose SSN line
   Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
   docs/REDESIGN.md §8, now manual review through the turned readings
   above, which only a page with a vertical line gets; a raster check is

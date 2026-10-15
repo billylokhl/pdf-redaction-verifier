@@ -33,6 +33,7 @@ from typing import Final
 from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
+from .annotations import build_annotations
 from .graph import Body, build_graph
 from .pages import build_pages
 from .trees import build_trees
@@ -187,6 +188,10 @@ class _Builder:
         trees, tree_flags = build_trees(len(chain.revisions), self.changes, self._body_of,
                                         self._home_number, trailers, self.budget)
         self.flags.extend(tree_flags)
+        annotations, synthesized, annotation_flags = build_annotations(
+            len(chain.revisions), self.changes, self._body_of, self._home_number, trailers,
+            pages, self.budget)
+        self.flags.extend(annotation_flags)
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -196,7 +201,8 @@ class _Builder:
         return Inventory(len(data), tiling, tiles,
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
-                         self.objects, self.streams, entries, graph, pages, trees)
+                         self.objects, self.streams, entries, graph, pages, trees,
+                         annotations, synthesized)
 
     def _claim(self, ref: UnitRef, span: Span, flags: tuple[Flag, ...] = ()) -> None:
         self.claims.append((ref, span))

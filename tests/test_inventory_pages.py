@@ -6,7 +6,6 @@ is generated here; fabricated content only."""
 
 from __future__ import annotations
 
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from redaction_verifier.inventory.pages import PageTreeRule
 from redaction_verifier.ledger import FlagReason
 
 from .conftest import requires_qpdf
-from .steps import charged_steps
+from .steps import charged_steps, step_cost
 
 # Lines the inventory executes per unit of work the page walk charges, at
 # most (#94): coarser than the graph's charges (measured 11-34 lines a unit,
@@ -234,14 +233,6 @@ def _wide(pages: int, updates: int) -> bytes:
     return bytes(w.out)
 
 
-def _timed(data: bytes) -> tuple[float, int]:
-    """(process time, work charged) of building *data*'s inventory."""
-    budget = Budget(file_size=len(data))
-    started = time.process_time()
-    build_inventory(data, budget=budget)
-    return time.process_time() - started, budget.work
-
-
 def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
     # Each update that touches the tree re-reads it: revisions x pages, by
     # design (ADR 0011 item 7). All of it is charged -- the work grows as
@@ -263,17 +254,27 @@ def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
     assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(len(large)), (w_s, w_l)
 
 
-def test_rereading_a_wide_tree_costs_its_charged_work_in_wall_clock_too() -> None:
+def test_rereading_a_wide_tree_costs_its_charged_work_in_wall_clock_too(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     # The backstop for work done inside C (a linear `in` on a list, a copy:
-    # review of #113): wall-clock time per charged unit does not grow with
-    # the input. Main's bound and sizes; measured 2.0x, and 3.6x with
-    # `list(self.kept)` scanned per page. Best of two: a loaded machine
-    # only slows a run.
+    # review of #113): the page walk's time per unit it charges does not
+    # grow with the input. The lump PAGE_RECORD_WORK charges are left out
+    # (set to 0 here; step_cost asserts the budget never runs out): they weigh
+    # more in the small file, which had left the clean ratio at 2.0-2.7x
+    # against a 3x bound. Measured clean 1.03-1.22x (3.10, 3.12), and with
+    # `list(self.kept)` scanned per page 1.76-1.91x on 3.10 (CI's uncovered
+    # leg), 1.94-2.25x on 3.12: 1.5x leaves ~1.2x room each way. Under
+    # coverage (3.12) that mutant reads 1.02-1.18x and passes: only the
+    # uncovered leg catches it, as on main. Best of three at each size: a
+    # loaded machine only slows a run.
+    from redaction_verifier.inventory import pages as module
+    monkeypatch.setattr(module, "PAGE_RECORD_WORK", 0)
     per_unit = []
     for data in (_wide(100, 100), _wide(800, 800)):
-        runs = [_timed(data) for _ in range(2)]
+        runs = [step_cost(data, "build_pages") for _ in range(3)]
+        # The work charged is the same on every run (deterministic).
         per_unit.append(max(min(t for t, _ in runs), 0.02) / runs[0][1])
-    assert per_unit[1] < 3 * per_unit[0], per_unit
+    assert per_unit[1] < 1.5 * per_unit[0], per_unit
 
 
 @requires_qpdf
