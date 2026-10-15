@@ -347,7 +347,12 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     `superseded`) and, for page content, on its page. Where the
     expected exit is `2`, a warning with the rule and storage will do;
     where it is `1`, a warning alone is a **downgrade**. A file that
-    exits non-zero for another secret does not excuse an instance. One
+    exits non-zero for another secret does not excuse an instance. In a
+    ⚑ cell (found but unreadable: `orphaned.font`, `orphaned.pixels`,
+    ...) the verifier reports the place, by design with no rule, so a
+    warning without a rule in the instance's storage covers it; that is
+    counted as its own outcome, **flagged**, and covers every instance
+    stored there. One
     report entry cannot vouch for two instances: a one-to-one matching
     of instances to the entries naming them decides, and an instance it
     cannot cover is **ambiguous**, not a hit. Instances in a known-gap
