@@ -321,6 +321,26 @@ def test_recorder_records_every_validated_match_not_only_the_first():
     assert set(recorder.joins) == {(record_key("s", "ssn", "****7890"), "hex-id")}
 
 
+def test_recorder_classifies_by_the_rules_class_not_its_name():
+    # The case library names its class rule "Any SSN": the dashed SSN must
+    # still be "formatted", and the email class still an address.
+    from redaction_verifier.matching import patterns
+
+    regex, validator = patterns.BUILTIN_PATTERN_CLASSES["ssn"]
+    named = patterns.PatternRule("Any SSN", re.compile(regex), validator)
+    regex, validator = patterns.BUILTIN_PATTERN_CLASSES["email"]
+    mail = patterns.PatternRule("Contact", re.compile(regex), validator)
+    custom = patterns.PatternRule("Ref", re.compile(r"REF-\d{3}-\d{2}-\d{4}"))
+    recorder = Recorder("s")
+    recorder.install()
+    try:
+        patterns.match_patterns("x 234-56-7890 a.b@example.org REF-234-56-7890", [named, mail, custom])
+    finally:
+        recorder.uninstall()
+    assert recorder.shapes == {"Any SSN": {"formatted"}, "Contact": {"email-address"},
+                               "Ref": {"alnum-id"}}  # a custom pattern: never "formatted"
+
+
 # ── Recorder parity over the case library ──────────────────────────────
 # Every case with a pattern rule, scanned in-process with and without the
 # recorder installed: the report must be identical, so the measurement
@@ -361,6 +381,7 @@ def test_recorder_leaves_the_report_unchanged(case, tmp_path):
     for name in ("exit_code", "error", "findings", "warnings"):
         assert recorded.report[name] == plain.report[name], name
     # And every class finding joins to a shape.
+    assert all(shape != "classifier-error" for _, shape in recorder.joins)
     keys = {key for key, _ in recorder.joins}
     classes = {r["name"] for r in case.rules if "class" in r}
     for f in recorded.report["findings"]:

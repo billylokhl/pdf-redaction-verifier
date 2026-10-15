@@ -91,9 +91,10 @@ class Recorder:
             text = patterns._fold_for_patterns(raw_text)
             for rule in rules:
                 first: tuple[str, str] | None = None
+                cls = _builtin_class(rule)
                 for start, end in _validated_matches(rule, text):
                     try:
-                        shape = classify(rule.name, text, start, end)
+                        shape = classify(cls, text, start, end)
                     except Exception:
                         shape = "classifier-error"
                     self.shapes.setdefault(rule.name, set()).add(shape)
@@ -117,6 +118,18 @@ class Recorder:
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload))
         os.replace(tmp, path)
+
+
+def _builtin_class(rule: Any) -> str:
+    """The built-in class a rule is (its regex is that class's own), so a
+    rule named otherwise ("Any SSN") is classified as its class; a custom
+    pattern gets the empty class, which no class-specific shape fits."""
+    from redaction_verifier.matching.patterns import BUILTIN_PATTERN_CLASSES
+
+    for name, (source, _validator) in BUILTIN_PATTERN_CLASSES.items():
+        if rule.regex.pattern == source:
+            return name
+    return ""
 
 
 def _validated_matches(rule: Any, text: str) -> Iterator[tuple[int, int]]:

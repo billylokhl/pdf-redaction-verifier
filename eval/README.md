@@ -724,8 +724,10 @@ are — `3-2-4`, `3-3-4`, fours — decided first, so "SSN123-45-6789" stays
 `D:` date, a `YYYYMMDDhhmm` timestamp, epoch milliseconds — never epoch
 seconds, which are also every phone number in area codes 201–220),
 `alnum-id`, `number-list` (separators, grouped otherwise), `bare-digits`
-or `email-address`. Where the evidence is thin it errs toward the shapes
-no option below demotes. The record file holds only shapes and, per hit,
+or `email-address`. A rule is classified as the built-in class whose
+regex it is, whatever its name (the case library's "Any SSN" is `ssn`);
+a custom pattern fits no class-specific shape. Where the evidence is thin
+it errs toward the shapes no option below demotes. The record file holds only shapes and, per hit,
 a key salted with a per-run secret that is never written, so neither the
 matched text nor the masked sample can be recovered from it. Each hard
 finding in the `--json` report is joined to its hit's shape through that
