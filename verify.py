@@ -226,6 +226,9 @@ try:
     from redaction_verifier.views import OCR_DPI as OCR_DPI
     from redaction_verifier.views import OCR_GENUINE_READINGS as OCR_GENUINE_READINGS
     from redaction_verifier.views import TEXT_GENUINE_READINGS as TEXT_GENUINE_READINGS
+    from redaction_verifier.views import TEXT_SEAM_READINGS as TEXT_SEAM_READINGS
+    from redaction_verifier.views import TEXT_TAILS_INTO_NEXT_PAGE as TEXT_TAILS_INTO_NEXT_PAGE
+    from redaction_verifier.views import TEXT_SCATTER_READINGS as TEXT_SCATTER_READINGS
     from redaction_verifier.views import _OCR_IMPORTS_OK as _OCR_IMPORTS_OK
     from redaction_verifier.views import _join_cluster as _join_cluster
     from redaction_verifier.views import _reconstruct as _reconstruct
@@ -295,11 +298,12 @@ EXIFTOOL_FILESYSTEM_FIELDS: frozenset[str] = frozenset({
 # PHASE 2/3: Text and OCR views — moved to redaction_verifier.views
 # ──────────────────────────────────────────────────────────────────────────
 # docs/REDESIGN.md §4, §6: the layout-aware visual text extractor
-# (_reconstruct, _join_cluster, extract_visual_text, TEXT_GENUINE_READINGS
-# and the line-clustering tolerance constants) and the Apple Vision OCR
-# bridge (_vision_recognize_batch, extract_ocr_text, OCR_DPI,
-# _OCR_IMPORTS_OK) now live in redaction_verifier.views, re-exported above
-# in the single guarded block.
+# (_reconstruct, _join_cluster, extract_visual_text, TEXT_GENUINE_READINGS,
+# TEXT_SEAM_READINGS, TEXT_TAILS_INTO_NEXT_PAGE and the line-clustering
+# tolerance constants) and the Apple Vision OCR bridge
+# (_vision_recognize_batch, extract_ocr_text, OCR_DPI, _OCR_IMPORTS_OK) now
+# live in redaction_verifier.views, re-exported above in the single
+# guarded block.
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -329,7 +333,11 @@ def scan_page_layer(
     note: str,
     patterns: Sequence[PatternRule] = (),
     hard_variants: int = 1,
+    seam_variants: int | None = None,
+    tails_into_next: Sequence[int] = (),
     cross_page_reading: int = 0,
+    scatter_readings: Sequence[int] = (),
+    scatter_window: int = 5,
     fail_fast: bool = False,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
@@ -337,34 +345,61 @@ def scan_page_layer(
     The extractor returns several readings per page. The first
     *hard_variants* are genuine reading orders; any others are
     reconstructions. Callers set it to the number of genuine readings:
-    TEXT_GENUINE_READINGS for Text, OCR_GENUINE_READINGS for OCR.
+    TEXT_GENUINE_READINGS for Text, OCR_GENUINE_READINGS for OCR. The
+    first *seam_variants* of those (default: all of them) also feed the
+    hard page seam; for Text, TEXT_SEAM_READINGS. The tail of each reading
+    in *tails_into_next* also meets the next page's first reading in the
+    manual-review net; for Text, TEXT_TAILS_INTO_NEXT_PAGE.
     *cross_page_reading* is the reading the cross-page pattern scan reads
     (manual review only): OCR's raw Vision reading, whose lines hold a
-    vertical line no upright re-read confirmed whole.
+    vertical line no upright re-read confirmed whole. In each reading of
+    *scatter_readings* (for Text, TEXT_SCATTER_READINGS) a known value
+    assembled from two or three pieces of different lines within
+    *scatter_window* consecutive lines, in any order
+    (SecretMatcher.scattered), is a manual-review warning: within a page,
+    or across a break from the previous page's last lines to this page's
+    first ones — a value split around a header, footer or other text, or
+    with its halves in reverse order. Never a finding.
 
     Known values:
     - hard: on one line of a genuine reading; or running from the last
-      line of a page onto the first line of the next page, in a genuine
-      reading;
+      line of a page onto the first line of the next page, in the same
+      seam reading;
     - manual review: on one line of a reconstructed reading only, when a
       page's lines are joined, or crossing a page break any other way
       (other lines, blank or unreadable pages in between).
     Each page break is checked on its own, so every place a value crosses
-    one is reported where it happens.
+    one is reported where it happens. Every reading, genuine or not,
+    keeps its own tail for that manual-review net. For Text, reading 4
+    (the visible text, each stretch of a line between column breaks read
+    on across the visible edge) feeds the hard seam; readings 5-6 feed
+    only the net: their last column may be off-page text, which does not
+    run on into the next page. The tails of the off-page reading (3) and
+    of reading 4 also meet the next page's visible horizontal reading (0)
+    in the net, so a value whose first half lies off the page, below or
+    beside its last line, and whose second half opens the next page is
+    reported for review; reading 9 (all horizontal text, visible or not)
+    meets itself across the break, so one whose second half lies off the
+    next page, above its top edge, is too.
 
-    Pattern rules match per visual line of the genuine readings for hard
-    findings, aggregated per rule across pages. Matches that appear only
-    in fused multi-line text, in reconstructed readings, or across page
-    boundaries are manual-review warnings.
+    Pattern rules match per visual line of every genuine reading for hard
+    findings (for Text, the readings across the visible edge included),
+    aggregated per rule across pages. Matches that appear only in fused
+    multi-line text, in reconstructed readings, or across page boundaries
+    (the first reading only) are manual-review warnings.
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
     """
     keep = max(matcher.max_len - 1, 0)   # enough of one side to straddle a join
     # Per reading: the last `keep` characters read so far (the tail a match
-    # crossing into the next page must start in), and — genuine readings
+    # crossing into the next page must start in), and — seam readings
     # only — the page number and end of the last line, for the seam.
+    seams = hard_variants if seam_variants is None else min(seam_variants, hard_variants)
     tails: dict[int, str] = {}
+    tail_page: dict[int, int] = {}       # the page that last fed each tail
+    # Per scatter reading: (page number, its last scatter_window-1 lines).
+    scatter_tail: dict[int, tuple[int, list[str]]] = {}
     last_line: dict[int, tuple[int, str]] = {}
     cross_page_patterns = PatternScanner(patterns, collapse_separators=True)
     layer_hard: dict[str, tuple[list[int], str]] = {}
@@ -396,11 +431,11 @@ def scan_page_layer(
                     report.record(layer, secret.name, f"page {page_no} ({note})", page=page_no)
 
         # Hard: the page seam — a value running from the previous page's
-        # last line onto this page's first line, in a genuine reading. A
+        # last line onto this page's first line, in a seam reading. A
         # page that failed or held no text never updates last_line, so it
         # breaks the adjacency: what lies between the halves is unseen.
         seam_here: set[str] = set()
-        for vi, lines in enumerate(norm_lines[:hard_variants]):
+        for vi, lines in enumerate(norm_lines[:seams]):
             prev = last_line.get(vi)
             if lines and prev and prev[0] == page_no - 1:
                 for name in matcher.crossing(prev[1], lines[0]):
@@ -428,39 +463,76 @@ def scan_page_layer(
                     rule=secret.name,
                     adjacency="JOINED_LINES",
                 )
+        # Manual review: a value scattered over nearby lines of the page.
+        for vi in scatter_readings:
+            if vi >= len(norm_lines):
+                continue
+            for name in matcher.scattered(norm_lines[vi], scatter_window):
+                if name in hard_here or name in page_warned:
+                    continue
+                page_warned.add(name)
+                report.warn(
+                    "REVIEW_CROSS_LINE",
+                    layer,
+                    CROSS_LINE_WARNING.format(layer=layer, page=page_no, name=name),
+                    storage="live",
+                    page=page_no,
+                    rule=name,
+                    adjacency="JOINED_LINES",
+                )
 
         # Manual review: anything else crossing into this page from the text
         # before it, in any reading — the net that keeps every page-break
         # split, however joined, from being silent.
-        crossing_warned: set[str] = set()
-        for vi, lines in enumerate(norm_lines):
-            full = "".join(lines)
-            tail = tails.get(vi, "")
+        # Each reading's tail meets its own head; the tails_into_next
+        # readings' tails, when the previous page fed them, also meet the
+        # first reading's head.
+        fulls = ["".join(lines) for lines in norm_lines]
+        joins = [(tails.get(vi, ""), full) for vi, full in enumerate(fulls)]
+        if fulls:
+            joins += [(tails[vi], fulls[0]) for vi in tails_into_next
+                      if tail_page.get(vi) == page_no - 1]
+        crossing_names: list[str] = []
+        for tail, full in joins:
             if keep and tail and full:
-                for name in matcher.crossing(tail, full[:keep]):
-                    if name in seam_here or name in crossing_warned:
-                        continue
-                    crossing_warned.add(name)
-                    report.warn(
-                        "REVIEW_CROSS_PAGE",
-                        layer,
-                        CROSS_PAGE_WARNING.format(layer=layer, page=page_no, name=name),
-                        storage="live",
-                        page=page_no,
-                        rule=name,
-                        adjacency="JOINED_PAGES",
-                    )
-            if keep and full:
-                tails[vi] = (tail + full)[-keep:]
-            if vi < hard_variants and keep and lines:
+                crossing_names += matcher.crossing(tail, full[:keep])
+        # And a value scattered over the previous page's last lines and
+        # this page's first ones, around a header or footer.
+        for vi in scatter_readings:
+            prev_lines = scatter_tail.get(vi)
+            if vi < len(norm_lines) and prev_lines and prev_lines[0] == page_no - 1:
+                head = norm_lines[vi][:scatter_window - 1]
+                crossing_names += matcher.scattered(
+                    prev_lines[1] + head, scatter_window, across=len(prev_lines[1]))
+        crossing_warned: set[str] = set()
+        for name in crossing_names:
+            if name in seam_here or name in crossing_warned:
+                continue
+            crossing_warned.add(name)
+            report.warn(
+                "REVIEW_CROSS_PAGE",
+                layer,
+                CROSS_PAGE_WARNING.format(layer=layer, page=page_no, name=name),
+                storage="live",
+                page=page_no,
+                rule=name,
+                adjacency="JOINED_PAGES",
+            )
+        for vi in scatter_readings:
+            if vi < len(norm_lines) and norm_lines[vi]:
+                scatter_tail[vi] = (page_no, norm_lines[vi][-(scatter_window - 1):])
+        for vi, lines in enumerate(norm_lines):
+            if keep and fulls[vi]:
+                tails[vi] = (tails.get(vi, "") + fulls[vi])[-keep:]
+                tail_page[vi] = page_no
+            if vi < seams and keep and lines:
                 last_line[vi] = (page_no, lines[-1][-keep:])
 
         # Pattern rules, two tiers. Hard findings come only from single
-        # visual lines of the primary variant (natural reading order) —
-        # matches that need fused lines, vertical column reconstructions,
-        # or secondary variants are the same coincidental-concatenation
-        # class the value pipeline demotes, so they become manual-review
-        # warnings instead of hard FAILs.
+        # visual lines of the genuine readings — matches that need fused
+        # lines or vertical column reconstructions are the same
+        # coincidental-concatenation class the value pipeline demotes, so
+        # they become manual-review warnings instead of hard FAILs.
         page_hard: dict[str, str] = {}
         page_soft: dict[str, str] = {}
         if variants:
@@ -3432,6 +3504,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         doc, matcher, report,
                         layer="Text", extractor=extract_visual_text, note="visual text layer",
                         hard_variants=TEXT_GENUINE_READINGS,
+                        seam_variants=TEXT_SEAM_READINGS,
+                        tails_into_next=TEXT_TAILS_INTO_NEXT_PAGE,
+                        scatter_readings=TEXT_SCATTER_READINGS,
                         patterns=patterns, fail_fast=args.fail_fast,
                     )
                 except Exception as exc:

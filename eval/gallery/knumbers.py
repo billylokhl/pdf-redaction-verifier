@@ -41,7 +41,8 @@ K12-K36's (``caselib/families/gaps.py``) don't carry that prefix, so
 these were matched by hand against §8's table, cell id by cell id.
 
 K8 has no case: §8 says it was fixed in the current tool before this
-gallery existed.
+gallery existed. K9 and K34 were fixed after it: their cases are now
+ordinary caught leak cases, so they have no K-number here any more.
 """
 
 from __future__ import annotations
@@ -62,7 +63,8 @@ CASE_TO_K: dict[str, int] = {
     "page.hidden-layer-outlines": 6,
     "file.after-final-eof": 7,
     # K8: fixed in the current tool (§8) — no case.
-    "page.runs-off-right-edge-embedded-font": 9,
+    # K9: fixed later (§8); its case, page.runs-off-right-edge-embedded-font,
+    # is now a caught leak case, no longer a known gap.
     "leftover.single-glyph-show-runs": 10,
     "leftover.untyped-text-operator-words": 11,
     "page.pixels-under-box": 12,
@@ -87,7 +89,7 @@ CASE_TO_K: dict[str, int] = {
     "file.after-final-eof-font-coded": 31,
     "file.after-final-eof-pixels": 32,
     "file.after-final-eof-container": 33,
-    "layout.two-column-wrap": 34,
+    # K34: fixed at the review tier (§8); layout.two-column-wrap is now a caught case.
     "page.extreme-coordinates": 35,
     "page.overprinted-embedded-font": 36,
     "page.image-extra-rows": 37,
@@ -97,8 +99,8 @@ CASE_TO_K: dict[str, int] = {
 
 
 def documented_k_numbers(redesign_text: str) -> set[int]:
-    """Every K-number §8 documents as a still-open gap (excludes K8,
-    which §8 itself says was fixed) — the source of truth
+    """Every K-number §8 documents as a still-open gap (excludes the ones
+    §8 itself says were fixed: K8, K9, K34) — the source of truth
     ``CASE_TO_K``'s values are checked against."""
     try:
         start = redesign_text.index(_SECTION_START)

@@ -292,8 +292,9 @@ The resolution is that **not all matches are equally trustworthy**:
 
 - **Hard findings (exit 1)** for a pattern come only from surfaces where
   the matched characters were genuinely adjacent in the document: one
-  visual line of the horizontal reading or of either OCR reading, one
-  decoded PDF literal, one metadata value.
+  visual line of a genuine page reading (horizontal, rotated, off-page or
+  across the visible edge) or of either OCR reading, one decoded PDF
+  literal, one metadata value.
 - **Soft findings (exit 2, manual-review warnings)** come from anything
   that required fusing separate things: multi-line text, vertical column
   reconstructions, adjacent literals, page boundaries.
@@ -307,7 +308,8 @@ see at all is a different matter — see Known limitations.)
 specific, so a split at a *structural* seam is treated as deliberate, not
 coincidental: across the strings of one PDF object, and from the last
 line of one page onto the first line of the next page, in a genuine
-reading — the natural continuation of the text. Every other join stays
+reading of the visible or the off-page text — the natural continuation
+of the text. Every other join stays
 manual review: two lines within a page, a vertical column of an ordinary
 page, a page break reached only by also joining other lines, or a break
 across a blank, image-only or unreadable page (what lies between the
@@ -355,13 +357,40 @@ Text is read along the direction it was written. PyMuPDF reports each
 line's writing direction, so horizontally written glyphs form the
 horizontal reading and glyphs written vertically (a rotated matrix) are
 read in their own columns, top-down and bottom-up: three *genuine*
-readings, all eligible for hard findings. Two more readings stack *every*
-glyph into vertical columns. They are *reconstructions*: the only way to
-read a value written one character per line, but on an ordinary page a
-column stacks one glyph from each of many lines — a ledger's last digits,
-a numbered list's numbers — which assembled the README's own example
-value out of a clean numbered list. Their matches are only ever manual
-review, for values and patterns alike.
+readings, all eligible for hard findings. Text outside the visible area
+(the crop box ∩ the media box) has a reading of its own, so a slug below
+a page never becomes that page's last line, and the same three
+directions are read again across the visible edge, visible and off-page
+glyphs together, so a value that runs off the page, or is written
+vertically off it, is read whole: seven genuine readings in all. The
+horizontal one keeps only the stretches of a line between column breaks
+that hold a visible glyph, so its last line is the visible text's last
+line read on past the edge, and it feeds the hard page seam; an off-page
+slug a column break away from a page number is left to the off-page
+reading, but one a mere word space away cannot be told from a value
+running past the edge, and is read with it (a known false alarm). The
+vertical ones also read columns wholly off the
+page, whose last column may be a slug that does not run on into the next
+page, so they feed the seam only at the manual-review tier. Text wholly
+off the page joined with the next page's first line is manual review
+too. Across the edge, lines are told apart with the visible text's
+tolerance, so a large off-page banner cannot merge two lines of visible
+fine print. Three more readings are *reconstructions*, whose matches are
+only ever manual review, for values and patterns alike. Two stack
+*every* visible glyph into vertical columns: the only way to read a
+value written one character per line, but on an ordinary page a column
+stacks one glyph from each of many lines — a ledger's last digits, a
+numbered list's numbers — which assembled the README's own example
+value out of a clean numbered list. The third reads all the horizontal
+text, visible or not, so a value formed by visible and off-page parts —
+a column break apart on one line, wrapped onto an off-page line, or
+carried over a page break onto off-page text above the next page — is
+reviewed rather than silent (the owner's decisions, 2026-10-11), at the
+cost, by design, of a review warning on the odd clean page whose
+visible text and an off-page slug happen to form a value. Across the
+edge, a line's column breaks, like its tolerance, are measured on the
+visible glyphs alone, so off-page text on a table row's baseline cannot
+fuse the row's visible cells into one number.
 
 OCR is different: both Apple Vision passes (language correction on and
 off) are genuine full-page reads of the same pixels, not reconstructions,
