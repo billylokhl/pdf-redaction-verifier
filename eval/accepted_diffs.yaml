@@ -1559,3 +1559,54 @@
     normalise to the same before/after pair.'
   cell: superseded.font.compact-syntax
   pr: '#13'
+- case: page.oversized-scan
+  old:
+    exit: 0
+    error: null
+    findings: []
+    warnings: []
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - PAGE_FAILED
+        - OCR
+        - null
+      - 1
+  reason: 'OCR size cap (#128): the page is 2400 x 3200 pt, a 10000 x 13334 px render at
+    300 dpi, and Vision reports success on it but returns none of its 8 pt lines, so the
+    reference certified it clean. A page whose render is longer than MAX_OCR_RENDER_SIDE
+    (3510 px) on a side is still read and also gets PAGE_FAILED: exit 2. Measured on the
+    weekly macOS 26 runner (on macOS 27 eval-ref-0 fails every OCR page, so there is no
+    difference there).'
+  cell: live.pixels.oversized-page
+  pr: '#128'
+- case: page.oversized-scan-large-print
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - PAGE_FAILED
+        - OCR
+        - null
+      - 1
+  reason: 'OCR size cap (#128): as page.oversized-scan, in 48 pt, which Vision reads; the
+    page is still read, so the hard finding stays (exit 1) and the size flag is added.
+    Measured on the weekly macOS 26 runner.'
+  cell: live.pixels
+  pr: '#128'
