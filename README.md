@@ -355,30 +355,62 @@ named, not that you named everything.
 [COVERAGE.md](COVERAGE.md) is the full known map; its ✗ cells are where a
 secret can still be **not detected** (exit `0`). In short:
 
-- **Pixels the tool does not OCR:** under a box drawn over an image, off
-  the page, in page or XMP thumbnails, in embedded files other than
-  listed attachments, and in image data beyond an image's declared size
-  (rows past its declared height are never drawn). One picture cut into
-  thin strips, each too small to read alone, is also missed when a box
-  covers the strips, when they are not drawn next to each other, or when
-  they are never drawn.
-- **Content no page shows:** font-coded text or images in a switched-off
-  optional-content layer, a hidden annotation's appearance, or a page
-  resource that is never drawn (plain text there *is* read).
-- **Unindexed bytes:** anything after the final `%%EOF`, in comments, or in
+- **Pixels the tool does not OCR:** under a box drawn over an image
+  (K12), off the page (K14), in page or XMP thumbnails (K24, K22, K23),
+  in embedded files other than listed attachments (K27), and in image
+  data beyond an image's declared size (rows past its declared height
+  are never drawn, K37). One picture cut into thin strips, each too
+  small to read alone, is also missed when a box covers the strips
+  (K38), when they are not drawn next to each other, or when they are
+  never drawn.
+  <!-- gap-cells: live.pixels.under-box off-page.pixels thumbnail.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
+- **Content no page shows:** font-coded text (K15) or outlines and
+  images (K6) in a switched-off optional-content layer, a hidden
+  annotation's appearance (K16, K17), or a page resource that is never
+  drawn (K18, K19; plain text there *is* read).
+  <!-- gap-cells: oc-off.font oc-off.pixels annot-appearance.font annot-appearance.pixels unused-resource.font unused-resource.pixels -->
+- **Unindexed bytes:** anything after the final `%%EOF` (plain text K7,
+  font-coded text K31, pixels K32, a container K33), in comments, or in
   an object whose table entry is marked free.
+  <!-- gap-cells: unindexed.plain unindexed.font unindexed.pixels unindexed.container -->
+- **Leftover streams nothing reads or flags:** text after a stream's
+  compression end marker, in a live page (K1) or a leftover stream
+  (K2); leftover plain text labelled as a font program or a 1×1 image
+  (K3, K4); leftover text converted to outlines (K5); a leftover image,
+  or one picture cut into strips, just under the 8×32 size gate yet
+  still readable when enlarged (K21); leftover font-coded text shown one
+  character per string (K10); and a removed attachment whose text holds
+  three words that are also content operators, so it is taken for page
+  content (K11).
+  <!-- gap-cells: live.plain.after-stream-end orphaned.plain.after-stream-end orphaned.plain.mislabelled orphaned.pixels.outlines orphaned.pixels.small orphaned.font.single-glyph-strings orphaned-attachment.plain.operator-words -->
 - **Leftover text in a font that maps ordinary-looking codes to other
-  glyphs**, and **containers encoded as text** (a base64 email part, an
-  HTML `data:` URI).
+  glyphs** (K20), **containers encoded as text** (a base64 email part, an
+  HTML `data:` URI; K25), and a zip container in an embedded file other
+  than a listed attachment (K28).
+  <!-- gap-cells: orphaned.font.ordinary-codes attachment.container.text-encoded embedded-other.container -->
+- **Font-coded text no reading recovers:** off the page in an embedded
+  font whose `/ToUnicode` map was stripped (K13), and text drawn from the
+  same starting point as other text, so the two interleave glyph by
+  glyph (K36).
+  <!-- gap-cells: off-page.font.no-unicode live.font.overprinted -->
 - **Pattern rules** on embedded files other than attachments, on scripts
   stored as streams on links, fields or pages, and on an image's own raw
   sample or codec bytes (known values are still found there, as manual
   review — a known value hidden in an image's raw samples, or in a JPEG
   comment segment, is a Binary-layer manual-review warning today, but the
-  same secret found only by a pattern rule is not).
+  same secret found only by a pattern rule is not; K26, K29, K30).
+  <!-- gap-cells: embedded-other.plain.pattern-rules javascript.plain.pattern-rules-in-streams private-data.plain.pattern-rules live.pixels.hidden-samples.pattern-rules -->
 - **Image data beyond the main picture:** a JPEG's own EXIF (or other)
   thumbnail can hold a second, fully decodable image the tool never
-  looks at — only the main picture is ever drawn or OCR'd.
+  looks at — only the main picture is ever drawn or OCR'd (K39).
+  <!-- gap-cells: live.pixels.exif-thumbnail -->
+- **A dense sideways scan on macOS 27:** on a scanned page of 40 small
+  lines turned 90°, Vision reports success but leaves some lines out,
+  and nothing compares its reading with the ink on the page. OCR now
+  also reads such a page turned, which finds the value, but only as
+  manual review (exit `2`), not a finding (K43; on macOS 26 Vision reads
+  the line and the page exits `1`).
+  <!-- gap-cells: live.pixels.ocr-dropped-line -->
 - **Split values:** a value split around other text into more than three
   pieces, or with its pieces more than five lines apart (a page-break
   split with a header, footer or page number between its halves, a value
@@ -389,11 +421,13 @@ secret can still be **not detected** (exit `0`). In short:
   the line tolerance, which merges them into one interleaved line; a
   page-break split whose halves are written in different directions (one
   horizontal, one vertical);
-  dash-less pattern numbers wrapped at a line or page break; text at
-  extreme coordinates.
+  dash-less pattern numbers wrapped at a line or page break; a value
+  split across a page break, or over several pages, that only a pattern
+  rule looks for; text at extreme coordinates (K35).
+  <!-- gap-cells: match.letter-spaced-stack match.tight-fine-print match.mixed-direction-split match.undashed-wrap match.pattern-split match.extreme-coordinates -->
 
-Leftover images, leftover text in non-plain font codes, and attachments
-that are not text are **flagged** (exit `2`) rather than read: a clean
+Other leftover images, leftover text in non-plain font codes, and
+attachments that are not text are **flagged** (exit `2`) rather than read: a clean
 document containing them cannot certify as `0` until the tool learns to
 read them.
 
@@ -401,10 +435,11 @@ Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the
 next page's first line); a value assembled down a vertical column or
 through several page-number-only pages is only ever manual review; and
-decompressed font tables can raise coincidental Binary warnings (see
-Binary); a document `/ID` written as hex text whose digits happen to
-form an SSN, card or phone number is manual review under a pattern
-rule. Prefer longer, more specific values.
+decompressed font tables, or an image's raw bytes, can raise
+coincidental Binary warnings (see Binary); a document `/ID` written as
+hex text whose digits happen to form an SSN, card or phone number is
+manual review under a pattern rule. Prefer longer, more specific values.
+<!-- gap-cells: false-alarm.slug-beside-visible-line false-alarm.binary-value-collision false-alarm.generated-id-digits -->
 
 A rewrite that closes these gaps by accounting for every byte of the
 file, rather than searching the places this tool knows about, is planned
