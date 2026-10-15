@@ -59,8 +59,10 @@ def page_break_slug(path: Path) -> None:
 
 @leak("layout.page-break-bates-footer", "match.page-break-furniture",
       "A code name split across a page break, with a Bates number printed as a footer "
-      "between the halves: the joined reading puts the footer between BLUE and HERON.",
-      known_gap=KnownGap("match.page-break-furniture", expect(0)),
+      "between the halves: the joined reading puts the footer between BLUE and HERON, "
+      "so only the review net, which assembles a value from nearby lines around such "
+      "furniture, finds it.",
+      expected=expect(2, warnings=(("REVIEW_CROSS_PAGE", "live"),)),
       mistake=NOBODY, recovery=READ_BREAK)
 def page_break_bates(path: Path) -> None:
     def extra(p: fitz.Page) -> None:
