@@ -543,7 +543,7 @@ Each entry has a `name` and exactly one of:
 | --- | --- |
 | `exact_values` | value rules (normalized matching) |
 | `patterns` | pattern rules, compiled `IGNORECASE` — the same flags the redactor uses |
-| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card` (informational notices under `--no-strict-classes`, like any built-in class; a YAML config has no per-type `strict`) |
+| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card`. Like any built-in class, their matches are informational notices under `--no-strict-classes`; `--strict-classes` makes the config's entity types count toward the verdict (a YAML config has no per-type `strict`) |
 | `backend`, `model`, `llm_url`, `ollama_url`, `scrub_metadata` | ignored |
 | any other key | warning (exit `2`) — a typo or a newer redactor key is surfaced, not skipped |
 

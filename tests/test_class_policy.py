@@ -176,12 +176,28 @@ def test_fail_fast_does_not_stop_on_a_notice(tmp_path):
 
 def test_fail_fast_reads_on_past_a_notice_to_a_listed_value(tmp_path):
     # A class hit on page 1 must not end the scan: the listed value is on
-    # page 2 (review round 1, finding 1: this exited 0).
-    rules = SSN_CLASS + [{"name": "Target", "value": "Zebraquokka"}]
-    proc, data = _run(tmp_path, ("Applicant 234-56-7890", "Codename Zebraquokka"), rules,
-                      "--no-strict-classes", "--fail-fast")
+    # page 2, in an embedded Identity-H font, so only the Text (or OCR)
+    # layer can read it (review round 1, finding 1: this exited 0).
+    from caselib.pdfkit import embedded_font
+
+    pdf = tmp_path / "f.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((50, 80), "Applicant 234-56-7890")
+    page = doc.new_page()
+    page.insert_text((50, 80), "Codename Zebraquokka", fontname=embedded_font(page))
+    doc.save(str(pdf))
+    doc.close()
+    rp = tmp_path / "r.json"
+    rp.write_text(json.dumps(SSN_CLASS + [{"name": "Target", "value": "Zebraquokka"}]))
+    out = tmp_path / "o.json"
+    proc = subprocess.run([sys.executable, str(REPO_ROOT / "verify.py"), "--target", str(pdf),
+                           "--secrets", str(rp), "--json", str(out),
+                           "--no-strict-classes", "--fail-fast"],
+                          capture_output=True, text=True, timeout=300)
+    data = json.loads(out.read_text())
     assert proc.returncode == 1
     assert {f["rule"] for f in data["findings"]} == {"Target"}
+    assert ("Target", "Text") in {(f["rule"], f["layer"]) for f in data["findings"]}
 
 
 def test_a_malformed_strict_is_refused_only_when_classes_inform(tmp_path):
