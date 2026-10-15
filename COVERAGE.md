@@ -19,7 +19,9 @@ clean.
 A cell that relies on OCR assumes the OCR layer ran. When it cannot run —
 off macOS, without the Vision bridge, on a page where Vision raises an
 error (every page on macOS 27 until the fix in the CHANGELOG), or on a
-page where Vision reports success without delivering both readings —
+page where Vision reports success without delivering both readings, on
+a page where a Vision call does not return within its deadline, or on a
+page too large for Vision to read whole (¹² below) —
 the run never exits `0` (`2`, or `1` if another layer found a leak). If
 Vision delivers a reading without error but misses text, nothing flags
 it: the OCR cells' ✓ assumes Vision's reading (¹² below).
@@ -34,7 +36,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹² | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ⚑ OCR on a page too large for Vision¹² · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹² | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map, also written vertically or running across the page edge · ✗ if the font has no Unicode map | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
@@ -127,6 +129,19 @@ turned, a one-character-per-line stack becomes a row Vision misreads as
 a number. A page whose dropped lines are horizontal, or where Vision
 reports no vertical line at all, can still pass as clean; nothing yet
 compares Vision's reading with the ink on the page ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
+How much Vision reads also depends on the size of the print against the
+render's longest side. On macOS 27, a 2400 × 3200 pt page (10000 ×
+13334 px at OCR's 300 dpi) came back without any of its ten lines of
+8 pt text ([#128](https://github.com/billylokhl/pdf-redaction-verifier/issues/128)); on renders 3600 px long some whole blocks of 8 pt
+print were lost, from 3900 px more, and of 10 pt from 4250 px. A page
+whose render is longer than 3510 px on a side (about 11.7 in: letter and
+A4 pages are below it, legal pages are not) is therefore still read,
+and whatever OCR finds on it counts, but it is also `PAGE_FAILED` (⚑,
+exit `2` when nothing is found, `page.oversized-scan`). The cap is a
+heuristic, not a guarantee: the losses do not grow steadily with size
+and depend on the content, and below it Vision still drops part of a
+block now and then (8 of 20 lines once at 3400 px, 6 of 20 on a
+landscape letter page).
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
@@ -148,6 +163,13 @@ matcher sees it whole. Each is ✗:
 
 - A value split around other text into more than three pieces, or with
   its pieces more than five lines apart (see the review net below).
+- A name written in a form the rules do not list: a reordered name
+  ("TESTPERSON, JORDAN Q" against "Jordan Q. Testperson") or a fragment
+  of one, such as a first name alone inside an email address. A value
+  rule is matched whole after normalization (case, punctuation, spacing);
+  the tool generates no reorderings and does not look for parts of a
+  listed value. Not detected unless each form is listed as its own value
+  (see README, Rules file).
 - A letter-spaced value in fine print that the page's reading breaks into
   one-character lines around other text — more than three pieces
   (`match.letter-spaced-stack`).
@@ -161,7 +183,9 @@ matcher sees it whole. Each is ✗:
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
-  one-character-per-line stack or rotated text, or with mixed separators —
+  one-character-per-line stack or rotated text, over four pages, or where
+  the split needs more than the last line before the break, or with
+  mixed separators —
   no reading joins it in a form the pattern accepts, so without a value
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which

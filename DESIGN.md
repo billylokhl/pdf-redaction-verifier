@@ -480,7 +480,17 @@ feeds are batched (per-literal regex sweeps measured ~100x slower), rules
 already matched are skipped, and every subprocess has a deadline — qpdf's
 stream is read under `select`, exiftool runs under `communicate(timeout)`
 — so a stalled tool cannot hang the run. Report samples are
-masked — at most four trailing characters, never more than half — and
+masked — at most four trailing characters, never more than half, and
+none at all (just `****`) when the sample contains an exact value or any
+revealed character is a character of one — per character, not per
+position, because the value search assembles values across characters it
+ignores, across lines and down columns, so any revealed character may be a
+piece of a value found elsewhere (compared both as the form the matcher
+searches and as letters and digits of any script, case, accents and
+punctuation ignored, non-ASCII decimal digits as ASCII; look-alike
+characters from other scripts are not recognised, so OCR-layer samples,
+where misreadings happen, never show a tail at all; the index of exact values is
+built once per run) — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
 OCR's upright re-reads of vertical lines are capped at 64 per page,
@@ -494,7 +504,19 @@ page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
 the #67 page about 0.3 s more than before, of about 5 s). The worst
 case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
 16 unstacked.
-Vision calls themselves have no deadline (as before the re-reads).
+Each Vision call has a deadline of its own (`VISION_CALL_TIMEOUT_S`,
+120 s; #115): `performRequests` has no timeout, and a stalled Vision
+once held a test run for about 25 minutes with no CPU in use. The call
+runs on a worker thread joined with that deadline; past it, its
+requests are cancelled, the thread is left behind (a thread blocked in
+Vision cannot be stopped from Python; it is a daemon, so it never holds
+up the exit) and the page is `PAGE_FAILED`, a re-read or extra reading
+included: a timeout is not one of the read failures those drop. While a
+timed-out call has still not returned, every later call fails at once
+without calling Vision, so a stuck Vision costs one deadline per run,
+not one per call or page. A page whose calls each return in time can
+still take up to its 147 calls' worth of deadlines; that is slow, not
+unbounded.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
@@ -609,12 +631,16 @@ several widgets: that copy adds nothing a reader could not already see,
 and flagging it made nearly every map with an annotation "incomplete". A
 stored, hidden or password classification does not absorb it, because
 the Objects layer does not say which key matched: in a checkbox, it may
-be the tooltip, which a reader sees on hover. A pattern's masked tail is
-dropped from the map when the match contains an exact value or any two
-consecutive revealed characters occur in one, or (for one revealed
-character, which `mask()` shows for a two-character match) that
-character occurs in one; a pattern match drawn on any glyph of an exact
-value's occurrence shows no tail at all.
+be the tooltip, which a reader sees on hover. The map has no masking
+rule of its own: every sample it shows (a box's label, and a `--json`
+finding's sample) is `mask()`'s output with the same index of exact
+values the reports use (#66: only `****` when the sample contains an
+exact value or any revealed character, in either folding, is a character
+of one). The map then checks the tail once more as drawn: escaping a
+character outside Latin-1 adds hex digits (文 is drawn `\u{6587}`), so
+the tail is dropped when its drawn form holds any character of an exact
+value. A pattern match drawn on any glyph of an exact value's occurrence
+shows no tail at all.
 
 Every string the plan keeps from outside its own fixed wording (a rule's
 label, a masked sample, the target's name, an object's role) goes
@@ -694,7 +720,19 @@ the gap is stated rather than implied away.
   checks tells an empty or partial reading from a page with that little
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
-  as clean (#67: on macOS 27, a dense sideways scan whose SSN line
+  as clean, except where the page's size alone says so: Vision reads
+  less of a render the smaller its print is against the render's longest
+  side, so a page whose 300 dpi render is longer than 3510 px on a side
+  (`MAX_OCR_RENDER_SIDE`, about 11.7 in: letter and A4 pages are below
+  it) is read but also `PAGE_FAILED` (#128; measured on macOS 27 on four
+  page shapes and three block positions: every block of 8 and 10 pt read
+  at 3500 and 3509 px, some whole 8 pt blocks lost at 3600 px, more from
+  3900 px, 10 pt ones from 4250 px; the pixel count did not decide it).
+  The cap is a heuristic, not a guarantee: the losses do not grow
+  steadily with size and depend on the content. The check is on the
+  page's size, made before the page is read, never on Vision returning
+  no lines, which a blank page also does. Below the cap Vision can still
+  drop part of a block (#67: on macOS 27, a dense sideways scan whose SSN line
   Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
   docs/REDESIGN.md §8, now manual review through the turned readings
   above, which only a page with a vertical line gets; a raster check is
@@ -721,9 +759,18 @@ the gap is stated rather than implied away.
   thumbnail, a second decoded picture the tool never looks at; pattern
   rules on non-attachment embedded files, on scripts stored as streams on
   actions, and on an image's own raw sample or codec bytes (a known value
-  there is still found, via the Binary layer's raw byte sweep); and the
-  matching limits — page-break splits with something between the halves,
-  multi-column wraps, dash-less pattern wraps, extreme coordinates.
+  there is still found, via the Binary layer's raw byte sweep, when the
+  image is drawn) and on an editor's private data; text after a stream's
+  compression end marker; leftover plain text labelled as a font or an
+  image, leftover outlines, leftover images just under the size gate,
+  leftover one-character strings, and a removed attachment taken for page
+  content; font-coded text off the page without a `/ToUnicode` map or
+  drawn from the same point as other text; a zip in a non-attachment
+  embedded file; and the matching limits — page-break splits with
+  something between the halves, pattern-rule page-break splits in
+  layouts no reading joins, multi-column wraps, dash-less pattern wraps,
+  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
+  a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`

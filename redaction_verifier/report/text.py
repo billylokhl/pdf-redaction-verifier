@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from redaction_verifier.matching import mask
-from redaction_verifier.model import Finding, ScanReport
+from redaction_verifier.model import Finding, MaskIndex, ScanReport
 
 if TYPE_CHECKING:
     from redaction_verifier.rules import RuleSet
@@ -126,8 +126,10 @@ _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
 _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
 
 
-def rule_label(name: str, rules: RuleSet | None, sample: str = "") -> str:
-    """The plain label for rule *name*, with *sample* masked: the human
+def rule_label(name: str, rules: RuleSet | None, sample: str = "",
+               exact: MaskIndex | None = None, *, full: bool = False) -> str:
+    """The plain label for rule *name*, with *sample* masked (mask() with
+    the rules' exact values *exact*; *full* for an OCR sample): the human
     report's, and the visible map's for every rule a shared config names
     (the map numbers legacy JSON rules instead, whose names are the
     user's own words)."""
@@ -137,13 +139,14 @@ def rule_label(name: str, rules: RuleSet | None, sample: str = "") -> str:
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if sample:
-        text += f" {mask(sample)}"
+        text += f" {mask(sample, exact if exact is not None else (), full=full)}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
 
 
-def _label(finding: Finding, rules: RuleSet | None) -> str:
-    return rule_label(finding.secret_name, rules, finding.sample)
+def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = None) -> str:
+    return rule_label(finding.secret_name, rules, finding.sample, exact,
+                      full=finding.layer == "OCR")
 
 
 def _counts(report: ScanReport, rules: RuleSet) -> str:
@@ -217,6 +220,9 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     certified (exit 2).
     """
     name = _sanitize_report_text(pdf_path.name)
+    exact = report.exact_index
+    if rules is not None:
+        exact = MaskIndex([*exact.values, *(f for s in rules.secrets for f in (s.normalized, s.folded) if f)])
     print(f"\n{_BAR}")
     if report.leaked:
         print(f"  [FAIL]  SECRETS ARE STILL IN THIS FILE: {name}")
@@ -234,7 +240,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
         print(_BAR)
         for f in report.findings:
             tag, _ = _where(f)
-            line = (f"  ✖ STILL PRESENT | {_label(f, rules):<36} | {f.layer:<8} | {tag:<15} | "
+            line = (f"  ✖ STILL PRESENT | {_label(f, rules, exact):<36} | {f.layer:<8} | {tag:<15} | "
                     f"{f.location}")
             print(_sanitize_report_text(line))
         _print_meaning(report, rules)

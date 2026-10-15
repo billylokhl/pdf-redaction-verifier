@@ -294,8 +294,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   goes uncompared, each with corpus/caselib/fuzz gate numbers re-measured before merge (any
   measured cost that differs from ADR 0011's figure goes to the owner before merge), its own docs sync
   (README, DESIGN, COVERAGE, eval/README, REDESIGN, CHANGELOG), adversarial review, and its
-  own linearity tests: work counts and wall clock at n vs 8n on that PR's adversarial shape
-  (ADR 0010: work counting alone cannot see uncharged work). Opus implements. The graph lives
+  own linearity tests: work counts at n vs 8n on that PR's adversarial shape, plus (since #94)
+  the lines executed in the inventory's modules per unit of work the step charges
+  (tests/steps.py, deterministic) and a wall-clock backstop for work inside C, sized so a
+  C-level quadratic shows (ADR 0010: work counting alone cannot see uncharged work). Opus
+  implements. The graph lives
   in a new `redaction_verifier/inventory/graph.py`, run by build_inventory after the bodies are
   found and before the budget's flags are gathered (build.py's `self.budget.flags()`), so a
   graph that runs out of budget leaves the file BUDGET_EXHAUSTED, never an unflagged inventory
@@ -322,7 +325,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     when its object stream's home is replaced: an index from home to live members, as
     build's `live`; a reverse index from target number to referencing bodies), so a file of
     many small updates costs its changes times their fan-in; later per-revision walks (7b,
-    7d) still cost revisions x live objects, the budget being the backstop (item 7). Gate:
+    7c, 7d) still cost revisions x live objects, the budget being the backstop (item 7) --
+    for 7c's trees, a revision that changes a tree node a walk read walks every tree again
+    (revisions x tree size; a catalog rewrite that leaves /Names and /PageLabels as written
+    does not). Gate:
     OBJECT_ZERO_REFERENCE leaves the allowlist (with its test,
     tests/test_inventory_values.py, the allowlist cases); the oracle stops normalizing
     references to numbers it does not list (#52 item 1): on an unflagged file every reference
@@ -390,6 +396,33 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     /EmbeddedFiles entries against MuPDF's pdf_load_name_tree (pymupdf.mupdf) and libqpdf's
     name-tree helper (pikepdf.NameTree). Linearity: large trees with many /Kids. Expected
     corpus cost: 0 (ADR 0011).
+    Done (3a-7c PR): scopes.py, RESOURCE_SCOPE -- by type in every live body (/Subtype
+    /Form or /Type3, /PatternType 1; a value by reference resolved, one that does not
+    resolve counting as the type) and by role (a stream under a resource dictionary's
+    /XObject, an image excepted, or /Pattern; or under /AP, directly or by state; a resource
+    dictionary is any /Resources or /DR value), every hop direct or by reference, roles kept
+    incrementally by target; each scope's innermost /Resources as written in
+    `Graph.scopes`. trees.py, NAME_TREE with 9 NameTreeRules; all trees of a revision share
+    one visited set (a node two trees share is reached twice). Review round 1 added: a soft
+    mask's /G as a role (MuPDF runs it as a form whatever its /Subtype); byte 0xAD in a
+    PDFDocEncoding key (MuPDF reads U+0000) and U+0000 in a UTF-16 key flag; keys in order
+    under each reader's reading. Round 2: U+001B in a UTF-16 key flags (MuPDF strips a
+    language escape of any bytes); the trailing NUL only after printable ASCII (MuPDF keeps it
+    after a high byte); /Limits comparisons charged by key length (a shared /Limits array
+    had compared a long key once per node, free). Round 3: a BOM-less key MuPDF may read
+    as UTF-8 (a lead byte 0xC0-0xFF then a continuation byte) flags -- libqpdf reads
+    PDFDocEncoding; a revision rewriting the catalog but not its /Names or /PageLabels reuses
+    the trees (they had been walked again: revisions x keys, BUDGET_EXHAUSTED on a benign
+    file). Gate: /EmbeddedFiles against
+    MuPDF and libqpdf, keys as each reads them; EMPTY_TREE_ROOT anchored (R5), with
+    agreement tests for /EmbeddedFiles, /Dests and /PageLabels. Measured cost differed from
+    ADR 0011's: P3 flagged 85 corpus files (expected 0) -- 72 keys ending in one NUL, 10
+    sorted by bytes but not as text, 3 with bytes 0x7F-0xA0; the owner allowed the trailing
+    NUL (decision 10 below). RESOURCE_SCOPE: 0 corpus files, as measured; 20 case-library
+    cases (annotation appearances that draw only paths, without /Resources) newly flagged,
+    kept strict (decision 10). Gate, all passing: corpus 1,920 agree / 153 flagged (7.38%) /
+    0 unflagged disagreements (NAME_TREE 13 files, 12 newly flagged); caselib 426/27/0 (453 cases);
+    fuzz 501/1,499/0.
   - 3a-7d Synthesized annotations (ADR 0011 item 5, its SYNTHESIZED part) -- first, since the
     drawing closure depends on it (/AcroForm /DR joins when any annotation is synthesized) and
     its gate is the riskiest part. A spike settles the gate's method before code (OWNER
@@ -426,6 +459,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
     memoized per field node; a /Parent cycle among fields flags FIELD_TREE (P5). Linearity: many fields deep
     in a /Parent chain over many revisions.
+    An annotation without /Subtype (#106: MuPDF warns, the gate disagrees) is flagged or
+    shown to agree, removing the strict xfail on
+    tests/test_inventory_build.py::test_an_annotation_without_a_subtype_is_flagged_or_agrees.
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
     lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like
@@ -508,3 +544,10 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    name tree in an encrypted revision flags NAME_TREE until 3a-9; P5: a /Parent cycle among
    AcroForm fields flags FIELD_TREE. P1 (the annotation gate's method) waits for 3a-7d's
    spike.
+10. (2026-10-12, 3a-7c's measured costs) P3 amended: a printable-ASCII name-tree key may
+   end in one NUL byte (72 corpus files), allowed because a reader-agreement test shows MuPDF (which cuts
+   the NUL) and libqpdf (which keeps it) resolve the key as written to the same object;
+   keys must be unique and in order under both readers' readings (NUL cut off, NUL kept). Keys sorted by bytes but not as
+   text (10 files) and bytes 0x7F-0xA0 (3 files) stay flagged. RESOURCE_SCOPE stays strict
+   (ADR 0011 item 3; 20 case-library cases); it is revisited with real redactor output
+   (operating plan §5, Lane B) before enforcement.

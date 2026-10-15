@@ -29,7 +29,7 @@ import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from scorecard.inventory import compare
+from scorecard.inventory import Check, compare
 from scorecard.pdfgen import (JUNK, MARKER, MUTATION_BYTES, MUTATION_SITES, UPDATE_XREF_KINDS,
                               XREF_KINDS, Spec, Update, Writer, build_pdf, mutated)
 
@@ -431,8 +431,10 @@ def test_mutated_files_are_flagged_or_agree_with_the_readers(
 
 
 # ── Member values and bounds (PR #45 review) ──────────────────────────────
+# Member 6 is the page's annotation (/Annots [6 0 R]), so a dictionary
+# there carries a /Subtype: one without it makes MuPDF warn (#106, below).
 _MEMBER_VALUES = [b"null", b"true", b"false", b"3 0 R", b"123", b"-4", b"1.5", b"/Foo",
-                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 >>", b"[1 2]"]
+                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 /Subtype /Link >>", b"[1 2]"]
 
 
 def _members_at(values: list[bytes], seps: list[bytes], head_sep: bytes,
@@ -493,6 +495,23 @@ def test_members_at_any_bound_are_flagged_or_agree_with_the_readers(
     inventory_agrees(_members_at(values, seps, head_sep, shifts, first_shift), tmp_path)
 
 
+class _Issue106(Exception):
+    """The #106 disagreement itself; any other failure is a real one."""
+
+
+@requires_qpdf
+@pytest.mark.xfail(strict=True, raises=_Issue106, reason="#106: an annotation without "
+                   "/Subtype is not flagged, and MuPDF warns on it (3a-7d's annotation gate)")
+def test_an_annotation_without_a_subtype_is_flagged_or_agrees(tmp_path: Path) -> None:
+    # The #106 counterexample: MuPDF cannot create its appearance and warns
+    # (a MUPDF_WARNING disagreement, failing closed: never certified).
+    # Passes once it is flagged or the readers agree (strict: then remove the mark).
+    found = compare(_members_at([b"<< /K 1 >>", b"true"], [b"", b""], b"", [0, 0], 0), tmp_path)
+    if found.disagrees and found.check is Check.MUPDF_WARNING:
+        raise _Issue106(found)
+    assert not found.disagrees, found
+
+
 # ── Allowlisted leniency: comment lines after the header and %%EOF ────────
 @requires_qpdf
 def test_comment_lines_after_the_header_and_each_eof_read_alike(tmp_path: Path) -> None:
@@ -515,6 +534,8 @@ CASE_SUBSET = ["page.memo-linearized", "page.content-stream-objstm", "document.c
                "leftover.raw-orphaned-objstm", "page.raw-minimal-objstm",
                "attachment.notes-text", "file.after-final-eof", "layout.form-boxes-ssn",
                "revision.encrypted-annotated"]
+FLAGGED_CASES = {"file.after-final-eof", "revision.redacted-incremental",
+                 "revision.encrypted-annotated"}
 
 
 def _case_pdf(case_id: str, tmp: Path) -> bytes:
@@ -528,8 +549,10 @@ def _case_pdf(case_id: str, tmp: Path) -> bytes:
 def test_case_library_files_inventory_and_agree(case_id: str, tmp_path: Path) -> None:
     data = _case_pdf(case_id, tmp_path)
     agreed = inventory_agrees(data, tmp_path)
-    # Only the after-%%EOF leak case is flagged (XREF_TAIL; its tail unclaimed).
-    assert agreed != case_id.startswith("file.after-final-eof"), case_id
+    # Flagged: the after-%%EOF leak case (XREF_TAIL; its tail unclaimed), and
+    # since 3a-7c the two whose annotation appearance stream carries no
+    # /Resources of its own (RESOURCE_SCOPE, ADR 0011 item 3).
+    assert agreed != (case_id in FLAGGED_CASES), case_id
 
 
 @requires_qpdf
