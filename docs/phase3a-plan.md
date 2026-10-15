@@ -555,6 +555,23 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     p99 26,503, max 132,589 units. Linearity: lines per charged unit about 11-12, at most 15
     and not growing from n to 8n; the reviewer-style mutants on the charges are caught or
     covered by another charge of the same loop.
+    Review of #153, round 1: (B1) item 5's keys label a stream only on the holder item 5
+    names -- /JS on an action with /S /JavaScript, /EF on a /Type /Filespec, /Metadata on an
+    allowlisted /Type or an image or form XObject -- and never on a resource-category or
+    /CharProcs dictionary (a Type 3 glyph or shading named /JS or /Metadata is drawn), each
+    reproducer a test agreeing with the gate; the reuse rule also compares what each body
+    holding those keys makes of them. (B2) A test per reuse condition, each failing under its
+    mutant. (B3) Labels' memory: the cross-reference streams one shared list, structural
+    records made on demand, whatever is new charged at least its size in bytes -- 0.4 to 0.9
+    bytes per unit of work, at most 53 per byte of the file (was 316x on an xref-only shape;
+    DESIGN.md, "Bounded resources"). The hint stream only where nothing reachable references
+    it; MuPDF's rewritten /ID elements added back; an object stream a reference reaches is a
+    known gap, failing closed. Re-measured on c938578: corpus 1,920 / 153 / 0 (2,080
+    revisions), case library 437/27/0 (464 cases, 518 revisions), fuzz 501/1,499/0;
+    STRUCTURAL counts unchanged; graph work per file now p50 2,573, p99 47,960, max 232,020
+    (the memory charges); corpus work per byte max 5.98; the REACHABLE check p50 0.002 s,
+    p99 0.031 s, max 0.73 s (oracle p50 0.258 s). Lines per charged unit of the walk's own
+    work at most about 10 (memory charges zeroed in the linearity tests, tested apart).
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page

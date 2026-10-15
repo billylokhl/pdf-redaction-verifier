@@ -556,13 +556,20 @@ Recorded with the implementation of reachable and `STRUCTURAL`
   the hint stream, free entries and dead bodies; and that a writer drops
   what it rewrites although its reader reads it: a stream's indirect
   `/Length` (both write it direct), the trailer's `/Encrypt` (both write
-  the revision unencrypted), and in qpdf the trailer's `/ID` (it writes a
-  new one; two corpus files hold it by reference) and a stream's
-  `/DecodeParms` without `/Filter`. The oracle adds those references back as each
+  the revision unencrypted), the trailer's `/ID` (qpdf writes a new one,
+  MuPDF a new second element; two corpus files hold it by reference), and
+  in qpdf a stream's `/DecodeParms` without `/Filter` -- which libqpdf
+  reads as written (it is in the stream's dictionary as libqpdf reads it,
+  its reference resolved, and the value comparison checks it), but its
+  writer drops, since no filter uses it. The oracle adds those references back as each
   reader reads them; a target that holds references of its own makes the
   reader's set inexact there, and the check fails closed rather than
   allowing it. A reference to an object whose value is null (both writers
-  drop it) already disagrees on the object's value. Measured: both
+  drop it) already disagrees on the object's value. Known gap, failing
+  closed: MuPDF's writer never writes an object stream, so an object
+  stream a reference reaches (the catalog naming one, say) is in our set
+  and not MuPDF's -- a disagreement on an unflagged file (no corpus or
+  case-library file has one). Measured: both
   readers' sets equal ours on every unflagged revision of the corpus
   (2,080) and the case library (516).
 - **An in-use `/ObjStm` home to no live compressed entry gets no label**
@@ -572,8 +579,30 @@ Recorded with the implementation of reachable and `STRUCTURAL`
 - **The hint stream of an updated linearized file whose `/L` is stale is
   `STRUCTURAL`** as item 5 says (coordinator decision Q8): the pair is
   canonical (owner decision 7); the measurement counts these files
-  separately. The hint stream is the one `/H`'s first offset names; an
-  overflow hint stream (`/H`'s second pair) gets no label, failing closed.
+  separately. The hint stream is the one `/H`'s first offset names, and
+  only in a revision where nothing reachable references it (item 5's
+  "nothing references it": an `/H` naming a page's content stream labels
+  nothing); an overflow hint stream (`/H`'s second pair) gets no label,
+  failing closed.
+- **Labels' memory is bounded** (the review of #153). What a revision's
+  labels keep that is new -- a reachable set, by-key records, an
+  object-stream set, the revision's record; the cross-reference streams
+  are one list shared by every revision -- is charged to the work budget
+  at least its size in bytes, so labels keep at most one byte per unit of
+  work, at most the budget's 64 per byte of the file (DESIGN.md,
+  "Bounded resources"; measured 0.4 to 0.9 bytes per unit, at most 53 per
+  byte of the file).
+- **Item 5's keys only on the holders it names** (the review of #153;
+  coordinator-requested, an interpretation of item 5). `/JS` only on an
+  action whose `/S` is `/JavaScript`; `/EF` only on a file specification
+  (`/Type /Filespec`, required with `/EF`); `/Metadata` only on a holder
+  whose `/Type` is one of `Catalog`, `Pages`, `Page`, `Template`, `Font`,
+  `FontDescriptor`, `EmbeddedFile`, `Filespec`, `StructTreeRoot`,
+  `StructElem`, `OCG`, `XObject`, or an image or form XObject; and never
+  on a resource-category or `/CharProcs` dictionary, written under one
+  of those keys or named under one by any reachable reference, whose
+  entries are drawn by name (a Type 3 glyph or a shading named `/JS` is
+  drawn, not a script). Any other holder: no label, failing closed.
 - **What a `STRUCTURAL` record holds.** Its kind, the reachable object
   whose key reached it and that key (or the chain): the walk's conditions
   only. The condition that the kind's decoder parses the whole stream is

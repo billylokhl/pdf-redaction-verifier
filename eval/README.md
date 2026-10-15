@@ -1055,8 +1055,9 @@ What each part of the output means:
   and libqpdf keeps writing it in QDF mode, read from its `%% Original
   object ID` comments; the references a writer rewrites though its
   reader reads them -- a stream's indirect `/Length`, the trailer's
-  `/Encrypt`, in qpdf the trailer's `/ID` and a stream's `/DecodeParms`
-  without `/Filter` -- are
+  `/Encrypt` and `/ID`, in qpdf a stream's `/DecodeParms` without
+  `/Filter` (libqpdf reads it as written; its writer drops it, no filter
+  using it) -- are
   added back as each reader reads them, and one whose target holds
   references of its own fails closed, `templates` naming the reader and
   "not exact"; ADR 0011's notes of 2026-10-15, 3a-7e-1),
