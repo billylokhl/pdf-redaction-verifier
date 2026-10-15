@@ -134,8 +134,11 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
     ("S1", "pixels-orphaned"): _e("orphaned.pixels", "leftover.inline-image", 2),
     ("S2", "pixels-orphaned"): _e("orphaned.pixels", "leftover.inline-image", 2),
     ("I1", "pixels-orphaned"): _e("orphaned.pixels", "leftover.inline-image", 2),
-    ("P1", "pixels-live"): _e("thumbnail.pixels", "page.thumb-image", 1, known_gap=True),
-    ("P1", "pixels-orphaned"): _e("thumbnail.pixels", "page.thumb-image", 1, known_gap=True),
+    # A page's /Thumb is flagged, not read (the H1 hotfix, PAGE_THUMBNAIL,
+    # exit 2). A thumbnail nothing references any more is an orphaned
+    # image like any other (LEFTOVER_IMAGE, exit 2).
+    ("P1", "pixels-live"): _e("thumbnail.pixels", "page.thumb-image", 2),
+    ("P1", "pixels-orphaned"): _e("orphaned.pixels", "leftover.inline-image", 2),
 }
 
 # Producers whose drawn text uses plain (simple-font) codes: their page
