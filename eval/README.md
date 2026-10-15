@@ -729,7 +729,7 @@ limit, `scan_timeout` (seconds, `caselib/model.py`): the scorecard's
 Only `page.dense-sideways-scan` (K43) has one, 300 s, and a test lists
 the cases that do, so adding one is a reviewed change. A page full of
 vertical lines gets the most OCR work the readings allow (#70's upright
-re-reads plus #91's turned and unstacked readings): 78 Vision calls, 13 s alone on Apple silicon but 151 s on the
+re-reads plus #91's turned and unstacked readings): 78 Vision calls, about 8 s alone on Apple silicon (5.5 s of it Vision) but 151 s on the
 weekly runner, where the reference takes 10 s. It timed out at 60 s
 there (#147). It stays a regular case rather than `perf`, so pytest,
 including `full-macos` on every PR, still judges it.
