@@ -58,6 +58,14 @@ def identity_clean(text: str, *neutral: str) -> str:
     return text
 
 
+def _with_sink(scan: Any, sink: MapSink) -> Any:
+    """*scan* with *sink* as its sink, whatever sink its caller passes."""
+    @functools.wraps(scan)
+    def with_sink(*args: Any, **kwargs: Any) -> Any:
+        return scan(*args, **{**kwargs, "sink": sink})
+    return with_sink
+
+
 def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool = False,
              sink: bool = True, json_report: bool = True) -> Run:
     """verify.main, OCR off unless asked, with (*sink*) or without a
@@ -78,7 +86,7 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
     try:
         if the_sink is not None:
             for name in hooks:
-                setattr(verify, name, functools.partial(originals[name], sink=the_sink))
+                setattr(verify, name, _with_sink(originals[name], the_sink))
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = verify.main(argv)
     finally:
