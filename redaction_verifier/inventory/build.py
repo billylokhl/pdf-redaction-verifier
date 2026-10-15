@@ -35,7 +35,7 @@ from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .annotations import build_annotations
 from .graph import Body, build_graph
-from .labels import build_labels
+from .labels import build_body_labels, build_labels
 from .pages import build_pages
 from .trees import build_trees
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
@@ -195,8 +195,12 @@ class _Builder:
             pages, self.budget)
         self.flags.extend(annotation_flags)
         labels = build_labels(len(chain.revisions), self.changes, self._body_of,
-                              self._home_number, graph.edges, graph.trailers, pages,
+                              self._home_number, graph.edges, graph.trailers, pages, annotations,
                               self._xref_streams(chain), self._hint_stream(chain), self.budget)
+        streams = [u.ref for u in self.units if u.ref.within is None
+                   and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)
+                   and u.ref.start in self.stream_data]
+        body_labels = build_body_labels(labels, streams, self.budget)
         graph_work = self.budget.work - graph_start
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
@@ -208,7 +212,7 @@ class _Builder:
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
                          self.objects, self.streams, entries, graph, pages, trees,
-                         annotations, synthesized, labels, graph_work)
+                         annotations, synthesized, labels, graph_work, body_labels)
 
     def _xref_streams(self, chain: Chain) -> list[list[UnitRef]]:
         """Each revision's own cross-reference streams (its sections', a
