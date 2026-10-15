@@ -95,7 +95,7 @@ def step_cost(data: bytes, entry: str) -> tuple[float, int]:
     import time
 
     import redaction_verifier.inventory.build as build_module
-    from redaction_verifier.budget import Budget
+    from redaction_verifier.budget import Budget, Counter
     from redaction_verifier.inventory import build_inventory
     budget = Budget(file_size=len(data))
     taken: list[tuple[float, int]] = []
@@ -112,4 +112,6 @@ def step_cost(data: bytes, entry: str) -> tuple[float, int]:
         build_inventory(data, budget=budget)
     finally:
         setattr(build_module, entry, real)
+    # Spent, the step stops early: its time per unit would mean nothing.
+    assert not budget.exhausted(Counter.WORK), "the budget ran out"
     return taken[0]

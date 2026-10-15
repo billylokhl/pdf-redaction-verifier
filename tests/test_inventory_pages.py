@@ -259,16 +259,20 @@ def test_rereading_a_wide_tree_costs_its_charged_work_in_wall_clock_too(
     # The backstop for work done inside C (a linear `in` on a list, a copy:
     # review of #113): the page walk's time per unit it charges does not
     # grow with the input. The lump PAGE_RECORD_WORK charges are left out
-    # (set to 0 here; this shape never exhausts the budget): they weigh more
-    # in the small file, which had left the clean ratio at 2.0-2.7x against
-    # a 3x bound. Measured 1.08-1.14x, and 1.90-2.25x with `list(self.kept)`
-    # scanned per page: 1.5x leaves ~1.3x room each way. Best of four (the
-    # small file, cheap and noisier) and two: a loaded machine only slows a run.
+    # (set to 0 here; step_cost asserts the budget never runs out): they weigh
+    # more in the small file, which had left the clean ratio at 2.0-2.7x
+    # against a 3x bound. Measured clean 1.03-1.22x (3.10, 3.12), and with
+    # `list(self.kept)` scanned per page 1.76-1.91x on 3.10 (CI's uncovered
+    # leg), 1.94-2.25x on 3.12: 1.5x leaves ~1.2x room each way. Under
+    # coverage (3.12) that mutant reads 1.02-1.18x and passes: only the
+    # uncovered leg catches it, as on main. Best of three at each size: a
+    # loaded machine only slows a run.
     from redaction_verifier.inventory import pages as module
     monkeypatch.setattr(module, "PAGE_RECORD_WORK", 0)
     per_unit = []
     for data in (_wide(100, 100), _wide(800, 800)):
-        runs = [step_cost(data, "build_pages") for _ in range(4 if len(per_unit) == 0 else 2)]
+        runs = [step_cost(data, "build_pages") for _ in range(3)]
+        # The work charged is the same on every run (deterministic).
         per_unit.append(max(min(t for t, _ in runs), 0.02) / runs[0][1])
     assert per_unit[1] < 1.5 * per_unit[0], per_unit
 
