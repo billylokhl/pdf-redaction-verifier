@@ -221,6 +221,14 @@ class TestSelfCheck:
 
 
 # ── Rendering (design §6) ─────────────────────────────────────────────
+def test_an_escaped_name_showing_part_of_a_value_is_not_drawn(tmp_path, monkeypatch) -> None:
+    pdf = _value_pdf(tmp_path / "文書.pdf")
+    _run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
+                                [{"name": "ref", "value": "65871234"}])
+    assert the_plan.target_name == "target"
+    _assert_absent(out, "6587")
+
+
 class TestRendering:
     def test_a_small_page_gets_a_band(self, tmp_path, monkeypatch) -> None:
         doc = fitz.open()
@@ -349,6 +357,15 @@ class TestSelfCheckSurfaces:
         assert render._decode_token(rb"(a\(b\)\\c\101\n)") == "a(b)\\cA\n"
         assert render._decode_token(b"(12\\\n3)") == "123"
         assert render._decode_token(b"<3132 33>") == "123"
+        assert render._decode_token(rb"(x\8y)") == "x8y"
+
+    def test_a_map_that_does_not_reopen_cleanly(self) -> None:
+        w = _clean_writer()
+        data = bytearray(_saved(w))
+        start = data.rindex(b"startxref\n") + len(b"startxref\n")
+        data[start:start + 1] = b"9" if data[start:start + 1] != b"9" else b"8"
+        with pytest.raises(render.SelfCheckFailed, match="reopen"):
+            render.check_saved(bytes(data), _checker(), w)
 
 
 def test_a_decomposed_name_is_drawn_composed() -> None:

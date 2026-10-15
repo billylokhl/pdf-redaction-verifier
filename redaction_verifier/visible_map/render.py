@@ -25,7 +25,6 @@ The self-check has two steps:
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Any, Callable, Iterable, Sequence
 
 import pymupdf as fitz
@@ -34,6 +33,7 @@ from redaction_verifier.matching import PatternRule, SecretMatcher, _fold_for_pa
 from redaction_verifier.matching import match_patterns, normalize_string
 from redaction_verifier.model import Secret
 from redaction_verifier.visible_map import markers
+from redaction_verifier.visible_map.latin import latin as latin
 from redaction_verifier.visible_map.plan import (
     DASHED,
     DOTTED,
@@ -74,23 +74,6 @@ VAR_CAP = 80          # characters of one variable string drawn
 
 class SelfCheckFailed(Exception):
     """The saved map holds a hit outside the tool's own text."""
-
-
-_ASCII = str.maketrans({"\u2014": "--", "\u2013": "-", "\u2026": "...", "\u2018": "'",
-                        "\u2019": "'", "\u201c": '"', "\u201d": '"'})
-
-
-def latin(text: str) -> str:
-    """*text* as the map draws it: composed (NFC, so a macOS file name's
-    "e" plus accent is one character), printable Latin-1, typographic
-    marks in ASCII, anything else as \\u{XXXX}."""
-    out = []
-    for ch in unicodedata.normalize("NFC", text).translate(_ASCII):
-        if ord(ch) < 256 and ch.isprintable():
-            out.append(ch)
-        else:
-            out.append(f"\\u{{{ord(ch):04X}}}")
-    return "".join(out)
 
 
 def cap(text: str) -> str:
@@ -472,7 +455,7 @@ def _decode_token(token: bytes) -> str:
 
     def escape(m: re.Match[bytes]) -> bytes:
         esc = m.group(1)
-        if esc[:1].isdigit():
+        if esc[:1] in b"01234567":
             return bytes([int(esc, 8) & 0xFF])
         if esc in (b"\r\n", b"\r", b"\n"):
             return b""
