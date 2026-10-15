@@ -786,7 +786,7 @@ owner together with what it does not yet cover.
 **U, "usable, with listed gaps"** (legacy plus the 3a work):
 - **U1, case library.** Every leak case exits `1` or `2` except the pinned
   `known_gap` cases; each appears in README "Known gaps" with its layout,
-  and CI fails if one is missing. K39 is fixed first.
+  and CI fails if one is missing. K39 is listed in README "Known gaps" first (#33); the detection gap itself closes in 4b.
 - **U2, real-redactor recall.** On the real-redactor set below: 0 silent
   misses against an independent oracle. A miss blocks U until it is fixed
   or the owner accepts it as a listed gap (pinning alone does not count).
@@ -812,7 +812,7 @@ real files). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
 phase is unspecified (e.g. K7); these stay listed in README until closed.
 
 Estimates are rough and re-baselined at each phase close-out: U about
-3-4 weeks now that the real-redactor set is 10-14 days (assuming it finds
+3-4 weeks now that the real-redactor set is estimated at 10-14 days in its lane plan (assuming it finds
 no blocking miss; a miss adds an owner decision and an open-ended legacy
 fix); R about 18-25 weeks of redesign-lane work. Recent pace was bursty
 and 3b and 4a are larger, structural phases.
@@ -902,7 +902,7 @@ the owner sets its priority against the critical path.
   2026-09-27.
 - **2026-10-12:** the review-policy amendment above is approved.
 - **2026-10-12:** #66 (H4: masked tail revealing exact-value characters)
-  is fixed now.
+  is fixed ahead of the rest (PR #100).
 - **2026-10-12:** the H1 candidates (#71, #64, K12, K37-K39) are decided
   per gap after the real-redactor set exists; until then they stay
   pinned and listed.
