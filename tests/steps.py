@@ -60,7 +60,8 @@ def lines_executed(files: set[str], call: Callable[[], T]) -> tuple[T, int]:
 def charged_steps(data: bytes, entry: str,
                   budget: Budget | None = None) -> tuple[int, int, Any]:
     """Build *data*'s inventory; return (the work charged inside
-    build.<entry> -- one part of the inventory, e.g. "build_graph" --, the
+    build.<entry> -- one part of the inventory, e.g. "build_graph", or the
+    reference graph's whole stage, "_reference_graph" --, the
     lines executed in every inventory module and the budget while that
     part ran -- the callbacks it makes into build.py included --, the
     inventory). *budget*, if given, is the one the whole build charges

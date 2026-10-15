@@ -1290,6 +1290,7 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
     out["reachable_current"] = len(current_labels.reachable) if current_labels else 0
     out["graph_work"] = inv.graph_work
     out |= drawing_measures(data, inv)
+    out |= cost_measures(data, inv)
 
     # Dead bodies, and dead object streams (#46 item 4: not decoded).
     dead = [u for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY]
@@ -1313,7 +1314,10 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
     thumbnail, piece_info, appearance, properties, ...), else referenced
     only by objects nothing reaches (``unreachable_source``) or by nothing
     (``unreferenced``); an object stream home to no live entry
-    (``objstm``); the verdict's dead and older bodies. The /Metadata
+    (``objstm``); the verdict's dead and older bodies. The same classes
+    over the verdict's orphans only, per body (``orphan_body_class_*``:
+    an orphan of the current revision labelled in an older one is left
+    out, 3a-7e-3). The /Metadata
     streams orphaned on an annotation or an ICC profile (both fail closed
     today; the /Metadata allowlist's cost, for 3a-7e-3). And
     the closure gap: streams MuPDF lists on the current revision's pages
@@ -1341,11 +1345,14 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
     out["orphaned_older_only"] = len(verdict - orphans)
     out["orphaned_current_labelled_older"] = len(orphans - verdict)
     classes: dict[str, int] = {}
+    body_classes: dict[str, int] = {}  # the verdict's orphans only (3a-7e-3)
 
-    def count(name: str) -> None:
+    def count(name: str, unit: UnitRef) -> None:
         classes[name] = classes.get(name, 0) + 1
+        if unit in verdict:
+            body_classes[name] = body_classes.get(name, 0) + 1
     for unit in verdict - orphans:
-        count("dead_body" if unit.kind is UnitKind.DEAD_BODY else "older_body")
+        count("dead_body" if unit.kind is UnitKind.DEAD_BODY else "older_body", unit)
     # From the trailer, breadth first over references resolving in the
     # current revision: each object's use kind, the nearest listed one on
     # the path that first reaches it (graph.use_kind; OTHER inherits its
@@ -1395,11 +1402,11 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
         number = unit.obj if unit.obj is not None else -1
         value = value_of(number)
         if isinstance(value, PdfDict) and _name_of(value.get(b"Type")) == b"ObjStm":
-            count("objstm")
+            count("objstm", unit)
         elif number in kind:
-            count(kind[number])
+            count(kind[number], unit)
         else:
-            count("unreachable_source" if number in referenced else "unreferenced")
+            count("unreachable_source" if number in referenced else "unreferenced", unit)
         for holder_number in metadata.get(number, [])[:1]:
             holder = value_of(holder_number)
             if holder_number in annotations or (isinstance(holder, PdfDict)
@@ -1413,10 +1420,159 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
                 meta["other"] += 1
     for name, n in classes.items():
         out[f"orphan_class_{name}"] = n
+    for name, n in body_classes.items():
+        out[f"orphan_body_class_{name}"] = n
     for name, n in meta.items():
         out[f"orphan_metadata_{name}"] = n
     out |= _closure_gap(data, inv, drawable)
     return out
+
+
+# 3a-7e-3: an XMP packet's encoded runs (ADR 0011 item 5's XMP bullet; R7),
+# scanned here in eval only -- labels.py reads no content; the XMP decoder
+# (3b/3c) is where the rule is enforced. A run is at least 48 bytes once
+# decoded, so a UUID or a short digest is not one.
+_XML_BREAKS = re.compile(rb"&#(?:x[0-9A-Fa-f]{1,2}|[0-9]{1,3});")
+_BASE64_RUN = re.compile(rb"(?:[A-Za-z0-9+/][\t\n\r ]*){64,}={0,2}")
+_HEX_RUN = re.compile(rb"(?:[0-9A-Fa-f]{2}[\t\n\r ]*){48,}")
+_ASCII85_RUN = re.compile(rb"<~([!-u\t\n\r z]{60,}?)~>")
+_QP_RUN = re.compile(rb"(?:=[0-9A-F]{2}|=\r?\n|[!-<>-~\t ]){64,}")
+_IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"II*\x00",
+                     b"MM\x00*", b"\x00\x00\x00\x0cjP  \r\n\x87\n", b"\xff\x4f\xff\x51",
+                     b"BM", b"\x97JB2\r\n\x1a\n")
+_XMP_DECODED_CAP = 64 << 20  # bytes of a packet inflated, at most
+
+
+def _xmp_scan(packet: bytes) -> tuple[bool, bool]:
+    """(holds an image, holds binary nothing accounts for): every base64,
+    hex, ASCII85 or quoted-printable run in *packet* decoded, and an image
+    signature, or else bytes that are not text (a tenth or more outside
+    printable ASCII and whitespace), looked for in what it decodes to."""
+    import base64
+    import binascii
+    import quopri
+    text = _XML_BREAKS.sub(b"", packet)
+    found: list[bytes] = []
+    for match in _BASE64_RUN.finditer(text):
+        run = re.sub(rb"[\t\n\r ]", b"", match.group())
+        try:
+            found.append(base64.b64decode(run + b"=" * (-len(run) % 4)))
+        except (binascii.Error, ValueError):
+            continue
+    for match in _HEX_RUN.finditer(text):
+        found.append(bytes.fromhex(re.sub(rb"[\t\n\r ]", b"", match.group()).decode()))
+    for match in _ASCII85_RUN.finditer(text):
+        try:
+            found.append(base64.a85decode(match.group(1), ignorechars=b" \t\n\r"))
+        except ValueError:
+            continue
+    for match in _QP_RUN.finditer(text):
+        if match.group().count(b"=") >= 8:
+            found.append(quopri.decodestring(match.group()))
+    image = binary = False
+    for run in found:
+        if len(run) < 48:
+            continue
+        if run.startswith(_IMAGE_SIGNATURES) or (run[:4] == b"RIFF" and run[8:12] == b"WEBP"):
+            image = True
+        elif sum(1 for b in run if b < 32 and b not in b"\t\n\r" or b > 126) * 10 >= len(run):
+            binary = True
+    return image, binary
+
+
+def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
+    """3a-7e-3 (ADR 0011 items 5 and 7; the owner's cost briefing),
+    integers only. ``graph_sum``: item 7's own quantity, the sum over
+    revisions of live objects and their edges, against ``graph_work``.
+    The XMP packets the labels call STRUCTURAL, per body across revisions
+    and in the current revision, scanned for an image or for binary (R7's
+    cost; in eval only, see _xmp_scan), and those whose filter the scan
+    does not decode. ``page_thumb_legacy``: whether today's CLI (#133,
+    verify._thumb_carrier) marks a page of the current revision as
+    carrying a /Thumb, or fails that check -- the thumbnail orphans' cost
+    already paid."""
+    out: dict[str, int] = {}
+    total = 0
+    for revision in range(inv.revisions):
+        live = inv.bodies_by_number(revision)
+        total += len(live) + sum(len(inv.graph.edges.get(ref, ())) for ref in live.values())
+    out["graph_sum"] = total
+    parser = ObjectParser(data)
+    ends = {u.ref.start: u.spans[0].end for u in inv.units
+            if u.ref.within is None and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)}
+    current = set(inv.bodies_by_number(0).values())
+    counts = {"xmp_bodies": 0, "xmp_image_bodies": 0, "xmp_binary_bodies": 0,
+              "xmp_undecoded_bodies": 0, "xmp_image_current": 0, "xmp_binary_current": 0}
+    for unit, labels in inv.body_labels.items():
+        if StructuralKind.XMP not in labels.structural:
+            continue
+        counts["xmp_bodies"] += 1
+        obj = parser.parse_indirect_at(unit.start, ends.get(unit.start, len(data)))
+        head = obj.value if obj is not None and isinstance(obj.value, PdfDict) else None
+        filters = head.get(b"Filter") if head is not None else None
+        names = ([f.raw for f in filters.items if isinstance(f, PdfName)]
+                 if isinstance(filters, PdfArray) else
+                 [filters.raw] if isinstance(filters, PdfName) else [] if filters is None else None)
+        span = inv.stream_data[unit.start]
+        raw = data[span.start:span.end]
+        if names == []:
+            packet: bytes | None = raw
+        elif names == [b"FlateDecode"] and (head is None or head.get(b"DecodeParms") is None):
+            decoded = flate_decode(raw, None, Budget(file_size=_XMP_DECODED_CAP // 64))
+            packet = decoded.data if decoded.complete else None
+        else:
+            packet = None
+        if packet is None:
+            counts["xmp_undecoded_bodies"] += 1
+            continue
+        image, binary = _xmp_scan(packet)
+        counts["xmp_image_bodies"] += image
+        counts["xmp_binary_bodies"] += binary and not image
+        counts["xmp_image_current"] += image and unit in current
+        counts["xmp_binary_current"] += binary and not image and unit in current
+    out |= counts
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            out["page_thumb_legacy"] = int(_page_thumb(doc))
+    except Exception:
+        out["page_thumb_legacy_error"] = 1
+    return out
+
+
+def _page_thumb(doc: pymupdf.Document) -> bool:
+    """Whether today's CLI marks a page as carrying a thumbnail (#133,
+    verify._thumb_carrier, PAGE_THUMBNAIL or HIDDEN_ITEM_FAILED): a /Thumb
+    on the page or on a Pages node up its /Parent chain, or a walk that
+    fails (a /Parent not a reference, a cycle). verify.py is not imported:
+    its OCR imports would add a third of a second to every oracle run."""
+    memo: dict[int, bool] = {}  # a Pages node: it or a node above has /Thumb
+    for index in range(doc.page_count):
+        xref = doc.page_xref(index)
+        if doc.xref_get_key(xref, "Thumb")[0] != "null":
+            return True
+        path: list[int] = []
+        node, found = xref, False
+        while True:
+            kind, value = doc.xref_get_key(node, "Parent")
+            if kind == "null":
+                break
+            parent = int(value.split()[0]) if kind == "xref" else 0
+            if parent <= 0 or parent in path or parent == xref \
+                    or len(path) >= doc.xref_length():
+                return True  # the walk fails: marked
+            if parent in memo:
+                found = memo[parent]
+                break
+            path.append(parent)
+            if doc.xref_get_key(parent, "Thumb")[0] != "null":
+                found = True
+                break
+            node = parent
+        for walked in path:
+            memo[walked] = found
+        if found:
+            return True
+    return False
 
 
 def _name_of(value: PdfValue | None) -> bytes | None:
