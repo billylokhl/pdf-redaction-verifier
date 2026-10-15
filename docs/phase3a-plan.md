@@ -491,7 +491,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     compared; FIELD_TREE and APPEARANCE_UNSUPPORTED 0 files; SYNTHESIZED units in 139 files,
     400 annotations in the current revisions, all widgets (as ADR 0011 measured; 130 files,
     373 units unflagged), older revisions 14 bodies in 9 files not synthesized now (ADR 0011:
-    13 widgets in 8 files). Case library 428/27/0 (455 cases); fuzz FUZZ_RESULT.
+    13 widgets in 8 files). Case library 428/27/0 (455 cases); fuzz 501/1,499/0 (2,000, seed 0; unchanged -- its generator writes no annotation).
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
     lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like

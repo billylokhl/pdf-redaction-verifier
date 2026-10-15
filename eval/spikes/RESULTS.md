@@ -661,7 +661,7 @@ STORED where the ADR says synthesized -- or nothing. The inventory flags the las
 | --- | --- | --- | --- |
 | Corpus (2,073) | 1,920 | 153 (7.38%) | 0 |
 | Case library (455) | 428 | 27 | 0 |
-| Fuzz (2,000, seed 0) | FUZZ_AGREE | FUZZ_FLAGGED | FUZZ_DISAGREE |
+| Fuzz (2,000, seed 0) | 501 | 1,499 | 0 (no annotation in any generated file) |
 
 Corpus: 778 annotations compared; `FIELD_TREE` and `APPEARANCE_UNSUPPORTED` on no file;
 `SYNTHESIZED` units in 139 files, 400 annotations in the current revisions, all widgets (130
