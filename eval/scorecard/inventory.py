@@ -870,21 +870,22 @@ def _annotations_agree(doc: pymupdf.Document, blob: bytes,
     classification against MuPDF's drawing (ADR 0011 items 5 and 8,
     owner decision 11; eval/scorecard/annotations.py). MuPDF's warnings
     so far -- the file's own, its pages loaded and their appearances
-    synthesized -- are gated first; those it gives while loading and
-    drawing the gate's two copies are not the file's and are discarded."""
+    synthesized -- are gated first, those of the pages reloaded for the
+    list too; only those it gives while loading and drawing the gate's two
+    copies are not the file's and are discarded."""
     if annotations is None:  # the page list is flagged: never reached unflagged
         raise _Disagreement(Check.ANNOTATION_LIST, revision, templates=("no annotations",))
-    warnings = _mupdf_templates()
-    if warnings:
-        raise _Disagreement(Check.MUPDF_WARNING, revision, templates=warnings)
+
+    def gate_warnings() -> None:
+        warnings = _mupdf_templates()
+        if warnings:
+            raise _Disagreement(Check.MUPDF_WARNING, revision, templates=warnings)
 
     def fail(what: str, number: int | None) -> Exception:
         check = Check.ANNOTATION_LIST if what == "list" else Check.ANNOTATION
         return _Disagreement(check, revision, number, templates=(what,))
-    try:
-        stats.annotations += compare_annotations(doc, blob, annotations, fail)
-    finally:
-        pymupdf.TOOLS.mupdf_warnings()  # the copies' warnings: discarded
+    gate_warnings()
+    stats.annotations += compare_annotations(doc, blob, annotations, fail, gate_warnings)
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,
@@ -1072,8 +1073,12 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
     out["ambiguous_equal"], out["ambiguous_differ"] = equal, differ
     out["ambiguous_unresolved"] = unresolved
 
-    # SYNTHESIZED units (3a-7d, ADR 0011 item 5): in the current revision,
-    # and those of older revisions whose body is not synthesized now.
+    # SYNTHESIZED units (3a-7d, ADR 0011 item 5): in the current revision;
+    # (body, /Annots index) pairs of older revisions' units not among the
+    # current revision's units (a body rewritten in a later revision counts,
+    # though its widget may be synthesized now); and ADR 0011's own count:
+    # widgets synthesized in an older revision whose widget, by object
+    # number, is not synthesized in the current one.
     current = inv.synthesized[0] if inv.synthesized else ()
     now = {(u.body, u.index) for u in current}
     out["synthesized_current"] = len(current)
@@ -1082,6 +1087,11 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         if a.synthesized and a.widget)
     out["synthesized_older_only"] = len({(u.body, u.index) for units in inv.synthesized[1:]
                                          for u in units} - now)
+    widgets_now = {a.number for a in (inv.annotations[0] or () if inv.annotations else ())
+                   if a.synthesized and a.widget and a.number is not None}
+    out["synthesized_older_widgets"] = len(
+        {a.number for found in inv.annotations[1:] for a in (found or ())
+         if a.synthesized and a.widget and a.number is not None} - widgets_now)
 
     # Dead bodies, and dead object streams (#46 item 4: not decoded).
     dead = [u for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY]

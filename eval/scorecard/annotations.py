@@ -210,11 +210,14 @@ def readings(blob: bytes) -> dict[tuple[int, int], str]:
 
 def compare_annotations(doc: pymupdf.Document, blob: bytes,
                         ours: tuple[Annotation, ...],
-                        fail: Callable[[str, int | None], Exception]) -> int:
+                        fail: Callable[[str, int | None], Exception],
+                        gate_warnings: Callable[[], None]) -> int:
     """The revision's annotation list and classifications, ours against
     MuPDF's (*doc*: the revision, its pages loaded). Raises
     ``fail(what, object number)`` on the first disagreement; returns the
-    number of annotations compared."""
+    number of annotations compared. *gate_warnings* checks MuPDF's warnings
+    so far -- the file's own, its pages loaded here included -- before the
+    two copies are made; only the copies' warnings are discarded."""
     by_page: dict[int, list[Annotation]] = {}
     for annotation in ours:
         by_page.setdefault(annotation.page, []).append(annotation)
@@ -225,9 +228,13 @@ def compare_annotations(doc: pymupdf.Document, blob: bytes,
         if theirs != mine:
             differ = sorted((theirs - mine) + (mine - theirs))
             raise fail("list", differ[0][1] if differ and differ[0][0] == "object" else None)
+    gate_warnings()
     if not ours:
         return 0
-    found = readings(blob)
+    try:
+        found = readings(blob)
+    finally:
+        pymupdf.TOOLS.mupdf_warnings()  # the copies' warnings: the gate's own, discarded
     # Each annotation's reading, by the tag its first /Annots slot gave it
     # (an object listed twice is tagged once, where MuPDF's copy met it).
     first: dict[int, tuple[int, int]] = {}

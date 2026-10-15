@@ -25,12 +25,15 @@ A direct null is an absent key. Inherited /FT and /V come from the
 nearest of the widget and its /Parent chain that has the key; they are
 memoized per field node, so a deep chain is walked once. A /Parent cycle
 among fields flags FIELD_TREE (owner decision P5): MuPDF fails on it
-(cycle in tree); so do more than 100 field nodes above a widget, past
-which qpdf does not reach it from /AcroForm. An annotation MuPDF would synthesize but cannot -- its
+(cycle in tree). An annotation MuPDF would synthesize but cannot -- its
 /Subtype not one MuPDF has an appearance for, or a widget whose inherited
-/FT is not a name it builds one for, written directly -- flags
-APPEARANCE_UNSUPPORTED (issue #106): MuPDF warns, and draws the stored
-appearance instead, or nothing.
+/FT is none it builds one for (/Tx, /Ch, /Sig, also through references;
+/Btn only written as a name) -- flags APPEARANCE_UNSUPPORTED (issue #106;
+coordinator decision, 2026-10-15): MuPDF warns, and draws the stored
+appearance instead, or nothing. One flag per cause, in the first revision
+it appears: the annotation (one written directly: its page), or for a
+field type the field node that holds /FT (none: the chain's top) -- not
+one per widget inheriting it.
 
 Each synthesized annotation is a SYNTHESIZED unit per (annotation body,
 revision): it claims no bytes (not a tiling claim), starts UNEXAMINED
@@ -68,13 +71,6 @@ class FieldTreeRule(IntEnum):
     """Why a widget's field chain was flagged FIELD_TREE (its ``rule``)."""
 
     CYCLE = 1  # a /Parent cycle (owner decision P5): MuPDF fails ("cycle in tree")
-    DEPTH = 2  # more than MAX_FIELD_LEVELS field nodes above a widget: qpdf stops there
-
-
-# Field nodes above a widget qpdf reaches from /AcroForm /Fields (deeper, qpdf
-# --check warns the widget "is not reachable from /AcroForm"), measured on
-# qpdf 12.4: 100 reach it, 101 do not -- like the page tree's 100 levels.
-MAX_FIELD_LEVELS: Final = 100
 
 
 # The subtypes MuPDF 1.28 builds an appearance for (pdf_write_appearance);
@@ -84,13 +80,21 @@ SYNTHESIZABLE: Final = frozenset({
     b"Text", b"FreeText", b"Line", b"Square", b"Circle", b"Polygon", b"PolyLine",
     b"Highlight", b"Underline", b"Squiggly", b"StrikeOut", b"Redact", b"Stamp", b"Caret",
     b"Ink", b"FileAttachment", b"Sound", b"Widget"})
-# The field types it builds a widget's appearance for, written as a name:
-# MuPDF reads some through a reference (/Tx, /Ch) and not others (/Btn).
-FIELD_TYPES: Final = frozenset({b"Btn", b"Ch", b"Sig", b"Tx"})
+# The field types it builds a widget's appearance for. MuPDF reads /Tx, /Ch
+# and /Sig through references (up to MAX_HOPS), /Btn only written as a name:
+# a reference to /Btn makes it warn "cannot create appearance stream for Btn
+# widgets" (tests/test_inventory_annotations.py, every case against MuPDF).
+FIELD_TYPES: Final = frozenset({b"Ch", b"Sig", b"Tx"})
+FIELD_TYPES_DIRECT: Final = frozenset({b"Btn"})
 UNLISTED: Final = frozenset({b"Link", b"Popup"})
 # References MuPDF follows in a row (pdf_resolve_indirect_chain); one more
 # and it warns "too many indirections" and reads null.
 MAX_HOPS: Final = 9
+# Work charged per reference followed: a body lookup through the xref
+# history (build.py's callbacks), several steps, not one.
+HOP_WORK: Final = 3
+# Work charged per /Annots item, listed or not: its resolution and checks.
+ITEM_WORK: Final = 2
 
 
 @dataclass(frozen=True)
@@ -130,15 +134,17 @@ Annotations = tuple[Annotation, ...]
 @dataclass(frozen=True)
 class _Field:
     """A field node's inherited /FT and /V, as written (None: absent), and
-    the field nodes from it to the top of its chain, itself included."""
+    the number of the node that decides its field type: the one holding
+    /FT, or with none in the chain its topmost numbered node (None: no
+    numbered node) -- one cause, however many widgets inherit it."""
 
     ft: PdfValue | None
     v: PdfValue | None
-    levels: int
+    cause: int | None
 
 
-_CYCLE: Final = _Field(None, None, -1)  # a node on a /Parent cycle (memo marker)
-_EMPTY: Final = _Field(None, None, 0)   # nothing above: no /Parent
+_CYCLE: Final = _Field(None, None, None)  # a node on a /Parent cycle (memo marker, by identity)
+_EMPTY: Final = _Field(None, None, None)  # nothing above: no /Parent
 
 
 def build_annotations(
@@ -161,6 +167,9 @@ def build_annotations(
     for revision in reversed(range(revisions)):
         listed = pages[revision] if revision < len(pages) else None
         if listed is None:
+            # No walk here, so nothing records what this revision changed:
+            # the next revision with a page list walks afresh (review of #140).
+            previous = None
             continue
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
@@ -277,7 +286,7 @@ class _Walk:
         hops = 0
         while isinstance(value, PdfRef):
             hops += 1
-            if hops > MAX_HOPS or not self.charge():
+            if hops > MAX_HOPS or not self.charge(HOP_WORK):
                 return None, None
             self.number = value.num
             body = self.body(value)
@@ -307,7 +316,7 @@ class _Walk:
             if not isinstance(annots, PdfArray):
                 continue
             for index, item in enumerate(annots.items):
-                if not self.charge():
+                if not self.charge(ITEM_WORK):
                     return None
                 value, held = self.resolve(item)
                 if not isinstance(value, PdfDict):
@@ -319,7 +328,8 @@ class _Walk:
                 if number is not None and number in self.classified:
                     synthesized = self.classified[number]
                 else:
-                    synthesized = self.classify(value, number, subtype, need)
+                    synthesized = self.classify(value, number, subtype, need,
+                                                number if number is not None else page.number)
                     if number is not None:
                         self.classified[number] = synthesized
                 unit = held[0] if held is not None else page.unit
@@ -343,26 +353,37 @@ class _Walk:
         return isinstance(need, PdfBool) and need.value
 
     def classify(self, value: PdfDict, number: int | None, subtype: PdfValue | None,
-                 need: bool) -> bool:
-        """ADR 0011 item 5: does MuPDF synthesize this annotation's appearance?"""
+                 need: bool, holder: int) -> bool:
+        """ADR 0011 item 5: does MuPDF synthesize this annotation's appearance?
+        *holder*: the object a flag names -- the annotation's number, or its
+        page's for one written directly."""
         widget = isinstance(subtype, PdfName) and subtype.raw == b"Widget"
         ft: PdfValue | None = None
+        cause = holder
         if widget:
             field = self.field(value, number)
             ft = field.ft
+            cause = field.cause if field.cause is not None else holder
             if isinstance(ft, PdfName) and ft.raw == b"Sig":
                 return not self.signed(field.v)  # whatever /AP or /NeedAppearances say
         synthesized = not self.stored(value) or (widget and need)
         if synthesized:
             if not (isinstance(subtype, PdfName) and subtype.raw in SYNTHESIZABLE):
-                self.flag_unsupported(AppearanceRule.SUBTYPE, number)
-            elif widget and not (isinstance(ft, PdfName) and ft.raw in FIELD_TYPES):
-                self.flag_unsupported(AppearanceRule.FIELD_TYPE, number)
+                self.flag_unsupported(AppearanceRule.SUBTYPE, holder)
+            elif widget and not self.buildable(ft):
+                self.flag_unsupported(AppearanceRule.FIELD_TYPE, cause)
         return synthesized
 
-    def flag_unsupported(self, rule: AppearanceRule, number: int | None) -> None:
-        self.flags.append((FlagReason.APPEARANCE_UNSUPPORTED, int(rule),
-                           -1 if number is None else number))
+    def buildable(self, ft: PdfValue | None) -> bool:
+        """A field type MuPDF builds a widget's appearance for: /Tx, /Ch or
+        /Sig, as written or through references; /Btn only as written."""
+        if isinstance(ft, PdfName):
+            return ft.raw in FIELD_TYPES or ft.raw in FIELD_TYPES_DIRECT
+        kind, _ = self.resolve(ft)
+        return isinstance(kind, PdfName) and kind.raw in FIELD_TYPES
+
+    def flag_unsupported(self, rule: AppearanceRule, number: int) -> None:
+        self.flags.append((FlagReason.APPEARANCE_UNSUPPORTED, int(rule), number))
 
     def stored(self, value: PdfDict) -> bool:
         """An /AP /N MuPDF draws as stored: a stream, or a dictionary in
@@ -426,11 +447,12 @@ class _Walk:
         for held_value, n in reversed(path):
             ft = self.get(held_value, b"FT")
             v = self.get(held_value, b"V")
+            if ft is not None:
+                cause = n if n is not None else base.cause
+            else:
+                cause = base.cause if base.cause is not None else n
             base = _Field(ft if ft is not None else base.ft, v if v is not None else base.v,
-                          base.levels + 1)
+                          cause)
             if n is not None:
                 self.fields[n] = base
-        if base.levels - 1 > MAX_FIELD_LEVELS:  # field nodes above the widget
-            self.flags.append((FlagReason.FIELD_TREE, int(FieldTreeRule.DEPTH),
-                               -1 if number is None else number))
         return base

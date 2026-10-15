@@ -26,8 +26,12 @@ from .conftest import requires_qpdf
 from .steps import charged_steps
 
 # Lines the inventory executes per unit of work the annotation walk
-# charges, at most (#94): as for the page walk.
-LINES_PER_UNIT = 50
+# charges, at most (#94): measured about 10; 15 leaves room for a change in
+# the mix of steps, not for an uncharged loop (review of #140: at 50, six
+# of the reviewer's mutants survived). The per-unit count must also not
+# grow with the input (PER_UNIT_GROWTH).
+LINES_PER_UNIT = 15
+PER_UNIT_GROWTH = 1.5
 
 RECT = b"/Rect [10 10 60 30]"
 AP = b"/AP << /N 5 0 R >>"
@@ -375,27 +379,10 @@ def test_form_filling_changes_the_classification_while_the_body_stays(
 ], ids=["self", "two-nodes", "through-a-direct-parent", "own-values-below-a-cycle"])
 def test_a_parent_cycle_among_fields_flags_field_tree(data: bytes, mupdf_fails: bool) -> None:
     flags = [f for f in _inventory(data).flags if f.reason is FlagReason.FIELD_TREE]
-    assert len(flags) == 1, flags
+    assert [dict(f.params)["rule"] for f in flags] == [int(FieldTreeRule.CYCLE)], flags
     if mupdf_fails:  # MuPDF fails on such a file ("cycle in tree")
         with pytest.raises(Exception):
             readings(data)
-
-
-def _field_tree_rules(data: bytes) -> list[int]:
-    return [dict(f.params)["rule"] for f in _inventory(data).flags
-            if f.reason is FlagReason.FIELD_TREE]
-
-
-@requires_qpdf
-def test_a_field_tree_deeper_than_qpdf_reads_flags_field_tree(tmp_path: Path) -> None:
-    # qpdf reaches a widget from /AcroForm /Fields through at most 100 field
-    # nodes above it; one more and --check warns the widget is unreachable.
-    assert _field_tree_rules(_chain(100, b"/FT /Sig")) == []
-    deep = _chain(101, b"/FT /Sig")
-    assert _field_tree_rules(deep) == [int(FieldTreeRule.DEPTH)]
-    inv = _inventory(deep)
-    found = compare(deep, tmp_path, inv=replace(inv, flags=()))
-    assert found.disagrees and found.check is Check.QPDF_CHECK, found
 
 
 def test_a_cycle_persisting_through_revisions_flags_once() -> None:
@@ -493,6 +480,137 @@ def test_the_gate_fails_closed_on_a_missed_cycle(tmp_path: Path) -> None:
     assert found.disagrees, found
 
 
+@requires_qpdf
+def test_the_gate_fails_closed_on_a_direct_annotations_position(tmp_path: Path) -> None:
+    # Two annotations written directly in /Annots: keyed by position, so
+    # ours naming the wrong position disagrees.
+    one = b"<< %s %s %s >>" % (SQ, RECT, AP)
+    data = build(one, direct=True, also=b" << %s /Rect [70 10 120 30] /C [0 0 1] >>" % SQ)
+    inv = _inventory(data)
+    assert compare(data, tmp_path, inv=inv).agrees
+    for change in (lambda found: tuple(replace(a, index=a.index + 2) for a in found),
+                   lambda found: (found[0], replace(found[1], index=0))):
+        found = compare(data, tmp_path, inv=_with(inv, change))
+        assert found.disagrees and found.check is Check.ANNOTATION_LIST, found
+    # Their classifications are read by position too: swapped, they disagree.
+    swapped = _with(inv, lambda found: (replace(found[0], synthesized=True),
+                                        replace(found[1], synthesized=False)))
+    found = compare(data, tmp_path, inv=swapped)
+    assert found.disagrees and found.check is Check.ANNOTATION, found
+
+
+def _two_pages(annots: tuple[bytes, bytes], objects: dict[int, bytes]) -> bytes:
+    """Pages 3 and 7 listing *annots*; annotation objects *objects*."""
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    found = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
+             2: b"<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>"}
+    for number, listed in zip((3, 7), annots):
+        found[number] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >>"
+                         b" /Annots [%s] >>" % listed)
+    for n, body in sorted((found | objects).items()):
+        table[n] = (1, w.obj(n, body), 0)
+    table[5] = (1, w.stream(5, FORM, RED), 0)
+    w.epilogue(w.table(table, b"/Size %d /Root 1 0 R" % (max(table) + 1)))
+    return bytes(w.out)
+
+
+@requires_qpdf
+@pytest.mark.parametrize("synthesized", [False, True])
+def test_an_annotation_listed_twice_and_on_two_pages_agrees_with_the_gate(
+        tmp_path: Path, synthesized: bool) -> None:
+    annot = b"<< %s %s %s >>" % (SQ, RECT, b"/C [0 0 1]" if synthesized else AP)
+    # Once on each of two pages: both readers agree, and the gate compares
+    # both listings (paired in MuPDF's copies by the tag of the first).
+    data = _two_pages((b"4 0 R", b"4 0 R"), {4: annot})
+    inv = _inventory(data)
+    assert inv.flags == ()
+    assert [(a.page, a.synthesized) for a in inv.annotations[0] or ()] == [
+        (0, synthesized), (1, synthesized)]
+    assert len(inv.synthesized[0]) == int(synthesized)  # one body, one unit
+    found = compare(data, tmp_path)
+    assert found.agrees and found.annotations_compared == 2, found
+    found = compare(data, tmp_path, inv=_with(inv, lambda f: f[:-1]))  # one listing dropped
+    assert found.disagrees and found.check is Check.ANNOTATION_LIST, found
+    # Twice in one page's /Annots: MuPDF lists it twice, as we do, but qpdf
+    # --check warns ("Annots has duplicate entry"): the gate fails closed.
+    # qpdf's annotation and AcroForm analysis warnings are issue #144's.
+    data = build(annot, also=b" 4 0 R")
+    assert [a.index for a in _inventory(data).annotations[0] or ()] == [0, 1]
+    found = compare(data, tmp_path)
+    assert found.disagrees and found.check is Check.QPDF_CHECK, found
+
+
+# ── Reuse across revisions without a page list (review of #140, B1) ────────
+PAGES_OK = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+PAGES_BAD = b"<< /Type /Pages /Kids [3 0 R] /Count 2 >>"
+
+
+@pytest.mark.parametrize(("before", "middle", "synthesized"), [
+    (b"<< /Type /Sig >>", b"(unsigned)", True),   # signed, then unsigned while unread
+    (b"(unsigned)", b"<< /Type /Sig >>", False),  # the mirror
+], ids=["signed-then-unsigned", "unsigned-then-signed"])
+def test_a_revision_without_a_page_list_is_not_skipped_by_reuse(
+        before: bytes, middle: bytes, synthesized: bool) -> None:
+    # The middle revision's page tree is flagged (no page list, no walk) and
+    # changes /V; the last restores the tree. The current revision must be
+    # walked afresh, not reuse the oldest revision's reading.
+    data = build(b"<< %s /V 6 0 R %s %s >>" % (SIG, RECT, AP), {6: before}, FIELDS,
+                 updates=({2: PAGES_BAD, 6: middle}, {2: PAGES_OK}))
+    inv = _inventory(data)
+    assert inv.pages[1] is None
+    assert (_ours(data, 2), _ours(data, 0)) == ([not synthesized], [synthesized])
+    assert list(readings(data).values()) == [SYNTHESIZED if synthesized else "STORED"]
+
+
+# ── The field type MuPDF builds, as written or by reference (D1) ──────────
+@pytest.mark.parametrize(("ft", "where", "need"), [
+    (ft, where, need) for ft in (b"Tx", b"Ch", b"Sig", b"Btn")
+    for where in ("own", "parent", "chain") for need in (False, True)])
+def test_a_field_type_by_reference_is_flagged_exactly_when_mupdf_cannot_build_it(
+        ft: bytes, where: str, need: bool) -> None:
+    import pymupdf
+    extra = {b"Tx": b" /V (x) /DA (/Helv 9 Tf 0 g)",
+             b"Ch": b" /V (a) /Opt [(a) (b)] /DA (/Helv 9 Tf 0 g)",
+             b"Sig": b"", b"Btn": b" /V /On /AS /On"}[ft]
+    ap = (b" /AP << /N << /On 5 0 R >> >>" if ft == b"Btn" else b" " + AP) if need else b""
+    objects = {6: b"/" + ft}
+    if where == "own":
+        annot = b"<< %s /FT 6 0 R /T (f)%s %s%s >>" % (W, extra, RECT, ap)
+        fields = b"4 0 R"
+    else:
+        if where == "chain":
+            objects[7] = b"6 0 R"
+        objects[8] = b"<< /FT %s /T (f) /Kids [4 0 R] >>" % (
+            b"6 0 R" if where == "parent" else b"7 0 R")
+        annot = b"<< %s /Parent 8 0 R%s %s%s >>" % (W, extra, RECT, ap)
+        fields = b"8 0 R"
+    data = build(annot, objects, b" /AcroForm << /Fields [%s]%s >>" % (
+        fields, b" /NeedAppearances true" if need else b""))
+    flags = [dict(f.params) for f in _inventory(data).flags]
+    pymupdf.TOOLS.mupdf_warnings()
+    mupdf = list(readings(data).values())
+    warned = "cannot create appearance stream" in pymupdf.TOOLS.mupdf_warnings()
+    # MuPDF builds /Tx, /Ch and /Sig through references, /Btn only as a name.
+    assert warned == (ft == b"Btn")
+    assert flags == ([{"rule": int(AppearanceRule.FIELD_TYPE), "object": 4 if where == "own"
+                       else 8, "revision": 0}] if ft == b"Btn" else [])
+    assert mupdf == (["STORED" if need else NOTHING] if ft == b"Btn" else [SYNTHESIZED])
+
+
+def test_one_flag_per_cause_not_per_widget() -> None:
+    # 50 widgets inheriting /FT /Foo from one field: one FIELD_TYPE flag, on
+    # the field; 50 /Movie annotations: one flag each (each its own cause).
+    kids = b" ".join(b"%d 0 R" % (20 + i) for i in range(50))
+    objects = {8: b"<< /FT /Foo /T (f) /Kids [%s] >>" % kids}
+    objects |= {20 + i: b"<< %s /Parent 8 0 R /T (k%d) %s >>" % (W, i, RECT) for i in range(50)}
+    data = build(b"<< /Type /Annot /Subtype /Movie %s >>" % RECT, objects,
+                 b" /AcroForm << /Fields [8 0 R] >>", also=b" " + kids)
+    found = [dict(f.params) for f in _inventory(data).flags]
+    assert found == [{"rule": int(AppearanceRule.SUBTYPE), "object": 4, "revision": 0},
+                     {"rule": int(AppearanceRule.FIELD_TYPE), "object": 8, "revision": 0}]
+
+
 # ── Linearity: many fields deep in a /Parent chain, over many revisions ────
 def _fields(n: int, updates: int, touch: bool = True) -> bytes:
     """*n* widgets on one page, widget i a kid of field node i of a /Parent
@@ -535,22 +653,22 @@ def test_a_deep_field_chain_is_walked_once() -> None:
     work = []
     for n in (100, 800):
         charged, lines, inv = charged_steps(_fields(n, 0), "build_annotations")
-        assert {f.reason for f in inv.flags} <= {FlagReason.FIELD_TREE}  # deeper than 100
+        assert inv.flags == ()
         assert len(inv.synthesized[0]) == n  # unsigned signature fields
-        assert lines <= LINES_PER_UNIT * charged, (lines, charged)
-        work.append(charged)
-    assert work[1] <= 10 * work[0], work
+        work.append((charged, lines))
+    _per_unit(work)
+    assert work[1][0] <= 10 * work[0][0], work
 
 
 def test_revisions_that_read_nothing_new_cost_no_walk() -> None:
     work = []
     for n in (40, 320):
         charged, lines, inv = charged_steps(_fields(n, n, touch=False), "build_annotations")
-        assert {f.reason for f in inv.flags} <= {FlagReason.FIELD_TREE}
-        assert lines <= LINES_PER_UNIT * charged, (lines, charged)
+        assert inv.flags == ()
         assert all(found is inv.annotations[0] for found in inv.annotations)
-        work.append(charged)
-    assert work[1] <= 10 * work[0], work
+        work.append((charged, lines))
+    _per_unit(work)
+    assert work[1][0] <= 10 * work[0][0], work
 
 
 def test_refilling_a_deep_form_over_many_revisions_is_charged_and_bounded() -> None:
@@ -562,14 +680,73 @@ def test_refilling_a_deep_form_over_many_revisions_is_charged_and_bounded() -> N
     for n in (40, 320):
         data = _fields(n, n)
         charged, lines, inv = charged_steps(data, "build_annotations")
-        assert lines <= LINES_PER_UNIT * charged, (lines, charged)
         reasons = {f.reason for f in inv.flags}
-        assert reasons <= {FlagReason.BUDGET_EXHAUSTED, FlagReason.FIELD_TREE}, reasons
+        assert reasons <= {FlagReason.BUDGET_EXHAUSTED}, reasons
         if FlagReason.BUDGET_EXHAUSTED not in reasons:
             assert sum(len(u) for u in inv.synthesized) == n * (n + 1)
-        work.append((charged, len(data)))
-    (w_s, _), (w_l, size) = work
+        work.append((charged, lines))
+        size = len(data)
+    _per_unit(work)
+    (w_s, _), (w_l, _) = work
     assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(size), work
+
+
+def _odd_annots(n: int) -> bytes:
+    """One page whose /Annots holds *n* integers and *n* references to the
+    head of a nine-reference chain ending in one Square: each item walked,
+    each hop followed (review of #140: mutants m2 and m8)."""
+    chain = {20 + i: b"%d 0 R" % (21 + i) for i in range(8)}
+    chain[28] = b"<< %s %s %s >>" % (SQ, RECT, AP)
+    items = b" ".join(b"7 20 0 R" for _ in range(n))
+    return build(b"<< %s %s %s >>" % (SQ, RECT, AP), chain, also=b" " + items)
+
+
+def _int_annots(n: int) -> bytes:
+    """One page whose /Annots holds a Square and *n* integers (mutant m2:
+    items no reader lists still cost a step each)."""
+    return build(b"<< %s %s %s >>" % (SQ, RECT, AP), also=b" " + b" ".join([b"7"] * n))
+
+
+def _rewritten_tree(n: int) -> bytes:
+    """*n* pages, *n* revisions each rewriting the page-tree root as it was:
+    the page records stay, the annotation walk is reused, and comparing the
+    page lists is charged (mutant m9)."""
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    kids = b" ".join(b"%d 0 R" % (10 + i) for i in range(n))
+    root = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (kids, n)
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"), 0)
+    table[2] = (1, w.obj(2, root), 0)
+    for i in range(n):
+        table[10 + i] = (1, w.obj(10 + i, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9]"
+                                         b" /Resources << >> >>"), 0)
+    size = 10 + n
+    prev = w.table(table, b"/Size %d /Root 1 0 R" % size)
+    w.epilogue(prev)
+    for _ in range(n):
+        prev = w.table({2: (1, w.obj(2, root), 0)}, b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
+        w.epilogue(prev)
+    return bytes(w.out)
+
+
+@pytest.mark.parametrize("make", [_odd_annots, _int_annots, _rewritten_tree],
+                         ids=["chains", "integers", "tree"])
+def test_every_item_hop_and_page_comparison_is_charged(make: object) -> None:
+    work = []
+    for n in (40, 320):
+        charged, lines, inv = charged_steps(make(n), "build_annotations")  # type: ignore[operator]
+        assert inv.flags == (), inv.flags
+        work.append((charged, lines))
+    _per_unit(work)
+
+
+def _per_unit(work: list[tuple[int, int]]) -> None:
+    """(work charged, lines executed) at n and 8n: lines per charged unit
+    under a fixed bound, and not growing with the input (#94; review of
+    #140)."""
+    (w_s, l_s), (w_l, l_l) = work
+    assert l_s <= LINES_PER_UNIT * w_s and l_l <= LINES_PER_UNIT * w_l, work
+    assert l_l / w_l <= PER_UNIT_GROWTH * (l_s / w_s), work
 
 
 def test_build_annotations_runs_on_its_own() -> None:
