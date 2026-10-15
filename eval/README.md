@@ -118,6 +118,31 @@ sidecars at import time (`_sidecar`); `tests/test_case_library.py`'s
 can't drift from either the file or the registered case without a test
 failing.
 
+Six of the files are measured outputs of the real-redactor set (below),
+written by `python -m redactor_set subset`: the exact bytes the oracle
+classed and the adjudication locked, never regenerated or shrunk, with
+the set's persona as their rules (`PERSONA_RULES`). Their sidecars add
+the tool's method (as-is, or re-saved with garbage collection), every
+Info-like dictionary and XMP value in the file, live or orphaned
+(`info_fields`), and an `oracle` block: the locked adjudication, per
+planted instance its written form, fingerprints, class, cell, storage,
+expected exit and the channels that found it, with the lock's sha256.
+`tests/test_caselib_redactor_set.py` checks each case's label against
+that block (the expected exit, and a required finding per recoverable
+instance a correct verifier reports, except an owner-accepted listed
+gap), re-runs the oracle's raw scanner and object walk on the committed
+bytes, allows only persona values and known producer strings in the
+metadata, and keeps file URLs and home paths out of the page text.
+
+| File | Method | Truth | Shows |
+| --- | --- | --- | --- |
+| `redactor-form-fields.pdf` | re-saved | leak | form fields found and counted as redacted, but a widget is not removed: each still shows its value |
+| `redactor-annotations.pdf` | re-saved | leak | a sticky note, a highlight's comment and a link outside any redaction keep their values |
+| `redactor-scan-skipped.pdf` | re-saved | leak | a page with no text layer is skipped: the scan shows everything |
+| `redactor-info-orphan.pdf` | as-is | leak | the nulled Info dictionary (a custom key too), the unlinked XMP and the old page stream stay as orphans |
+| `redactor-statement-gc.pdf` | re-saved | clean | a correctly redacted statement |
+| `redactor-w2-gc.pdf` | re-saved | clean | a correctly redacted form |
+
 ### Privacy scrub
 
 Every case whose bytes are committed as-is (`writer="file"` — today
@@ -166,7 +191,8 @@ redactor-set run`). It is local: everything it
 writes lives under the gitignored `eval/scorecard/redactor_set_local/`
 (the generator refuses any other `--root` unless given
 `--allow-outside`), and only aggregate counts are ever published. A
-small, scrubbed subset will join `caselib/real/` with the usual sidecars.
+small subset is committed under `caselib/real/` with the usual sidecars
+(above).
 
 ```bash
 uv sync --extra test --extra redactor-set     # + reportlab, Pillow
@@ -178,6 +204,7 @@ PYTHONPATH=eval:. python -m redactor_set oracle --set inputs  # m0, m1, m2 -> or
 PYTHONPATH=eval:. python -m redactor_set adjudicate draft --set inputs
 PYTHONPATH=eval:. python -m redactor_set adjudicate lock --set inputs    # then: verify
 PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
+PYTHONPATH=eval:. python -m redactor_set subset --set inputs --pick NAME=STEM:METHOD:CASE_ID
 ```
 
 - **Documents** (`templates.py`): 20 templates — tax forms (a W-2, a
