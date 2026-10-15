@@ -639,7 +639,9 @@ headline is one row of a table a property test proves exclusive. A built-in clas
 informational rules (required; a header without them is refused), their
 matches in the scan's truth are never boxed, classified or listed as OCR
 finds, and each of the report's `notices` is listed under "Not counted in
-the verdict", its sample masked as any --json sample, setting no flag.
+the verdict", its sample masked as any --json sample, setting no flag
+(a page-less fused-pattern notice takes its pages from the scan's truth,
+as the same warning does in strict mode).
 Switched-off layers are counted from MuPDF's evaluation *and* the default
 configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
 reports a group with a `/Usage` dictionary as on while MuPDF hides it.
