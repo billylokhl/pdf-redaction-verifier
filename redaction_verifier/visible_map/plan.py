@@ -1,7 +1,7 @@
 """redaction_verifier.visible_map.plan — what the map says.
 
 Built from three inputs: the scan's own truth (the sink), the --json
-report's findings and warnings, and the document (make_plan). Every
+report's findings, warnings and notices, and the document (make_plan). Every
 finding ends up drawn as a box, listed, or listed as "could not be
 positioned"; every warning code either sets a flag or is an "outside"
 code (headline.py). Nothing here writes a PDF.
@@ -57,6 +57,10 @@ SECTIONS: dict[str, tuple[str, str]] = {
     "password": ("Stored; not shown by viewers that honour the password flag", "X"),
     "stored": ("Stored, not shown", ""),
     "not_visible": ("Not visible", ""),
+    # ADR 0012: a built-in class match that no listed value made is a
+    # notice, never a finding: listed here, masked like any sample, never
+    # boxed, and setting no flag.
+    "notices": ("Not counted in the verdict: shaped like a built-in class", ""),
 }
 
 # What the Hidden layer's item kinds are, when they are not on a page.
@@ -334,6 +338,11 @@ class Planner:
         self.clean = rules.clean
         self.sink = header["sink"]
         self.report = header["report"]
+        # The rules whose matches are notices (report.informational): the
+        # sink's truth holds their matches too, and the map must not box
+        # them. Required: a header without it is refused, not read as
+        # "none".
+        self.informational = frozenset(header["informational"])
         self.plan = MapPlan(
             target_name=rules.free_text(header["target_name"], NAME_CAP, "target"),
             target_sha256=header["target_sha256"],
@@ -429,9 +438,10 @@ class Planner:
             entry = truth[page_no]
             # One page that cannot be located costs only its own findings,
             # listed "could not be positioned".
-            jobs = [*((n, "value") for n in entry["hard"]),
-                    *((n, "pattern") for n in entry["pattern_hard"]),
-                    *((n, "seam") for n in entry["seam"])]
+            jobs = [(n, tier) for n, tier in (*((n, "value") for n in entry["hard"]),
+                                               *((n, "pattern") for n in entry["pattern_hard"]),
+                                               *((n, "seam") for n in entry["seam"]))
+                    if n not in self.informational]
             for name, tier in jobs:
                 try:
                     if tier == "seam":
@@ -534,7 +544,8 @@ class Planner:
         truth = {int(p): t for p, t in self.sink["truth"].get("OCR", {}).items()}
         for page_no in sorted(truth):
             entry = truth[page_no]
-            for name in sorted({*entry["hard"], *entry["pattern_hard"], *entry["seam"]}):
+            names = {*entry["hard"], *entry["pattern_hard"], *entry["seam"]} - self.informational
+            for name in sorted(names):
                 self.list("ocr", page_no, self.rules.label(name))
                 self.located_ocr.add(name)
 
@@ -546,6 +557,11 @@ class Planner:
                 # attached file): the scan only warns, so the map neither
                 # boxes nor classifies it; its REVIEW_HIDDEN_TEXT warning
                 # lists it under "Possible (review)".
+                continue
+            # A notice's rule is neither boxed nor classified here; the
+            # report's notices list it (notices()).
+            entry = dict(entry, rules=[n for n in entry["rules"] if n not in self.informational])
+            if not entry["rules"]:
                 continue
             for name in entry["rules"]:
                 self.located_hidden.add((entry["location"], name))
@@ -750,6 +766,18 @@ class Planner:
                 key = storage or "stored"
                 self.plan.not_visible[key] = self.plan.not_visible.get(key, 0) + 1
 
+    def notices(self) -> None:
+        """ADR 0012's notices, from the --json report: listed only, the
+        sample masked as the report masked it and then as the map masks
+        any --json sample (_shown_label)."""
+        for n in self.report.get("notices", []):
+            name = self.rules.resolve(n.get("rule") or "")
+            if n.get("tier") == "hard":
+                label = self._shown_label(name, n.get("sample") or "")
+            else:
+                label = self.rules.label(name)
+            self.list("notices", n.get("page"), label, n.get("layer") or "")
+
     # ── the whole plan ────────────────────────────────────────────────
     def build(self) -> MapPlan:
         plan = self.plan
@@ -772,6 +800,7 @@ class Planner:
         self.hidden_layer()
         self.findings()
         self.warnings()
+        self.notices()
         self.finish()
         return plan
 
@@ -909,7 +938,8 @@ def make_plan(data: bytes | memoryview, target_sha256: str, header: dict[str, An
               rules: Rules) -> MapPlan:
     """The plan for the document *data*, from *header*: the scan's truth
     (sink.MapSink.to_header), the --json report's content, the exit code,
-    the scan's own code, the target's name and the version. *rules* is
+    the scan's own code, the target's name, the version and the rules
+    whose matches are notices ("informational"). *rules* is
     Rules rebuilt from the header's rules_header, with the checker its
     labels go through."""
     doc = fitz.open("pdf", data)

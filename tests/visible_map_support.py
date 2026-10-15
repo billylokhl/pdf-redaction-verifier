@@ -26,6 +26,7 @@ from typing import Any
 import pymupdf as fitz
 
 import verify
+from redaction_verifier.matching.policy import informational_rules
 from redaction_verifier.rules import load_rules
 from redaction_verifier.visible_map import plan
 from redaction_verifier.visible_map.plan import MapPlan
@@ -99,8 +100,13 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
         with fitz.open(target) as doc:
             if not doc.needs_pass:
                 offer(the_sink, "document", doc.page_count)
+        rule_set = load_rules(rules)
         header = {
-            "rules": plan.rules_header(load_rules(rules)),
+            "rules": plan.rules_header(rule_set),
+            # As verify.main sets report.informational.
+            "informational": sorted(informational_rules(
+                {name: label.kind for name, label in rule_set.labels.items()},
+                strict="--no-strict-classes" not in extra, strict_rules=rule_set.strict_rules)),
             "sink": the_sink.to_header(),
             "report": report,
             "exit_code": code,

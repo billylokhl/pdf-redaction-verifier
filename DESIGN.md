@@ -635,7 +635,12 @@ codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
 never reads, #133), are named with their pages as INCOMPLETE reasons,
 whatever their storage, and nothing of the page's content is shown; a
 code seen both on pages and with no page adds "and document-wide"), and the
-headline is one row of a table a property test proves exclusive.
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
+`--no-strict-classes`) is not a finding: the header names the
+informational rules (required; a header without them is refused), their
+matches in the scan's truth are never boxed, classified or listed as OCR
+finds, and each of the report's `notices` is listed under "Not counted in
+the verdict", its sample masked as any --json sample, setting no flag.
 Switched-off layers are counted from MuPDF's evaluation *and* the default
 configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
 reports a group with a `/Usage` dictionary as on while MuPDF hides it.
