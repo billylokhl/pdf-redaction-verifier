@@ -401,7 +401,11 @@ PYTHONPATH=eval:. python -m redactor_set subset --set inputs --pick NAME=STEM:ME
     when its code fits the cell's column (`LEFTOVER_UNDECODABLE_TEXT`
     for font, `LEFTOVER_IMAGE` for pixels, `LEFTOVER_CONTAINER`), the
     instance expects exit `2`, and the instance's object, from the
-    oracle's evidence, is in the warning's object list. Two blind spots,
+    oracle's evidence, is in the warning's object list. A ⚑ cell whose
+    warning names a page instead (coordinator decision, 2026-10-15,
+    extending the owner's rule): `thumbnail.pixels` is caught only by
+    `PAGE_THUMBNAIL`, with exit `2` expected, naming the instance's exact
+    page -- another page, or none, is a miss. Two blind spots,
     both on the safe side (a miss, never a false catch): the verifier
     lists at most eight objects and then "(+N more)", and
     `LEFTOVER_CONTAINER` lists payloads, not objects, so a container
@@ -934,6 +938,114 @@ not just in the file you pointed at. `--out` defaults under
 `eval/scorecard/real_corpus/scan-workdir` (gitignored, guarded the same
 way as `--manifest`) for exactly this reason.
 
+### Pattern-class false-hard baseline (Phase 5, measurement only)
+
+Phase 5's gate is "built-in pattern false hard < 1% on text-bearing real
+files" (docs/REDESIGN.md §7). ADR 0005's 23.1% scanned page text only;
+`scorecard.pattern_baseline` measures the whole CLI, every layer:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard.pattern_baseline \
+    --root eval/scorecard/real_corpus/links --workers 4 --timeout 300 \
+    --json /tmp/pattern-baseline.json
+```
+
+Each manifest file is scanned with `builtin_classes.rules.json` — the
+four built-in classes (`ssn`, `credit-card`, `email`, `us-phone`) and no
+value — so on this corpus, which holds no planted secret, every hard
+finding is a false hard (an `email` match is a true positive for "an
+address is here", ADR 0005, and is reported but kept out of the
+digit-class unions). The CLI is run through `scorecard/pattern_recorder.py`:
+`verify.py` itself, same arguments, exit status and report, with
+`match_patterns` — the one function every pattern match in the tool goes
+through — wrapped. For every call that could yield a hard finding (no
+`collapse_separators`; a collapsed call is the review tier) the wrapper
+classifies **every** validated match at its exact span into a **shape**
+(`scorecard/match_shapes.py`), not only the first one the tool reports:
+`formatted` (separators grouping the digits as the class's real values
+are — `3-2-4`, `3-3-4`, fours — decided first, so "SSN123-45-6789" stays
+`formatted`), `uuid`, `hex-id`, `date-or-time` (only with context: a PDF
+`D:` date, a `YYYYMMDDhhmm` timestamp, epoch milliseconds — never epoch
+seconds, which are also every phone number in area codes 201–220),
+`alnum-id`, `number-list` (separators, grouped otherwise), `bare-digits`
+or `email-address`. A rule is classified as the built-in class whose
+regex it is, whatever its name (the case library's "Any SSN" is `ssn`);
+a custom pattern fits no class-specific shape. Where the evidence is thin
+it errs toward the shapes no option below demotes. The record file holds only shapes and, per hit,
+a key salted with a per-run secret that is never written (the sample in
+it masked exactly as the report masks it: with the scan's exact values,
+and fully in the OCR layer), so neither the
+matched text nor the masked sample can be recovered from it. Each hard
+finding in the `--json` report is joined to its hit's shape through that
+key (several shapes on one key: the one kept longest below); a finding
+with no record counts as `unjoined`, which should stay 0. A wrapper
+failure can lose a record, never change a hit: `tests/test_pattern_baseline.py`
+scans every case-library case that has a pattern rule with and without
+the recorder installed and requires an identical report, and checks the
+recorder's own CLI against `verify.py` on a file with findings, a clean
+file and one it cannot open.
+
+Output, to stdout and `--json`, is counts only, per stratum (all,
+text-bearing, text-free, text-unknown): per class, files with a hard
+finding (and their rate), by layer, by shape and by layer and shape, and
+files with a review warning for the class; the unions `ssn|us-phone`,
+`ssn|us-phone|credit-card` and `any built-in`; exit codes; and
+unmeasured files by reason (a crash, a timeout or a CLI error such as an
+encrypted file — never folded into a rate's denominator).
+
+For each class and union, `residual_hard_files` **estimates** the files
+that would still be hard if the matches of some shapes were demoted to
+review — demoting the embedded shapes (`uuid`, `hex-id`, `alnum-id`) and
+`date-or-time`; then also `number-list`; then also `bare-digits`, so only
+`formatted` stays hard. Nothing is demoted. A file counts if it has a hard
+finding of the class today and any match of that class the recorder saw
+has a kept shape (or a finding of it has no known shape; an email address
+is never demoted). The estimate errs toward keeping files hard — a
+kept-shape match seen only in a call whose result is a review warning
+still counts — with one blind spot the other way: once every rule has
+hit, a layer's rolling scanner stops feeding the matcher, so a later
+match there is never seen. Scratch reports, rules and record files go
+under `real_corpus/pattern-baseline-workdir`. It changes no verdict.
+Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
+
+**Recall cost** (`scorecard.pattern_recall`, Phase 5 PR 2a): the other
+side of the same choice. Every case-library case with a built-in class
+rule is scanned in-process with the recorder installed, and each of ADR
+0012's options is applied to what it saw:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard.pattern_recall [--json OUT]
+```
+
+For ADR 0012's demote-only options (per class, a set of shapes kept hard)
+it prints, per option, the leak cases that exit 1 today and would move to
+exit 2, as two bounds: `moved_at_least` (every class finding demoted
+whichever of its recorded shapes is used, none unknown, and no other match
+of the class in a hard-capable call kept) and `moved_at_most` (each finding
+possibly demoted, an unknown shape counting as demoted); and the same upper
+bound as if the cases' value rules were absent. For the owner's policy 1
+(a class match no longer affects the exit code) it recomputes every case's
+exit from its report without the class findings and class review warnings
+and lists every case whose exit changes; a leak case reaching 0 needs the
+owner's sign-off. It applies policy 1 to every case label too (expected,
+known gap, older macOS; scanned or not): a label lists warning codes, not
+their rule, so a review warning is the class's only when the case's rules
+are all classes, and a label it cannot judge is settled by this scan's
+report when that report satisfies the label exactly (`caselib.run.judge`;
+listed as `settled_by_scan`), or reported as undetermined. It also prints the cases measured per class (a class with
+none has no measured recall), how many exit-1 cases a value rule holds, the
+cases expected at exit 1 that exit otherwise today (not judged), and any
+finding of unknown or ambiguous shape. It exits 1 if a finding's shape is
+unknown, a warning names a class rule without carrying it in `rule`, or a
+label stays undetermined.
+Case ids are fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
+
+`scorecard.pattern_policy1_corpus` recomputes the baseline run's per-file
+reports under the owner's policy 1 (ADR 0012: built-in class matches no
+longer affect the exit code) and prints, per stratum, the exit codes today
+and under policy 1 and the moves between them; counts only, from the
+local reports, scanning nothing.
+
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in
@@ -1000,7 +1112,20 @@ What each part of the output means:
   revision's `/EmbeddedFiles` entries, keys as text and values as
   written, against MuPDF's `pdf_load_name_tree` and libqpdf's name-tree
   helper; an encrypted revision's keys are not compared until 3a-9, and
-  its non-empty name trees are flagged), `oracle_error`, `tiling`),
+  its non-empty name trees are flagged), `annotation_list` and
+  `annotation` (since 3a-7d, `eval/scorecard/annotations.py`, owner
+  decision 11: each page's annotations as MuPDF lists them --
+  `pdf_first_annot` then `pdf_first_widget`, Link and Popup in neither
+  list -- against ours as a multiset by object number, by `/Annots`
+  position for one written directly; then each annotation synthesized or
+  not against MuPDF's drawing of it, read by the 3a-7d spike's method: a
+  copy with rotation, `/F` and `/OC` cleared against the same copy with
+  every annotation that has `/AP` replaced by a stand-in `/Square` drawn
+  from it, each annotation's trace and 4x pixels compared, NOTHING
+  agreeing with either reading; not exact below 4x. MuPDF's warnings while
+  it loads and draws those two copies are the gate's own and are
+  discarded; the file's own -- its pages loaded, its appearances
+  synthesized -- are gated as before), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password cannot be certified, so it is **flagged**, not a
   disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
@@ -1059,7 +1184,8 @@ What each part of the output means:
   allowing a real one 32-bit float step from ours (MuPDF holds reals in
   32 bits); references are compared as written -- since 3a-7a the
   inventory flags any that does not resolve (`REF_DANGLING`,
-  `REF_GENERATION`), so none reaches the comparison.
+  `REF_GENERATION`), so none reaches the comparison. `annotations` (since
+  3a-7d): annotations listed and classified against MuPDF, per revision.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
