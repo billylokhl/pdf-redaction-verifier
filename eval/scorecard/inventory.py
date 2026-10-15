@@ -1445,7 +1445,7 @@ def _closure_gap(data: bytes, inv: Inventory, drawable: frozenset[UnitRef]) -> d
             for annot in _annots(page):
                 number = M.pdf_to_num(M.pdf_annot_obj(annot))
                 if (index, number) in stored:
-                    found["annotations"].add(_final_number(M.pdf_annot_ap(annot)))
+                    found["annotations"].add(_drawn_stream(M.pdf_annot_ap(annot)))
     drawn = {unit.obj for unit in drawable}
     listed: set[int] = set()
     gap: set[int] = set()
@@ -1483,15 +1483,13 @@ def _annots(page: pymupdf.Page) -> list[Any]:
     return found
 
 
-def _final_number(obj: Any) -> int:
-    """The number of the object a reference chain ends on (0: none)."""
-    number = 0
-    for _ in range(10):
-        if not obj.m_internal or not M.pdf_is_indirect(obj):
-            break
-        number = M.pdf_to_num(obj)
-        obj = M.pdf_resolve_indirect(obj)
-    return number
+def _drawn_stream(obj: Any) -> int:
+    """The number of the stream MuPDF draws for *obj* (pdf_annot_ap's
+    answer): a reference to a stream, one reference away -- pdf_is_stream
+    follows no chain, and MuPDF then draws nothing (0)."""
+    if obj.m_internal and M.pdf_is_indirect(obj) and M.pdf_is_stream(obj):
+        return int(M.pdf_to_num(obj))
+    return 0
 
 
 def regions(inv: Inventory) -> dict[str, dict[str, int]]:

@@ -157,7 +157,11 @@ class Inventory:
     def orphaned(self, revision: int = 0) -> frozenset[UnitRef]:
         """The streams live in *revision* that it gives no other label
         (ADR 0011 item 5, ORPHANED, per revision): every live stream when
-        the revision has no labels. Derived on each call, not kept."""
+        the revision has no labels. Derived on each call, not kept, in time
+        linear in the file's object numbers (``bodies_by_number``) -- outside
+        the work budget: a consumer reading every revision of a file with
+        many revisions pays O(R x entries) this way; ``body_labels`` (per
+        body, built once and charged) is the verdict's input instead."""
         live = {ref for ref in self.bodies_by_number(revision).values()
                 if ref.within is None and ref.start in self.stream_data}
         found = self.labels[revision] if revision < len(self.labels) else None

@@ -90,7 +90,7 @@ from typing import Final
 
 from ..budget import Budget
 from ..ledger import UnitRef
-from .annotations import _SPENT, Annotations, _catalog_key
+from .annotations import SPENT, Annotations, acroform_key
 from .drawable import CATALOG, FORM, PAGE, RES_HOLDER, Drawing, Start
 from .graph import ARRAY, Body, Edge
 from .objects import PdfArray, PdfDict, PdfName, PdfRef, PdfValue
@@ -402,8 +402,8 @@ def _drawable(revision: int, changed: set[int], body_of: Callable[[int, int], Bo
     synthesized = any(a.synthesized for a in found)
     roots = [e for e in trailer if e.path == (b"Root",)]
     root = PdfRef(0, 0, roots[0].num, roots[0].gen) if roots else None
-    held = _catalog_key(root, revision, body_of, budget) if synthesized else None
-    if held is _SPENT:
+    held = acroform_key(root, revision, body_of, budget) if synthesized else None
+    if held is SPENT:
         return None
     ident = ((root.num, root.gen) if root is not None else None, synthesized, held)
     starts: list[Start] = []

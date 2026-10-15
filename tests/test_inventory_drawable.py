@@ -144,6 +144,20 @@ DRAWABLE: list[tuple[str, bytes, set[int], set[int]]] = [
                                                      b" /BitsPerComponent 8 /ColorSpace"
                                                      b" /DeviceGray /SMask 6 0 R", b"\x00"),
                                                  6: IMAGE_}), {4, 5, 6}, set()),
+    # A form's /Subtype2 replaces its /Subtype (MuPDF's Do operator): an
+    # image then (its /SMask drawn), /PS nothing (nothing under it drawn).
+    ("form-subtype2-image", page(b"/XObject << /X 4 0 R >>", streams={
+        4: (b" /Subtype /Form /Subtype2 /Image /Width 1 /Height 1 /BitsPerComponent 8"
+            b" /ColorSpace /DeviceGray /SMask 6 0 R /BBox [0 0 1 1]"
+            b" /Resources << /XObject << /Im 7 0 R >> >>", b"\x00"),
+        6: IMAGE_, 7: IMAGE_}), {4, 5, 6}, {7}),
+    ("form-subtype2-ps", page(b"/XObject << /X 4 0 R >>", streams={
+        4: (b" /Subtype /Form /Subtype2 /PS /BBox [0 0 1 1]"
+            b" /Resources << /XObject << /Im 6 0 R >> >>", b"0 0 m"), 6: IMAGE_}), {4, 5}, {6}),
+    ("image-subtype2-form", page(b"/XObject << /X 4 0 R >>", streams={
+        4: (GRAY + b" /Subtype2 /Form /SMask 6 0 R /BBox [0 0 1 1]"
+                   b" /Resources << /XObject << /Im 7 0 R >> >>", b"\x00"),
+        6: IMAGE_, 7: IMAGE_}), {4, 5, 6}, {7}),
     ("xobject-not-a-stream", page(b"/XObject << /X 9 0 R >>", objects={
         9: b"<< /Subtype /Form /Resources << /XObject << /Im 6 0 R >> >> >>"},
         streams={6: IMAGE_}), {5}, {6}),
@@ -194,9 +208,24 @@ DRAWABLE: list[tuple[str, bytes, set[int], set[int]]] = [
     ("type3-subtype-by-reference", page(b"/Font << /F1 9 0 R >>", objects={
         9: b"<< /Type /Font /Subtype 10 0 R /CharProcs << /a 6 0 R >> /Resources << >> >>",
         10: b"/Type3"}, streams={6: LEAF_}), {5, 6}, set()),
-    ("type3-subtype-two-references", page(b"/Font << /F1 9 0 R >>", objects={
+    # A name is read through references (as MuPDF reads one): a TrueType
+    # font two references away is no Type3, whatever its /CharProcs.
+    ("truetype-subtype-two-references", page(b"/Font << /F1 9 0 R >>", objects={
         9: b"<< /Type /Font /Subtype 10 0 R /CharProcs << /a 6 0 R >> /Resources << >> >>",
-        10: b"11 0 R", 11: b"/Type3"}, streams={6: LEAF_}), {5}, {6}),
+        10: b"11 0 R", 11: b"/TrueType"}, streams={6: LEAF_}), {5}, {6}),
+    # No /Subtype, or one MuPDF does not load by name, with /CharProcs:
+    # guessed Type3 ("unknown font format, guessing type3").
+    ("type3-guessed", page(b"/Font << /F1 9 0 R /F2 10 0 R /F3 11 0 R >>", objects={
+        9: b"<< /Type /Font /CharProcs << /a 6 0 R >> /Resources << >> >>",
+        10: b"<< /Type /Font /Subtype /Bogus /CharProcs << /a 7 0 R >> /Resources << >> >>",
+        11: b"<< /Type /Font /Subtype /CIDFontType2 /DescendantFonts [] /CharProcs << /a 8 0 R >>"
+            b" /Resources << /XObject << /Im 12 0 R >> >> >>"},
+        streams={6: LEAF_, 7: LEAF_, 8: LEAF_, 12: IMAGE_}), {5, 6, 7, 8, 12}, set()),
+    # A Type0 font's descendant is a CID font, never guessed Type3.
+    ("descendant-never-type3", page(b"/Font << /F1 9 0 R >>", objects={
+        9: b"<< /Type /Font /Subtype /Type0 /DescendantFonts [10 0 R] >>",
+        10: b"<< /Type /Font /CharProcs << /a 6 0 R >> /Resources << >> >>"},
+        streams={6: LEAF_}), {5}, {6}),
     # ── a colour space: every element of its array; in a dictionary or
     # stream so reached only /Functions, /Colorants, /Process (its /ColorSpace)
     ("color-spaces", page(
@@ -278,7 +307,7 @@ DRAWABLE: list[tuple[str, bytes, set[int], set[int]]] = [
                                           b" /Default 13 0 R >> >> >>",
                                           objects={9: b"10 0 R", 10: b"5"},
                                           streams={13: (b" /HalftoneType 6 /Width 1 /Height 1",
-                                                        b"\x00")}), {5}, {13}),
+                                                        b"\x00")}), {5, 13}, set()),
     # ── a resource dictionary: /Properties draws nothing; other keys neither.
     ("resources-other-keys", page(b"/Properties << /MC0 << /Foo 4 0 R >> >> /Foo << /X 6 0 R >>"
                                   b" /ProcSet [/PDF]", streams={4: LEAF_, 6: IMAGE_}),
@@ -422,6 +451,75 @@ def test_role_at_reads_each_list(role: int, path: tuple[bytes, ...], expected: i
     assert role_at(role, path) == expected
 
 
+def _xobject(subtype: bytes, smask: bytes, image: bytes,
+             objects: dict[int, bytes] | None = None) -> bytes:
+    """XObject 4 with *subtype*, image and form keys both: as an image (5
+    bytes of samples) it draws soft mask 6; as a form (its content `/X Do`)
+    image 7."""
+    gray = (b" /Type /XObject /Subtype /Image /Width 5 /Height 1 /BitsPerComponent 8"
+            b" /ColorSpace /DeviceGray")
+    return page(b"/XObject << /Im 4 0 R >>", objects=objects, streams={
+        5: (b"", b"q 100 0 0 100 20 20 cm /Im Do Q"),
+        4: (b" /Type /XObject %s /Width 5 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"
+            b" /SMask 6 0 R /BBox [0 0 1 1] /Resources << /XObject << /X 7 0 R >> >>" % subtype,
+            b"/X Do"),
+        6: (gray, smask), 7: (gray.replace(b"/Width 5", b"/Width 2"), image)})
+
+
+def _pixels(data: bytes) -> bytes:
+    return bytes(pymupdf.open(stream=data, filetype="pdf")[0].get_pixmap().samples)
+
+
+@pytest.mark.parametrize(("subtype", "objects"), [
+    (b"/Subtype /Form", None), (b"/Subtype /Image", None), (b"/Subtype /PS", None), (b"", None),
+    (b"/Subtype /Form /Subtype2 /Form", None), (b"/Subtype /Form /Subtype2 /Image", None),
+    (b"/Subtype /Image /Subtype2 /Form", None), (b"/Subtype /Form /Subtype2 /PS", None),
+    (b"/Subtype /Form /Subtype2 /Bogus", None), (b"/Subtype /Form /Subtype2 7", None),
+    (b"/Subtype /Form /Subtype2 null", None),
+    (b"/Subtype /Form /Subtype2 9 0 R", {9: b"10 0 R", 10: b"/Image"}),
+    (b"/Subtype 9 0 R /Subtype2 /Image", {9: b"/Form"}),
+    (b"/Subtype 9 0 R", {9: b"10 0 R", 10: b"/Image"}),
+])
+def test_an_xobject_is_drawn_as_mupdf_reads_its_subtype(subtype: bytes,
+                                                        objects: dict[int, bytes] | None) -> None:
+    # Each stream is DRAWABLE exactly when MuPDF's drawing changes as it does.
+    data = _xobject(subtype, b"\x00\xff\x00\xff\x00", b"\x00\xff", objects)
+    inv = _inventory(data)
+    drawn = _drawn(inv)
+    base = _pixels(data)
+    assert (_pixels(_xobject(subtype, b"\xff\x00\xff\x00\xff", b"\x00\xff", objects)) != base) \
+        == (6 in drawn)
+    assert (_pixels(_xobject(subtype, b"\x00\xff\x00\xff\x00", b"\xff\x00", objects)) != base) \
+        == (7 in drawn)
+
+
+T3_ = (b"<< /Type /Font %s /FontBBox [0 0 10 10] /FontMatrix [0.1 0 0 0.1 0 0]"
+       b" /CharProcs << /a 6 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97"
+       b" /LastChar 97 /Widths [10] /Resources << >> >>")
+
+
+def _glyph_font(subtype: bytes, glyph: bytes, objects: dict[int, bytes] | None = None) -> bytes:
+    return page(b"/Font << /F1 9 0 R >>", objects={9: T3_ % subtype} | (objects or {}),
+                streams={5: (b"", b"BT /F1 80 Tf 20 20 Td (a) Tj ET"),
+                         6: (b"", b"10 0 0 0 10 10 d1 " + glyph)})
+
+
+@pytest.mark.parametrize(("subtype", "objects"), [
+    (b"/Subtype /Type3", None), (b"", None), (b"/Subtype /Bogus", None), (b"/Subtype 3", None),
+    (b"/Subtype /CIDFontType2", None), (b"/DescendantFonts []", None),
+    (b"/Subtype /TrueType", None), (b"/Subtype /Type1", None), (b"/Subtype /MMType1", None),
+    (b"/Subtype 10 0 R", {10: b"11 0 R", 11: b"/TrueType"}),
+    (b"/Subtype 10 0 R", {10: b"11 0 R", 11: b"/Type3"}),
+])
+def test_a_font_is_type3_as_mupdf_decides(subtype: bytes,
+                                          objects: dict[int, bytes] | None) -> None:
+    # The glyph is DRAWABLE exactly when MuPDF's drawing changes with it.
+    data = _glyph_font(subtype, b"0 0 10 10 re f", objects)
+    inv = _inventory(data)
+    changed = _pixels(_glyph_font(subtype, b"0 0 3 3 re f", objects)) != _pixels(data)
+    assert (6 in _drawn(inv)) == changed
+
+
 def test_a_decided_role_takes_the_narrower_reading_without_its_value() -> None:
     # Mid-path, a direct XObject draws nothing; unread, a halftone is not
     # type 5 and a font not Type3.
@@ -435,8 +533,11 @@ def test_a_decided_role_takes_the_narrower_reading_without_its_value() -> None:
 
 # ── Annotation.appearance: the stream MuPDF draws (pdf_annot_ap) ──────────
 def _mupdf_appearances(data: bytes) -> list[int | None]:
-    """pdf_annot_ap of each annotation on page 0, in MuPDF's list order
-    (annotations, then widgets), the reference chain followed."""
+    """The stream MuPDF draws for each annotation on page 0, in its list
+    order (annotations, then widgets): pdf_annot_ap's object when
+    pdf_is_stream holds of it -- a reference whose object is a stream, one
+    reference away; MuPDF follows no chain to a stream (it draws nothing,
+    "content stream is not a stream")."""
     doc = pymupdf.open(stream=data, filetype="pdf")
     raw = M.pdf_page_from_fz_page(doc[0].this)
     found: list[int | None] = []
@@ -444,23 +545,31 @@ def _mupdf_appearances(data: bytes) -> list[int | None]:
                         (M.pdf_first_widget, M.pdf_next_widget)):
         annot = first(raw)
         while annot.m_internal:
-            obj, number = M.pdf_annot_ap(annot), 0
-            while obj.m_internal and M.pdf_is_indirect(obj):
-                number, obj = M.pdf_to_num(obj), M.pdf_resolve_indirect(obj)
-            found.append(number or None)
+            obj = M.pdf_annot_ap(annot)
+            stream = obj.m_internal and M.pdf_is_indirect(obj) and M.pdf_is_stream(obj)
+            found.append(M.pdf_to_num(obj) if stream else None)
             annot = step(annot)
     return found
 
 
-def _chained_appearance() -> bytes:
-    """An /AS entry and an /N given through a chain of references."""
-    return _annotated(b"<< %s /AS 9 0 R /AP << /N 10 0 R >> >>" % SQ,
-                      objects={9: b"/On", 10: b"<< /On 11 0 R >>", 11: b"12 0 R"},
-                      streams={12: _form(12)})
+def _chained(where: str, content: bytes = b"0 0 m") -> bytes:
+    """A square whose /AS (*where* "as"), /AP (*where* "ap"), /N (a
+    dictionary, *where* "n-dictionary"), state entry ("entry") or /N
+    stream ("n") is given through two references (`20 0 obj 21 0 R`)."""
+    annot = {"as": b"<< %s /AS 20 0 R /AP << /N << /On 12 0 R >> >> >>",
+             "ap": b"<< %s /AS /On /AP 20 0 R >>",
+             "n-dictionary": b"<< %s /AS /On /AP << /N 20 0 R >> >>",
+             "entry": b"<< %s /AS /On /AP << /N << /On 20 0 R >> >> >>",
+             "n": b"<< %s /AP << /N 20 0 R >> >>"}[where] % SQ
+    target = {"as": b"/On", "ap": b"<< /N << /On 12 0 R >> >>",
+              "n-dictionary": b"<< /On 12 0 R >>"}.get(where, b"12 0 R")
+    return _annotated(annot, objects={20: b"21 0 R", 21: target},
+                      streams={12: (FORM_ % b"", content)})
 
 
+CHAINED = ["as", "ap", "n-dictionary", "entry", "n"]
 APPEARANCES = [(name, data) for name, data, _ in ANNOTATION_CASES] + [
-    ("as-entry-through-references", _chained_appearance()),
+    (f"{where}-through-references", _chained(where)) for where in CHAINED] + [
     # An /AS entry naming a dictionary, not a stream: nothing drawn.
     ("as-entry-a-dictionary", _annotated(b"<< %s /AS /On /AP << /N << /On 9 0 R >> >> >>" % SQ,
                                          objects={9: b"<< /Foo 1 >>"}))]
@@ -513,9 +622,24 @@ def test_a_revision_walked_again_to_the_same_drawable_set_shares_it() -> None:
     assert _labels(inv, 0).drawable is _labels(inv, 1).drawable
 
 
-def test_a_chained_appearance_is_drawable() -> None:
-    inv = _inventory(_chained_appearance())
-    assert _drawn(inv) == {5, 12}
+@pytest.mark.parametrize(("where", "drawn"), [("as", {5, 12}), ("ap", {5, 12}),
+                                              ("n-dictionary", {5, 12}), ("entry", {5}),
+                                              ("n", {5})])
+def test_a_chained_appearance_is_drawn_as_mupdf_draws_it(where: str, drawn: set[int]) -> None:
+    # Names and dictionaries are read through references; a stream only one
+    # reference away: a chained state entry draws nothing (not synthesized),
+    # a chained /N stream is no stream (synthesized). MuPDF's own drawing:
+    # the stored form fills nothing here, so the pixels tell the three
+    # apart only by whether 12 is drawn -- pinned by mutating it.
+    data = _chained(where)
+    inv = _inventory(data)
+    assert _drawn(inv) == drawn
+    (annotation,) = inv.annotations[0] or ()
+    assert annotation.synthesized == (where == "n")
+    assert annotation.appearance == (12 if 12 in drawn else None)
+    filled = _chained(where, b"0 0 10 10 re f")
+    pixels = [bytes(pymupdf.open(stream=d)[0].get_pixmap().samples) for d in (data, filled)]
+    assert (pixels[0] != pixels[1]) == (12 in drawn)
 
 
 # ── Per body, across revisions (ADR 0011 item 5, "Across revisions") ─────
@@ -745,6 +869,21 @@ def test_each_reuse_condition_walks_the_drawing_again(data: bytes, expected: lis
     assert [_drawn(inv, r) for r in range(inv.revisions)] == expected
 
 
+def test_a_revision_without_a_page_list_resets_the_reuse() -> None:
+    # The /XObject dictionary 8 is rewritten in a revision with no page list
+    # (its page tree flagged); the next only repairs the tree. Nothing
+    # records what the skipped revision changed, so the next walks afresh
+    # (the review of #140's rule; the review of #158's gap.py).
+    from .test_inventory_labels import PAGES as TREE
+    data = page(b"/XObject 8 0 R", objects={8: b"<< /Im 4 0 R >>"},
+                streams={4: IMAGE_, 6: IMAGE_},
+                updates=({2: TREE.replace(b"1 >>", b"2 >>"), 8: b"<< /Im 6 0 R >>"}, {2: TREE}))
+    inv = _inventory(data)
+    assert {f.reason for f in inv.flags} == {FlagReason.PAGE_TREE}
+    assert inv.labels[1] is None
+    assert _drawn(inv, 0) == {5, 6} and _drawn(inv, 2) == {4, 5}
+
+
 def test_a_stream_rewritten_alone_is_the_new_body_drawn() -> None:
     # The content stream rewritten: the same number, a new body -- labelled,
     # the old one drawable for the older revision only.
@@ -887,11 +1026,19 @@ def _wide_rewrites(n: int) -> bytes:
                 updates=tuple({8: b"<< %s /Pad %d >>" % (names, i)} for i in range(n)))
 
 
-SHAPES = [_fan, _deep, _pages, _glyphs, _shared, _page_rewrites, _direct_fonts]
+def _big_dictionary(n: int) -> bytes:
+    """One image XObject whose dictionary holds n direct entries: its
+    /Subtype decision indexes them all (the review of #158's bigdict.py)."""
+    pad = b" ".join(b"/K%d 0" % i for i in range(n))
+    return page(b"/XObject << /Im 4 0 R >>", streams={4: (GRAY + b" " + pad, b"\x00")})
+
+
+SHAPES = [_fan, _deep, _pages, _glyphs, _shared, _page_rewrites, _direct_fonts, _big_dictionary]
 
 
 @pytest.mark.parametrize("make_file", SHAPES, ids=["fan", "deep", "pages", "glyphs", "shared",
-                                                   "page-rewrites", "direct-fonts"])
+                                                   "page-rewrites", "direct-fonts",
+                                                   "big-dictionary"])
 def test_the_drawing_walk_is_linear(make_file: object, walk_only: None) -> None:
     work = []
     for n in (60, 480):

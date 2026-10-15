@@ -20,7 +20,11 @@ classified, per ADR 0011 item 5 as MuPDF 1.28 reads it
   is not true; every other annotation is synthesized.
 
 References are resolved as MuPDF resolves them, through up to nine
-references in a row (a longer chain makes MuPDF warn: the gate sees it).
+references in a row (a longer chain makes MuPDF warn: the gate sees it)
+-- but a stream counts only one reference away, as pdf_is_stream reads
+it: an /N or state entry naming an object whose value is a reference to
+a stream is no stream (an /N so given is read as the stream's dictionary,
+an entry so given draws nothing; 3a-7e-2's review, fixing 3a-7d).
 A direct null is an absent key. Inherited /FT and /V come from the
 nearest of the widget and its /Parent chain that has the key; they are
 memoized per field node, so a deep chain is walked once. A /Parent cycle
@@ -179,8 +183,8 @@ def build_annotations(
             continue
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
-        held = _catalog_key(root, revision, body_of, budget)
-        if held is _SPENT:
+        held = acroform_key(root, revision, body_of, budget)
+        if held is SPENT:
             break
         ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, held)
         if not budget.charge_work(len(listed) + 1):
@@ -231,13 +235,13 @@ def _units(found: Annotations) -> tuple[Synthesized, ...]:
     return tuple(out)
 
 
-_SPENT: Final = object()
+SPENT: Final = object()  # acroform_key's answer when the budget refuses
 
 
-def _catalog_key(root: PdfValue | None, revision: int,
+def acroform_key(root: PdfValue | None, revision: int,
                  body_of: Callable[[int, int], Body | None], budget: Budget) -> object:
     """What the walk reads of the catalog: its /AcroForm value's written
-    bytes (None without a catalog dictionary or /AcroForm); _SPENT when
+    bytes (None without a catalog dictionary or /AcroForm); SPENT when
     the budget refuses. The catalog itself is not in the walk's read set:
     a revision rewriting it but not /AcroForm reuses the walk."""
     if not isinstance(root, PdfRef) or root.num == 0:
@@ -247,12 +251,12 @@ def _catalog_key(root: PdfValue | None, revision: int,
         return None
     catalog = body[1]
     if not budget.charge_work(len(catalog.entries) + 1):
-        return _SPENT
+        return SPENT
     value = catalog.get(b"AcroForm")
     if value is None:
         return None
     if not budget.charge_work(value.end - value.start + 1):
-        return _SPENT
+        return SPENT
     return body[3][value.start:value.end]
 
 
@@ -268,6 +272,7 @@ class _Walk:
         # An annotation's classification and drawn appearance, by number.
         self.classified: dict[int, tuple[bool, int | None]] = {}
         self.number = 0  # the number of the body resolve() last reached
+        self.hops = 0    # and how many references it followed to get there
 
     def charge(self, n: int = 1) -> bool:
         if not self.budget.charge_work(n):
@@ -300,7 +305,17 @@ class _Walk:
             if body is None:
                 return None, None
             value = body[1]
+        self.hops = hops
         return (None, None) if value is None or isinstance(value, PdfNull) else (value, body)
+
+    def stream(self, value: PdfValue | None) -> int | None:
+        """The number of the stream *value* names, as MuPDF's pdf_is_stream
+        reads it: a reference whose object is itself a stream. A chain
+        (`20 0 obj 6 0 R endobj`) is no stream there, though a dictionary or
+        a name is read through one (tests/test_inventory_drawable.py, against
+        MuPDF's drawing). None otherwise."""
+        _, held = self.resolve(value)
+        return self.number if held is not None and held[4] and self.hops == 1 else None
 
     def get(self, holder: PdfDict, key: bytes) -> PdfValue | None:
         """*holder*'s *key* as written, a direct null absent; charged by
@@ -402,16 +417,20 @@ class _Walk:
         self.flags.append((FlagReason.APPEARANCE_UNSUPPORTED, int(rule), number))
 
     def stored(self, value: PdfDict) -> tuple[bool, int | None]:
-        """Whether MuPDF draws an /AP /N as stored -- a stream, or a
-        dictionary in which /AS names an entry (one that is not a stream
-        draws nothing) -- and the stream's number (None: no stream)."""
+        """Whether MuPDF draws an /AP /N as stored -- a stream one
+        reference away (pdf_is_stream follows no chain), or else a
+        dictionary (read through references: a stream's at the end of a
+        chain is one) in which /AS names an entry (one that is not a stream
+        one reference away draws nothing) -- and the stream's number (None:
+        no stream drawn)."""
         ap, _ = self.resolve(self.get(value, b"AP"))
         if not isinstance(ap, PdfDict):
             return False, None
-        normal, held = self.resolve(self.get(ap, b"N"))
-        if held is not None and held[4]:
-            # A stream (resolve ends on a body only through a reference).
-            return True, self.number
+        normal_value = self.get(ap, b"N")
+        drawn = self.stream(normal_value)
+        if drawn is not None:
+            return True, drawn
+        normal, _ = self.resolve(normal_value)
         if not isinstance(normal, PdfDict):
             return False, None
         state, _ = self.resolve(self.get(value, b"AS"))
@@ -420,8 +439,7 @@ class _Walk:
         entry = self.get(normal, state.raw)
         if entry is None:
             return False, None
-        _, held = self.resolve(entry)
-        return True, (self.number if held is not None and held[4] else None)
+        return True, self.stream(entry)
 
     def signed(self, v: PdfValue | None) -> bool:
         """MuPDF's test: /V a dictionary (a stream's included) whose /Type
