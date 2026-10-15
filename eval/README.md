@@ -225,7 +225,8 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   escaped or UTF-16), or its extracted page text (text drawn in glyph
   codes, such as a browser's header, is readable only there) —
   or a secret's bytes inside a font program or image samples, or a
-  trailer `/ID` whose hex, as written, the config's patterns match.
+  trailer `/ID` whose text the config's patterns match (a hex string's
+  digits as written, a literal string's own text).
 - **Probes** (`probes.py`): one location per document, to see what the
   tool does to each place alone before the full set is trusted.
 - **Runner** (`run.py`): method 1 is the tool exactly as it is run day

@@ -302,7 +302,8 @@ def store_occurrences(path: Path) -> set[tuple[str, str]]:
 
 # Keys whose strings are machine-written numbers (dates, identifiers),
 # where four digits of a secret occur by chance; and the same inside XMP.
-_NUMERIC_KEYS = {"/CreationDate", "/ModDate", "/ID", "/M", "/CheckSum", "/Size"}
+_NUMERIC_KEYS = {"/CreationDate", "/ModDate", "/ID", "/M", "/CheckSum", "/Size",
+                 "/Producer", "/Creator"}   # producers' own version strings
 # Machine-written values wherever they sit: a tagged PDF's element ids
 # (Chrome writes node00048 in /ID, /Headers and the /IDTree), and dates.
 _MACHINE_VALUE = re.compile(r"node\d+|D:[\d+\-Z']+")

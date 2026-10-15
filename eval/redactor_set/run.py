@@ -51,7 +51,10 @@ def _run_group(cmd: list[str], cwd: Path, timeout: float) -> tuple[int | str, st
                 out, err = proc.communicate(timeout=10)
                 break
             except ProcessLookupError:
-                out, err = proc.communicate()
+                try:
+                    out, err = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:   # a grandchild holds the pipes
+                    out, err = "", ""
                 break
             except subprocess.TimeoutExpired:
                 out, err = "", ""
