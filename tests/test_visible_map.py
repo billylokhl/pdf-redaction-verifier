@@ -267,6 +267,12 @@ class TestHeadline:
     def test_an_unclassified_code_counts_as_document_level(self) -> None:
         assert headline.code_level("SOME_FUTURE_CODE", None) == "document"
 
+    @pytest.mark.parametrize("code", ["PAGE_FAILED", "PAGE_THUMBNAIL"])
+    @pytest.mark.parametrize("storage", [None, "live", "orphaned"])
+    def test_page_codes_are_page_level_whatever_the_storage(self, code, storage) -> None:
+        # #141 gives PAGE_FAILED storage "live"; #133's PAGE_THUMBNAIL is live.
+        assert headline.code_level(code, storage) == "page"
+
     def test_object_codes_split_by_storage(self) -> None:
         assert headline.code_level("LEFTOVER_IMAGE", "orphaned") == "outside"
         assert headline.code_level("LEFTOVER_IMAGE", "live") == "document"
@@ -927,6 +933,30 @@ class TestClasses:
             "1 page has area outside the crop; images there not checked")
         assert any(r.startswith(want) for r in alone.reasons)
         assert alone.row == 2 and "Nothing visible found" not in alone.headline
+
+
+def test_a_page_thumbnail_makes_the_map_incomplete_on_its_page(tmp_path,
+                                                                 monkeypatch) -> None:
+    """#133: a page /Thumb is never read, so its page is named as an
+    INCOMPLETE reason (PAGE_THUMBNAIL p.2); the thumbnail itself is never
+    drawn or listed."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Cover page")
+    doc.new_page().insert_text((72, 72), "Second page")
+    thumb = doc.get_new_xref()
+    doc.update_object(thumb, "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 "
+                             "/BitsPerComponent 8 /ColorSpace /DeviceGray >>")
+    doc.update_stream(thumb, bytes(64))
+    doc.xref_set_key(doc.page_xref(1), "Thumb", f"{thumb} 0 R")
+    pdf = _save(doc, tmp_path / "thumb.pdf")
+    run, _the_plan = mapped(monkeypatch, tmp_path, pdf)
+    assert run.code == 2
+    assert [(w["code"], w["page"]) for w in run.report["warnings"]
+            if w["code"] == "PAGE_THUMBNAIL"] == [("PAGE_THUMBNAIL", 2)]
+    alone = plan_of(pdf, without_ocr_warning(run.header))
+    assert "PAGE_THUMBNAIL p.2" in alone.reasons
+    assert alone.flags.I and alone.row == 2 and "Nothing visible found" not in alone.headline
+    assert not alone.boxes and not alone.listed
 
 
 # ── Pinned, out of scope (issues #124, #125) ──────────────────────────

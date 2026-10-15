@@ -633,3 +633,214 @@ gate tell, per annotation, whether MuPDF draws the stored /AP or an appearance i
   Also covered: a stored /AP holding only clip-mode text, and pages with a widget before a
   square in /Annots. Cost: two document copies per file, linear -- roughly 0.03-0.2 s for 100
   annotations and 0.5-0.8 s for 1,600, by machine.
+
+## Phase 3a-7d: the annotation gate on the implementation
+
+The spike's method (owner decision 11, P1 = (a)) in `eval/scorecard/annotations.py`, against
+`redaction_verifier/inventory/annotations.py`'s classification. Two corrections to the spike's
+code: the copies pair on a (page, /Annots index) key, not page * 10^6 + index; and whether an
+annotation has /AP is read as written before MuPDF loads the copy -- MuPDF writes the appearance
+it synthesizes into an annotation written directly in /Annots, which the spike would then read
+as STORED. MuPDF's warnings while it loads and draws the two copies are discarded (an /AS entry
+that is not a stream draws nothing but warns "content stream is not a stream" when drawn); the
+file's own warnings, its pages reloaded for the list included, are gated as before.
+
+Implementing it found where MuPDF 1.28 reads past ADR 0011 item 5's text (each pinned in
+`tests/test_inventory_annotations.py` against MuPDF's drawing; ADR 0011's notes on item 5):
+the signature test reads /FT as written (a reference to /Sig is no signature field) and
+resolves /V and its /Type; a direct null is an absent key; references are followed up to nine
+in a row; only widgets climb /Parent (a Square's /Parent cycle draws fine); a widget whose
+/Parent chain has a cycle makes MuPDF fail ("cycle in tree"): `FIELD_TREE`. An annotation MuPDF
+would synthesize but cannot makes it warn "cannot create appearance stream" and draw the stored
+/AP instead -- under /NeedAppearances that is STORED where the ADR says synthesized -- or
+nothing: a /Subtype outside the 18 it builds, or a widget whose /FT is missing, unknown, or a
+reference to /Btn. Probed for each field type given by reference (as written on the widget, on
+its parent, and through a chain of two references; with and without /NeedAppearances): /Tx,
+/Ch and /Sig are built through references without a warning, /Btn (a check box, a push
+button, a radio button) only written as a name. The inventory flags exactly those
+(`APPEARANCE_UNSUPPORTED`, coordinator decision, 2026-10-15). qpdf --check's own annotation
+and AcroForm analysis -- a widget more than 100 field levels below /Fields ("not reachable from
+/AcroForm"), an annotation listed twice in one /Annots ("duplicate entry") -- is issue #144; a
+first version flagged a /Parent chain deeper than 100, which neither matched qpdf's
+downward walk nor caught it, and was dropped in review.
+
+| Run | Agree | Flagged | Unflagged disagreements |
+| --- | --- | --- | --- |
+| Corpus (2,073) | 1,920 | 153 (7.38%) | 0 |
+| Case library (461) | 433 | 28 | 0 |
+| Fuzz (2,000, seed 0) | 501 | 1,499 | 0 (no annotation in any generated file) |
+
+Corpus: 778 annotations compared; `FIELD_TREE` and `APPEARANCE_UNSUPPORTED` on no file;
+`SYNTHESIZED` units in 139 files, 400 annotations in the current revisions, all widgets (130
+files, 373 annotations unflagged) -- ADR 0011 measured 139 and 400. Older revisions: 14
+(body, /Annots index) pairs in 9 files are units not among the current revision's (a widget
+whose body a later revision rewrote counts here); by ADR 0011's definition -- a widget, by
+object number, synthesized in an older revision but not now -- 0 ("none of them new", the ADR
+said, of its 13 widgets in 8 files); 57 widgets in 23 unflagged files are synthesized in some
+older revision. Case library: 27 annotations compared. Oracle seconds on the final run (6
+workers): p50 0.32, max 17.0 (3a-7c's run: 0.63 and 20.6); the two copies cost only on
+revisions with annotations.
+
+## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
+
+Measured 2026-10-14 (commit 90669ef), on the owner's local corpus: 2,073
+macOS system and application PDFs (eval/README.md, "Pattern-class
+false-hard baseline"). The rules file holds only the four built-in classes,
+so every hard finding is a false hard; `email` is reported but, per ADR
+0005, it is a true positive for "an address is here". Unlike ADR 0005's
+page-text scan, this covers every layer the CLI runs a class over. 1 file
+was unmeasured (a 300 s timeout, text-bearing); no finding was unjoined.
+Counts only.
+
+Files with at least one hard finding, text-bearing stratum (488 measured):
+
+| Class | Files | Text | OCR | Objects | Metadata | Hidden |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ssn` | 132 (27.0%) | 89 | 87 | 23 | 13 | -- |
+| `us-phone` | 14 (2.9%) | 3 | 8 | 8 | -- | -- |
+| `credit-card` | 7 (1.4%) | 1 | -- | 6 | -- | -- |
+| `email` | 112 (23.0%) | 111 | 111 | 91 | -- | 24 |
+| **`ssn` or `us-phone`** | **138 (28.3%)** | | | | | |
+
+All files (2,072 measured): `ssn` 7.8%, `credit-card` 3.7%, `us-phone`
+1.9%, `email` 5.5%; `ssn` or `us-phone` 8.7%. On text-free files the
+false hards come only from Metadata and Objects (credit-card's 58
+Metadata files: number lists 28, hex ids 26, UUIDs 4).
+
+**What the matches are** (text-bearing, files per shape; a file can have
+several):
+
+| Class | hex-id | alnum-id | uuid | bare-digits | number-list | formatted |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ssn` | 69 | 44 | 11 | 12 | -- | 3 |
+| `us-phone` | -- | -- | -- | 12 | -- | 2 |
+| `credit-card` | -- | 1 | -- | 2 | 4 | -- |
+
+No `date-or-time` match was found. For `ssn` and `us-phone` that shape can
+only come from a `D:` prefix, because the classes' digit guards keep a
+9- or 10-digit match out of a longer digit run, so this is not evidence
+that the corpus holds no dates. `formatted` (grouped as the class's real
+values are) is decided first, so a run that spells a real grouping inside
+a longer id counts as `formatted`; this errs toward keeping files hard.
+
+**What each demotion option would leave hard** (text-bearing `ssn` or
+`us-phone`; an estimate from every match of the class, not only the one
+reported, that errs toward keeping files hard -- eval/README.md):
+
+| Demoted to review | Still hard |
+| --- | --- |
+| nothing (today) | 138 (28.3%) |
+| matches inside a token (`uuid`, `hex-id`, `alnum-id`) and dates | 25 (5.1%) |
+| ... and number lists | 25 (5.1%) |
+| ... and bare digit runs | 5 (1.0%) |
+| the whole class | 0 |
+
+The 5 left are 3 files with a dashed SSN-shaped value (all in Objects)
+and 2 with a punctuated phone number (Text, OCR and Objects): matches that
+look exactly like the real thing.
+
+Reading:
+- 28.3% replaces ADR 0005's 23.1%, which scanned page text only, on an
+  earlier snapshot of the corpus (2,031 files, 484 text-bearing).
+- A context rule that only demotes matches inside a token, or dates,
+  leaves 5.1%, far above the gate.
+- Phase 5's gate (< 1%) is not met by any option short of demoting what
+  looks exactly like a real SSN or phone number: 5/488 is 1.02%.
+- `credit-card` is not 0% under the full CLI.
+
+This measures false hards only. It does **not** measure what a demotion
+would cost in recall: a real SSN written next to a label with the space
+lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
+rest. That cost has to be measured on leak cases before any demotion
+ships (Phase 5, PR 2; ADR 0012).
+
+**Policy 1 on the corpus** (ADR 0012; `eval/scorecard/pattern_policy1_corpus.py`
+over the per-file reports of the run above, recomputed without the
+built-in classes' findings and review warnings, which every pattern
+warning names in its `rule` field; 0 unattributed): since the rules were
+the four classes only, each file's exit is then set by its coverage
+warnings alone.
+
+| Text-bearing, 488 | Exit 0 | Exit 1 | Exit 2 |
+| --- | --- | --- | --- |
+| today | 131 (26.8%) | 235 (48.2%) | 122 (25.0%) |
+| policy 1 | 248 (50.8%) | 0 | 240 (49.2%) |
+
+Moves: 111 files 1 → 0, 124 files 1 → 2 (a coverage warning remains), 6
+files 2 → 0. All 2,072 measured files: exit 0 from 1,579 to 1,785, exit 1
+from 337 to 0, exit 2 from 156 to 287 (198 1 → 0, 139 1 → 2, 8 2 → 0).
+
+With `credit-card` in the union (`ssn`, `us-phone` or `credit-card`,
+text-bearing): 139 files (28.5%) today; under the demote-only options A,
+B and C, 25 (5.1%), 5 (1.0%) and 0.
+
+## Phase 5 recall: what each option costs -- eval/scorecard/pattern_recall.py
+
+Measured 2026-10-15 on the case library (fabricated), macOS 27: every case
+with a built-in class rule, scanned with the pattern recorder. 109 are leak
+cases, and **every one names the `ssn` class**: no `us-phone`,
+`credit-card` or `email` leak case exists, so those classes' recall is not
+measured. 52 of the 109 exit 1 today: 43 are held there by a value rule
+(no option touches it) and 9 by `ssn` findings only. One case expected at
+exit 1 cannot be judged here: `page.dense-sideways-scan` (K43) exits 2
+today on macOS 27 (its story says 1 on macOS 26). No finding's shape was
+unknown or ambiguous.
+
+**ADR 0012's demote-only options** (exit 1 → 2; the lower and upper bounds
+agree for every option):
+
+| Option | Leak cases moved 1 → 2 | ... if the cases' value rules were absent |
+| --- | --- | --- |
+| A: demote matches inside a token or a dated run | 0 | 0 |
+| B: A, plus bare digit runs and number lists | 1: `layout.form-boxes-pattern-only` | 4 |
+| C: demote the class | 9 | 24 |
+
+`layout.form-boxes-pattern-only` is an SSN typed one digit per form box,
+which the Text layer reads as a bare `123456789`. The 9 under C are every
+leak case caught at exit 1 by the class rule alone (listed below).
+
+**Policy 1** (the owner's direction of 2026-10-15: a built-in class match
+no longer affects the exit code). 24 leak cases reach exit 0, all `ssn`:
+
+- from exit 1 (9): `page.visible-pattern-rule`, `layout.single-line-pattern-only`,
+  `layout.rotated-pattern-only`, `layout.form-boxes-pattern-only`,
+  `layout.overlapping-values-pattern-only`,
+  `layout.overlapping-split-short-tail-pattern-only`,
+  `document.trailer-key-pattern-rule`, `page.scan-image-sideways-90`,
+  `page.scan-image-sideways-270`;
+- from exit 2 (14; their only warnings were class reviews): `layout.split-lines-pattern-only`,
+  `layout.split-three-lines-pattern-only`, `layout.split-pages-pattern-only`,
+  `layout.split-pages-needs-later-lines-pattern-only`,
+  `layout.split-three-pages-pattern-only`, `layout.split-over-blank-page-pattern-only`,
+  `layout.two-page-breaks-pattern-only`, `layout.overlapping-split-pages-pattern-only`,
+  `layout.repeated-line-wraps-pattern-only`, `layout.several-values-pattern-only`,
+  `layout.table-rows-pattern-only`, `layout.table-rows-split-pages-pattern-only`,
+  `layout.vertical-stack-pattern-only`, `document.trailer-id-digits-pattern-rule`;
+- the known gap `page.dense-sideways-scan` (K43): exit 2 today, 1 expected,
+  0 under policy 1.
+
+Two clean cases change: `document.generated-id-digits` (2 → 0; expected
+0) and `page.digit-column` (2 → 0; expected 2, the clean side of #74).
+
+**Policy 1 on the case labels** (every case with a class rule, scanned or
+not). A label's exit also changes where the label's target was set by the
+class alone: 11 more `ssn` leak cases, all known gaps that exit 0 today and
+are expected at exit 2 only from a class review warning, are expected at
+exit 0 under policy 1. Four are REVIEW_BINARY targets (`document.af-pattern-rule`,
+`document.js-stream-pattern-rule`, `document.piece-info-pattern-rule`,
+`page.hidden-sample-bytes-pattern-rule`). Seven are REVIEW_FUSED_PATTERN
+targets (`layout.form-boxes-split-pages-pattern-only`,
+`layout.rotated270-split-pages-pattern-only`, `layout.split-four-pages-pattern-only`,
+`layout.split-pages-needs-earlier-lines-pattern-only`,
+`layout.vertical-stack-split-pages-pattern-only`, `layout.undashed-ssn-wrapped`,
+and `layout.rotated-split-pages-pattern-only`, which needs `no-ocr` and is
+judged from its label only). In all, 35 leak cases reach exit 0 under
+policy 1; the owner signed off all 35 (ADR 0012). The 31 cases with a
+value rule beside the class rule cannot be judged from their labels (a
+label lists warning codes, not their rule); for each, this scan's report
+satisfies the label exactly (`caselib.run.judge`) and names each
+warning's rule, which settles it: none changes (`settled_by_scan` lists
+all 31).
+
+These lists describe macOS 27 with every tool installed: OCR differs by
+macOS version (K43) and a case needing a missing tool is not scanned.

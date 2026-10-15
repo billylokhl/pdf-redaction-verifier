@@ -290,7 +290,7 @@ has seen, not measured statistics.
 | 1 | **Text** | is covered by a box but still selectable | characters read with positions, rebuilt into reading order, matched | PyMuPDF |
 | 2 | **Objects** | the page no longer shows but the file still stores | every PDF object decoded and matched; unreferenced ones flagged ORPHANED | PyMuPDF + built-in PDF string parser |
 | 3 | **Metadata** | sits in document properties | every metadata tag dumped and matched | exiftool, PyMuPDF |
-| 4 | **Hidden** | no page renders at all | attachments, annotations, form fields, links, JavaScript, layer names read and matched | PyMuPDF |
+| 4 | **Hidden** | no page renders at all | attachments, annotations, form fields, links, JavaScript, layer names read and matched; page thumbnails flagged | PyMuPDF |
 | 5 | **OCR** | exists only as pixels | each page rendered to an image, text recognized, matched | PyMuPDF, Apple Vision |
 | 6 | **Binary** | survives in the objects qpdf rebuilds — a cross-check for damaged files | reachable objects decompressed, searched for known values | qpdf |
 
@@ -413,6 +413,9 @@ case number that was scrubbed from the page.
   and names (`page.widgets()`), link targets (`page.get_links()`),
   JavaScript in the catalog's `/OpenAction` and the top level of its named
   JavaScript tree, and optional-content group names (`get_ocgs()`).
+  A page carrying a `/Thumb` preview image (on the page, or on a Pages
+  node above it) is flagged `PAGE_THUMBNAIL` (exit `2`): the thumbnail is
+  not decoded or OCR'd, and can still show what the page no longer does.
   Scripts on links, form fields, pages or the catalog's other actions are
   not reported here; a script stored as a string is still caught by the
   Objects layer, and one stored as a stream by Binary (manual review).
@@ -508,14 +511,14 @@ named, not that you named everything.
 secret can still be **not detected** (exit `0`). In short:
 
 - **Pixels the tool does not OCR:** under a box drawn over an image
-  (K12), off the page (K14), in page or XMP thumbnails (K24, K22, K23),
+  (K12), off the page (K14), in XMP thumbnails (K22, K23),
   in embedded files other than listed attachments (K27), and in image
   data beyond an image's declared size (rows past its declared height
   are never drawn, K37). One picture cut into thin strips, each too
   small to read alone, is also missed when a box covers the strips
   (K38), when they are not drawn next to each other, or when they are
   never drawn.
-  <!-- gap-cells: live.pixels.under-box off-page.pixels thumbnail.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
+  <!-- gap-cells: live.pixels.under-box off-page.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
 - **Content no page shows:** font-coded text (K15), outlines (K6) or
   images in a switched-off optional-content layer, a hidden
   annotation's appearance (K16, K17), or a page resource that is never
@@ -594,10 +597,10 @@ secret can still be **not detected** (exit `0`). In short:
   <!-- gap-cells:  -->
 
 Other leftover images, other leftover text in non-plain font codes,
-and attachments that are not text are **flagged** (exit `2`) rather than
-read: a clean
-document containing them cannot certify as `0` until the tool learns to
-read them.
+attachments that are not text, and page thumbnails (`/Thumb` preview
+images on any page) are **flagged** (exit `2`) rather than read: a
+clean document containing them cannot certify as `0` until the tool
+learns to read them.
 
 Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the
@@ -609,6 +612,11 @@ decompressed font tables, or an image's raw bytes, can raise
 coincidental Binary warnings (see Binary); a document `/ID` written as
 hex text whose digits happen to form an SSN, card or phone number is
 manual review under a pattern rule. Prefer longer, more specific values.
+The built-in classes raise hard findings on many clean files: on 488 real
+text-bearing PDFs with no secret in them, `ssn` or `us-phone` did on
+28.3%, mostly digit runs inside hex or alphanumeric ids (Phase 5 of
+docs/REDESIGN.md addresses this; eval/spikes/RESULTS.md, "Phase 5
+baseline").
 <!-- gap-cells: false-alarm.slug-beside-visible-line false-alarm.binary-value-collision false-alarm.generated-id-digits -->
 
 A rewrite that closes these gaps by accounting for every byte of the
@@ -727,7 +735,11 @@ version: 12.4 with Python 3.11+, 12.3 with Python 3.10. Homebrew's qpdf
 12.4 matches; Debian/Ubuntu's packaged qpdf is older, so install the
 matching release binary from qpdf's GitHub releases, as CI does
 (`.github/workflows/tests.yml`). With a mismatch those tests fail closed
-and the inventory gate refuses to run. Without uv, `pip install -e '.[test]'`
+and the inventory gate refuses to run. qpdf's macOS release binary reads
+RC4-encrypted files only if it finds OpenSSL's legacy provider; CI sets
+`OPENSSL_MODULES` to Homebrew openssl@3's `lib/ossl-modules` (Homebrew's
+own qpdf needs nothing). Without the provider, the RC4 encrypted-file
+test fails: the gate reads a split on encryption. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
 `python verify.py --target ... --secrets ...` works installed or not; pass
 `--fail-fast` to stop at the first confirmed finding. `verify.py` imports

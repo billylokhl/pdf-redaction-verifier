@@ -106,7 +106,7 @@ def _cells() -> dict[str, Cell]:
         "metadata.pixels": Cell(gap, "XMP thumbnails"),
         "leftover-xmp.plain": Cell(read, "orphaned or superseded XMP"),
         "leftover-xmp.pixels": Cell(gap, "thumbnails in leftover XMP"),
-        "thumbnail.pixels": Cell(gap, "page thumbnails (/Thumb)"),
+        "thumbnail.pixels": Cell(flagged, "page thumbnails (/Thumb)"),
         # trailer — the document trailer dictionary (not an object)
         "trailer.plain": Cell(read, "the trailer's /ID and other trailer strings"),
         # attachments
@@ -207,5 +207,5 @@ ROW_STORAGE: dict[str, str] = {
     **{row: "live" for row in ("live", "off-page", "oc-off", "annot-appearance",
                                "unused-resource", "metadata", "attachment",
                                "embedded-other", "annot-fields", "javascript",
-                               "private-data", "trailer")},
+                               "private-data", "trailer", "thumbnail")},
 }
