@@ -358,7 +358,8 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     when the oracle names it, and entries that name neither page nor
     object (the Hidden and Metadata layers' locations) count as one
     occurrence per storage, and only where no layer placed that secret
-    in an object (the largest one-to-one
+    in an object; an occurrence on a page vouches for such content only
+    on the page it sits on (the largest one-to-one
     matching decides); an instance with candidates the matching cannot
     cover is **ambiguous**, not a hit. A hard finding is a **hit**; a
     warning alone is a hit where review (exit `2`) is expected and a

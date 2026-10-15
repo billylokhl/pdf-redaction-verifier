@@ -209,11 +209,16 @@ def occurrence_units(report: Mapping[str, Any], exact: list[str],
 
 def _candidate(u: Unit, secret: str, rules: frozenset[str],
                storages: frozenset[str] | None, page: int | None, objects: set[int],
-               object_units: set[tuple[str, str]]) -> bool:
+               object_units: set[tuple[str, str]], home_page: int | None = None) -> bool:
     if storages is not None and u.storage not in storages:
         return False
     if page is not None and u.page != page + 1:
         return False
+    if page is None and u.page is not None:
+        # An occurrence on a page vouches for content with no page of its
+        # own (an annotation, say) only on the page that content sits on.
+        if home_page is None or u.page != home_page + 1:
+            return False
     if page is None and u.page is None:
         # Content with no page (an annotation, a field, metadata): an
         # object-bearing occurrence must be the instance's own object,
@@ -304,7 +309,8 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
             known_gap=bool(row.get("known_gap")), provisional=bool(row.get("provisional")))
         objects = instance_objects(row)
         mine = [k for k, u in enumerate(units)
-                if _candidate(u, row["secret"], rules, storages, page, objects, object_units)]
+                if _candidate(u, row["secret"], rules, storages, page, objects, object_units,
+                              base.get("page") if base else None)]
         # Prefer an occurrence a hard finding reports.
         mine.sort(key=lambda k: (not units[k].finding, k))
         column = _flagged_column(score.cell)

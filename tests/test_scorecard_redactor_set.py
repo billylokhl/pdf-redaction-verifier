@@ -455,3 +455,16 @@ def test_a_rules_file_that_is_not_the_personas_is_refused(tmp_path, monkeypatch)
     args.rules.write_text(args.rules.read_text().replace("666-51-4073", "123-45-6789"))
     assert rs.main(args) == 1
     assert not (tmp_path / "out.json").exists()
+
+
+def test_a_page_occurrence_vouches_for_page_less_content_only_on_its_page():
+    # Round 3 follow-up: NAME1 found drawn on page 1 must not vouch for a
+    # missed annotation on page 2 (or one whose page is unknown).
+    rows = [row(0, "NAME1", loc="A1", where="live", cell="annot-fields.plain")]
+    on_p1 = {**finding(NAME1, "live", page=1, obj=None), "layer": "Text"}
+    assert score(rows, truth(("NAME1", "Jordan Q. Testperson", 1), encoding="string"),
+                 [on_p1])[0].outcome == rs.MISS
+    assert score(rows, truth(("NAME1", "Jordan Q. Testperson", None), encoding="string"),
+                 [on_p1])[0].outcome == rs.MISS
+    assert score(rows, truth(("NAME1", "Jordan Q. Testperson", 0), encoding="string"),
+                 [on_p1])[0].outcome == rs.HIT
