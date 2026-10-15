@@ -481,11 +481,11 @@ already matched are skipped, and every subprocess has a deadline — qpdf's
 stream is read under `select`, exiftool runs under `communicate(timeout)`
 — so a stalled tool cannot hang the run. Report samples are
 masked — at most four trailing characters, never more than half, and
-none at all (just `****`) when the sample contains an exact value or its
-revealed tail shares two consecutive characters (or a lone character,
-or a single edge character) with one, or shows any character the matcher
-ignores (a non-ASCII letter, or a digit of another script) that occurs in one, since
-the matcher can find a value across such characters (compared both as the form the matcher
+none at all (just `****`) when the sample contains an exact value or any
+revealed character is a character of one — per character, not per
+position, because the value search assembles values across characters it
+ignores, across lines and down columns, so any revealed character may be a
+piece of a value found elsewhere (compared both as the form the matcher
 searches and as letters and digits of any script, case, accents and
 punctuation ignored, non-ASCII decimal digits as ASCII; look-alike
 characters from other scripts are not recognised, so OCR-layer samples,

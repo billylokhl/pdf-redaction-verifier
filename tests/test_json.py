@@ -814,7 +814,8 @@ class TestMaskHelper:
         ("123-45-6789", ["123456789"], "****"),    # tail comes from the value
         ("123-45-60000", ["12345"], "****"),       # sample contains the value
         ("abc-12345", ["x45y"], "****"),           # 2 consecutive chars overlap
-        ("abc-12345", ["x4y5z"], "****2345"),      # only non-adjacent chars: kept
+        ("abc-12345", ["x4y5z"], "****"),          # any shared character hides the tail
+        ("abc-12345", ["xyz"], "****2345"),        # nothing shared: kept
         ("123-45-67890", ["0ok"], "****"),         # tail ends with the value's first char
         ("abcd", ["xyzabc"], "****"),              # tail begins with the value's last char
         ("ab", ["b"], "****"),                     # 1-character tail

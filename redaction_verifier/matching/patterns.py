@@ -77,21 +77,15 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
-def _shows_a_dropped_value_char(tail: str, index: MaskIndex) -> bool:
-    """True when *tail* holds a character the matcher drops (a non-ASCII
-    letter, or a decimal digit of another script) that is a character of
-    an exact value.
-
-    The matcher can find a value across such characters ("93Ж8" is
-    searched as "938" and found in "x93ΩЖ8"), so neither folding's checks
-    in mask() see the character in context; any of them that occurs in a
-    value hides the tail.
-    """
+def _tail_chars(tail: str) -> set[str]:
+    """Every character *tail* can stand for in either folding: the wide
+    fold and the matcher's own, of the whole tail and of each character
+    on its own (so a mark or a compatibility form cannot shift a
+    character out of view)."""
+    chars = set(fold_wide(tail)) | set(normalize_string(tail))
     for c in tail:
-        wide = fold_wide(c)
-        if wide and wide != normalize_string(c) and any(x in index.chars for x in wide):
-            return True
-    return False
+        chars.update(fold_wide(c), normalize_string(c))
+    return chars
 
 
 def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = False) -> str:
@@ -101,40 +95,29 @@ def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = Fa
     match; the fixed '****' prefix hides the true length.
 
     *exact* holds the rules' exact values (a MaskIndex, or raw strings),
-    which a report never shows. Everything is compared folded (letters and
-    digits of any script, case and accents ignored). Only '****' is shown
-    when the sample contains an exact value, when two consecutive revealed
-    characters (or a lone revealed character) occur in one, or when the
-    tail touches one at an edge by a single character, or when a revealed
-    character the matcher ignores (a non-ASCII letter, or a digit of
-    another script) is a character of one. *full* (used for OCR
-    samples, whose characters may be look-alike misreadings of an exact
-    value's letters) never shows a tail.
+    which a report never shows. Only '****' is shown when the sample
+    contains an exact value, or when ANY revealed character is a
+    character of one, compared folded (letters and digits of any script,
+    case and accents ignored, digits of any script as ASCII digits, in
+    both the wide fold and the matcher's own). The rule is per character,
+    not per position, because the value search can assemble a value from
+    pieces anywhere: across characters it ignores ("93Ж8" is found in
+    "x93ΩЖ8"), across lines, and down a column, so any single revealed
+    character may be a piece of a value found elsewhere. *full* (used for
+    OCR samples, whose characters may be look-alike misreadings of an
+    exact value's letters) never shows a tail.
     """
     reveal = min(4, len(matched) // 2)
     if full or not reveal:
         return "****"
     index = exact if isinstance(exact, MaskIndex) else MaskIndex(exact)
     if index:
+        tail = matched[-reveal:]
+        if not _tail_chars(tail).isdisjoint(index.chars):
+            return "****"
         # Both foldings: the wide one, and the matcher's own (which drops
-        # non-ASCII characters interleaved in a match, so a value can span
-        # them in the matcher's view only).
-        tail_raw = matched[-reveal:]
-        for sample_f, tail in ((fold_wide(matched), fold_wide(tail_raw)),
-                               (normalize_string(matched), normalize_string(tail_raw))):
-            if index.contained_in(sample_f):
-                return "****"
-            if len(tail) == 1:
-                if tail in index.chars:
-                    return "****"
-            elif any(tail[i : i + 2] in index.pairs for i in range(len(tail) - 1)):
-                return "****"
-            # A one-character overlap at the edge of the match: the tail
-            # ends with an exact value's first character or begins with
-            # its last.
-            if tail and (tail[-1] in index.firsts or tail[0] in index.lasts):
-                return "****"
-        if _shows_a_dropped_value_char(tail_raw, index):
+        # non-ASCII characters interleaved in a match).
+        if index.contained_in(fold_wide(matched)) or index.contained_in(normalize_string(matched)):
             return "****"
     return "****" + matched[-reveal:]
 

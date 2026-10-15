@@ -131,11 +131,13 @@ never hard-fails a clean document. Demotion never discards a match; what
 the tool cannot see at all is listed under [Known gaps](#known-gaps).
 Regex patterns are held to the stricter rule: hard only within one line
 of a genuine reading or one decoded string. Reported samples are masked
-(`****6789`); when a sample overlaps one of your exact values, only `****` is
-shown, so a report never shows two consecutive characters of an exact value, nor any
-character where the match overlaps one (compared ignoring case, accents and
-punctuation, for letters and digits of any script, including those the search
-itself skips). Characters that merely look
+(`****6789`); when a sample contains one of your exact values, or any character it
+would show is a character of one, only `****` is shown, so a report never shows
+any character of an exact value (compared ignoring case, accents and punctuation,
+for letters and digits of any script). The check is per character, not per
+position, because the search can assemble a value from pieces across lines or
+down a column; with numeric exact values, most numeric samples therefore show
+only `****`. Characters that merely look
 like one another (a Greek or Cyrillic letter for a Latin one) are not
 recognised as equal, so a sample read by OCR, where such misreadings happen,
 is always fully masked (`****`), in the report, `--json` and warnings.

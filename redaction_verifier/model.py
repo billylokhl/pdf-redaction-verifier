@@ -56,11 +56,6 @@ class MaskIndex:
             c: tuple(sorted(ns)) for c, ns in lengths.items()
         }
         self.chars: frozenset[str] = frozenset(c for v in self.values for c in v)
-        self.pairs: frozenset[str] = frozenset(
-            v[i : i + 2] for v in self.values for i in range(len(v) - 1)
-        )
-        self.firsts: frozenset[str] = frozenset(v[0] for v in self.values)
-        self.lasts: frozenset[str] = frozenset(v[-1] for v in self.values)
 
     def __bool__(self) -> bool:
         return bool(self.values)

@@ -148,10 +148,67 @@ def test_no_value_glyph_in_a_revealed_tail(seed) -> None:
     assert _leaks(seed, 20_000) == []
 
 
-def test_property_test_catches_the_old_rule(monkeypatch) -> None:
-    # Without the dropped-character check the same draw finds leaks, so the
+def test_property_test_catches_a_missing_rule(monkeypatch) -> None:
+    # Without the per-character rule the same draw finds leaks, so the
     # property test above can fail.
     import redaction_verifier.matching.patterns as patterns
 
-    monkeypatch.setattr(patterns, "_shows_a_dropped_value_char", lambda tail, index: False)
+    monkeypatch.setattr(patterns, "_tail_chars", lambda tail: set())
     assert _leaks(0, 20_000)
+
+
+# ── Values assembled across lines or down a column (review after B6) ─────
+def _helv_pdf(path: Path, spans: list[tuple[float, float, str]]) -> Path:
+    doc = fitz.open()
+    page = doc.new_page()
+    for x, y, text in spans:
+        page.insert_text((x, y), text, fontsize=11)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def _json_run(tmp_path: Path, pdf: Path, value: str, pattern: str) -> dict:
+    rules = _rules(tmp_path / "r.json", value, pattern)
+    out = tmp_path / "report.json"
+    verify.main(["--target", str(pdf), "--secrets", str(rules), "--json", str(out)])
+    return json.loads(out.read_text())
+
+
+@pytest.mark.parametrize("line, pattern", [
+    ("ACCT 5557", r"ACCT\d+\s\d+"),
+    ("ACCT 5557-", r"ACCT\d+-\d+"),
+])
+def test_value_joined_across_lines_is_not_shown(tmp_path, line, pattern) -> None:
+    # The value 7234 is found as "7" ending line 2 plus "234" starting
+    # line 1; the fused pattern sample ends "7 11", whose "7" is the
+    # value's first character.
+    pdf = _helv_pdf(tmp_path / "doc.pdf",
+                    [(72, 68, "234 ref"), (72, 82, line), (72, 96, "11 end")])
+    data = _json_run(tmp_path, pdf, "7234", pattern)
+    codes = {w["code"] for w in data["warnings"]}
+    assert "REVIEW_CROSS_LINE" in codes
+    texts = [w["message"] for w in data["warnings"] if "(sample " in w["message"]]
+    assert texts and all("(sample ****)" in t for t in texts)
+    assert {f["sample"] for f in data["findings"]} <= {"", "****"}
+
+
+def test_value_read_down_a_column_is_not_shown(tmp_path) -> None:
+    # "2", "3", "4" drawn under the "7" of ACCT55571: the column reading
+    # holds 7234, and the hard pattern sample's tail "5571" holds its "7".
+    pdf = _helv_pdf(tmp_path / "doc.pdf", [
+        (72, 96, "ACCT55571"), (120, 110, "2"), (120, 124, "3"), (120, 138, "4"),
+    ])
+    data = _json_run(tmp_path, pdf, "7234", r"ACCT\d+")
+    samples = {f["sample"] for f in data["findings"]}
+    assert "****" in samples and samples <= {"", "****"}
+    assert not any("5571" in w["message"] for w in data["warnings"])
+
+
+@pytest.mark.parametrize("sample, values, shown", [
+    ("4111 1111 1111 7\n11", ("7234",), "****"),
+    ("ACCT55571", ("7234",), "****"),
+    ("ACCT55571", ("9026",), "****5571"),     # control: nothing shared
+])
+def test_any_shared_character_hides_the_tail(sample, values, shown) -> None:
+    assert mask(sample, _index(*values)) == shown
