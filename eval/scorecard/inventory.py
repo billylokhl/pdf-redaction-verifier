@@ -913,8 +913,12 @@ def _reachable_agree(blob: bytes, path: Path, labels: RevisionLabels | None, rev
     `%% Original object ID` comment), every stream's data as it is. A
     writer drops what it rewrites, though its reader reads it: a stream's
     indirect /Length (both write it direct), the trailer's /Encrypt (both
-    write the revision unencrypted) and, in qpdf, the trailer's /ID (it
-    writes a new one) and a stream's /DecodeParms without /Filter. Those references are added back as each reader reads
+    write the revision unencrypted) and /ID (qpdf writes a new one, MuPDF a
+    new second element) and, in qpdf, a stream's /DecodeParms without
+    /Filter -- a key libqpdf reads as written (it is in the stream's
+    dictionary as libqpdf reads it, its reference resolved; the value
+    comparison checks it), which its writer drops because no filter uses
+    it. Those references are added back as each reader reads
     them, and each such target must hold no reference of its own (an
     integer /Length on an unflagged file): otherwise the reader's set is
     not exact there and the comparison fails closed. The 3a-7e spike
@@ -984,13 +988,17 @@ def _refs_in(text: bytes) -> list[PdfRef]:
 
 def _mupdf_reachable(blob: bytes) -> set[int] | None:
     """MuPDF's reachable set (_reachable_agree), from a document of its
-    own: its writer rewrites /Length and /Encrypt in the document it
-    writes, so both are read first."""
+    own: its writer rewrites /Length, /Encrypt and /ID in the document it
+    writes, so they are read first."""
     with pymupdf.open(stream=blob, filetype="pdf") as doc:
         rewritten: dict[int, list[PdfRef]] = {}  # holder (-1: the trailer) -> references
-        kind, value = doc.xref_get_key(-1, "Encrypt")
-        if kind != "null":
-            rewritten[-1] = _refs_in(value.encode("latin-1"))
+        # /Encrypt: written unencrypted. /ID: MuPDF writes a new second
+        # element (a direct /ID [6 0 R 7 0 R] keeps 6, drops 7).
+        rewritten[-1] = []
+        for key in ("Encrypt", "ID"):
+            kind, value = doc.xref_get_key(-1, key)
+            if kind != "null":
+                rewritten[-1] += _refs_in(value.encode("latin-1"))
         for number in range(1, doc.xref_length()):
             if doc.xref_is_stream(number):
                 kind, value = doc.xref_get_key(number, "Length")
