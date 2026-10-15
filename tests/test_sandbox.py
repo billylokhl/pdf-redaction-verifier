@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import signal
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -163,6 +164,26 @@ def test_a_child_that_leaves_its_group_is_reported_not_passed(pdf, tmp_path):
                 pass
 
 
+@pytest.mark.parametrize("sandboxed", [False, pytest.param(True, marks=pytest.mark.skipif(
+    not sb.os_sandbox_available(), reason="the OS sandbox is macOS sandbox-exec"))])
+def test_the_child_sees_the_environments_packages(pdf, sandboxed):
+    # The child must be able to run the work it exists for: pikepdf (and
+    # MuPDF) live only in the project's environment, not the base Python.
+    r = sb.run("import pikepdf, pymupdf\nprint('ok')", pdf,
+               limits=sb.Limits(os_sandbox=sandboxed, wall_clock_s=60))
+    assert r.ok and r.stdout == b"ok\n", r.stderr_tail[-400:]
+
+
+def test_cleanup_never_follows_a_link_the_child_planted(pdf, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o755)
+    os.chmod(outside, 0o755)
+    code = f"import os\nos.symlink({str(outside)!r}, 'link')\nos.mkdir('d')\nos.chmod('d', 0)\n"
+    r = sb.run(code, pdf, limits=FAST)
+    assert r.private_dir_removed and outside.exists()
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+
+
 def test_a_locked_subdirectory_is_still_removed(pdf):
     r = sb.run("import os\nos.mkdir('d')\nopen('d/x', 'w').write('x')\nos.chmod('d', 0)\n",
                pdf, limits=FAST)
@@ -195,6 +216,33 @@ def test_the_os_sandbox_denies_fork_exec_and_writes_by_proxy(pdf):
     assert r.os_sandboxed
     assert r.stdout.decode().splitlines() == ["fork denied", "exec denied"]
     assert not Path("~/Library/Preferences/com.example.prv-sandbox-test.plist").expanduser().exists()
+
+
+@MACOS_SANDBOX
+def test_the_os_sandbox_denies_writes_by_proxy_in_process(pdf):
+    # In process, with no exec at all: CFPreferences asks cfprefsd (a Mach
+    # service) to write the user's preferences. Without Mach lookups it
+    # cannot, so nothing is written.
+    domain = "com.example.prv-sandbox-proxy"
+    code = (
+        "import ctypes, ctypes.util\n"
+        "cf = ctypes.CDLL(ctypes.util.find_library('CoreFoundation'))\n"
+        "cf.CFStringCreateWithCString.restype = ctypes.c_void_p\n"
+        "cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]\n"
+        "cf.CFPreferencesSetAppValue.argtypes = [ctypes.c_void_p] * 3\n"
+        "cf.CFPreferencesAppSynchronize.argtypes = [ctypes.c_void_p]\n"
+        "cf.CFPreferencesAppSynchronize.restype = ctypes.c_bool\n"
+        "s = lambda t: cf.CFStringCreateWithCString(None, t.encode(), 0x08000100)\n"
+        f"app = s({domain!r})\n"
+        "cf.CFPreferencesSetAppValue(s('k'), s('v'), app)\n"
+        "print(bool(cf.CFPreferencesAppSynchronize(app)))\n")
+    plist = Path(f"~/Library/Preferences/{domain}.plist").expanduser()
+    try:
+        r = sb.run(code, pdf, limits=sb.Limits(os_sandbox=True, wall_clock_s=20))
+        assert r.stdout.decode().strip() == "False", r.stderr_tail[-300:]
+        assert not plist.exists()
+    finally:
+        plist.unlink(missing_ok=True)
 
 
 @MACOS_SANDBOX
