@@ -277,3 +277,10 @@ def test_residuals_keep_bare_digits_until_the_last_option_and_never_demote_unkno
     residual = aggregate(results)["text-bearing"]["classes"]["ssn"]["residual_hard_files"]
     assert {k: v["files"] for k, v in residual.items()} == {
         "demote-embedded-and-dates": 3, "also-number-lists": 2, "also-bare-digits": 1}
+
+
+def test_residuals_never_demote_an_email_address():
+    results = [FileResult("text-bearing", True, 1,
+                          (HardFinding("email", "Text", "live", "email-address"),))]
+    union = aggregate(results)["text-bearing"]["unions"]["any built-in"]["residual_hard_files"]
+    assert all(v["files"] == 1 for v in union.values())

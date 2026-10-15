@@ -118,11 +118,12 @@ def _pct(n: int, d: int) -> float | None:
 def _residuals(measured: list[FileResult], members: tuple[str, ...]) -> dict[str, dict[str, Any]]:
     """Per RESIDUALS option: files of *measured* that keep a hard finding of
     a class in *members* whose shape is in the kept set (an unjoined or
-    classifier-error finding is always kept: unknown is never demoted)."""
+    classifier-error finding is always kept: unknown is never demoted; so is
+    an email address, which no option demotes, ADR 0005)."""
     n = len(measured)
     out = {}
     for option, kept in RESIDUALS.items():
-        keep = kept | {UNJOINED, "classifier-error"}
+        keep = kept | {UNJOINED, "classifier-error", "email-address"}
         files = sum(1 for r in measured
                     if any(h.rule in members and h.shape in keep for h in r.hard))
         out[option] = {"files": files, "pct": _pct(files, n)}

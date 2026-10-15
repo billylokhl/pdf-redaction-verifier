@@ -643,8 +643,8 @@ files with a review warning for the class; the unions `ssn|us-phone`, `ssn|us-ph
 be hard if the matches of some shapes were demoted to review
 (`residual_hard_files`: demoting the embedded shapes — `uuid`, `hex-id`,
 `alnum-id` — and `date-or-time`, then also `number-list`, then also
-`bare-digits`, so only `formatted` stays hard; an `unjoined` finding is
-never counted as demoted) — measured, nothing is demoted; exit codes; and unmeasured files
+`bare-digits`, so only `formatted` stays hard; an `unjoined` finding or
+an email address is never counted as demoted) — measured, nothing is demoted; exit codes; and unmeasured files
 (a crash or timeout, never folded into a rate's denominator). Scratch
 reports and rules go under `real_corpus/pattern-baseline-workdir`. It
 changes no verdict. Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
