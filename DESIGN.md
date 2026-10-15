@@ -634,7 +634,12 @@ codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
 never reads, #133), are named with their pages as INCOMPLETE reasons,
 whatever their storage, and nothing of the page's content is shown; a
 code seen both on pages and with no page adds "and document-wide"), and the
-headline is one row of a table a property test proves exclusive.
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
+`--no-strict-classes`) is not a finding: the header names the
+informational rules (required; a header without them is refused), their
+matches in the scan's truth are never boxed, classified or listed as OCR
+finds, and each of the report's `notices` is listed under "Not counted in
+the verdict", its sample masked as any --json sample, setting no flag.
 Switched-off layers are counted from MuPDF's evaluation *and* the default
 configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
 reports a group with a `/Usage` dictionary as on while MuPDF hides it.
@@ -669,8 +674,9 @@ checker comes with its self-check.
 **Drawing the map, and its self-check.** `render.build_map` draws the
 plan as a new document — nothing is copied from the target: a summary
 page (the target's name and sha256, the version, the exit code, the
-headline, an INCOMPLETE banner with its reasons, and every finding that
-cannot be boxed, listed by page) and, for each page with something to
+headline, an INCOMPLETE banner with its reasons, every finding that
+cannot be boxed, listed by page, and last any ADR 0012 notices, masked,
+under "Not counted in the verdict") and, for each page with something to
 box, a page of the same displayed size with numbered solid, hatched,
 dashed and dotted boxes and a numbered list (a small page is widened and
 given a band below it for the list; a list that does not fit continues

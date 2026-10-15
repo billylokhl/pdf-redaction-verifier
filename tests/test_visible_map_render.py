@@ -253,6 +253,23 @@ class TestRendering:
         assert "selectable text" in text
         _assert_absent(out, SSN, "6789")
 
+    def test_a_notice_is_listed_masked_and_not_drawn_as_a_finding(self, tmp_path,
+                                                                    monkeypatch) -> None:
+        """ADR 0012: under --no-strict-classes a built-in class match no
+        listed value made is listed under "Not counted in the verdict",
+        masked, and gets no box; the map passes its self-check."""
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "SSN 234-56-7891 here")
+        rules = [{"name": "Any SSN", "class": "ssn"}, {"name": "Target", "value": NAME}]
+        run, the_plan, out = drawn(monkeypatch, tmp_path, _save(doc, tmp_path / "notice.pdf"),
+                                   rules, "--no-strict-classes")
+        assert run.code == 2 and run.report is not None and run.report["notices"]
+        text = map_text(out)
+        assert not the_plan.boxes and "VISIBLE SECRETS FOUND" not in text
+        assert "Not counted in the verdict: shaped like a built-in class:" in text
+        assert "p.1 built-in type rule #1 ****7891 -- Text" in text
+        _assert_absent(out, "234-56-7891", "234-56", NAME)
+
     def test_the_box_cap_still_draws_a_map(self, tmp_path, monkeypatch) -> None:
         doc = fitz.open()
         page = doc.new_page(width=612, height=2000)
