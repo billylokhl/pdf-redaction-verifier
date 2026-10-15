@@ -785,26 +785,58 @@ class TestScatteredValues:
     def test_matcher_cost_grows_linearly_with_lines(self) -> None:
         # A dense numeric page with many value rules: eight times the lines
         # must cost about eight times as much, not sixty-four (the window
-        # bounds the pairs each line is compared with). Generous bound
-        # against timing noise: under sixteen times, best of three.
+        # bounds the pairs each line is compared with). Deterministic: the
+        # cost is the number of source lines executed in the matcher's
+        # module (every loop iteration there, whatever it touches), not
+        # wall-clock time, so machine load cannot flake it. Bound: under
+        # twelve times (linear is eight) at each of two steps, 62 -> 500 ->
+        # 4000 lines; each run stops once past the bound, so a quadratic
+        # fails in seconds instead of running for minutes.
         import random
-        import time
+        import sys
+        from types import FrameType
+
+        from redaction_verifier.matching import values
+
         rng = random.Random(1)
         m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
+        source = values.__file__
+        executed = [0]
+        budget = [math.inf]
 
-        def lines(count: int) -> list[str]:
-            return ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+        class OverBudget(Exception):
+            pass
 
-        def cost(ls: list[str]) -> float:
-            best = math.inf
-            for _ in range(3):
-                start = time.perf_counter()
+        def local(frame: FrameType, event: str, arg: Any) -> Any:
+            if event == "line":
+                executed[0] += 1
+                if executed[0] > budget[0]:
+                    raise OverBudget
+            return local
+
+        def outer(frame: FrameType, event: str, arg: Any) -> Any:
+            return local if frame.f_code.co_filename == source else None
+
+        def cost(count: int) -> int:
+            ls = ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+            executed[0] = 0
+            previous = sys.gettrace()
+            sys.settrace(outer)
+            try:
                 m.scattered(ls, 5)
-                best = min(best, time.perf_counter() - start)
-            return best
+            except OverBudget:
+                pass
+            finally:
+                sys.settrace(previous)
+            return executed[0]
 
-        small, large = lines(500), lines(4000)
-        assert cost(large) < 16 * cost(small) + 0.05
+        tiny = cost(62)
+        assert tiny > 0
+        budget[0] = 12 * tiny
+        small = cost(500)
+        assert small < 12 * tiny
+        budget[0] = 12 * small
+        assert cost(4000) < 12 * small
 
     def test_matcher_bounds(self) -> None:
         m = SecretMatcher([Secret("SSN", normalize_string(SSN))])

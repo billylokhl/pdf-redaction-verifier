@@ -459,6 +459,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
     memoized per field node; a /Parent cycle among fields flags FIELD_TREE (P5). Linearity: many fields deep
     in a /Parent chain over many revisions.
+    An annotation without /Subtype (#106: MuPDF warns, the gate disagrees) is flagged or
+    shown to agree, removing the strict xfail on
+    tests/test_inventory_build.py::test_an_annotation_without_a_subtype_is_flagged_or_agrees.
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
     lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like
