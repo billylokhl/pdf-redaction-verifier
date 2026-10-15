@@ -728,7 +728,7 @@ so the `/Metadata` holder allowlist costs nothing today.
 707 files have at least one class; 144 have only an XMP image, 63 only a hint stream, 6 only an
 orphan. Orphans, hint streams and XMP images alone cover all 707, so decoding synthesized
 annotations (4a) and JavaScript does not lower the count. Counting orphans in the current
-revision's sense instead moves the total by 2 files (709).
+revision's sense instead moves the total by 2 files (709). The full overlap with today's CLI exit `2` is 3a-12's measurement (ADR 0007; "Phase 3a-12" below: 288 of the 707 already exit `2`, 419 are new).
 
 **At least 194 of the 707 already exit `2` today; labels add at most 513 new exit-`2` files
 among the unflagged (26.7%).** Today's CLI marks every page carrying a `/Thumb` (#133,
@@ -797,6 +797,94 @@ anchors, the child protocol and completion sentinel, witnesses, the verdict func
 orphan mapping and its test), shadow and enforced verdicts with worst-of shipping, `--explain`
 -- so about 7 to 9 PRs with its plan. Lane A merged five 3a-7 PRs on 2026-10-15, reviews
 included; the coordinator re-baselines from PRs per day.
+
+## Phase 3a-12: the unit budget and the orphan overlap -- eval/spikes/unit_budget.py
+
+Measured 2026-10-15 on the scorecard's SHA-pinned corpus manifest: 2,073 files (counted per
+manifest entry, as the inventory gate counts them), 489 text-bearing by the manifest's probe
+(the ADR 0007 pass had 484 of 2,031). Every file built; 153 are flagged by the inventory, and
+the 3a-7e classes on the other 1,920 reproduce the 3a-7e briefing exactly (orphans per body
+242, current revision 294, hint streams 400, XMP images 516, JavaScript 86, synthesized 130,
+output intents 0, any of them 707). Today's CLI is `verify.py` as last changed in b96b974,
+run once per file with one fabricated, non-sequential value rule (no pattern class), OCR
+available: no crash, no timeout, no exit `1`; 1,473 exit `0` and 600 exit `2`.
+
+### Units per file -- docs/adr/0006 (amendment draft)
+
+| Units per file (2,073 files) | p50 | p90 | p99 | max |
+| --- | --- | --- | --- | --- |
+| The tiling's units (every `UnitKind`) | 16 | 86 | 269 | 32,976 |
+| -- objects | 12 | 71 | 195 | 32,971 |
+| -- object-stream members | 0 | 0 | 38 | 816 |
+| -- dead bodies | 0 | 0 | 93 | 328 |
+| SYNTHESIZED units, every revision | 0 | 0 | 4 | 16 |
+| Units today (tiling + SYNTHESIZED) | 16 | 86 | 269 | 32,976 |
+| + page views, current revision (3b) | 17 | 90 | 281 | 36,852 |
+| + DRAWABLE streams summed over revisions (proxy for 4a) | 19 | 114 | 293 | 44,066 |
+| The last row, unflagged files only (1,920) | 18 | 113 | 293 | 2,106 |
+| The last row per KiB of the file | 1.69 | 5.03 | 13.44 | 13.94 |
+
+The budget is charged today only for SYNTHESIZED units (at most 16 in a file). Header,
+cross-reference and epilogue units are 1 to 9 a file; object-stream headers at most 18;
+unindexed ranges at most 6; no corpus file has stream slack. The maximum is one 20 MB file:
+one revision, 32,971 objects, 3,876 pages, flagged by the inventory (`REF_DANGLING`); the
+largest unflagged file has 2,106 units. Not countable yet: the children a decoder uncovers
+(each form per context, Type3 glyphs, images and masks, `RESIDUE`, unwrapped attachments),
+4a's and 4b's -- the DRAWABLE proxy counts a stream once per revision, not per context. The
+cap proposal, pending the owner, is in ADR 0006's amendment draft: 500,000 (11.3x the
+largest file, 237x the largest unflagged one).
+
+### The 3a-7e classes against today's exit 2 -- docs/adr/0007
+
+"Already" exits `2` today for some reason; "new" exits `0` today. No file in any class exits
+`1` today. Reasons for the "already" files, a file once per warning code it carries.
+
+| Class (unflagged files) | Files | Already exit 2 | New | Text-bearing: files / already / new |
+| --- | --- | --- | --- | --- |
+| Orphan, per body (R3) | 242 | 213 | 29 | 64 / 51 / 13 |
+| Orphan, current revision | 294 | 260 | 34 | 116 / 98 / 18 |
+| Hint stream (R6) | 400 | 137 | 263 | 212 / 104 / 108 |
+| XMP image (R7) | 516 | 181 | 335 | 70 / 41 / 29 |
+| JavaScript | 86 | 35 | 51 | 86 / 35 / 51 |
+| Synthesized (until 4a) | 130 | 44 | 86 | 130 / 44 / 86 |
+| Output intent | 0 | 0 | 0 | 0 / 0 / 0 |
+| **Any of them** | **707** | **288** | **419** | **228 / 115 / 113** |
+| Inventory flags (3a-7) | 153 | 90 | 63 | |
+| **Any, with the inventory's flags** | **860** | **378** | **482** | |
+
+Why the orphan files already exit `2`: 194 of the 213 carry `PAGE_THUMBNAIL` (#133) -- the
+thumbnail orphans themselves, 143 with no other reason; then `UNTERMINATED_STRING` 34,
+qpdf exit 3 22, `LEFTOVER_UNDECODABLE_TEXT` 10, `OBJECT_UNREADABLE` 8, `PAGE_FAILED` 2 (the
+last four are today's Objects-layer handling of orphaned objects, besides qpdf). No orphan
+file exits `2` on qpdf exit 3 alone. So ADR 0007's rule adds 29 files (1.4% of all files),
+13 text-bearing (2.7% of 489) -- against its gross 242 (64 text-bearing, 13.1%). Over the
+707, the already-exit-2 reasons are `PAGE_THUMBNAIL` 194, `PAGE_FAILED` 50,
+`LEFTOVER_UNDECODABLE_TEXT` 47, `UNTERMINATED_STRING` 34, qpdf exit 3 22,
+`OBJECT_UNREADABLE` 19 (none on qpdf exit 3 alone); over the inventory's 153, qpdf exit 3
+alone is the only reason for 34.
+
+**Today's exit `2`, by reason** (600 files; a file once per code): `PAGE_THUMBNAIL` 244,
+qpdf exit 3 187, `PAGE_FAILED` 144, `LEFTOVER_UNDECODABLE_TEXT` 49, `UNTERMINATED_STRING`
+42, `OBJECT_UNREADABLE` 20. 163 files exit `2` on qpdf exit 3 alone, 161 of them
+text-bearing -- 32.9 of the text-bearing rate's 57.5 points.
+
+### The net change in review rate (for the briefing)
+
+Review rate = files exiting `2`. "After" = today's exit-2 files joined with the 7e classes
+(and the inventory's flags) once they gate; "without qpdf 3" takes today's qpdf exit-3
+warnings out first (a file whose only reason they are exits `0`).
+
+| Population | Scenario | Today | + 7e classes (707) | + 7e and inventory flags (860) |
+| --- | --- | --- | --- | --- |
+| All 2,073 files | today's qpdf exit 3 | 600 (28.9%) | 1,019 (49.2%; +20.2 pts, 419 new) | 1,082 (52.2%; +23.3 pts, 482 new) |
+| All 2,073 files | qpdf exit 3 removed | 437 (21.1%) | 856 (41.3%; +20.2 pts, 419 new) | 953 (46.0%; +24.9 pts, 516 new) |
+| Text-bearing (489) | today's qpdf exit 3 | 281 (57.5%) | 394 (80.6%; +23.1 pts, 113 new) | 402 (82.2%; +24.7 pts, 121 new) |
+| Text-bearing (489) | qpdf exit 3 removed | 120 (24.5%) | 233 (47.6%; +23.1 pts, 113 new) | 275 (56.2%; +31.7 pts, 155 new) |
+
+The 7e classes add the same 419 files (113 text-bearing) in both scenarios: none of the 707
+exits `2` today on qpdf exit 3 alone. The inventory's flags add 34 more files once qpdf
+exit 3 is gone (all 34 text-bearing). By class, hint streams (263 new), XMP images (335) and
+synthesized annotations (86) drive the increase; orphans add 29.
 
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 

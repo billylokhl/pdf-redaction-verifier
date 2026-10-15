@@ -700,6 +700,23 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
   — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
+  Done (3a-12 PR, 2026-10-15; eval/spikes/unit_budget.py, RESULTS.md "Phase 3a-12"), no code
+  or verdict change. On 2,073 corpus files (489 text-bearing), all built:
+  - Units per file: the tiling's p50 16, p99 269, max 32,976 (one flagged 20 MB file with
+    32,971 objects); SYNTHESIZED at most 16; with a page view per page and each revision's
+    DRAWABLE streams (a proxy for 4a's units) p50 19, p99 293, max 44,066 (largest unflagged
+    2,106), at most 13.9 units per KiB. Decoder-uncovered children are 4a's and 4b's.
+  - Unit cap: ADR 0006's amendment draft proposes 500,000 (11.3x the largest file), PENDING
+    OWNER DECISION; `Limits.max_units` stays 200,000 until then.
+  - Overlap with today's CLI (run once per file, a fabricated value rule; 600 exit 2, none
+    exit 1): orphans per body 242 files, 213 already exit 2 (194 with PAGE_THUMBNAIL, #133),
+    29 new (13 text-bearing: 2.7%; ADR 0007 note). Hint streams 400 / 137 / 263; XMP images
+    516 / 181 / 335; JavaScript 86 / 35 / 51; synthesized 130 / 44 / 86; any of them 707 /
+    288 / 419; with the inventory's 153 flagged, 860 / 378 / 482.
+  - Review rate (exit 2), today -> with the 707: all files 28.9% -> 49.2%, text-bearing
+    57.5% -> 80.6%; with today's qpdf exit-3 warnings removed (163 files exit 2 on them
+    alone, 161 text-bearing), 21.1% -> 41.3% and 24.5% -> 47.6%. None of the 707 exits 2 on
+    qpdf exit 3 alone.
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 

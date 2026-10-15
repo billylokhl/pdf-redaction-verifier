@@ -154,3 +154,62 @@ Owner decision: "approve all recommendations."
 - **Reference-graph recursion stays open for Phase 3a/3d** (cycle
   detection, `RecursionError` handling) rather than being partially
   addressed here.
+
+## Amendment draft: the unit cap, measured (2026-10-15, 3a-12) -- PENDING OWNER DECISION
+
+Status: a draft. `Limits.max_units` stays 200,000 in the code until the
+owner decides; nothing here changes a verdict.
+
+Owner decision 1 of the Phase 3a plan (2026-09-27): measure the unit cap
+in 3a with generous headroom, re-derive it at 4c/4d; hitting it cannot
+exit `0` (`FLAGGED`; a confirmed hard finding still exits `1`).
+
+**What was measured** (`eval/spikes/unit_budget.py`, all 2,073 corpus
+files, every one built; the numbers in
+[RESULTS.md](../../eval/spikes/RESULTS.md), "Phase 3a-12"). The inventory
+now enumerates real units, so the first version's two gaps are closed:
+object-stream members are counted, and so is every other unit of the
+byte tiling (header, cross-reference sections, epilogues, objects, dead
+bodies, object-stream headers and members, stream slack). Counted per
+file:
+
+| Units per file | p50 | p90 | p99 | max |
+| --- | --- | --- | --- | --- |
+| The tiling's units | 16 | 86 | 269 | 32,976 |
+| + SYNTHESIZED units, every revision (3a-7d; the only units the budget is charged for today) | 16 | 86 | 269 | 32,976 |
+| + one page view per page (3b) | 17 | 90 | 281 | 36,852 |
+| + each revision's DRAWABLE streams (a proxy for 4a's (stream, context) units) | 19 | 114 | 293 | 44,066 |
+| The same, unflagged files only (1,920) | 18 | 113 | 293 | 2,106 |
+| Units per KiB of the file (the last row's count) | 1.69 | 5.03 | 13.44 | 13.94 |
+
+The maximum is one file: 20 MB, one revision, 32,971 objects and 3,876
+pages, flagged by the inventory (a dangling reference) -- the same file
+as the first version's 32,971 objects. The next largest file has 2,106
+units. SYNTHESIZED units are at most 16 in a file; unindexed ranges at
+most 6.
+
+**What it cannot see yet.** Units a decoder uncovers -- each form under
+each context it is drawn in, Type3 glyph procedures, images and their
+masks, `RESIDUE` children, embedded files unwrapped -- are 4a's and 4b's.
+The DRAWABLE proxy counts a stream once per revision, not once per
+context, so a form drawn from many pages is undercounted; that is what
+4c/4d re-derives.
+
+**Proposal** (generous headroom, per decision 1):
+
+- **(a) Recommended: `max_units = 500,000`, flat.** Headroom 11.3x over
+  the largest file's 44,066 units (decoder-uncovered children included
+  only as the proxy above), 237x over the largest unflagged file's 2,106,
+  1,700x over p99. At a few hundred bytes per unit record (not measured
+  here), the ledger stays in the low hundreds of MB.
+- (b) Keep 200,000: 4.5x the largest file. Enough today; little room for
+  the decoder-uncovered children 4a/4b add to the largest files.
+- (c) A cap proportional to the file, like the work budget (`Limits.
+  work_per_byte`): a floor of 100,000 plus 1 unit per byte -- at least
+  72x the largest measured units per byte. It scales with a large
+  legitimate file, but a cap per byte grows with what an attacker pads
+  in; the work budget already bounds the inventory's own work per byte.
+
+In every option the cap is re-derived at 4c/4d, once the decoders count
+their children, and the number stays a named limit with a pinning test
+(Phase 3d).
