@@ -1142,6 +1142,11 @@ def _value_pdf(path: Path) -> Path:
 
 
 class TestMaskedLabels:
+    """The plan's masked labels (Rules.label / Rules.masked: main's mask()
+    with the rules' exact values, then the drawn form checked). That
+    nothing of a value reaches the map file is the self-check's job,
+    tested with the rendering."""
+
     @pytest.mark.parametrize("name, shown", [
         ("Jane Q. Exampl.pdf", "target"),           # 14 of the name value's 15
         ("123-45-678.pdf", "target"),               # 8 of 9 digits
@@ -1157,11 +1162,6 @@ class TestMaskedLabels:
                                 [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME},
                                  {"name": "ref", "value": "65871234"}])
         assert the_plan.target_name == shown
-
-
-    """The plan's own masking (Rules.label / Rules.masked). That nothing
-    of a value reaches the map file is the self-check's job, tested with
-    the rendering."""
 
     def test_a_pattern_tail_that_is_part_of_a_value_is_dropped(self, tmp_path,
                                                                 monkeypatch) -> None:
@@ -1196,6 +1196,34 @@ class TestMaskedLabels:
                             "labels": [["ssn", "value", "'ssn'"]]}, lambda t, *n: t)
         assert rules.masked("****9") == "****"
         assert rules.masked("****0") == "****0"
+        assert rules.masked("****x0") == "****x0"
+        assert rules.masked("****x9") == "****"         # any character, not a pair
+
+    @pytest.mark.parametrize("shown, drawn", [
+        ("****文書文書", "****"),         # drawn \u{6587}\u{66F8}...: 6, 5, 8, 7
+        ("****文", "****"),               # one character, drawn \u{6587}
+        ("****书", "****"),               # \u{4E66}: 4 and 6 are a value's
+        ("****ab", "****ab"),
+    ])
+    def test_a_tail_drawn_with_escapes_never_shows_a_value_character(self, shown,
+                                                                      drawn) -> None:
+        rules = plan.Rules({"secrets": [["ref", "65871234", "65871234"]], "patterns": [],
+                            "labels": [["ref", "value", "'ref'"]]}, lambda t, *n: t)
+        assert rules.masked(shown) == drawn
+
+    def test_a_sample_is_masked_by_the_reports_own_rule(self) -> None:
+        # Rules.label masks with main's mask() and the same MaskIndex the
+        # reports use (a folded value of another script included).
+        from redaction_verifier.matching import mask
+        rules = plan.Rules({"secrets": [["ref", "65871234", "65871234"],
+                                        ["who", "", "ж"]], "patterns": [],
+                            "labels": [["ref", "value", "'ref'"], ["who", "value", "'who'"],
+                                       ["any", "pattern", "'any'"]]}, lambda t, *n: t)
+        for sample in ("Ref 6587", "xxxxxxЖq", "zzzzzzzz", "abcdefgh"):
+            assert rules.label("any", sample).endswith(
+                rules.masked(mask(sample, rules.index)))
+        assert rules.label("any", "xxxxxxЖq").endswith(" ****")
+        assert rules.label("any", "abcdefgh").endswith(" ****efgh")
 
     def test_a_pattern_running_past_a_value_hides_its_tail(self, tmp_path, monkeypatch) -> None:
         # 123-45-67890 holds the value and runs on: mask() would show 7890,
@@ -1206,7 +1234,8 @@ class TestMaskedLabels:
         run, the_plan = mapped(monkeypatch, tmp_path, pdf,
                                f'exact_values:\n  - "{SSN}"\npatterns:\n'
                                '  - "\\\\d{3}-\\\\d{2}-\\\\d{5}"\n')
-        assert any("****7890" in f["sample"] for f in run.report["findings"])
+        # The --json report hides it too (main's mask, #66).
+        assert not any("7890" in f["sample"] for f in run.report["findings"])
         assert "pattern #1 (patterns[0]) ****" in {b.label for b in the_plan.boxes}
         assert not any("7890" in i.label for i in the_plan.listed)
 

@@ -631,12 +631,16 @@ several widgets: that copy adds nothing a reader could not already see,
 and flagging it made nearly every map with an annotation "incomplete". A
 stored, hidden or password classification does not absorb it, because
 the Objects layer does not say which key matched: in a checkbox, it may
-be the tooltip, which a reader sees on hover. A pattern's masked tail is
-dropped from the map when the match contains an exact value or any two
-consecutive revealed characters occur in one, or (for one revealed
-character, which `mask()` shows for a two-character match) that
-character occurs in one; a pattern match drawn on any glyph of an exact
-value's occurrence shows no tail at all.
+be the tooltip, which a reader sees on hover. The map has no masking
+rule of its own: every sample it shows (a box's label, and a `--json`
+finding's sample) is `mask()`'s output with the same index of exact
+values the reports use (#66: only `****` when the sample contains an
+exact value or any revealed character, in either folding, is a character
+of one). The map then checks the tail once more as drawn: escaping a
+character outside Latin-1 adds hex digits (文 is drawn `\u{6587}`), so
+the tail is dropped when its drawn form holds any character of an exact
+value. A pattern match drawn on any glyph of an exact value's occurrence
+shows no tail at all.
 
 Every string the plan keeps from outside its own fixed wording (a rule's
 label, a masked sample, the target's name, an object's role) goes
