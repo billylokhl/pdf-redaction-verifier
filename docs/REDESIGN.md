@@ -806,13 +806,13 @@ owner together with what it does not yet cover.
   the review rate (exit `2`) is measured as a baseline, with no new budget (4a's gate governs later changes).
 - **U5, robustness and platform.** 0 crashes or timeouts on the corpora; a
   user-password file exits `2`; results are certified only on macOS with
-  OCR working on the owner's OS version (Linux runs cannot certify scans); macOS 27 parity is a documented local check (see Owner decisions).
+  OCR working on the owner's OS version (Linux runs cannot certify scans); macOS 27 parity is to be a documented local check (see Owner decisions).
 
 **R, "reliable"** (redesign): U holds, plus 3d (bomb and hang cases exit
 `2`), 3a-8/9 (owner-password decryption checked), 4a (content kinds
 enforced; K3-K6 closed), 4b (image kinds; K21 and the strips cases exit
 `2`; recall measured; the open question on drawn strips under a box
-answered) and Phase 5 (built-in pattern false hard < 1% on text-bearing
+answered by the owner) and Phase 5 (built-in pattern false hard < 1% on text-bearing
 real files). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
 phase is unspecified (e.g. K7); these stay listed in README until closed.
 
@@ -914,7 +914,7 @@ the owner sets its priority against the critical path.
   2026-09-27.
 - **2026-10-12:** the review-policy amendment above is approved.
 - **2026-10-12:** #66 (H4: masked tail revealing exact-value characters)
-  is fixed ahead of the rest (PR #100).
+  is to be fixed ahead of the rest (PR #100).
 - **2026-10-12:** the H1 candidates (#71, #64, K12, K37-K39) are decided
   per gap after the real-redactor set exists; until then they stay
   pinned and listed.
@@ -927,7 +927,7 @@ the owner sets its priority against the critical path.
   confirmation pass on the final head (see Review policy).
 - **2026-10-12:** visible map stage 1 now; S2-S4 after 4a.
 - **2026-10-12:** macOS 27 parity is a documented local check rather than
-  CI coverage; until documented it is tracked as a gap.
+  CI coverage; the check is still to be written down.
 
 ## 8. Known gaps found by this review
 
