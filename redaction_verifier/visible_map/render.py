@@ -18,8 +18,14 @@ The self-check has two steps:
 2. check_saved reopens the saved bytes and scans all page text (per
    line, knowing each character's colour), the document information,
    XMP and every decompressed stream (knowing which string tokens are
-   fixed text). A hit is tolerated only where every character of it is
-   tool-generated; any other hit aborts the write.
+   fixed text) for a value (normalized, or folded with escapes
+   decoded), a pattern, or a variable "****" whose tail holds a
+   character of a value. A hit is tolerated only where every character
+   of it is tool-generated; any other hit aborts the write.
+
+It is a backstop for whole values, patterns and masked tails; the rules
+for parts of a value (a tail's characters, the name's character pairs)
+are applied where the plan makes each label and the name.
 """
 
 from __future__ import annotations
@@ -31,7 +37,8 @@ import pymupdf as fitz
 
 from redaction_verifier.matching import PatternRule, SecretMatcher, _fold_for_patterns
 from redaction_verifier.matching import match_patterns, normalize_string
-from redaction_verifier.model import Secret
+from redaction_verifier.matching.patterns import _tail_chars
+from redaction_verifier.model import MaskIndex, Secret, fold_wide
 from redaction_verifier.visible_map import markers
 from redaction_verifier.visible_map.latin import latin as latin
 from redaction_verifier.visible_map.plan import (
@@ -91,10 +98,15 @@ class Checker:
         self.secrets = list(secrets)
         self.matcher = SecretMatcher(self.secrets)
         self.patterns = list(patterns)
+        # The values in both foldings the masking uses (the reports'
+        # MaskIndex): fold_wide keeps letters and digits of any script.
+        self.index = MaskIndex(f for s in self.secrets for f in (s.normalized, s.folded) if f)
 
     def hits(self, text: str) -> bool:
         for form in (text, latin(text)):
             if self.matcher.search(normalize_string(form)):
+                return True
+            if self.index.contained_in(fold_wide(form)):
                 return True
             if match_patterns(form, self.patterns):
                 return True
@@ -398,11 +410,76 @@ def render(plan: MapPlan) -> tuple[bytes, Writer]:
 
 
 # ── Step 2: the saved bytes ────────────────────────────────────────────
+_DRAWN_ESCAPE = re.compile(r"\\u\{([0-9A-Fa-f]{1,6})\}")
+
+
+def _unescape(chars: str, tainted: Sequence[bool]) -> tuple[str, list[bool]]:
+    """*chars* with latin()'s \\u{XXXX} escapes decoded back to the
+    characters they stand for; a decoded character is tainted when any
+    character of its escape was."""
+    out: list[str] = []
+    flags: list[bool] = []
+    pos = 0
+    for m in _DRAWN_ESCAPE.finditer(chars):
+        out.extend(chars[pos:m.start()])
+        flags.extend(tainted[pos:m.start()])
+        code = int(m.group(1), 16)
+        out.append(chr(code) if code <= 0x10FFFF else m.group(0))
+        flags.append(any(tainted[m.start():m.end()]))
+        pos = m.end()
+    out.extend(chars[pos:])
+    flags.extend(tainted[pos:])
+    return "".join(out), flags
+
+
+def _folded_hit(checker: Checker, chars: str, tainted: Sequence[bool]) -> bool:
+    """An exact value, folded (fold_wide), in *chars* (escapes decoded)
+    where it touches a tainted character."""
+    parts = [fold_wide(ch) for ch in chars]
+    text = "".join(parts)
+    exact = text == fold_wide(chars)
+    owners = [k for k, part in enumerate(parts) for _ in part]
+    for value in checker.index.values:
+        start = text.find(value)
+        while start >= 0:
+            if not exact or any(tainted[owners[i]] for i in range(start, start + len(value))):
+                return True
+            start = text.find(value, start + 1)
+    return False
+
+
+def _tail_hit(checker: Checker, chars: str, tainted: Sequence[bool]) -> bool:
+    """A variable "****" whose tail (the variable characters after it)
+    holds a character of an exact value, as drawn or decoded: the
+    masking rule, checked again on the saved text."""
+    if not checker.index:
+        return False
+    start = chars.find("****")
+    while start >= 0:
+        end = start + 4
+        if all(tainted[start:end]):
+            while end < len(chars) and tainted[end]:
+                end += 1
+            drawn = chars[start + 4:end]
+            decoded, _ = _unescape(drawn, [True] * len(drawn))
+            if drawn and not (_tail_chars(drawn) | _tail_chars(decoded)).isdisjoint(
+                    checker.index.chars):
+                return True
+        start = chars.find("****", end)
+    return False
+
+
 def _tainted_hit(checker: Checker, chars: str, tainted: Sequence[bool]) -> bool:
     """A rule matches *chars* somewhere that touches a tainted character
-    (or anywhere, when positions cannot be mapped and any is tainted)."""
+    (or anywhere, when positions cannot be mapped and any is tainted):
+    a value (normalized, or folded with escapes decoded), a pattern, or
+    a masked tail showing a character of a value."""
     if not any(tainted):
         return False
+    if _tail_hit(checker, chars, tainted):
+        return True
+    if _folded_hit(checker, *_unescape(chars, tainted)):
+        return True
     norm: list[str] = []
     owners: list[int] = []
     for k, ch in enumerate(chars):

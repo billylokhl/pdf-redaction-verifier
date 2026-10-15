@@ -1143,15 +1143,20 @@ def _value_pdf(path: Path) -> Path:
 
 class TestMaskedLabels:
     """The plan's masked labels (Rules.label / Rules.masked: main's mask()
-    with the rules' exact values, then the drawn form checked). That
-    nothing of a value reaches the map file is the self-check's job,
-    tested with the rendering."""
+    with the rules' exact values, then the drawn form checked) and the
+    target's name (Rules.free_text). The self-check, tested with the
+    rendering, is the backstop for whole values and masked tails."""
 
     @pytest.mark.parametrize("name, shown", [
         ("Jane Q. Exampl.pdf", "target"),           # 14 of the name value's 15
         ("123-45-678.pdf", "target"),               # 8 of 9 digits
         ("Example_Jane_records.pdf", "target"),
-        ("x" * 70 + ".pdf", "x" * 59 + "…"),        # cut to NAME_CAP
+        ("x" * 70 + ".pdf", "x" * 57 + "…"),        # drawn ("..."), cut to NAME_CAP
+        ("文" * 70 + ".pdf", "target"),             # \u{6587}: 6587 of a value
+        ("书" * 70 + ".pdf", "书" * 7 + "…"),        # 7 * \u{4E66} + "..." fits NAME_CAP
+        ("Иванов_Иван.pdf", "target"),              # Cyrillic letters of a value
+        ("山田太郎_records.pdf", "target"),          # CJK letters of a value
+        ("Ив.pdf", "target"),                       # two of them are enough
         ("quarterly.pdf", "quarterly.pdf"),
         ("文書.pdf", "target"),                     # drawn \u{6587}...: 6587 of a value
     ])
@@ -1160,7 +1165,9 @@ class TestMaskedLabels:
         pdf = _value_pdf(tmp_path / name)
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
                                 [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME},
-                                 {"name": "ref", "value": "65871234"}])
+                                 {"name": "ref", "value": "65871234"},
+                                 {"name": "ru", "value": "Иванов Иван 1985"},
+                                 {"name": "jp", "value": "山田太郎 2001"}])
         assert the_plan.target_name == shown
 
     def test_a_pattern_tail_that_is_part_of_a_value_is_dropped(self, tmp_path,

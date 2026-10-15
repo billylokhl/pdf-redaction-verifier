@@ -22,7 +22,7 @@ import pymupdf as fitz
 
 from redaction_verifier.matching import PatternRule, mask, normalize_string
 from redaction_verifier.matching.patterns import _tail_chars
-from redaction_verifier.model import MaskIndex, Secret
+from redaction_verifier.model import MaskIndex, Secret, fold_wide
 from redaction_verifier.report.text import _sanitize_report_text, rule_label
 from redaction_verifier.rules import RuleLabel, RuleSet
 from redaction_verifier.visible_map import headline, locate
@@ -202,20 +202,25 @@ class Rules:
 
     def free_text(self, text: str, cap: int, neutral: str) -> str:
         """*text* (free text from outside the tool, such as the target's
-        file name), cut to *cap* characters, or *neutral* when the cut
-        form could show part of an exact value: any two consecutive
-        normalized characters of it, as written or as drawn (latin),
-        occur together in one, or a rule matches it (clean). The cut comes first, so the form checked is the form
-        drawn."""
-        if len(text) > cap:
-            text = text[:cap - 1] + "…"
-        values = [s.normalized for s in self.secrets.values()]
+        file name), cut so the form drawn (latin) is at most *cap*
+        characters, or *neutral* when the cut form could show part of an
+        exact value: any two consecutive characters of it, as written or
+        as drawn, occur together in one, compared in both foldings the
+        masking uses (normalize_string, ASCII letters and digits only, and
+        fold_wide, which keeps letters and digits of any script); or a
+        rule matches it (clean). The cut comes first, so the form checked
+        is the form drawn."""
+        if len(latin(text)) > cap:
+            while text and len(latin(text + "…")) > cap:
+                text = text[:-1]
+            text += "…"
+        values = {*self.index.values, *(s.normalized for s in self.secrets.values())}
         # Checked as written and as drawn: escaping a character outside
         # Latin-1 (文 as \u{6587}) adds hex digits the name did not have.
         for form in (text, latin(text)):
-            norm = normalize_string(form)
-            if any(norm[i:i + 2] in v for i in range(len(norm) - 1) for v in values):
-                return self.clean(neutral)
+            for norm in (normalize_string(form), fold_wide(form)):
+                if any(norm[i:i + 2] in v for i in range(len(norm) - 1) for v in values):
+                    return self.clean(neutral)
         return self.clean(text, neutral)
 
     def masked(self, shown: str) -> str:

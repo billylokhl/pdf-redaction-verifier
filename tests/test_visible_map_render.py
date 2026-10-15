@@ -339,6 +339,51 @@ class TestSelfCheckSurfaces:
         with pytest.raises(render.SelfCheckFailed, match="XMP"):
             render.check_saved(_saved(w), _checker(), w)
 
+    @staticmethod
+    def _wide_checker() -> render.Checker:
+        from redaction_verifier.model import fold_wide
+        checker = render.Checker()
+        checker.use([plan.Secret("ru", "1985", fold_wide("Иванов Иван 1985")),
+                     plan.Secret("ref", "65871234", "65871234")], [])
+        return checker
+
+    def test_step_one_sees_a_value_of_any_script(self) -> None:
+        checker = self._wide_checker()
+        assert checker.hits("file Иванов Иван 1985.pdf")
+        assert checker.hits("ИВАНОВ-ИВАН-1985")
+        assert not checker.hits("Иванов 1984")
+
+    @pytest.mark.parametrize("text", ["Иванов Иван 1985", "x ИВАНОВ ИВАН 1985 y"])
+    def test_step_two_decodes_escapes_and_folds(self, text) -> None:
+        """A value of another script is drawn as \\u{XXXX} escapes: the
+        saved text is decoded and folded before it is searched, on the
+        page and in a stream's string tokens alike."""
+        w = _clean_writer(text)
+        with pytest.raises(render.SelfCheckFailed, match="page 1 text"):
+            render.check_saved(_saved(w), self._wide_checker(), w)
+        token = render.latin(text)
+        stream = f"BT ({token}) Tj ET"
+        tainted = [stream.index(token) <= k < stream.index(token) + len(token)
+                   for k in range(len(stream))]
+        assert render._tainted_hit(self._wide_checker(), stream, tainted)
+        assert not render._tainted_hit(self._wide_checker(), stream, [False] * len(stream))
+
+    @pytest.mark.parametrize("text, leaks", [
+        ("rule #1 ****文", True),          # drawn \u{6587}: 6, 5, 8, 7
+        ("rule #1 ****0z", False),
+        ("rule #1 ****9z", True),          # 9 of 1985
+        ("rule #1 ****x1", True),
+        ("rule #1 ****", False),
+        ("rule #1 ****ab", False),
+    ])
+    def test_step_two_checks_every_masked_tail(self, text, leaks) -> None:
+        w = _clean_writer(text)
+        if leaks:
+            with pytest.raises(render.SelfCheckFailed, match="page 1 text"):
+                render.check_saved(_saved(w), self._wide_checker(), w)
+        else:
+            render.check_saved(_saved(w), self._wide_checker(), w)
+
     def test_variable_text_must_read_back_as_variable(self, monkeypatch) -> None:
         """If variable text does not read back in its colour, every hit
         would pass as fixed text: the map is refused."""

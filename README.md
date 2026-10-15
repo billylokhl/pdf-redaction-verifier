@@ -173,24 +173,28 @@ When the `--json` report was not written every headline says so, and a
 map that is incomplete also carries a red INCOMPLETE banner naming why
 (warning codes with their pages).
 
-**Masked, always.** No character of an exact value appears anywhere in
-the map. A sample is masked by the same rule as the reports (`****6789`,
+**Masked, always.** The map never shows an exact value, and no sample
+it shows reveals a character of one. A sample is masked by the same rule as the reports (`****6789`,
 or only `****` when the match contains one of your exact values or any
 character it would show is a character of one, ignoring case, accents
 and the script of a digit), and the map then checks the tail as it is
 drawn: a character outside Latin-1 is drawn as `\u{XXXX}`, so a tail
 whose escape holds a character of an exact value (文 is `\u{6587}`) shows
 only `****` too. A pattern match drawn on any glyph of an exact value
-shows no tail at all. A
+shows no tail at all. The target's file name is shown only when no
+two consecutive characters of it, as written or as drawn, occur
+together in an exact value (letters of any script count); otherwise the
+map says "target", and the sha256 identifies the file. A
 rules file entry from this tool's own JSON format is shown by number
 (`value rule #3`, explained as "3rd value entry, rules-file entry 5"),
 because its `name` is your own words and may be the secret; a shared
 YAML config's rules keep their report labels (`exact value #2
 (exact_values[1])`). Before the map is written it is checked against
 every rule twice — each label, name and masked sample on its own, then
-the saved file's text, metadata and streams — and a hit anywhere except
-the tool's own fixed wording (headings, counts, page numbers) means no
-map (`MAP_SELF_CHECK_FAILED`).
+the saved file's text, metadata and streams, with escapes decoded — and
+a whole value, a pattern match or a masked tail showing a value's
+character anywhere except the tool's own fixed wording (headings,
+counts, page numbers) means no map (`MAP_SELF_CHECK_FAILED`).
 
 **Limits of this first version.** It draws the masked map only. OCR hits
 are listed, not positioned. A switched-off layer's content is not fully
