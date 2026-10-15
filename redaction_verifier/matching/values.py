@@ -69,6 +69,80 @@ class SecretMatcher:
                 names.add(secret.name)
         return sorted(names)
 
+    def scattered(self, lines: Sequence[str], window: int,
+                  across: int | None = None) -> list[str]:
+        """Names of secrets that two or three pieces of *lines* (each
+        normalized) assemble, in any order: the end of one line, then
+        optionally one whole line, then the start of another, each piece
+        from a different line, all within *window* consecutive lines.
+
+        So a value whose parts lie apart, with a header or other short
+        text between them or in the reverse order, is found; it never
+        takes more than three pieces or reaches past *window* lines, so
+        unrelated lines across a page cannot be pooled into a value. With
+        *across* set, only assemblies using a line on each side of index
+        *across* (lines[:across] and lines[across:]) count.
+        """
+        names: set[str] = set()
+        n_lines = len(lines)
+        last_chars = {line[-1] for line in lines if line}
+        first_chars = {line[0] for line in lines if line}
+        for secret in self._secrets:
+            v = secret.normalized
+            n = len(v)
+            if n < 2:
+                continue
+            # Cut points k (1..n-1) whose first piece v[:k] could end a line
+            # (its last character is some line's last character), and whose
+            # last piece v[k:] could start one: a secret with none is
+            # skipped before any line is compared, which keeps the cost on
+            # a page of many lines and many rules near one pass per rule.
+            cuts_end = [k for k in range(1, n) if v[k - 1] in last_chars]
+            cuts_start = [k for k in range(1, n) if v[k] in first_chars]
+            if not cuts_end or not cuts_start:
+                continue
+            # ends[i]: cut points k where lines[i] ends with v[:k];
+            # starts[i]: cut points k where lines[i] starts with v[k:].
+            ends = [{k for k in cuts_end if line.endswith(v[:k])} if line else set()
+                    for line in lines]
+            if not any(ends):
+                continue
+            starts = [{k for k in cuts_start if line.startswith(v[k:])} if line else set()
+                      for line in lines]
+            if not any(starts):
+                continue
+            found = False
+            for i in range(n_lines):
+                if not ends[i] or found:
+                    continue
+                low, high = max(0, i - window + 1), min(n_lines, i + window)
+                for j in range(low, high):
+                    if j == i or not starts[j]:
+                        continue
+                    # Two pieces: v[:k] ends line i, v[k:] starts line j.
+                    if ends[i] & starts[j] and (
+                            across is None or (i < across) != (j < across)):
+                        found = True
+                        break
+                    # Three pieces: a whole line m in the middle.
+                    for m in range(low, high):
+                        if m in (i, j) or abs(m - j) >= window or not lines[m]:
+                            continue
+                        if across is not None and len({x < across for x in (i, j, m)}) < 2:
+                            continue
+                        mid = lines[m]
+                        for k in ends[i]:
+                            if v.startswith(mid, k) and (k + len(mid)) in starts[j]:
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+            if found:
+                names.add(secret.name)
+        return sorted(names)
+
     def search(self, normalized_haystack: str) -> list[Secret]:
         if self._pattern is None:
             return []
