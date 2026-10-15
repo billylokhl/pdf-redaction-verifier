@@ -5,6 +5,11 @@
   config   [--root R]                                write the fabricated config
   run      [--root R] --set inputs|probes            methods 1 and 2 (needs
                                                      REDACTOR_CMD, REDACTOR_PYTHON)
+  oracle   [--root R] --set S [--methods m0,m1,m2]   the oracle -> R/oracle/S/<m>/
+                                                     (m0: the unredacted inputs,
+                                                     calibration only)
+  adjudicate draft|lock|verify [--root R] --set S    adjudication records
+                                                     -> R/adjudication/S/<m>/
 """
 
 from __future__ import annotations
@@ -21,15 +26,21 @@ from .templates import TEMPLATES
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="redactor_set")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("generate", "probes", "config", "run"):
+    for name in ("generate", "probes", "config", "run", "oracle", "adjudicate"):
         p = sub.add_parser(name)
         p.add_argument("--root", type=Path, default=gen.LOCAL_ROOT)
         p.add_argument("--allow-outside", action="store_true")
         if name in ("generate", "probes"):
             p.add_argument("--only", default="")
             p.add_argument("--seed", type=int, default=0)
-        if name == "run":
+        if name in ("run", "oracle", "adjudicate"):
             p.add_argument("--set", choices=("inputs", "probes"), required=True)
+        if name == "oracle":
+            p.add_argument("--methods", default="m0,m1,m2")
+            p.add_argument("--only", default="")
+        if name == "adjudicate":
+            p.add_argument("action", choices=("draft", "lock", "verify"))
+            p.add_argument("--reason", default="")
     args = parser.parse_args(argv)
     root = gen.local_root(args.root, allow_outside=args.allow_outside)
     config = gen.write_config(root)
@@ -44,6 +55,13 @@ def main(argv: list[str] | None = None) -> int:
         gen.write_manifest(out_dir, rows, args.cmd)
     elif args.cmd == "run":
         run_set(root, args.set, config)
+    elif args.cmd == "oracle":
+        from .oracle_cli import run_oracle
+        return run_oracle(root, args.set, [m for m in args.methods.split(",") if m],
+                          [s for s in args.only.split(",") if s])
+    elif args.cmd == "adjudicate":
+        from .oracle_cli import run_adjudicate
+        return run_adjudicate(root, args.set, args.action, args.reason)
     return 0
 
 
