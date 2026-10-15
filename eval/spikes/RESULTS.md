@@ -844,3 +844,24 @@ all 31).
 
 These lists describe macOS 27 with every tool installed: OCR differs by
 macOS version (K43) and a case needing a missing tool is not scanned.
+
+## Value false hards with a sequential test value -- Phase 5 item 4
+
+Measured 2026-10-15 on the owner's local corpus (counts only). With the
+case library's exact-value rule `SSN` = `123-45-6789`, Lane B's corpus run
+found false hard findings on 17 entries (15 unique files), all in the
+Objects layer, live storage, plus 132 text-bearing REVIEW_BINARY warnings
+naming the SSN rule. With a realistic value, `666-51-4073`, over all 2,073
+entries: 0 false hard findings in any layer (0 of 489 text-bearing) and no
+warning naming the rule.
+
+Root cause, on all 15 files: the Objects layer extracts PDF string literals
+(`(...)`, `<hex>`) from stream bodies and the value scanner reads them back
+to back, so a value split across literals is caught (by design). In 12 of
+the 15, one hex string decodes to a character table beginning
+`0123456789`; in the other 3, a run of one-character strings decodes to
+`1`, `2`, ... `9` in order. Either way the normalized value `123456789` is
+really there: the matcher is correct, and the false hards come from the
+test value being sequential. Decision (coordinator, 2026-10-15): no matcher
+change; corpus false-hard measurements use a non-sequential value.
+
