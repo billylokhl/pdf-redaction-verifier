@@ -675,8 +675,9 @@ checker comes with its self-check.
 **Drawing the map, and its self-check.** `render.build_map` draws the
 plan as a new document — nothing is copied from the target: a summary
 page (the target's name and sha256, the version, the exit code, the
-headline, an INCOMPLETE banner with its reasons, and every finding that
-cannot be boxed, listed by page) and, for each page with something to
+headline, an INCOMPLETE banner with its reasons, every finding that
+cannot be boxed, listed by page, and last any ADR 0012 notices, masked,
+under "Not counted in the verdict") and, for each page with something to
 box, a page of the same displayed size with numbered solid, hatched,
 dashed and dotted boxes and a numbered list (a small page is widened and
 given a band below it for the list; a list that does not fit continues
