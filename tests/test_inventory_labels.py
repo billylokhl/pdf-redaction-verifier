@@ -572,11 +572,13 @@ def _fan(n: int) -> bytes:
 
 def _revisions(n: int, touch: bool) -> bytes:
     """n objects reachable from the catalog, and n updates, each rewriting
-    one reachable object (*touch*: every revision walks again) or one
-    nothing references (shared)."""
+    one reachable object to reference a new one (*touch*: every revision
+    walks again, and its reachable set differs) or rewriting one nothing
+    references (shared)."""
     items = b" ".join(b"%d 0 R" % (10 + i) for i in range(n))
     objects = {10 + i: b"<< /I %d >>" % i for i in range(n)}
-    updates = tuple({(10 + i) if touch else 9: b"<< /I %d /Again true >>" % i}
+    updates = tuple({10 + i: b"<< /I %d /New %d 0 R >>" % (i, 10 + n + i),
+                     10 + n + i: b"(new)"} if touch else {9: b"(%d)" % i}
                     for i in range(n))
     return make(catalog=b" /All [%s] /Metadata 4 0 R" % items, objects=objects,
                 streams={4: (b"", XMP)}, updates=updates)
@@ -601,8 +603,9 @@ def _stream_revisions(n: int) -> bytes:
     return bytes(w.out)
 
 
-@pytest.mark.parametrize("make_file", [_chain, _fan, lambda n: _revisions(n, False)],
-                         ids=["chain", "fan", "shared-revisions"])
+@pytest.mark.parametrize("make_file", [_chain, _fan, lambda n: _revisions(n, False),
+                                       lambda n: _catalog_rewrites(n)],
+                         ids=["chain", "fan", "shared-revisions", "catalog-rewrites"])
 def test_the_label_walk_is_linear(make_file: object) -> None:
     work = []
     for n in (100, 800):
@@ -611,6 +614,18 @@ def test_the_label_walk_is_linear(make_file: object) -> None:
         work.append((charged, lines))
     _per_unit(work)
     assert work[1][0] <= 10 * work[0][0], work
+
+
+def test_comparing_rewritten_bodies_is_charged() -> None:
+    # Each update rewrites a catalog listing every object: its references
+    # are compared with the old body's, every one charged (the file grows
+    # with them too: work linear in the file, not in n).
+    work = []
+    for n in (40, 320):
+        charged, lines, inv = charged_steps(_catalog_rewrites(n, wide=True), "build_labels")
+        assert inv.flags == () and all(found is inv.labels[0] for found in inv.labels)
+        work.append((charged, lines))
+    _per_unit(work)
 
 
 def test_shared_revisions_cost_no_walk() -> None:
@@ -637,6 +652,56 @@ def test_revisions_that_walk_again_are_charged_and_bounded(make_file: object) ->
     _per_unit(work)
     (w_s, _), (w_l, _) = work
     assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(size), work
+
+
+def test_a_revision_walked_again_to_the_same_labels_shares_them() -> None:
+    # Each update rewrites the catalog as it was (an update's usual shape):
+    # walked again, the same labels -- shared, nothing new retained.
+    data = make(catalog=b" /Metadata 4 0 R", streams={4: (b"", XMP)},
+                updates=tuple({1: CAT % b" /Metadata 4 0 R"} for _ in range(5)))
+    inv = _inventory(data)
+    assert inv.flags == ()
+    assert all(found is inv.labels[-1] for found in inv.labels)
+
+
+@pytest.mark.parametrize(("update", "kinds", "reachable"), [
+    # The same references under another key: the record goes.
+    ({1: CAT % b" /Meta 4 0 R"}, {}, {1, 2, 3, 4}),
+    # A by-key target rewritten with the same references, now with /Width.
+    ({4: b"<< /Width 1 /Length 1 >>\nstream\nx\nendstream"}, {}, {1, 2, 3, 4}),
+    # A reachable object rewritten to reference something new.
+    ({3: PAGE % b" /Foo 5 0 R", 5: b"(new)"}, {4: {K.XMP}}, {1, 2, 3, 4, 5}),
+], ids=["key-renamed", "target-rewritten", "new-reference"])
+def test_a_rewritten_object_is_read_again_unless_its_references_are_the_same(
+        update: dict[int, bytes | None], kinds: dict[int | None, set[K]],
+        reachable: set[int]) -> None:
+    data = make(catalog=b" /Metadata 4 0 R", streams={4: (b"", XMP)}, updates=(update,))
+    inv = _inventory(data)
+    assert inv.flags == ()
+    assert _kinds(inv, 1) == {4: {K.XMP}} and _kinds(inv, 0) == kinds
+    assert _labels(inv, 0).reachable == reachable
+
+
+def test_a_revision_walked_again_to_the_same_set_keeps_it_once() -> None:
+    # A key renamed on the page: walked again (its references' paths
+    # changed), to the same labels -- shared, not kept twice.
+    data = make(page=b" /Foo 5 0 R", objects={5: b"(x)"}, updates=({3: PAGE % b" /Bar 5 0 R"},))
+    inv = _inventory(data)
+    assert inv.flags == () and inv.labels[0] is inv.labels[1]
+
+
+def _catalog_rewrites(n: int, wide: bool = False) -> bytes:
+    """n objects reachable from the catalog (listed in it when *wide*, so
+    each rewritten catalog's references are compared), and n updates each
+    rewriting the catalog with the same references: not walked again."""
+    items = b" ".join(b"%d 0 R" % (10 + i) for i in range(n))
+    held = b"[%s]" % items if wide else b"6 0 R"
+    catalog = CAT % (b" /All %s /Metadata 4 0 R%%s" % held)
+    return make(catalog=b" /All %s /Metadata 4 0 R" % held,
+                objects={6: b"[%s]" % items} | {10 + i: b"<< /I %d >>" % i for i in range(n)},
+                streams={4: (b"", XMP)},
+                updates=tuple({1: catalog % (b" /PageMode /UseNone" if i % 2 else b"")}
+                              for i in range(n)))
 
 
 def test_labels_made_again_are_charged_for_their_memory() -> None:

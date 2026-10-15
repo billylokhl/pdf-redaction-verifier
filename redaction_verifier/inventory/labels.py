@@ -32,9 +32,11 @@ its STRUCTURAL streams; DRAWABLE and ORPHANED follow (3a-7e-2).
 
 Labels add no flag (owner decision R3). Revisions are read oldest first.
 A revision whose trailer references are unchanged and that changes no
-object the previous walk read shares its reachable set and by-key records
-(by identity; and its whole record when the chain's structural streams
-are unchanged too). A revision without a page list gets no labels, and
+object the previous walk read -- or only reachable objects whose new
+bodies hold the same references (a rewritten catalog, an update's usual
+shape) -- shares its reachable set and by-key records (by identity; and
+its whole record when the chain's structural streams are unchanged too),
+as does a revision walked again to the same labels. A revision without a page list gets no labels, and
 the next walks afresh (the review of #140's rule: nothing records what
 the skipped revision changed). Iterative, never raises, every step
 charged to the budget; a walk the budget cuts short leaves that revision
@@ -130,12 +132,10 @@ def build_labels(revisions: int, changes: list[list[int]],
     # cross-reference streams so far, and each object stream's live members.
     chain_units: list[UnitRef] = []
     members: dict[int, set[int]] = {}
+    homes: set[int] = set()  # every number that has been a home
     home_now: dict[int, int] = {}
     chain: tuple[_Records, set[int]] | None = None  # records, numbers read
-    # The last walk: (numbers read, trailer references, reachable, by-key
-    # records, the revision's labels).
-    previous: tuple[set[int], tuple[object, ...], frozenset[int], _Records,
-                    RevisionLabels] | None = None
+    last: _Last | None = None
     made = False
     for revision in reversed(range(revisions)):
         changed = set(changes[revision])
@@ -156,6 +156,7 @@ def build_labels(revisions: int, changes: list[list[int]],
                     moved = True
             if home is not None:
                 home_now[number] = home
+                homes.add(home)
                 if home not in members:
                     members[home] = set()
                     moved = True
@@ -165,7 +166,7 @@ def build_labels(revisions: int, changes: list[list[int]],
                 or (chain is not None and not chain[1].isdisjoint(changed))):
             chain = None  # made again below, when this revision has labels
         if revision >= len(pages) or pages[revision] is None:
-            previous = None
+            last = None
             continue
         trailer = trailers[revision]
         if not budget.charge_work(len(trailer) + 1):
@@ -179,28 +180,56 @@ def build_labels(revisions: int, changes: list[list[int]],
                 break
             chain = (records, walk.read)
             walk.read = set()
-        if previous is not None and previous[1] == ident and previous[0].isdisjoint(changed):
+        same = last is not None and last.ident == ident and walk.same(
+            last.read & changed, last, homes)
+        if walk.spent:
+            break
+        if same:
+            assert last is not None
             if not fresh:
-                results[revision] = previous[4]  # nothing new read: shared
+                results[revision] = last.labels  # nothing new read: shared
                 continue
-            read, reachable, by_key = previous[0], previous[2], previous[3]
+            read, keyed, reachable, by_key = last.read, last.keyed, last.reachable, last.by_key
         else:
             walked = walk.run(trailer)
             if walked is None:
                 break
-            read, by_key = walk.read, walked[1]
+            read, keyed, by_key = walk.read, walk.keyed, walked[1]
             reachable = frozenset(walked[0])
+            if last is not None and reachable == last.reachable:
+                reachable = last.reachable  # walked again, the same: kept once
         if not budget.charge_work(len(by_key) + len(chain[0]) + 1):
             break
-        labels = RevisionLabels(reachable, _merge(by_key, chain[0]))
-        retained = len(labels.structural) + (
-            len(reachable) if previous is None or reachable is not previous[2] else 0)
+        structural = _merge(by_key, chain[0])
+        if (last is not None and reachable is last.reachable
+                and structural == last.labels.structural):
+            labels = last.labels  # the same labels: shared, nothing new retained
+            retained = 0
+        else:
+            labels = RevisionLabels(reachable, structural)
+            retained = len(structural) + (
+                len(reachable) if last is None or reachable is not last.reachable else 0)
         if made and not budget.charge_work(RECORD_WORK * retained):
             break
         made = True
         results[revision] = labels
-        previous = (read, ident, reachable, by_key, labels)
+        last = _Last(read, keyed, ident, reachable, by_key, labels)
     return tuple(results)
+
+
+@dataclass(frozen=True)
+class _Last:
+    """The last revision labelled: the numbers its walk read (``keyed``:
+    those read for a by-key record -- a target, a /Subtype, an /EF or
+    /OutputIntents body), its trailer references, reachable set, by-key
+    records and labels."""
+
+    read: set[int]
+    keyed: set[int]
+    ident: tuple[object, ...]
+    reachable: frozenset[int]
+    by_key: _Records
+    labels: RevisionLabels
 
 
 def _merge(by_key: _Records, chain: _Records) -> dict[UnitRef, tuple[Structural, ...]]:
@@ -219,6 +248,7 @@ class _Walk:
         self.revision, self.body_of, self.home_of, self.edges, self.budget = (
             revision, body_of, home_of, edges, budget)
         self.read: set[int] = set()
+        self.keyed: set[int] = set()
         self.spent = False
 
     def charge(self, n: int = 1) -> bool:
@@ -236,6 +266,31 @@ class _Walk:
             return None
         body = self.body_of(number, self.revision)
         return body if body is not None and body[2] == gen and number != 0 else None
+
+    def same(self, numbers: set[int], last: _Last, homes: set[int]) -> bool:
+        """Does the last walk's reading still hold, though *numbers* (read
+        by it) changed? Each must be a reachable object -- not a home, not
+        read for a by-key record -- whose new body has the generation and
+        the references (number, generation, key path) its old one had:
+        then no number is reached or left, and no record changes. A
+        catalog rewritten with the same references, an update's usual
+        shape, is not walked again."""
+        if not self.charge(len(numbers) + 1):
+            return False
+        for number in sorted(numbers):
+            if number not in last.reachable or number in last.keyed or number in homes:
+                return False
+            old = self.body_of(number, self.revision + 1)
+            new = self.body_of(number, self.revision)
+            if not self.charge(2 * BODY_WORK) or old is None or new is None or old[2] != new[2]:
+                return False
+            before, after = self.edges.get(old[0]), self.edges.get(new[0])
+            if before is None or after is None or not self.charge(len(before) + len(after) + 1):
+                return False
+            if ({(e.num, e.gen, e.path) for e in before}
+                    != {(e.num, e.gen, e.path) for e in after}):
+                return False
+        return True
 
     def chain(self, units: list[UnitRef], members: dict[int, set[int]],
               hint: UnitRef | None) -> _Records | None:
@@ -300,6 +355,7 @@ class _Walk:
             if (number, context) in seen:
                 continue
             seen.add((number, context))
+            self.keyed.add(number)
             body = self.body(number, gen)
             if self.spent:
                 return False
@@ -323,6 +379,7 @@ class _Walk:
         keys. The caller checks ``spent``."""
         records: _Records = {}
         for kind, source, key, number, gen in candidates:
+            self.keyed.add(number)
             body = self.body(number, gen)
             if self.spent:
                 break
@@ -343,6 +400,7 @@ class _Walk:
             return False
         subtype = value.get(b"Subtype")
         if isinstance(subtype, PdfRef):
+            self.keyed.add(subtype.num)
             held = self.body(subtype.num, subtype.gen)
             subtype = held[1] if held is not None else None
             if isinstance(subtype, PdfRef):
