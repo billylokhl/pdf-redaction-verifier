@@ -18,8 +18,9 @@ jobs:
   # environment-gated tests can never silently skip on this job.
   full-macos:
     runs-on: macos-latest
-    # The case library OCRs ~100 generated PDFs: about 9 minutes here.
-    timeout-minutes: 25
+    # The whole suite, case library OCR included, takes about 21 minutes
+    # here (2026-10-15); 35 leaves room for runner variance and new tests.
+    timeout-minutes: 35
     env:
       REQUIRE_FULL_ENV: "1"
     steps:
@@ -44,10 +45,10 @@ jobs:
         # /opt/homebrew/Cellar/openssl@3/3.6.4/lib/ossl-modules). When the
         # runner image changes Homebrew's openssl@3, that directory can
         # vanish: qpdf then exits 2 on any RC4 file ("unable to load
-        # openssl legacy provider"), which the gate reads as a split on encryption (macos-26-arm64
-        # 20261013, openssl@3 3.6.4 -> 3.6.5). So point OpenSSL at the
-        # installed openssl@3's modules, and fail this step, not a test, if
-        # qpdf still cannot write and read an RC4 file.
+        # openssl legacy provider"), which the gate reads as a split on
+        # encryption (macos-26-arm64 20261013, openssl@3 3.6.4 -> 3.6.5). So
+        # point OpenSSL at the installed openssl@3's modules, and fail this
+        # step, not a test, if qpdf still cannot write and read an RC4 file.
         run: |
           curl -fsSL -o "$RUNNER_TEMP/qpdf.zip" \
             https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip

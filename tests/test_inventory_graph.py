@@ -20,6 +20,12 @@ from redaction_verifier.inventory.graph import ARRAY, UseKind, use_kind
 from redaction_verifier.ledger import Flag, FlagReason
 
 from .conftest import requires_qpdf
+from .steps import charged_steps
+
+# Lines the inventory executes per unit of work the graph charges, at most
+# (#94): measured 9.6-15.3 on every shape here (callbacks into build.py
+# included).
+LINES_PER_GRAPH_UNIT = 24
 
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
@@ -289,19 +295,16 @@ def test_flipping_a_shared_target_is_charged() -> None:
     # Every flip re-resolves every reference into it: changes x fan-in, by
     # design (docs/phase3a-plan.md 3a-7a). The budget bounds it -- within the
     # limit or flagged BUDGET_EXHAUSTED -- provided all of it is charged:
-    # its time per unit of work stays that of a linear shape (a ratio, so
-    # any machine and coverage's slowdown cancel; best of three runs).
-    data = _rewrites(800, 800, flip=True)
-    work, _, flags = _work(data)
+    # the graph's lines executed per unit of work it charges stay under
+    # LINES_PER_UNIT (a deterministic count, not wall clock: #94).
+    data = _rewrites(400, 400, flip=True)
+    work, lines, flags = _graph_steps(data)
     assert work <= Limits().work_limit(len(data))
-    linear = _rewrites(800, 800, flip=False)
-    base_work = _work(linear)[0]
-    per = min(_work(data)[1] for _ in range(3)) / work
-    base = min(_work(linear)[1] for _ in range(3)) / base_work
-    assert per < 3 * base, (per, base)
-    # Deterministic, whatever the machine: each of the 800 flips charges
-    # each of the 800 references into the target (uncharged work: ~0 here).
-    assert work - base_work >= 800 * 800, (work, base_work)
+    assert lines <= LINES_PER_UNIT * work, (lines, work)
+    base_work, _, _ = _graph_steps(_rewrites(400, 400, flip=False))
+    # Deterministic, whatever the machine: each of the 400 flips charges
+    # each of the 400 references into the target (uncharged work: ~0 here).
+    assert work - base_work >= 400 * 400, (work, base_work)
     assert FlagReason.REF_DANGLING in {f.reason for f in flags}
 
 
@@ -346,17 +349,58 @@ def _stale(bodies: int, flips: int) -> bytes:
     return bytes(w.out)
 
 
+def _graph_steps(data: bytes) -> tuple[int, int, tuple[Flag, ...]]:
+    """(work charged inside the graph, lines executed in the inventory's
+    modules while it ran -- its callbacks into build.py included --,
+    flags): the line count sees every Python loop, charged or not, the
+    same on every machine (#94)."""
+    work, lines, inv = charged_steps(data, "build_graph")
+    return work, lines, inv.flags
+
+
+# Lines executed per unit of work the graph charges, at most: every loop
+# charges per pass, so this holds on any input; an uncharged loop breaks it.
+LINES_PER_UNIT = LINES_PER_GRAPH_UNIT
+
+
+def _best_time(data: bytes, runs: int = 3) -> float:
+    """The best of *runs* wall-clock runs (a loaded machine slows a run,
+    never speeds one), at least 20 ms (a floor for timer noise)."""
+    return max(min(_work(data)[1] for _ in range(runs)), 0.02)
+
+
+def test_the_graph_scales_in_wall_clock_too() -> None:
+    # The backstop for work done inside C, which the line count cannot see
+    # (a linear `in` on a list, a copy, a sort: review of #113). A C-level
+    # scan costs nanoseconds a step, so it shows only at large n: 4000 vs
+    # 64000 measured 18.7x (16x the input), and 56x with `moved_set` a list.
+    # 32x sits between, with ~1.7x room each way.
+    # Under coverage Python runs ~5x slower and C does not, diluting the
+    # signal: CI's uncovered 3.10 leg is the one that catches it (as on main).
+    small, large = _best_time(_wide(4000)), _best_time(_wide(64000), runs=2)
+    assert large < 32 * small, (small, large)
+
+
+def test_flipping_costs_its_charged_work_in_wall_clock_too() -> None:
+    # The flip shape is quadratic by design, all of it charged: its time per
+    # charged unit stays that of a linear shape (C-level work: review of
+    # #113). Measured 0.6x; 4.1x with `seen` a list.
+    flip, linear = _rewrites(400, 400, flip=True), _rewrites(400, 400, flip=False)
+    per = _best_time(flip) / _work(flip)[0]
+    base = _best_time(linear) / _work(linear)[0]
+    assert per < 2 * base, (per, base)
+
+
 @pytest.mark.parametrize("shape", [lambda n: _wide(n), lambda n: _stale(n, n // 4)],
                          ids=["wide", "stale"])
 def test_every_step_of_the_graph_is_charged(shape) -> None:  # type: ignore[no-untyped-def]
-    # Wall clock, not only work counts (ADR 0010): 8x the input costs
-    # about 8x the time, and the work charged keeps pace with it.
-    small, large = shape(4000), shape(32000)
-    work_s, _, flags_s = _work(small)
-    work_l, _, flags_l = _work(large)
-    # The best of three runs each: a loaded machine slows a run, never speeds one.
-    time_s = min(_work(small)[1] for _ in range(3))
-    time_l = min(_work(large)[1] for _ in range(3))
+    # Not only work counts (ADR 0010): 8x the input executes about 8x the
+    # inventory's lines while the graph runs (an uncharged quadratic loop:
+    # ~64x), and the work charged keeps pace with it. Lines, not wall clock:
+    # deterministic (C-level work: test_the_graph_scales_in_wall_clock_too).
+    work_s, lines_s, flags_s = _graph_steps(shape(500))
+    work_l, lines_l, flags_l = _graph_steps(shape(4000))
     assert FlagReason.BUDGET_EXHAUSTED not in {f.reason for f in flags_s + flags_l}
     assert work_l < 10 * work_s, (work_s, work_l)
-    assert time_l < 12 * max(time_s, 0.05), (time_s, time_l)  # quadratic: ~18x and up
+    assert lines_l < 10 * lines_s, (lines_s, lines_l)
+    assert lines_l <= LINES_PER_UNIT * work_l, (lines_l, work_l)

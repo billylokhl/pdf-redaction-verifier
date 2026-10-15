@@ -458,6 +458,19 @@ clean scans: turned, a column of repeated digits reads as a row, so a
 questionnaire with sideways headers and answer columns of 1–5 matched
 the phone pattern (manual review; 1 of 14 generated clean scans moved).
 
+**The readings with their glyphs.** `views.text.visual_text_glyphs`
+gives the same readings as `extract_visual_text`, built by the same code,
+with every line as the indices of the glyphs it was read from, and each
+glyph's character, box and visibility: the code runs once with each
+glyph's character replaced by a tag naming its index, and since lines are
+clustered, ordered and split at column breaks from geometry alone, the
+tagged readings are the real ones line for line. It is for callers that
+must say *where* the scan read something (the visible map) without a
+second copy of the reading code; nothing in the scan calls it, and a test
+checks its text equals `extract_visual_text`'s, reading for reading, on
+every page of every case in the case library and on fabricated pages at
+every rotation.
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
@@ -481,7 +494,19 @@ page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
 the #67 page about 0.3 s more than before, of about 5 s). The worst
 case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
 16 unstacked.
-Vision calls themselves have no deadline (as before the re-reads).
+Each Vision call has a deadline of its own (`VISION_CALL_TIMEOUT_S`,
+120 s; #115): `performRequests` has no timeout, and a stalled Vision
+once held a test run for about 25 minutes with no CPU in use. The call
+runs on a worker thread joined with that deadline; past it, its
+requests are cancelled, the thread is left behind (a thread blocked in
+Vision cannot be stopped from Python; it is a daemon, so it never holds
+up the exit) and the page is `PAGE_FAILED`, a re-read or extra reading
+included: a timeout is not one of the read failures those drop. While a
+timed-out call has still not returned, every later call fails at once
+without calling Vision, so a stuck Vision costs one deadline per run,
+not one per call or page. A page whose calls each return in time can
+still take up to its 147 calls' worth of deadlines; that is slow, not
+unbounded.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
@@ -549,7 +574,19 @@ the gap is stated rather than implied away.
   checks tells an empty or partial reading from a page with that little
   text (a raster check — ink on the page, no text read — could catch the
   empty case, but none exists), so a secret only OCR can see would pass
-  as clean (#67: on macOS 27, a dense sideways scan whose SSN line
+  as clean, except where the page's size alone says so: Vision reads
+  less of a render the smaller its print is against the render's longest
+  side, so a page whose 300 dpi render is longer than 3510 px on a side
+  (`MAX_OCR_RENDER_SIDE`, about 11.7 in: letter and A4 pages are below
+  it) is read but also `PAGE_FAILED` (#128; measured on macOS 27 on four
+  page shapes and three block positions: every block of 8 and 10 pt read
+  at 3500 and 3509 px, some whole 8 pt blocks lost at 3600 px, more from
+  3900 px, 10 pt ones from 4250 px; the pixel count did not decide it).
+  The cap is a heuristic, not a guarantee: the losses do not grow
+  steadily with size and depend on the content. The check is on the
+  page's size, made before the page is read, never on Vision returning
+  no lines, which a blank page also does. Below the cap Vision can still
+  drop part of a block (#67: on macOS 27, a dense sideways scan whose SSN line
   Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
   docs/REDESIGN.md §8, now manual review through the turned readings
   above, which only a page with a vertical line gets; a raster check is
@@ -576,9 +613,18 @@ the gap is stated rather than implied away.
   thumbnail, a second decoded picture the tool never looks at; pattern
   rules on non-attachment embedded files, on scripts stored as streams on
   actions, and on an image's own raw sample or codec bytes (a known value
-  there is still found, via the Binary layer's raw byte sweep); and the
-  matching limits — page-break splits with something between the halves,
-  multi-column wraps, dash-less pattern wraps, extreme coordinates.
+  there is still found, via the Binary layer's raw byte sweep, when the
+  image is drawn) and on an editor's private data; text after a stream's
+  compression end marker; leftover plain text labelled as a font or an
+  image, leftover outlines, leftover images just under the size gate,
+  leftover one-character strings, and a removed attachment taken for page
+  content; font-coded text off the page without a `/ToUnicode` map or
+  drawn from the same point as other text; a zip in a non-attachment
+  embedded file; and the matching limits — page-break splits with
+  something between the halves, pattern-rule page-break splits in
+  layouts no reading joins, multi-column wraps, dash-less pattern wraps,
+  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
+  a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`
