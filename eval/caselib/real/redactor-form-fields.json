@@ -1,0 +1,195 @@
+{
+  "file": "redactor-form-fields.pdf",
+  "sha256": "53aab2c0255ec8bfb5e47f1bbde9b1f19290d3bcc19ef6d4dc670cf0b3ba1547",
+  "size_bytes": 11451,
+  "size_cap_bytes": 100000,
+  "origin": "redactor",
+  "case_id": "document.redactor-form-fields",
+  "source_case": null,
+  "source_case_note": "The real-redactor set (eval/redactor_set): template D13, seed 0, producer reportlab; the exact bytes measured.",
+  "tool": {
+    "description": "a PyMuPDF-based redaction tool",
+    "version": "0.1.0",
+    "date": "2026-10-14",
+    "settings": {
+      "llm_detection": false,
+      "invocation": "<pdf> --config <yaml>",
+      "config": "# Fabricated values only (eval/redactor_set/persona.py).\nentity_types: []\nexact_values:\n  - \"Jordan Q. Testperson\"\n  - \"Avery R. Samplename\"\n  - \"666-51-4073\"\n  - \"666-38-2914\"\n  - \"1600 Fictional Ave\"\n  - \"731904628155\"\n  - \"997382611\"\n  - \"4111 1111 1111 1111\"\n  - \"00-4857261\"\n  - \"03/14/1971\"\n  - \"jordan.testperson@example.com\"\npatterns:\n  - '\\d{3}-\\d{2}-\\d{4}'\n  - '\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b'\nscrub_metadata: true\n",
+      "method": "m2",
+      "garbage": 4,
+      "deflate": true,
+      "gc_pymupdf": "1.27.2.3",
+      "note": "m1: the tool as it is run day to day. m2: m1's output re-saved with garbage collection in the tool's own environment, which can differ in detail from a collecting save inside the tool."
+    }
+  },
+  "fabricated_data_statement": "Every value in this document -- the household's names, SSNs, address, account, routing and card numbers, EIN, date of birth and email -- is fabricated (eval/redactor_set/persona.py) and cannot belong to a real person.",
+  "redacted_values": [
+    {
+      "name": "NAME1",
+      "value": "Jordan Q. Testperson"
+    },
+    {
+      "name": "NAME2",
+      "value": "Avery R. Samplename"
+    },
+    {
+      "name": "SSN1",
+      "value": "666-51-4073"
+    },
+    {
+      "name": "SSN2",
+      "value": "666-38-2914"
+    },
+    {
+      "name": "ADDR",
+      "value": "1600 Fictional Ave"
+    },
+    {
+      "name": "ACCT",
+      "value": "731904628155"
+    },
+    {
+      "name": "ROUT",
+      "value": "997382611"
+    },
+    {
+      "name": "CARD",
+      "value": "4111 1111 1111 1111"
+    },
+    {
+      "name": "EIN",
+      "value": "00-4857261"
+    },
+    {
+      "name": "DOB",
+      "value": "03/14/1971"
+    },
+    {
+      "name": "EMAIL",
+      "value": "jordan.testperson@example.com"
+    },
+    {
+      "name": "SSN pattern",
+      "pattern": "\\d{3}-\\d{2}-\\d{4}"
+    },
+    {
+      "name": "Card pattern",
+      "pattern": "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"
+    }
+  ],
+  "metadata_fields_scrubbed": [],
+  "metadata_fields_scrubbed_note": "Nothing was scrubbed: these are the exact bytes measured. info_fields lists every value left.",
+  "info_fields": [],
+  "oracle": {
+    "adjudicator": "agent (Opus), Lane B",
+    "adjudication_date": "2026-10-14",
+    "lock_sha256": "699690c19665dbc46479f2496245b4608bd54d920a56e8aef85bb4db2198cc1d",
+    "truth": "leak",
+    "expected_exit": 1,
+    "secrets": {
+      "DOB": "recoverable-visible",
+      "EMAIL": "recoverable-visible",
+      "NAME1": "recoverable-visible",
+      "SSN1": "recoverable-visible"
+    },
+    "instances": [
+      {
+        "secret": "NAME1",
+        "loc": "F1",
+        "class": "recoverable-visible",
+        "written": "Jordan Q. Testperson",
+        "fingerprints": [],
+        "channels": [
+          "R2",
+          "V"
+        ],
+        "r1_witness": false,
+        "cell": "annot-fields.plain",
+        "case": "document.form-ssn",
+        "storage": "live",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "DOB",
+        "loc": "F1",
+        "class": "recoverable-visible",
+        "written": "03/14/1971",
+        "fingerprints": [],
+        "channels": [
+          "R2",
+          "V"
+        ],
+        "r1_witness": false,
+        "cell": "annot-fields.plain",
+        "case": "document.form-ssn",
+        "storage": "live",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "SSN1",
+        "loc": "F1",
+        "class": "recoverable-visible",
+        "written": "666-51-4073",
+        "fingerprints": [],
+        "channels": [
+          "R2",
+          "V"
+        ],
+        "r1_witness": false,
+        "cell": "annot-fields.plain",
+        "case": "document.form-ssn",
+        "storage": "live",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "EMAIL",
+        "loc": "F1",
+        "class": "recoverable-visible",
+        "written": "jordan.testperson@example.com",
+        "fingerprints": [],
+        "channels": [
+          "R2",
+          "V"
+        ],
+        "r1_witness": false,
+        "cell": "annot-fields.plain",
+        "case": "document.form-ssn",
+        "storage": "live",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "SSN1",
+        "loc": "F2",
+        "class": "recoverable-visible",
+        "written": "666-51-4073",
+        "fingerprints": [],
+        "channels": [
+          "R2",
+          "V"
+        ],
+        "r1_witness": false,
+        "cell": "annot-fields.plain",
+        "case": "document.form-ssn",
+        "storage": "live",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      }
+    ]
+  },
+  "labels_summary": {
+    "truth": "leak",
+    "cells": [
+      "annot-fields.plain"
+    ],
+    "expected_exit": 1
+  }
+}

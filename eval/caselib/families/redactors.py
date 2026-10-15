@@ -8,6 +8,13 @@ LLM detection disabled and these exact values:
 "Springfield", "000123456789". The compacted file is the hex output
 re-saved by PyMuPDF with garbage=4.
 
+The real-redactor set (eval/redactor_set, eval/README.md) adds measured
+outputs of the same tool: fabricated documents from five producers, run
+as-is (m1) or re-saved with garbage collection (m2), each the exact bytes
+the oracle classed and the adjudication locked, with that adjudication
+in its sidecar's ``oracle`` block. They use the set's persona
+(``PERSONA_RULES``) instead of ``RULES``.
+
 Each committed PDF has a sidecar (``<name>.json`` beside it) recording the
 same provenance machine-readably — sha256, tool, settings, the fabricated-
 data statement, scrubbed metadata fields, and a summary of the label below
@@ -40,6 +47,23 @@ RULES = (
 NO_GC = ("redactor applies the redactions correctly, then saves with PyMuPDF's "
          "default garbage=0, so the page's original content streams stay in the file.")
 ALL_ORPHANED = expect(1, findings=tuple((r["name"], "orphaned") for r in RULES))
+# The real-redactor set's persona and config patterns (eval/redactor_set/
+# persona.py; tests/test_case_library.py checks the two agree).
+PERSONA_RULES = (
+    {"name": "NAME1", "value": "Jordan Q. Testperson"},
+    {"name": "NAME2", "value": "Avery R. Samplename"},
+    {"name": "SSN1", "value": "666-51-4073"},
+    {"name": "SSN2", "value": "666-38-2914"},
+    {"name": "ADDR", "value": "1600 Fictional Ave"},
+    {"name": "ACCT", "value": "731904628155"},
+    {"name": "ROUT", "value": "997382611"},
+    {"name": "CARD", "value": "4111 1111 1111 1111"},
+    {"name": "EIN", "value": "00-4857261"},
+    {"name": "DOB", "value": "03/14/1971"},
+    {"name": "EMAIL", "value": "jordan.testperson@example.com"},
+    {"name": "SSN pattern", "pattern": r"\d{3}-\d{2}-\d{4}"},
+    {"name": "Card pattern", "pattern": r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"},
+)
 
 
 def _copy(name: str):
@@ -48,7 +72,8 @@ def _copy(name: str):
     return build
 
 
-def _sidecar(pdf_name: str, case_id: str, truth: str) -> dict[str, Any]:
+def _sidecar(pdf_name: str, case_id: str, truth: str,
+             rules: tuple[dict[str, str], ...] = RULES) -> dict[str, Any]:
     """Load ``real/<pdf_name>.json`` and cross-check it against the case
     it documents: the sha256 and size cap are re-derived from the file on
     disk (never trusted from the sidecar alone), and the sidecar's own
@@ -83,10 +108,8 @@ def _sidecar(pdf_name: str, case_id: str, truth: str) -> dict[str, Any]:
     if summary.get("truth") != truth:
         raise ValueError(f"{pdf_name}: sidecar labels_summary.truth {summary.get('truth')!r} "
                           f"!= case truth {truth!r}")
-    values = {v["name"]: v["value"] for v in data.get("redacted_values", [])}
-    expected_values = {r["name"]: r["value"] for r in RULES}
-    if values != expected_values:
-        raise ValueError(f"{pdf_name}: sidecar redacted_values do not match RULES")
+    if list(data.get("redacted_values", [])) != [dict(r) for r in rules]:
+        raise ValueError(f"{pdf_name}: sidecar redacted_values do not match the case's rules")
     return data
 
 
@@ -117,3 +140,86 @@ case("leftover.redactor-compacted", truth="clean", features="orphaned.plain",
      mistake="None — the fix for the failure above.",
      privacy_allowlist=tuple(_COMPACTED.get("privacy_allowlist", ())),
      )(_copy("redactor-hex-compacted.pdf"))
+
+
+# ── The real-redactor set's committed subset ────────────────────────────
+
+SET_NOTE = ("A fabricated document from the real-redactor set (eval/redactor_set), "
+            "redacted by the tool with LLM detection off; the label is its locked "
+            "adjudication (sidecar oracle block).")
+
+
+def _set_case(pdf_name: str, case_id: str, truth: str, *, expected, story: str,
+              mistake: str, recovery: str = "", cells: tuple[str, ...] = (),
+              features: tuple[str, ...] = (), requires: tuple[str, ...] = ()) -> None:
+    data = _sidecar(pdf_name, case_id, truth, PERSONA_RULES)
+    case(case_id, truth=truth, cells=cells, features=features, writer="file",
+         origin="redactor", rules=PERSONA_RULES, expected=expected, story=story,
+         mistake=mistake, recovery=recovery, requires=requires,
+         privacy_allowlist=tuple(data.get("privacy_allowlist", ())),
+         )(_copy(pdf_name))
+
+
+_set_case(
+    "redactor-form-fields.pdf", "document.redactor-form-fields", "leak",
+    cells=("annot-fields.plain",),
+    expected=expect(1, findings=tuple((n, "live") for n in ("NAME1", "SSN1", "DOB", "EMAIL"))),
+    story="A fillable benefits application run through the tool and re-saved with garbage "
+          "collection: the tool found every value in the form fields and counted them as "
+          "redacted, but redaction does not remove a widget, so each field still shows "
+          "its value.",
+    mistake="Redacting a filled form with a page-text redactor: the fields' values and "
+            "appearances are annotations, which applying redactions leaves in place.",
+    recovery="Open the file: the fields still show the values (or read each /V).")
+
+_set_case(
+    "redactor-annotations.pdf", "document.redactor-annotations", "leak",
+    cells=("annot-fields.plain",),
+    # NAME1 also survives as the word "jordan" in a mailto: link: a name
+    # fragment, an owner-accepted listed gap (2026-10-15), not required here.
+    expected=expect(1, findings=tuple((n, "live") for n in ("SSN2", "DOB", "EMAIL"))),
+    story="An annotated statement run through the tool and re-saved with garbage "
+          "collection: the page text is gone, but a sticky note, a highlight's comment and "
+          "a mailto: link that overlap no redacted text keep the SSN, the date of birth and "
+          "the email address.",
+    mistake="Redacting page text only: annotation comments and link targets are not page "
+            "text, and nothing removes those that do not overlap a redaction.",
+    recovery="Open the comments panel, or read each annotation's /Contents and /URI.")
+
+_set_case(
+    "redactor-scan-skipped.pdf", "page.redactor-scan-skipped", "leak",
+    cells=("live.pixels",), requires=("ocr",),
+    expected=expect(1, findings=tuple((n, "live") for n in ("NAME1", "SSN1", "ADDR")),
+                    layers=tuple((n, "OCR") for n in ("NAME1", "SSN1", "ADDR"))),
+    story="A scanned letter run through the tool and re-saved with garbage collection: "
+          "the page has no text layer, so the tool skips it and the name, SSN and address "
+          "stay visible in the image.",
+    mistake="Trusting a text-based redactor with a scan: it only processes pages that have "
+            "text.",
+    recovery="Look at the page.")
+
+_set_case(
+    "redactor-info-orphan.pdf", "leftover.redactor-info-orphan", "leak",
+    cells=("orphaned.plain", "leftover-xmp.plain", "orphaned.font"),
+    expected=expect(1, findings=tuple((n, "orphaned") for n in ("NAME1", "SSN1", "ACCT")),
+                    warnings=(("LEFTOVER_UNDECODABLE_TEXT", "orphaned"),)),
+    story="A metadata-heavy tax summary run through the tool as-is: it nulls the trailer's "
+          "/Info and unlinks the XMP, but saves without garbage collection, so the old "
+          "Info dictionary (a custom SSN key included), the XMP packet and the page's "
+          "original content stream all stay in the file, orphaned.",
+    mistake=NO_GC,
+    recovery="qpdf --qdf --object-streams=disable, then grep the uncompressed objects.")
+
+_set_case(
+    "redactor-statement-gc.pdf", "page.redactor-statement-gc", "clean",
+    features=("live.font",), expected=expect(0),
+    story="A three-page checking statement run through the tool and re-saved with garbage "
+          "collection: every value was in page text, and none is left.",
+    mistake="None -- a correctly redacted statement (U3: it must exit 0).")
+
+_set_case(
+    "redactor-w2-gc.pdf", "page.redactor-w2-gc", "clean",
+    features=("live.font",), expected=expect(0),
+    story="A W-2 run through the tool and re-saved with garbage collection: every value "
+          "was in page text, and none is left.",
+    mistake="None -- a correctly redacted form (U3: it must exit 0).")
