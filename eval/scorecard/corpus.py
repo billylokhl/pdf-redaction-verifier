@@ -188,7 +188,7 @@ def find_pdfs(root: Path) -> CorpusFiles:
     is not followed (a link cycle could otherwise loop), but is counted."""
     try:  # the caller supplied the path, but it is still never echoed
         is_dir = stat.S_ISDIR(root.stat().st_mode)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         is_dir = False
     except OSError:  # Path.is_dir() raises here before 3.14 and its message names the path
         raise SystemExit("refusing to build: --root cannot be accessed") from None
@@ -289,7 +289,9 @@ def _write_atomically(path: Path, text: str) -> None:
     write would (`ensure_local_only` checked where it resolves)."""
     target = Path(os.path.realpath(path))
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # The link's own directory, as a plain write would create; a link
+        # to a missing directory then fails at mkstemp (ENOENT), as it did.
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
             mode: int | None = stat.S_IMODE(target.stat().st_mode)
         except FileNotFoundError:

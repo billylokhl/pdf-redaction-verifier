@@ -1100,6 +1100,14 @@ def test_manifest_write_is_atomic_and_leaves_nothing_behind(tmp_path, monkeypatc
     corpus_mod.build_manifest(root, manifest_path=link)
     assert link.is_symlink() and len(json.loads(manifest.read_text())["entries"]) == 6
 
+    # A link into a missing directory is refused, as a plain write refused
+    # it, and the directory is not created.
+    dangling = out / "dangling.json"
+    dangling.symlink_to(tmp_path / "missing" / "deep" / "target.json")
+    with pytest.raises(SystemExit, match=r"\(ENOENT\)"):
+        corpus_mod.build_manifest(root, manifest_path=dangling)
+    assert not (tmp_path / "missing").exists()
+
 
 @_POSIX_NON_ROOT
 @pytest.mark.parametrize("protect", ["manifest", "directory"])
