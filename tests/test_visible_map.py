@@ -173,7 +173,8 @@ def test_a_raising_sink_changes_no_verdict(tmp_path, monkeypatch) -> None:
     for extra in ((), ("--fail-fast",)):
         off = run_main(monkeypatch, pdf, rules, *extra, sink=False)
         on = run_main(monkeypatch, pdf, rules, *extra)
-        assert (off.code, off.stdout, off.report) == (on.code, on.stdout, on.report)
+        assert (off.code, off.stdout, off.stderr, off.report) == (
+            on.code, on.stdout, on.stderr, on.report)
         assert on.header is not None and on.header["sink"]["failed"]
 
 
@@ -1141,6 +1142,21 @@ def _value_pdf(path: Path) -> Path:
 
 
 class TestMaskedLabels:
+    @pytest.mark.parametrize("name, shown", [
+        ("Jane Q. Exampl.pdf", "target"),           # 14 of the name value's 15
+        ("123-45-678.pdf", "target"),               # 8 of 9 digits
+        ("Example_Jane_records.pdf", "target"),
+        ("x" * 70 + ".pdf", "x" * 59 + "…"),        # cut to NAME_CAP
+        ("quarterly.pdf", "quarterly.pdf"),
+    ])
+    def test_a_target_name_sharing_part_of_a_value_is_not_shown(
+            self, tmp_path, monkeypatch, name, shown) -> None:
+        pdf = _value_pdf(tmp_path / name)
+        _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
+                                [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME}])
+        assert the_plan.target_name == shown
+
+
     """The plan's own masking (Rules.label / Rules.masked). That nothing
     of a value reaches the map file is the self-check's job, tested with
     the rendering."""

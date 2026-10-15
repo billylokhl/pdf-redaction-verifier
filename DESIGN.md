@@ -551,7 +551,8 @@ today). `offer` copies into plain lists inside its own
 completeness — it then says so — but cannot raise into the scan or
 mutate what the scan still uses. Tests scan a case from every cell of
 the case library (every case with `RUN_MAP_IDENTITY=1`) with and
-without a sink and compare the exit code, every byte of stdout and the
+without a sink and compare the exit code, every byte of stdout and of
+stderr, and the
 `--json` report.
 
 **Every finding is accounted for.** No box is drawn without a hard truth

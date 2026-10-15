@@ -27,6 +27,7 @@ from redaction_verifier.rules import RuleLabel, RuleSet
 from redaction_verifier.visible_map import headline, locate
 
 MAX_BOXES_PER_PAGE = 200
+NAME_CAP = 60               # characters of the target's name kept
 MERGE_OVERLAP = 0.5
 
 # Box styles, by how the content shows.
@@ -191,6 +192,22 @@ class Rules:
             return self.clean(f"{base} {masked}", f"{base} ****", f"{entry} ****")
         return self.clean(base, entry)
 
+    def free_text(self, text: str, cap: int, neutral: str) -> str:
+        """*text* (free text from outside the tool, such as the target's
+        file name), cut to *cap* characters, or *neutral* when the cut
+        form could show part of an exact value: any two consecutive
+        normalized characters of it occur together in one (the rule
+        masked() applies to a sample's tail), or a rule matches it
+        (clean). The cut comes first, so the form checked is the form
+        drawn."""
+        if len(text) > cap:
+            text = text[:cap - 1] + "…"
+        norm = normalize_string(text)
+        values = [s.normalized for s in self.secrets.values()]
+        if any(norm[i:i + 2] in v for i in range(len(norm) - 1) for v in values):
+            return self.clean(neutral)
+        return self.clean(text, neutral)
+
     def masked(self, shown: str, matched: str = "") -> str:
         """*shown* (mask()'s output), or a bare "****" when it could reveal
         part of an exact value: the match contains one, or any two
@@ -274,11 +291,10 @@ class Planner:
         self.header = header
         self.rules = rules
         self.clean = rules.clean
-        clean = self.clean
         self.sink = header["sink"]
         self.report = header["report"]
         self.plan = MapPlan(
-            target_name=clean(header["target_name"], "target"),
+            target_name=rules.free_text(header["target_name"], NAME_CAP, "target"),
             target_sha256=header["target_sha256"],
             version=header["version"],
             exit_code=header["exit_code"],
@@ -391,6 +407,9 @@ class Planner:
         self.located_text |= {(n, None) for n, _ in self.located_text}
 
     def _place_text(self, page_no: int, name: str, *, value: bool) -> None:
+        # Raising part-way (text_layer's guard) can leave some boxes for
+        # this rule on the page as well as its "could not be located"
+        # entry: more is listed, never less.
         pt = self.page_text(page_no)
         rule_hits: list[locate.TextHit] = []
         if pt is not None:
