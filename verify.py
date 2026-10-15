@@ -960,8 +960,10 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         try:
             node, seen, carrier = page.xref, set(), ""
             while node:
-                if node in seen or len(seen) >= 64:
-                    raise ValueError("page tree cycle or too deep")
+                # A walk that never repeats a node cannot visit more
+                # nodes than the file has objects; a repeat is a cycle.
+                if node in seen or len(seen) >= doc.xref_length():
+                    raise ValueError("page tree cycle")
                 seen.add(node)
                 if doc.xref_get_key(node, "Thumb")[0] != "null":
                     carrier = "its own" if node == page.xref else "inherited"
