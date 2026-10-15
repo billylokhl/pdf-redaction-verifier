@@ -102,13 +102,15 @@ without a map leaves no file at all.
 **The output file.** The map is only ever written as a new file. An
 existing `map.pdf` is replaced only if it is one of this tool's own maps
 — a regular file you own whose second line and last line are both
-`%PRV-VISIBLE-MAP-1` — and it is removed at the start of every run, so
-a run that dies never leaves an old map behind. Anything else at that
+`%PRV-VISIBLE-MAP-1` — and it is removed at the start of every run that
+gets as far as checking it (a run refused for a malformed command line
+does not), so a run that dies never leaves an old map behind. Anything else at that
 path (another PDF, a symbolic link, a directory, the target, the rules
 file or the `--json` report) is refused untouched; there is deliberately
 no `--force`. A file with only the line-2 marker is a map an interrupted
 run left half-written; it is refused by name, and you delete it. Hidden
-temp files a killed run left beside it (`.map.pdf.<pid>.tmp`, carrying
+temp files a killed run left beside it (`.map.pdf.<pid>.<token>.tmp`,
+`.old` or `.probe`, carrying
 the marker, or still empty) are removed by a later run once they are
 older than 20 minutes and no process with that id is running. The flag must be spelled out in
 full: `--v` and other abbreviations of it are refused.

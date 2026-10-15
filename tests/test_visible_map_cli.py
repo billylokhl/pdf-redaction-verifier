@@ -870,6 +870,44 @@ def test_signals_during_the_map_keep_the_verdict(signals, tmp_path) -> None:
     assert not (tmp_path / "out.pdf").exists()
 
 
+@requires_full_env
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_a_signal_after_the_map_in_the_cleanup_keeps_the_verdict(signum, tmp_path,
+                                                                 monkeypatch) -> None:
+    """A burst that outlasts the map: a signal arriving in main()'s
+    cleanup, after the map is done, on a clean target. It must not turn
+    the decided 0 into the crash code; the handlers the map replaced are
+    back once main() returns."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Nothing to see")
+    pdf = tmp_path / "clean.pdf"
+    doc.save(pdf)
+    doc.close()
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    real_close = runner.MapJob.close
+
+    def close_then_signal(self: runner.MapJob) -> None:
+        real_close(self)
+        os.kill(os.getpid(), signum)
+        time.sleep(0.05)            # let the handler run here, in the cleanup
+
+    monkeypatch.setattr(runner.MapJob, "close", close_then_signal)
+    run = run_main(monkeypatch, pdf, write_rules(tmp_path, SSN_RULES), ocr=True)
+    assert run.code == 0 and run.written, run.stderr
+    assert {s: signal.getsignal(s) for s in before} == before
+
+
+def test_a_leftover_with_an_impossible_process_id_is_left_alone(tmp_path) -> None:
+    """A junk name whose id overflows os.kill must not make every later
+    run refuse the flag: the sweep leaves it and goes on."""
+    out = tmp_path / "o1.pdf"
+    junk = out.with_name(f".{out.name}.99999999999999999999999.tmp")
+    junk.write_bytes(b"")
+    os.utime(junk, (0, 0))
+    paths.sweep_temps(out)
+    assert junk.exists()
+
+
 def test_closed_stderr_keeps_map_status_off_stdout(tmp_path) -> None:
     """With fd 2 closed, print(file=sys.stderr) would fall back to stdout:
     the map's status must vanish instead, so stdout stays identical."""
@@ -973,32 +1011,48 @@ def _dense_pdf(path: Path, pages: int) -> Path:
 MB = 1 << 20
 
 
-@pytest.mark.parametrize("kind", [
-    "large-file",
-    pytest.param("many-pages", marks=[
-        pytest.mark.perf,
-        pytest.mark.skipif(os.environ.get("RUN_PERF") != "1",
-                           reason="2,000 dense pages; set RUN_PERF=1 to run")]),
-])
-def test_the_parent_holds_no_more_memory_with_the_map(kind, tmp_path) -> None:
-    """The parent's peak with the flag on stays within 5 MB of the run
-    without it — the target reaches the child by descriptor and the map
-    comes back in 64 KB chunks. OCR off; nothing to find. The scan's own
-    peak varies by a few MB from run to run, so the flag-off peak is the
-    larger of two runs. This whole-run bound cannot see the map step
-    behind the scan's own peak (hundreds of MB here):
-    test_the_map_step_holds_no_more_memory_however_large_the_target
-    measures that step alone."""
+def _median(values: list[int]) -> int:
+    return sorted(values)[len(values) // 2]
+
+
+def _overhead(target: Path, rules: Path, out: Path, runs: int = 3) -> int:
+    """The flag's cost to the parent's whole-run peak RSS: the median of
+    *runs* runs with it, less the median of *runs* without (same exit
+    code)."""
+    off = [_peak(target, rules) for _ in range(runs)]
+    on = [_peak(target, rules, "--visible-map", str(out)) for _ in range(runs)]
+    assert {code for _, code in off} == {code for _, code in on}
+    assert out.exists()
+    return _median([p for p, _ in on]) - _median([p for p, _ in off])
+
+
+def test_the_parent_holds_no_more_memory_however_large_the_target(tmp_path) -> None:
+    """The flag's cost to the parent's whole-run peak does not grow with
+    the target: the target reaches the child by descriptor and the map
+    comes back in 64 KB chunks. Measured (2026-10-14): about 4 MB at a
+    25 MB target and at a 200 MB one -- the map step's own fixed cost
+    (the planner's imports, the header, spawning the child, the stream
+    buffers), stacked on the scan's memory MuPDF still holds when the map
+    starts, so it shows above the scan's peak. A parent that read the
+    target would grow by its size. Medians of three runs each, because a
+    scan's own peak varies by several MB from run to run on a loaded
+    machine; test_the_map_step_holds_no_more_memory_however_large_the_target
+    bounds the step itself."""
     rules = write_rules(tmp_path, SSN_RULES)
-    if kind == "large-file":
-        target = _big_image_pdf(tmp_path / "large.pdf", 200)
-    else:
-        target = _dense_pdf(tmp_path / "dense.pdf", 2000)
-    off = [_peak(target, rules) for _ in range(2)]
-    on, code_on = _peak(target, rules, "--visible-map", str(tmp_path / "out.pdf"))
-    assert {code for _, code in off} == {code_on}
-    assert (tmp_path / "out.pdf").exists()
-    assert on - max(peak for peak, _ in off) < 5 * MB, (off, on)
+    small = _overhead(_big_image_pdf(tmp_path / "small.pdf", 25), rules, tmp_path / "s.pdf")
+    large = _overhead(_big_image_pdf(tmp_path / "large.pdf", 200), rules, tmp_path / "l.pdf")
+    assert large - small < 5 * MB, (small, large)
+
+
+@pytest.mark.perf
+@pytest.mark.skipif(os.environ.get("RUN_PERF") != "1",
+                    reason="2,000 dense pages; set RUN_PERF=1 to run")
+def test_the_parent_holds_no_more_memory_with_many_pages(tmp_path) -> None:
+    """The same fixed cost on 2,000 dense pages (OCR off; nothing to
+    find): the flag adds no per-page memory to the parent."""
+    rules = write_rules(tmp_path, SSN_RULES)
+    target = _dense_pdf(tmp_path / "dense.pdf", 2000)
+    assert _overhead(target, rules, tmp_path / "out.pdf", runs=2) < 10 * MB
 
 
 # The map step alone, in a fresh interpreter with no scan to hide behind:

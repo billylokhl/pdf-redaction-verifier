@@ -197,7 +197,13 @@ def sweep_temps(out: Path) -> None:
     now = time.time()
     for name in names:
         m = pattern.fullmatch(name)
-        if m is None or _alive(int(m.group(1))):
+        if m is None:
+            continue
+        try:
+            alive = _alive(int(m.group(1)))
+        except (OverflowError, ValueError, OSError):
+            alive = True            # an id no process can have: leave the file
+        if alive:
             continue                # this run's, or a concurrent run's
         path = out.with_name(name)
         try:

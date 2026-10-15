@@ -3396,6 +3396,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # flag, and nothing below evaluates anything of the map's then.
     map_job: Any = None
     sink: MapSink | None = None
+    # SIGINT/SIGTERM handlers the map replaced, put back at the end.
+    map_signals: dict[int, Any] = {}
 
     def finish(code: int, error: tuple[str, str] | None = None) -> int:
         if error:
@@ -3442,31 +3444,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         A suppress's own __exit__ is Python code a signal can land in, so
         while the map is made SIGINT and SIGTERM do not raise at all: their
-        handlers only stop the child (and the map) and are put back before
-        this returns. The verdict was decided before the map began; a
+        handlers only stop the child (and the map), and they stay until the
+        end of main()'s finally (_restore_map_signals), so a burst that
+        outlasts the map cannot land in the cleanup either. The verdict was decided before the map began; a
         signal during it must not undo it (a burst of Ctrl-C used to turn a
         confirmed leak's 1 into the crash code).
         """
         if map_job is None or sink is None:
             return
-        previous: dict[int, Any] = {}
-
         def stop_map(signum: int, frame: Any) -> None:
             map_job.interrupt()
 
         with contextlib.suppress(BaseException):
             try:
                 for signum in (signal.SIGINT, signal.SIGTERM):
-                    previous[signum] = signal.signal(signum, stop_map)
+                    map_signals[signum] = signal.signal(signum, stop_map)
             except ValueError:
                 pass            # not the main thread: signals stay as they are
-            try:
-                with contextlib.suppress(BaseException):
-                    _make_map(final)
-            finally:
-                for signum, handler in previous.items():
-                    with contextlib.suppress(BaseException):
-                        signal.signal(signum, handler)
+            with contextlib.suppress(BaseException):
+                _make_map(final)
+        # The previous handlers come back only at the very end of main()'s
+        # finally (_restore_map_signals): a burst that outlasts the map must
+        # not land in the cleanup after it, where a KeyboardInterrupt would
+        # turn the decided verdict into the crash code.
+
+    def _restore_map_signals() -> None:
+        for signum, handler in map_signals.items():
+            with contextlib.suppress(BaseException):
+                signal.signal(signum, handler)
+        map_signals.clear()
 
     def _map_status(line: str) -> None:
         """One line of map status, on stderr only -- never stdout, which a
@@ -3835,6 +3841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     map_job.close()
                 except Exception as exc:
                     _map_status(f"[ERROR] could not close the visible map's target: {exc}")
+                _restore_map_signals()
     except BaseException as exc:
         # BaseException, not Exception: a SystemExit (or other
         # BaseException) raised somewhere inside the pipeline above must

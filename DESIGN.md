@@ -668,8 +668,9 @@ human report is out (`_map_after_report`, never from `finish()` or
 `crash()`), and that whole step — its own handler, cleanup and `[ERROR]`
 line included — runs inside one `suppress(BaseException)`, and while it
 runs SIGINT and SIGTERM do not raise at all: their handlers only stop the
-child and the map, and the previous handlers are put back before it
-returns (a suppress's own `__exit__` is Python code a burst of Ctrl-C
+child and the map, and the previous handlers are put back only at the
+very end of `main()`'s `finally`, so a burst that outlasts the map
+cannot land in the cleanup after it either (a suppress's own `__exit__` is Python code a burst of Ctrl-C
 could land in; before this a burst could turn a confirmed leak's 1 into
 the crash code, and SIGTERM ended the run at -15 after its verdict was
 decided). `main()`'s `finally` kills a child anything left running, under
@@ -693,7 +694,9 @@ it: before the scan the parent opens the target once — read-only,
 hashes it, and keeps that descriptor — moved to 3 or above and marked
 close-on-exec, so with stdin closed it cannot land on fd 0, where the
 child's stdin (and exiftool's and qpdf's) would replace it; the child
-inherits it (`pass_fds`), reads it into one buffer, hashes exactly what
+inherits it (`pass_fds`), reads it into one buffer (so the child, not
+the parent, holds the target's size in memory, for at most its
+deadline), hashes exactly what
 it read (a target that grew or shrank hashes differently) and returns
 the digest, so a
 target edited after the scan is caught by hash and one replaced by
