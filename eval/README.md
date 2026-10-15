@@ -594,8 +594,14 @@ or pasted anywhere. Only the coarse producer *family* (e.g. `"acrobat"`,
 and discarded on the spot, since real producer apps sometimes embed a
 username, hostname, or email address in it.
 
-`corpus build` picks up only files named `*.pdf` in lower case: rename or
-link any `.PDF` files first, or they are silently left out.
+`corpus build` records every regular file under the root whose name ends
+in `.pdf` in any case (`.PDF`, `.Pdf`, ...); a symbolic link to a file
+counts as that file. It prints how many entries it left out, by kind and
+never by name: files without a `.pdf` extension, entries named `.pdf`
+that are not regular files (a broken link, say), symbolic links to
+directories (not followed, so a link cycle cannot loop the walk) and
+directories it could not list. A `--root` that is not an existing
+directory is refused rather than written as an empty manifest.
 
 A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
 abort on the first password-protected or corrupt file, so the exemption
@@ -614,20 +620,20 @@ CLI's error report on it has no findings, so there it would only add an
 unscanned file to the false-hard denominator: as text-bearing, of the
 stratum the redesign's targets are measured on. `all` does include them,
 so its false-hard denominator counts files nothing scanned: read false
-hard on a measured stratum.
+hard on a measured stratum. A `"text-unreadable"` file is scanned, but
+no text stratum can hold it, so it is its own counted group (owner
+decision, 2026-10-12): `all`, `text-unknown` and `probe:text-unreadable`
+only, and the run passes. `probe:text-unreadable` is always in the
+table and `--json`, even at 0, and the run always prints the count.
 
 That placement is decided by the build-time probe, so `corpus run` exits
 1 when the scan does not bear the probe out, listing each such file by
 SHA-256 prefix (`probe` lines): a `"password"` or `"unreadable"` file the
 CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
 upgrade can make a file readable, and its findings would otherwise
-vanish from every measured stratum), an `"ok"` file the CLI could not
-open, and every `"text-unreadable"` file, which the CLI scans but no
-text stratum can hold. Rebuild the manifest for the first two. A
-text-unreadable file keeps the run failing until the owner decides how
-to count it: open an issue rather than deleting the file, since dropping
-every file the tool struggles with would bias the corpus toward easy
-files and flatter the rates. The build
+vanish from every measured stratum), and an `"ok"` or
+`"text-unreadable"` file the CLI could not open. Rebuild the manifest
+for them. The build
 prints only how many there were, never which, and never keeps the
 exception's message (it can name the path). A manifest written before
 the field existed loads with `probe` `"ok"`; one written now does not
@@ -731,11 +737,19 @@ What each part of the output means:
   shows it -- media box, crop box, rotation, rectangle -- against what
   those attributes say it is), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
-  a user password is an unflagged `needs_password` disagreement, so it
-  fails the gate. `corpus build` can now record such a file (above),
-  where it used to abort, so a corpus holding one fails `inventory run`
-  instead of never reaching it; how the gate should count it is still
-  open (issue #48, item 3).
+  a user password cannot be certified, so it is **flagged**, not a
+  disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
+  it no longer fails the gate. It is reported under the reason
+  `needs_password` in `flags`, or under the inventory's own reasons when
+  it has any, so `files_by_reason.needs_password` counts only files with
+  no other flag. The oracle stops at the first revision that needs a
+  password, so nothing after it is compared; the file fails the gate
+  only if it does not tile (a disagreement, listed under
+  `needs_password` here) or the two children flag it differently
+  (`inconsistent`). The oracle reports `needs_password` only when our
+  trailer also reads that revision encrypted; a file MuPDF wants a
+  password for that our trailer reads as plain is an `encryption`
+  disagreement, which gates.
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and
