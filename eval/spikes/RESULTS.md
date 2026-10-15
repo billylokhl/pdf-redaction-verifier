@@ -754,6 +754,26 @@ lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
 rest. That cost has to be measured on leak cases before any demotion
 ships (Phase 5, PR 2; ADR 0012).
 
+**Policy 1 on the corpus** (ADR 0012; `eval/scorecard/pattern_policy1_corpus.py`
+over the per-file reports of the run above, recomputed without the
+built-in classes' findings and review warnings, which every pattern
+warning names in its `rule` field; 0 unattributed): since the rules were
+the four classes only, each file's exit is then set by its coverage
+warnings alone.
+
+| Text-bearing, 488 | Exit 0 | Exit 1 | Exit 2 |
+| --- | --- | --- | --- |
+| today | 131 (26.8%) | 235 (48.2%) | 122 (25.0%) |
+| policy 1 | 248 (50.8%) | 0 | 240 (49.2%) |
+
+Moves: 111 files 1 → 0, 124 files 1 → 2 (a coverage warning remains), 6
+files 2 → 0. All 2,072 measured files: exit 0 from 1,579 to 1,785, exit 1
+from 337 to 0, exit 2 from 156 to 287 (198 1 → 0, 139 1 → 2, 8 2 → 0).
+
+With `credit-card` in the union (`ssn`, `us-phone` or `credit-card`,
+text-bearing): 139 files (28.5%) today; under the demote-only options A,
+B and C, 25 (5.1%), 5 (1.0%) and 0.
+
 ## Phase 5 recall: what each option costs -- eval/scorecard/pattern_recall.py
 
 Measured 2026-10-15 on the case library (fabricated), macOS 27: every case

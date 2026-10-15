@@ -382,3 +382,11 @@ recall bound is a scheduling gate (it cannot actually be reached until
 Phase 4b measures a recall bound, one that covers small images), not an
 open decision -- the list itself (the four reasons, three rejected)
 needed no separate decision beyond the ones recorded above.
+
+## Note (2026-10-15)
+
+[ADR 0012](0012-pattern-classes-inform.md): in the default mode a built-in
+class match no longer affects the exit code, so the review-tier pattern
+matches over raw image bytes described here become informational notices;
+strict mode (`--strict-classes`) keeps them as review. User-written
+`pattern` rules are unchanged.

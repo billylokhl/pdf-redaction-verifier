@@ -1002,6 +1002,12 @@ unknown, a warning names a class rule without carrying it in `rule`, or a
 label stays undetermined.
 Case ids are fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
 
+`scorecard.pattern_policy1_corpus` recomputes the baseline run's per-file
+reports under the owner's policy 1 (ADR 0012: built-in class matches no
+longer affect the exit code) and prints, per stratum, the exit codes today
+and under policy 1 and the moves between them; counts only, from the
+local reports, scanning nothing.
+
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in
