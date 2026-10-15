@@ -516,9 +516,9 @@ be accessed or listed is refused, and so is a root with no readable PDF:
 the build never replaces a manifest with an empty one, and leaves the
 existing one as it was. The manifest is written to a fresh temporary
 file beside it (mode 0600, or the existing manifest's mode) and renamed
-into place (so it is replaced, not rewritten: a second hard link to it
-keeps the old content), so a failed write leaves the old manifest and no temporary
-file; a symbolic link at `--manifest` is written through. A
+into place. It is replaced, not rewritten (a second hard link to it
+keeps the old content), so a failed write leaves the old manifest and no
+temporary file; a symbolic link at `--manifest` is written through. A
 write-protected manifest, or one in a directory that cannot be written,
 is refused and left as it was.
 

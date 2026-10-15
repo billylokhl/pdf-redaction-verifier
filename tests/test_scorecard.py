@@ -1149,6 +1149,9 @@ def test_find_pdfs_refuses_a_root_that_is_not_a_directory(tmp_path):
             call()
         assert "private-name" not in str(exc.value)
     assert not (tmp_path / "m.json").exists()
+    (tmp_path / "a-file.pdf").write_bytes(b"%PDF-1.7\n")
+    with pytest.raises(SystemExit, match="not an existing directory"):  # ENOTDIR, as main
+        find_pdfs(tmp_path / "a-file.pdf" / "x")
 
 
 def test_corpus_build_cli_records_upper_case_pdfs_and_counts_skips(tmp_path, capsys):
