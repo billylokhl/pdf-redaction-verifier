@@ -935,6 +935,12 @@ class TestClasses:
         assert alone.row == 2 and "Nothing visible found" not in alone.headline
 
 
+def test_a_code_on_a_page_and_document_wide_says_both() -> None:
+    assert plan.code_scope([("HIDDEN_ITEM_FAILED", 3), ("HIDDEN_ITEM_FAILED", None),
+                            ("PAGE_FAILED", 2), ("PAGE_FAILED", 4), ("OCR_UNAVAILABLE", None)]) == [
+        "HIDDEN_ITEM_FAILED p.3 and document-wide", "OCR_UNAVAILABLE", "PAGE_FAILED pp. 2, 4"]
+
+
 def test_a_page_thumbnail_makes_the_map_incomplete_on_its_page(tmp_path,
                                                                  monkeypatch) -> None:
     """#133: a page /Thumb is never read, so its page is named as an
