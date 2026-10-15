@@ -1,6 +1,6 @@
 # 0012. Pattern-class precision: demotion, context rules, or both
 
-Status: proposed (draft, 2026-10-15; options and a recommendation for the owner)
+Status: Proposed — owner decision pending (draft, 2026-10-15; options and a recommendation for the owner)
 
 ## Context
 
@@ -25,7 +25,7 @@ Owner decisions already taken (2026-10-15) bound the options:
 
 ## Measurement
 
-Phase 5 PR 1 (`eval/scorecard/pattern_baseline.py`; eval/spikes/RESULTS.md,
+Phase 5 PR 1 (#134, `eval/scorecard/pattern_baseline.py`; eval/spikes/RESULTS.md,
 "Phase 5 baseline"), full CLI, every layer, rules = the four classes only,
 2,073 local corpus files, commit 90669ef. Text-bearing stratum, 488
 measured:
@@ -53,7 +53,7 @@ The 5 left look exactly like the real thing: 3 files with a dashed
 SSN-shaped value (Objects layer) and 2 with a punctuated phone number. No
 option short of demoting real-looking values meets "< 1%": 5/488 is 1.02%.
 
-**Recall** (Phase 5 PR 2a, `eval/scorecard/pattern_recall.py`): every
+**Recall** (Phase 5 PR 2a, #138, `eval/scorecard/pattern_recall.py`; eval/spikes/RESULTS.md, "Phase 5 recall"): every
 case-library leak case with a built-in class rule (109, of which 52 exit
 1 today), scanned with the recorder, each option applied to what it saw.
 A demotion never certifies a file (exit 2, not 0), but it moves a
