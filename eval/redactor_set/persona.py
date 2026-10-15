@@ -1,13 +1,15 @@
 """The fabricated household every real-redactor-set document is about.
 
 Every value here is fabricated and chosen so it cannot belong to anyone:
-an SSN area that is never issued (666) or the repo's own fabricated
-123-45-6789, an EIN prefix that is never issued (00), a routing number
-whose Federal Reserve prefix (99) is unassigned, the card networks' test
-number, and example.com. No two values share a run of six or more
-digits, so a hit on one is never mistaken for another, and the dashed
-SSN is the only form of 123-45-6789 ever written: its undashed digits
-also occur in common font tables (README, Binary layer).
+an SSN area that is never issued (666), an EIN prefix that is never
+issued (00), a routing number whose Federal Reserve prefix (99) is
+unassigned, the card networks' test number, and example.com. No two
+values share a run of six or more digits, so a hit on one is never
+mistaken for another. Neither SSN is sequential (owner decision,
+2026-10-15): the repo's usual fabricated 123-45-6789 matched a form's
+"Line 1" ... "Line 9" labels read across lines and font tables' bytes, so
+correctly redacted outputs went to review for reasons a real SSN would
+never cause, and U3 measured the persona, not the verifier.
 
 One persona and one redactor config drive every document, the way the
 owner uses one config for all of their files.
@@ -29,7 +31,7 @@ class Secret:
 SECRETS: tuple[Secret, ...] = (
     Secret("NAME1", "Jordan Q. Testperson", "person name"),
     Secret("NAME2", "Avery R. Samplename", "person name"),
-    Secret("SSN1", "123-45-6789", "SSN"),
+    Secret("SSN1", "666-51-4073", "SSN"),
     Secret("SSN2", "666-38-2914", "SSN"),
     Secret("ADDR", "1600 Fictional Ave", "street address"),
     Secret("ACCT", "731904628155", "bank account number"),
