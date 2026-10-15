@@ -543,6 +543,10 @@ class TestLockCompleteness:
             adjudicate.lock(root, "inputs", seeds=[0, 7])
         adjudicate.lock(root, "inputs", seeds=[0, 7], reason="seed 7 joins (owner)")
         assert adjudicate.verify(root, "inputs")[0] == []
+        adjudicate.lock(root, "inputs", seeds=[7, 0, 7])     # the same set: no reason
+        (root / "inputs/D01-s7.truth.json").unlink()
+        with pytest.raises(ValueError, match="no truth manifest"):
+            adjudicate.lock(root, "inputs")
 
     def test_a_deleted_lock_file_needs_a_reason(self, tmp_path) -> None:
         root = _root_with_record(tmp_path)
