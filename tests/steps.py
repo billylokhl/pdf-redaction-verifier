@@ -80,3 +80,31 @@ def charged_steps(data: bytes, entry: str) -> tuple[int, int, Any]:
         setattr(build_module, entry, real)
     work, lines = measured[0]
     return work, lines, inv
+
+
+def step_cost(data: bytes, entry: str) -> tuple[float, int]:
+    """(process time, work charged) of build.<entry> while *data*'s
+    inventory is built, untraced: time per charged unit, which grows with
+    the input only through work no charge pays for -- inside C, which no
+    line count sees (#94)."""
+    import time
+
+    import redaction_verifier.inventory.build as build_module
+    from redaction_verifier.budget import Budget
+    from redaction_verifier.inventory import build_inventory
+    budget = Budget(file_size=len(data))
+    taken: list[tuple[float, int]] = []
+    real = getattr(build_module, entry)
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        before, started = budget.work, time.process_time()
+        try:
+            return real(*args, **kwargs)
+        finally:
+            taken.append((time.process_time() - started, budget.work - before))
+    setattr(build_module, entry, wrapped)
+    try:
+        build_inventory(data, budget=budget)
+    finally:
+        setattr(build_module, entry, real)
+    return taken[0]
