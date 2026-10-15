@@ -49,6 +49,7 @@ from redaction_verifier.visible_map.plan import (
     SOLID,
     Box,
     MapPlan,
+    code_scope,
     page_ranges,
 )
 
@@ -263,13 +264,7 @@ def summary(w: Writer, plan: MapPlan) -> None:
     if plan.codes:
         w.y += 3
         w.line([("Warning codes:", False)], size=HEADING)
-        by_code: dict[str, set[int]] = {}
-        for code, page in plan.codes:
-            pages_of = by_code.setdefault(code, set())
-            if page is not None:
-                pages_of.add(page)
-        w.line([("; ".join(f"{c} {page_ranges(sorted(p))}" if p else c
-                           for c, p in sorted(by_code.items())), False)], indent=12)
+        w.line([("; ".join(code_scope(plan.codes)), False)], indent=12)
     if plan.legend:
         w.y += 3
         w.line([("Legacy rule names are not shown; rules are numbered:", False)], size=HEADING)
