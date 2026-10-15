@@ -36,7 +36,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ⚑ OCR on a page too large for Vision¹² · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹² | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ⚑ OCR on a page too large for Vision¹² · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹², or an image with far more detail than the page's OCR render resolves (`live.pixels.oversized-image`) | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map, also written vertically or running across the page edge · ✗ if the font has no Unicode map | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
@@ -163,6 +163,28 @@ warning. **One render cut into strips**, each too thin to read alone:
 the page's OCR reads them only when they are drawn next to each other
 and nothing covers them; under a drawn box, drawn apart, or listed as a
 resource but never drawn, they are not detected.
+
+## Hostile input
+
+Not storage places but files made to cost a reader time or memory
+(Phase 3d). Each case plants a value where the bomb is; the case library
+runs them out of process, under per-case caps
+(`eval/caselib/families/bombs.py`, `tests/test_bomb_cases.py`):
+
+- ⚑ A value behind a decompression bomb (`hostile.flate-bomb`): in an
+  orphaned stream, read only to its first 16 MiB and the rest flagged; in
+  live content, read whole (found), with the stream's object flagged.
+- ✓ A value in a file with deeply nested objects
+  (`hostile.deep-nesting`): found, with what could not be parsed flagged.
+- ✓ A value on a page in a cyclic page tree (`hostile.page-tree-cycle`):
+  the page is read once, the cycle flagged.
+- ⚑ A value in a file whose page tree claims an absurd page count
+  (`hostile.huge-page-count`)¹⁴.
+- ✓ A value among a flood of content operators
+  (`hostile.operator-flood`): found, within its memory cap.
+
+¹⁴ Exit `2` today comes from a caught internal error, not a flag: it
+fails closed, but names no reason. Phase 3d turns it into a limit flag.
 
 ## Matching limits
 

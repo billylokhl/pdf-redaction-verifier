@@ -138,8 +138,8 @@ def _cells() -> dict[str, Cell]:
         # matching limits
         # hostile -- input made to cost a reader time or memory (Phase 3d)
         "hostile.flate-bomb": Cell(flagged, "a value behind a decompression bomb"),
-        "hostile.deep-nesting": Cell(flagged, "a value in a file with deeply nested objects"),
-        "hostile.page-tree-cycle": Cell(flagged, "a value on a page in a cyclic page tree"),
+        "hostile.deep-nesting": Cell(read, "a value in a file with deeply nested objects"),
+        "hostile.page-tree-cycle": Cell(read, "a value on a page in a cyclic page tree"),
         "hostile.huge-page-count": Cell(
             flagged, "a value in a file whose page tree claims an absurd page count"),
         "hostile.operator-flood": Cell(read, "a value among a flood of content operators"),

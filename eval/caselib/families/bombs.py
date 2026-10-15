@@ -60,23 +60,29 @@ def _bomb_then(mib: int, tail: bytes) -> bytes:
 
 
 BUSY = "Opening an untrusted PDF in any tool that does not bound its own work."
+READ_IT = ("Read the file with a tool that bounds its work (or decompress the stream "
+           "piecewise): the SSN is plain text behind the bomb.")
 
 
 @case("page.bomb-flate-content", truth="leak", cells="hostile.flate-bomb", writer="raw",
-      bomb=Bomb(wall_clock_s=180, memory_bytes=3 * GB),
-      expected=expect(2),
+      # Read whole (2.4 GB at peak on the owner's Mac): found, with the
+      # object it could not also read flagged.
+      bomb=Bomb(wall_clock_s=180, memory_bytes=4 * GB),
+      expected=expect(1, findings=(("SSN", "live"),),
+                      warnings=(("OBJECT_UNREADABLE", "orphaned"),)),
       story="A page whose content stream is 256 MiB of spaces and then the SSN, compressed "
             "to a few hundred KB: a decompression bomb in live content.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def flate_content(path: Path) -> None:
     path.write_bytes(_pdf(_page() + [_stream(_bomb_then(256, SHOW), b"/Filter /FlateDecode")]))
 
 
 @case("leftover.bomb-flate-orphan", truth="leak", cells="hostile.flate-bomb", writer="raw",
       bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
-      expected=expect(2),
+      # Read only to 16 MiB: the rest, the SSN included, is flagged.
+      expected=expect(2, warnings=(("PAYLOAD_TRUNCATED", "orphaned"),)),
       story="The same 256 MiB bomb, ending in the SSN, in a stream nothing references.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def flate_orphan(path: Path) -> None:
     path.write_bytes(_pdf(_page() + [_stream(b"BT ET"),
                                      _stream(_bomb_then(256, b"SSN " + SSN.encode()),
@@ -84,22 +90,30 @@ def flate_orphan(path: Path) -> None:
 
 
 @case("file.bomb-deep-nesting", truth="leak", cells="hostile.deep-nesting", writer="raw",
-      requires=("exiftool",), bomb=Bomb(wall_clock_s=400, memory_bytes=3 * GB),
-      expected=expect(2),
+      requires=("exiftool", "qpdf"), bomb=Bomb(wall_clock_s=400, memory_bytes=3 * GB),
+      # The page dictionary does not parse, so no reachability walk is
+      # trusted: the content stream's SSN is found as "unreferenced", and
+      # what could not be read is flagged (exiftool times out at 120 s).
+      expected=expect(1, findings=(("SSN", "unreferenced"),), warnings=(
+          ("HIDDEN_ITEM_FAILED", "live"), ("OBJECT_UNREADABLE", "unreferenced"),
+          ("TOOL_EXIT_NONZERO", None), ("TOOL_TIMEOUT", None))),
       story="A page showing the SSN, whose dictionary also holds an array nested 30,000 "
             "levels deep.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def deep_nesting(path: Path) -> None:
     deep = b"[" * 30000 + b"]" * 30000
     path.write_bytes(_pdf(_page(FONT + b" /Deep " + deep) + [_stream(SHOW)]))
 
 
 @case("file.bomb-page-tree-cycle", truth="leak", cells="hostile.page-tree-cycle", writer="raw",
-      bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
-      expected=expect(2),
+      requires=("qpdf",), bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
+      # The page is read once (found); the cycle's repeat is flagged.
+      expected=expect(1, findings=(("SSN", "live"),), warnings=(
+          ("HIDDEN_ITEM_FAILED", "live"), ("PAGE_FAILED", "live"),
+          ("TOOL_EXIT_NONZERO", None), ("TOOL_NO_OUTPUT", None))),
       story="A page showing the SSN, in a page tree whose /Kids lists the tree itself: a "
             "reader that walks it without remembering where it has been never stops.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def page_tree_cycle(path: Path) -> None:
     path.write_bytes(_pdf([
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -109,10 +123,12 @@ def page_tree_cycle(path: Path) -> None:
 
 
 @case("file.bomb-huge-page-count", truth="leak", cells="hostile.huge-page-count", writer="raw",
+      # Today an internal error (exit 2, failing closed: COVERAGE's ⚑
+      # footnote); the flag 3d is to give instead is a failed page.
       bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB, today="error:INTERNAL_ERROR"),
-      expected=expect(2),
+      expected=expect(2, warnings=(("PAGE_FAILED", "live"),)),
       story="A page showing the SSN, in a page tree that claims two billion pages.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def huge_page_count(path: Path) -> None:
     path.write_bytes(_pdf([
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -142,7 +158,7 @@ def oversized_image(path: Path) -> None:
       expected=expect(1, findings=(("SSN", "live"),)),
       story="A page whose content is 10 MB of one-letter text operators, 130 KB on disk, "
             "with the SSN among them: a reader must still find it, within its limits.",
-      mistake=BUSY)
+      mistake=BUSY, recovery=READ_IT)
 def operator_flood(path: Path) -> None:
     ops = b"BT /F1 1 Tf (x) Tj ET\n" * 250_000 + SHOW + b"BT /F1 1 Tf (x) Tj ET\n" * 250_000
     path.write_bytes(_pdf(_page() + [_stream(zlib.compress(ops, 9), b"/Filter /FlateDecode")]))
