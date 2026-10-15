@@ -173,8 +173,8 @@ case(
           "2400 x 3200 pt page (33 x 44 in), the page's only content. OCR renders a page at "
           "300 dpi, here 10000 x 13334 px; Vision on macOS 27 reports success on that render "
           "but returns none of those lines, so the run certified the page clean (exit 0, no "
-          "warnings). A page whose render is longer than 3600 px on a side (12 in) is still "
-          "read, and is also flagged as not fully read: PAGE_FAILED, exit 2.",
+          "warnings). A page whose render is longer than 3510 px on a side (about 11.7 in) is "
+          "still read, and is also flagged as not fully read: PAGE_FAILED, exit 2.",
     expected=expect(2, warnings=(("PAGE_FAILED", "live"),)),
     rules=({"name": "SSN", "value": SSN},),
     requires=("ocr",),

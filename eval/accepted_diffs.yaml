@@ -1577,7 +1577,7 @@
   reason: 'OCR size cap (#128): the page is 2400 x 3200 pt, a 10000 x 13334 px render at
     300 dpi, and Vision reports success on it but returns none of its 8 pt lines, so the
     reference certified it clean. A page whose render is longer than MAX_OCR_RENDER_SIDE
-    (3600 px) on a side is still read and also gets PAGE_FAILED: exit 2. Measured on the
+    (3510 px) on a side is still read and also gets PAGE_FAILED: exit 2. Measured on the
     weekly macOS 26 runner (on macOS 27 eval-ref-0 fails every OCR page, so there is no
     difference there).'
   cell: live.pixels.oversized-page

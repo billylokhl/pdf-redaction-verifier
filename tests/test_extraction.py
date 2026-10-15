@@ -1703,8 +1703,8 @@ class TestOcrPageSize:
         ((612, 792), False),          # letter, 2550 x 3300 px
         ((792, 612), False),          # letter, landscape
         ((595, 842), False),          # A4, 3509 px long
-        ((864, 612), False),          # 3600 px: the cap itself
-        ((864.5, 612), True),         # 3602 px
+        ((842.4, 595), False),        # 3510 px: the cap itself
+        ((842.6, 595), True),         # 3511 px
         ((612, 1008), True),          # legal, 4200 px long
         ((842, 1191), True),          # A3
         ((792, 1224), True),          # tabloid

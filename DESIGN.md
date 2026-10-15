@@ -576,12 +576,14 @@ the gap is stated rather than implied away.
   empty case, but none exists), so a secret only OCR can see would pass
   as clean, except where the page's size alone says so: Vision reads
   less of a render the smaller its print is against the render's longest
-  side, so a page whose 300 dpi render is longer than 3600 px on a side
-  (`MAX_OCR_RENDER_SIDE`, 12 in: letter and A4 pages are below it) is
-  read but also `PAGE_FAILED` (#128; measured on macOS 27 on four page
-  shapes and three block positions: every block of 8 and 10 pt read up
-  to 3700 px, whole 8 pt blocks lost from 3900 px and 10 pt ones from
-  4250 px; the pixel count did not decide it). The check is on the
+  side, so a page whose 300 dpi render is longer than 3510 px on a side
+  (`MAX_OCR_RENDER_SIDE`, about 11.7 in: letter and A4 pages are below
+  it) is read but also `PAGE_FAILED` (#128; measured on macOS 27 on four
+  page shapes and three block positions: every block of 8 and 10 pt read
+  at 3500 and 3509 px, some whole 8 pt blocks lost at 3600 px, more from
+  3900 px, 10 pt ones from 4250 px; the pixel count did not decide it).
+  The cap is a heuristic, not a guarantee: the losses do not grow
+  steadily with size and depend on the content. The check is on the
   page's size, made before the page is read, never on Vision returning
   no lines, which a blank page also does. Below the cap Vision can still
   drop part of a block (#67: on macOS 27, a dense sideways scan whose SSN line
