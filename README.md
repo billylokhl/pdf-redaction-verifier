@@ -455,7 +455,7 @@ not check `exact_values` for this at all.
 
 ## Installation
 
-Python 3.10+ (CI tests 3.10 and 3.12); dependencies, including the
+Python 3.10+ (CI tests 3.10, 3.12, 3.13 and 3.14); dependencies, including the
 macOS-only Apple Vision OCR bridge, are declared in `pyproject.toml`. The
 Metadata and Binary layers shell out to `exiftool` and `qpdf`; without
 them those layers degrade and the run exits `2` rather than certifying
@@ -469,7 +469,7 @@ conda env create -f environment.yml && conda activate pdf-redaction-verifier
 ```
 
 Dependencies are hash-locked in `uv.lock`, resolved for macOS and Linux on
-Python 3.10–3.13 (the pyobjc packages stay macOS-only via their markers).
+Python 3.10–3.14 (the pyobjc packages stay macOS-only via their markers).
 With [uv](https://docs.astral.sh/uv/), install the two binaries separately:
 
 ```bash
