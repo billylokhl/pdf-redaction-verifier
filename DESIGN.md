@@ -483,7 +483,9 @@ stream is read under `select`, exiftool runs under `communicate(timeout)`
 masked — at most four trailing characters, never more than half, and
 none at all (just `****`) when the sample contains an exact value or its
 revealed tail shares two consecutive characters (or a lone character,
-or a single edge character) with one (compared both as the form the matcher
+or a single edge character) with one, or shows any character the matcher
+ignores (a non-ASCII letter, or a digit of another script) that occurs in one, since
+the matcher can find a value across such characters (compared both as the form the matcher
 searches and as letters and digits of any script, case, accents and
 punctuation ignored, non-ASCII decimal digits as ASCII; look-alike
 characters from other scripts are not recognised, so OCR-layer samples,

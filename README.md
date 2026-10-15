@@ -134,7 +134,8 @@ of a genuine reading or one decoded string. Reported samples are masked
 (`****6789`); when a sample overlaps one of your exact values, only `****` is
 shown, so a report never shows two consecutive characters of an exact value, nor any
 character where the match overlaps one (compared ignoring case, accents and
-punctuation, for letters and digits of any script). Characters that merely look
+punctuation, for letters and digits of any script, including those the search
+itself skips). Characters that merely look
 like one another (a Greek or Cyrillic letter for a Latin one) are not
 recognised as equal, so a sample read by OCR, where such misreadings happen,
 is always fully masked (`****`), in the report, `--json` and warnings.

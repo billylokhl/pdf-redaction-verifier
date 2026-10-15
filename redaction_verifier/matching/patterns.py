@@ -77,6 +77,23 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
+def _shows_a_dropped_value_char(tail: str, index: MaskIndex) -> bool:
+    """True when *tail* holds a character the matcher drops (a non-ASCII
+    letter, or a decimal digit of another script) that is a character of
+    an exact value.
+
+    The matcher can find a value across such characters ("93Ж8" is
+    searched as "938" and found in "x93ΩЖ8"), so neither folding's checks
+    in mask() see the character in context; any of them that occurs in a
+    value hides the tail.
+    """
+    for c in tail:
+        wide = fold_wide(c)
+        if wide and wide != normalize_string(c) and any(x in index.chars for x in wide):
+            return True
+    return False
+
+
 def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = False) -> str:
     """Mask a matched sample for the report.
 
@@ -88,7 +105,9 @@ def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = Fa
     digits of any script, case and accents ignored). Only '****' is shown
     when the sample contains an exact value, when two consecutive revealed
     characters (or a lone revealed character) occur in one, or when the
-    tail touches one at an edge by a single character. *full* (used for OCR
+    tail touches one at an edge by a single character, or when a revealed
+    character the matcher ignores (a non-ASCII letter, or a digit of
+    another script) is a character of one. *full* (used for OCR
     samples, whose characters may be look-alike misreadings of an exact
     value's letters) never shows a tail.
     """
@@ -115,6 +134,8 @@ def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = Fa
             # its last.
             if tail and (tail[-1] in index.firsts or tail[0] in index.lasts):
                 return "****"
+        if _shows_a_dropped_value_char(tail_raw, index):
+            return "****"
     return "****" + matched[-reveal:]
 
 
