@@ -186,6 +186,12 @@ All recommendations adopted, relayed by the coordinator:
 7. **Case library:** strict-mode runs keep today's expectations; default
    mode expects exit 0 plus a notice.
 
+## Coordinator decision (2026-10-15, owner informed)
+
+Strict mode's "today's behaviour exactly" means exit codes, tiers, findings
+and warnings as today. The `--json` report is `schema_version` 2 in both
+modes, with `notices` empty in strict mode; there is no per-mode schema.
+
 ## Appendix: the demote-only options weighed first
 
 Measured before the owner's direction (Phase 5 PR 1 and 2a; RESULTS,
