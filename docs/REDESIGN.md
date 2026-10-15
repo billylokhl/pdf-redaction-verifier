@@ -658,7 +658,27 @@ artifact.
   than legacy on any case, except those in `accepted_diffs.yaml`.
 - **Legacy is otherwise frozen.** Known gaps found meanwhile become
   `known_gap` cases closed by the new path; a legacy hotfix is the
-  owner's call per gap.
+  owner's call per gap. A gap is raised for that decision only when it
+  is one of:
+  - **H1.** An exit `0` on a layout plausible for a real redactor
+    (evidence: the real-redactor set of §7a, an owner report, or a
+    documented redactor behaviour).
+  - **H2.** An outage, crash, hang or resource exhaustion on a supported
+    platform or valid input.
+  - **H3.** CI or tooling breakage, or a performance regression caused by
+    a merged fix.
+  - **H4.** The tool exposing secret material in its own output.
+  - **H5.** A user-facing feature the owner requested.
+
+  Everything else is "pin and defer": a `known_gap` case, a README "Known
+  gaps" entry, a §8 row naming the closing phase (or an issue if no phase
+  covers it); deferring is also the owner's call and can be batched.
+  **Any loosening**, accidental or not, needs a root cause,
+  `weaker: true` in `accepted_diffs.yaml`, an explicit owner decision and
+  a CHANGELOG line describing the layout. Any move to exit `0` needs a
+  per-case owner sign-off, and `1`→`2` is preferred over →`0`. "Main only
+  catches it because of a bug" is a reason to bring a case to the owner,
+  never to loosen it automatically.
 
 ## 7. Plan
 
@@ -751,6 +771,145 @@ for a later PR: the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
+
+## 7a. Operating rules
+
+Adopted 2026-10-12. They complement §6 and §7 and override none of them
+(worst-of verdict, "never less strict", legacy frozen).
+
+### Milestones
+
+Owner's use: before sharing a redacted PDF, know whether any secret from
+the rules file is still recoverable. Each milestone is reported to the
+owner together with what it does not yet cover.
+
+**U, "usable, with listed gaps"** (legacy plus the 3a work):
+- **U1, case library.** Every leak case exits `1` or `2` except the pinned
+  `known_gap` cases; each appears in README "Known gaps" with its layout,
+  and CI fails if one is missing. K39 is fixed first.
+- **U2, real-redactor recall.** On the real-redactor set below: 0 silent
+  misses against an independent oracle. A miss blocks U until it is fixed
+  or the owner accepts it as a listed gap (pinning alone does not count).
+  Downgrades (expected `1`, got `2`) are reported.
+- **U3, usability on good redactions.** The share of correctly redacted
+  real-redactor outputs (e.g. saved with garbage collection) that exit `0`
+  is reported, against a target the owner sets after the first
+  measurement. If good files mostly exit `2`, the tool is not usable.
+- **U4, false alarms on clean files**, on the text-bearing stratum of the
+  real corpus: with exact-value rules only, false hard findings below 1%;
+  built-in pattern classes stay at their ADR 0005 baseline until Phase 5;
+  the review rate (exit `2`) is measured as a baseline, with no new budget (4a's gate governs later changes).
+- **U5, robustness and platform.** 0 crashes or timeouts on the corpora; a
+  user-password file exits `2`; results are certified only on macOS with
+  OCR working on the owner's OS version (Linux runs cannot certify scans); macOS 27 parity is a documented local check (see Owner decisions).
+
+**R, "reliable"** (redesign): U holds, plus 3d (bomb and hang cases exit
+`2`), 3a-8/9 (owner-password decryption checked), 4a (content kinds
+enforced; K3-K6 closed), 4b (image kinds; K21 and the strips cases exit
+`2`; recall measured; the open question on drawn strips under a box
+answered) and Phase 5 (built-in pattern false hard < 1% on text-bearing
+real files). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
+phase is unspecified (e.g. K7); these stay listed in README until closed.
+
+Estimates are rough and re-baselined at each phase close-out: U about
+3-4 weeks now that the real-redactor set is 10-14 days (assuming it finds
+no blocking miss; a miss adds an owner decision and an open-ended legacy
+fix); R about 18-25 weeks of redesign-lane work. Recent pace was bursty
+and 3b and 4a are larger, structural phases.
+
+### Review policy
+
+This amends the standing "fix all majors" rule. Every PR still gets an
+independent adversarial review of its final content, docs in sync and
+green CI before merge.
+
+**Blocking, in every round:**
+- an exit `0` or verdict regression against main on any input, unless
+  owner-approved under §6;
+- a secret or real data in the tool's output or the public repo, or
+  naming a third-party redaction tool;
+- deleting or overwriting a user file;
+- a crash, hang or resource exhaustion;
+- false or misleading documentation of verdict behaviour;
+- a ratchet or allowlist growing without the required flag;
+- a missing or vacuous test for the PR's own verdict change.
+
+**Scope test, from round 1.** A finding outside the PR's problem, or about
+pre-existing behaviour, is not fixed in the PR: it becomes a pinned case
+and an issue, raised to the owner under §6, unless leaving it out makes
+the PR weaker than main (then the owner chooses between including it and
+accepting a documented weaker result).
+
+**Realism** is classified by the reviewer or the coordinator, not the PR author;
+disputes go to the owner. **Round count** is not a cut-off: at round 3 the
+PR is re-scoped or checked in with the owner, splitting does not reset the
+count, and if round 3 still finds blocking issues the next review uses a
+fresh reviewer.
+
+### PR scope
+
+- One problem per PR (the scope test above).
+- About 600 changed lines of code (excluding tests, case data and docs)
+  triggers a split decision before implementation; it is not a hard cap.
+- `verify.py` (any part) and `redaction_verifier/views/*` have one open PR
+  each at a time; others queue behind it, each merging main first.
+- Add-only shared files (existing entries are not edited): CHANGELOG, `eval/accepted_diffs.yaml`,
+  `eval/caselib/cells.py`. Row-scoped edits only in the §7/§8 tables,
+  README, DESIGN and COVERAGE (closing a gap edits its row).
+
+### Real-redactor set
+
+Extends the committed tier `eval/caselib/real/` (`origin="redactor"`,
+provenance sidecars, privacy scrub and provenance tests; tools are named
+only generically in the repo).
+- **Committed:** a small, fully fabricated, scrubbed subset. Larger sets
+  live in a gitignored local stratum; only aggregate counts are published.
+- **Oracle, independent of the verifier:** per file, which fabricated
+  secrets remain recoverable, from decompression plus a raw search, a
+  render plus OCR, and manual adjudication recorded per file. Correctly
+  redacted variants are included for U3.
+- **Decided (2026-10-12):** the owner's redactor run plain with `--config`
+  (LLM off first), plus a garbage-collected re-save; 20 templates x 1
+  seed, mirroring the owner's real document types.
+- It comes before any H1 hotfix decision.
+
+### Feature work
+
+Visible map stage 1 is finished by reusing #68's readings
+through an interface; at about 6,000 lines it needs an explicit split plan
+before review. A new feature request gets a short design and a review, and
+the owner sets its priority against the critical path.
+
+### Coordination
+
+- **Lanes, one owner each:** redesign phases; evidence (the
+  real-redactor set and U measurements); Text and the visible map; OCR;
+  tooling, CI and small fixes. A lane's items run in order and lanes run
+  in parallel.
+- A lane owner claims its files in a shared registry before starting; no
+  second PR opens on claimed files. `verify.py` and views PRs are
+  serialised as above; shared files are append-only.
+- Merge main before every review round.
+- A session that needs a decision stops and reports. Unanswered means
+  blocked, never a default to a looser outcome.
+- The coordinator (the maintainer the owner designates) summarises each merge batch to the owner: merged, blocked,
+  decisions needed.
+
+### Owner decisions
+
+- **2026-10-12:** milestone R is 4a + 4b + 3d + 3a-8/9 + Phase 5, with 4c
+  and 4d listed as gaps. This extends the "4a + 4b" bar given on
+  2026-09-27.
+- **2026-10-12:** the review-policy amendment above is approved.
+- **2026-10-12:** #66 (H4: masked tail revealing exact-value characters)
+  is fixed now.
+- **2026-10-12:** the H1 candidates (#71, #64, K12, K37-K39) are decided
+  per gap after the real-redactor set exists; until then they stay
+  pinned and listed.
+- **2026-10-12:** U3's target is set after the first measurement.
+- **2026-10-12:** visible map stage 1 now; S2-S4 after 4a.
+- **2026-10-12:** macOS 27 parity is a documented local check rather than
+  CI coverage; until documented it is tracked as a gap.
 
 ## 8. Known gaps found by this review
 
