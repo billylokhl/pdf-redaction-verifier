@@ -256,3 +256,15 @@ def test_the_text_report_lists_a_warning_notice_after_the_verdict(capsys):
     assert out.index("[PASS]") < out.index("NOT COUNTED IN THE VERDICT")
     assert "sequence matching pattern rule" in out.split("NOT COUNTED")[1]
     assert "STILL PRESENT" not in out
+
+
+def test_a_notice_never_reveals_part_of_a_listed_value(tmp_path):
+    # The class matches the listed value's own text (and a decoy ending in
+    # its digits): a notice is masked like a finding, so no tail shows.
+    rules = SSN_CLASS + [{"name": "Target", "value": "Zebra 6789"}]
+    proc, data = _run(tmp_path, "Applicant 234-56-7890 and Zebra 6789", rules,
+                      "--no-strict-classes")
+    hard = [n for n in data["notices"] if n["tier"] == "hard"]
+    assert hard and all(n["sample"] == "****" for n in hard)
+    notices_text = proc.stdout.split("NOT COUNTED IN THE VERDICT")[1]
+    assert "6789" not in notices_text and "7890" not in notices_text
