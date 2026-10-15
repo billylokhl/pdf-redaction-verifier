@@ -468,3 +468,23 @@ def test_a_page_occurrence_vouches_for_page_less_content_only_on_its_page():
                  [on_p1])[0].outcome == rs.MISS
     assert score(rows, truth(("NAME1", "Jordan Q. Testperson", 0), encoding="string"),
                  [on_p1])[0].outcome == rs.HIT
+
+
+def test_a_value_split_across_pages_is_found_by_a_match_joined_across_them():
+    # The verifier joins a page-break split and reports it on no page.
+    rows = [row(0, "NAME2", loc="T3c", where="live", cell="match.page-break")]
+    tr = truth(("NAME2", "Avery R. Samplename", 0))
+    tr["instances"][0]["part_boxes"] = [[0, 1, 2, 3, 4], [1, 1, 2, 3, 4]]
+    name2 = f"exact_values[{EXACT.index('Avery R. Samplename')}]"
+    joined = {**finding(name2, "live", page=None, obj=None), "layer": "Text"}
+    assert score(rows, tr, [joined])[0].outcome == rs.HIT
+    on_p2 = {**finding(name2, "live", page=2, obj=None), "layer": "Text"}
+    assert score(rows, tr, [on_p2])[0].outcome == rs.HIT
+    # Not on a page it does not touch, nor from an object.
+    assert score(rows, tr, [{**on_p2, "page": 3}])[0].outcome == rs.MISS
+    assert score(rows, tr, [finding(name2, "live", page=None, obj=12)])[0].outcome == rs.MISS
+    metadata = {**finding(name2, "live", page=None, obj=None), "layer": "Metadata"}
+    assert score(rows, tr, [metadata])[0].outcome == rs.MISS
+    # An unsplit value still needs its own page.
+    one = truth(("NAME2", "Avery R. Samplename", 0))
+    assert score(rows, one, [joined])[0].outcome == rs.MISS

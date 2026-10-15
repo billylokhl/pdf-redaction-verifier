@@ -352,7 +352,9 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     instance's rules fired (its secret's `exact_values[i]`, or a pattern
     matching the string as written), in a storage class it can sit in
     (`live`; `orphaned` or `unreferenced` for an orphaned object;
-    `superseded`) and, for drawn text and pixels, on its page. Each
+    `superseded`) and, for drawn text and pixels, on its page (a value
+    split across pages: on any of them, or by a match the report joins
+    across the break and places on no page). Each
     occurrence vouches for at most one instance. Content with no page
     (an annotation, a field, metadata) must be found in its own object
     when the oracle names it, and entries that name neither page nor

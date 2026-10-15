@@ -156,15 +156,18 @@ class InstanceScore:
 # secret's instance the pattern happens to fit.
 
 def _place(e: Mapping[str, Any]) -> str:
-    """Where an entry says its occurrence is. Entries that name neither a
-    page nor an object (the Hidden and Metadata layers' locations, say)
-    are alternative views of the same content, not further occurrences:
-    they share one place per storage."""
+    """Where an entry says its occurrence is. A page layer's entry with no
+    page is a match joined across a page break. Other entries that name
+    neither a page nor an object (the Hidden and Metadata layers'
+    locations, say) are alternative views of the same content, not
+    further occurrences: they share one place per storage."""
     storage = e.get("storage")
     if e.get("page") is not None:
         return f"{storage}|p{e['page']}"
     if e.get("object") is not None:
         return f"{storage}|o{e['object']}"
+    if e.get("layer") in ("Text", "OCR"):
+        return f"{storage}|joined"     # page text matched across a page break
     return f"{storage}|elsewhere"
 
 
@@ -209,11 +212,17 @@ def occurrence_units(report: Mapping[str, Any], exact: list[str],
 
 def _candidate(u: Unit, secret: str, rules: frozenset[str],
                storages: frozenset[str] | None, page: int | None, objects: set[int],
-               object_units: set[tuple[str, str]], home_page: int | None = None) -> bool:
+               object_units: set[tuple[str, str]], home_page: int | None = None,
+               spans: frozenset[int] = frozenset()) -> bool:
     if storages is not None and u.storage not in storages:
         return False
     if page is not None and u.page != page + 1:
-        return False
+        # A value split across pages (its parts on several) is found on
+        # any of them, or by a match the report places on no page and no
+        # object: the halves joined across the page break.
+        if not (spans and (u.page in {p + 1 for p in spans}
+                           or u.place.endswith("|joined"))):
+            return False
     if page is None and u.page is not None:
         # An occurrence on a page vouches for content with no page of its
         # own (an annotation, say) only on the page that content sits on.
@@ -308,9 +317,11 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
             expected_exit=int(override.get("expected_exit", row.get("expected_exit"))),
             known_gap=bool(row.get("known_gap")), provisional=bool(row.get("provisional")))
         objects = instance_objects(row)
+        part_pages = frozenset(int(b[0]) for b in (base or {}).get("part_boxes") or [])
+        spans = part_pages if page is not None and len(part_pages) > 1 else frozenset()
         mine = [k for k, u in enumerate(units)
                 if _candidate(u, row["secret"], rules, storages, page, objects, object_units,
-                              base.get("page") if base else None)]
+                              base.get("page") if base else None, spans)]
         # Prefer an occurrence a hard finding reports.
         mine.sort(key=lambda k: (not units[k].finding, k))
         column = _flagged_column(score.cell)
