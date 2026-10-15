@@ -1065,11 +1065,21 @@ def test_the_parent_holds_no_more_memory_however_large_the_target(tmp_path) -> N
     target would grow by its size. Medians of three runs each, because a
     scan's own peak varies by several MB from run to run on a loaded
     machine; test_the_map_step_holds_no_more_memory_however_large_the_target
-    bounds the step itself."""
+    bounds the step itself.
+
+    The overhead is the whole-run peak with the flag less the peak
+    without: max(scan peak, memory kept after the scan + the map step's
+    fixed cost) - scan peak. So it lies between 0 (the scan's own peak
+    absorbs the step) and the fixed cost, whichever the target gives:
+    macOS measured 3.4 and 3.2 MB (2026-10-15); Linux CI 0 and 5.2 MB
+    (3.13), where the old 5 MB bound on the difference failed. The bound
+    is the fixed-cost budget, 16 MB, on each and on their difference;
+    a parent that read the target would add at least 175 MB here."""
     rules = write_rules(tmp_path, SSN_RULES)
     small = _overhead(_big_image_pdf(tmp_path / "small.pdf", 25), rules, tmp_path / "s.pdf")
     large = _overhead(_big_image_pdf(tmp_path / "large.pdf", 200), rules, tmp_path / "l.pdf")
-    assert large - small < 5 * MB, (small, large)
+    assert small < 16 * MB and large < 16 * MB, (small, large)
+    assert large - small < 16 * MB, (small, large)
 
 
 @pytest.mark.perf
