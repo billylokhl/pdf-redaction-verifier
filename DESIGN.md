@@ -458,6 +458,19 @@ clean scans: turned, a column of repeated digits reads as a row, so a
 questionnaire with sideways headers and answer columns of 1–5 matched
 the phone pattern (manual review; 1 of 14 generated clean scans moved).
 
+**The readings with their glyphs.** `views.text.visual_text_glyphs`
+gives the same readings as `extract_visual_text`, built by the same code,
+with every line as the indices of the glyphs it was read from, and each
+glyph's character, box and visibility: the code runs once with each
+glyph's character replaced by a tag naming its index, and since lines are
+clustered, ordered and split at column breaks from geometry alone, the
+tagged readings are the real ones line for line. It is for callers that
+must say *where* the scan read something (the visible map) without a
+second copy of the reading code; nothing in the scan calls it, and a test
+checks its text equals `extract_visual_text`'s, reading for reading, on
+every page of every case in the case library and on fabricated pages at
+every rotation.
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
