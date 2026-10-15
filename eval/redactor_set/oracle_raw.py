@@ -326,10 +326,15 @@ def text_blocks(content: bytes) -> list[bytes]:
 def text_forms(form: str) -> list[tuple[str, bytes]]:
     """(how, bytes) for the ways a string object or raw text can hold
     *form*."""
+    utf16 = form.encode("utf-16-be")
     out = [("ascii", form.encode("latin-1", "replace")),
-           ("utf16", form.encode("utf-16-be")),
+           ("utf16", utf16),
            ("hex", form.encode("latin-1", "replace").hex().encode()),
-           ("hex", form.encode("latin-1", "replace").hex().upper().encode())]
+           ("hex", form.encode("latin-1", "replace").hex().upper().encode()),
+           # A two-byte font whose codes are Unicode, written as a hex
+           # string (an OCR text layer, say).
+           ("hex16", utf16.hex().encode()),
+           ("hex16", utf16.hex().upper().encode())]
     escaped = form.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     if escaped != form:
         out.append(("literal", escaped.encode("latin-1", "replace")))
@@ -445,11 +450,16 @@ def scan(raw: bytes, forms: dict[str, list[str]], *, partial: bool = True) -> Re
         for b in found:
             if any(any(n in t for n in plain) for t in body_tokens.get(id(b), [])):
                 report.hits.append(Hit(form, b.kind, b.obj, b.start, "string", b.storage))
-        codes = [bytes.fromhex(p) for p in prints]
+        # Joined text blocks: the form's own fingerprints, or its UTF-16
+        # (a two-byte font whose codes are Unicode, split across operands).
+        codes = [bytes.fromhex(p) for p in prints] + [form.encode("utf-16-be")]
         for b in found:
             if any(c and c in block for c in codes for block in body_blocks.get(id(b), [])):
                 report.hits.append(Hit(form, "content", b.obj, b.start, "codes", b.storage))
-        if not partial or any(h.form == form for h in report.hits):
+        # A whole hit only in a font program or image never counts, so it
+        # does not stand in for the partial search either.
+        if not partial or any(h.form == form and h.kind not in NOT_RECOVERABLE_ALONE
+                              for h in report.hits):
             continue
         # Partial residue, where text lives only, and only when no whole
         # occurrence was found anywhere.

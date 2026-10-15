@@ -16,9 +16,13 @@ and for a recoverable row a cell and expected exit.
 
 ``lock`` refuses an unfinished record, and a record whose oracle result
 or output file changed, or whose rows differ from a fresh draft of its
-oracle result other than by overrides; it writes a sha256 per record to
-``adjudication.lock.json``. A locked record that changes, appears or
-disappears needs a reason, which the lock keeps. ``verify`` re-checks
+oracle result other than by overrides; it requires exactly one record,
+named ``<method>/<stem>.json``, for every m1 and m2 output the run made
+(of the seeds the lock names), and reports an output the run did not
+make; it writes a sha256 per record to ``adjudication.lock.json``. A
+locked record that changes, appears or disappears, a change of seeds,
+or a lost lock file over finalised records needs a reason, which the
+lock keeps. An override never gives a recoverable row exit 0. ``verify`` re-checks
 every record and prints the lock's own sha256, which the measurement
 reports alongside its counts (the lock lives in the gitignored local
 root, so that hash is what ties a published number to its labels).
@@ -227,6 +231,13 @@ def finalize_record(record: dict[str, Any], name: str = "") -> dict[str, Any]:
                 problems.append(f"{tag}: unknown class {ov.get('class')!r}")
                 continue
         cls = ov.get("class", row["class"])
+        if ov and cls != "removed":
+            if ov.get("expected_exit") == 0:
+                problems.append(f"{tag}: a recoverable or partial row cannot expect exit 0 "
+                                "(that would score a silent miss as correct)")
+            if ("expected_exit" in ov or not row.get("cell")) and not ov.get("cell"):
+                problems.append(f"{tag}: an override that sets an expected exit, or makes a "
+                                "row recoverable, must give its cell")
         flagged = row.get("uncertain") or row.get("disagreement") or row.get("unattributed") \
             or (cls != "removed" and row.get("where") == "unknown")
         if flagged and not ov and not row.get("confirmed"):
@@ -281,20 +292,69 @@ def _against_oracle(record: dict[str, Any], root: Path, set_name: str, name: str
     return problems
 
 
-def lock(root: Path, set_name: str, *, reason: str = "") -> tuple[Path, str]:
+def expected_records(root: Path, set_name: str,
+                     seeds: list[int] | None) -> tuple[set[str], list[str]]:
+    """The record every run output needs (``<method>/<stem>.json`` for
+    each m1 and m2 output in the run's ``run.json``, of *seeds* when
+    given), and the problems: an output the run did not produce, or that
+    is gone. A file left out of the set is never silent."""
+    run_path = root / "work" / set_name / "run.json"
+    if not run_path.exists():
+        return set(), [f"no {run_path.relative_to(root)}: nothing to check the records against"]
+    run = json.loads(run_path.read_text())
+    want: set[str] = set()
+    problems: list[str] = []
+    for stem, entry in sorted(run["documents"].items()):
+        if seeds is not None:
+            truth = json.loads((root / set_name / f"{stem}.truth.json").read_text())
+            if truth.get("seed") not in seeds:
+                continue
+        for method in ("m1", "m2"):
+            want.add(f"{method}/{stem}.json")
+            out = entry.get(method)
+            if not out or not (root / out).exists():
+                problems.append(f"{method}/{stem}: the run has no output (missing, not skipped)")
+    return want, problems
+
+
+def _record_files(adj_dir: Path, lock_path: Path) -> dict[str, Path]:
+    return {str(p.relative_to(adj_dir)): p for p in sorted(adj_dir.rglob("*.json"))
+            if p != lock_path}
+
+
+def _set_problems(present: dict[str, Path], want: set[str]) -> list[str]:
+    problems = [f"no record for {r}" for r in sorted(want - set(present))]
+    problems += [f"a record outside the set (or under another name): {r}"
+                 for r in sorted(set(present) - want)]
+    for rel, path in present.items():
+        rec = json.loads(path.read_text())
+        if rel != f"{rec.get('method')}/{rec.get('stem')}.json":
+            problems.append(f"{rel}: its method and stem say "
+                            f"{rec.get('method')}/{rec.get('stem')}")
+    return problems
+
+
+def lock(root: Path, set_name: str, *, reason: str = "",
+         seeds: list[int] | None = None) -> tuple[Path, str]:
     """Finalise every record of *set_name* and write the lock; returns
-    the lock's path and its own sha256."""
+    the lock's path and its own sha256. *seeds* limits the set to those
+    seeds' documents (kept in the lock; default: the lock's own, else
+    every document the run made)."""
     adj_dir = root / "adjudication" / set_name
     lock_path = adj_dir / "adjudication.lock.json"
     old = json.loads(lock_path.read_text()) if lock_path.exists() else {"records": {},
                                                                         "relocks": []}
+    if seeds is None:
+        seeds = old.get("seeds")
     records: dict[str, str] = {}
     problems: list[str] = []
     finals: dict[Path, dict[str, Any]] = {}
-    for path in sorted(adj_dir.rglob("*.json")):
-        if path == lock_path:
-            continue
-        rel = str(path.relative_to(adj_dir))
+    present = _record_files(adj_dir, lock_path)
+    lost_lock = not lock_path.exists() and any(
+        "expected_exit" in json.loads(p.read_text()) for p in present.values())
+    want, problems = expected_records(root, set_name, seeds)
+    problems += _set_problems(present, want)
+    for rel, path in present.items():
         rec = json.loads(path.read_text())
         problems += _against_oracle(rec, root, set_name, rel)
         try:
@@ -307,17 +367,24 @@ def lock(root: Path, set_name: str, *, reason: str = "") -> tuple[Path, str]:
         if final != json.loads(path.read_text()):
             path.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n")
         records[str(path.relative_to(adj_dir))] = _sha(path)
+    # Any change to a locked set needs a reason, kept in the lock: a
+    # record changed, removed or added, the seeds changed -- or the lock
+    # file itself gone while records already carry finalised labels.
     changed = sorted(r for r in set(old["records"]) | set(records)
-                     if old["records"].get(r) != records.get(r) and r in old["records"])
+                     if old["records"].get(r) != records.get(r)
+                     and (r in old["records"] or old["records"]))
+    if lock_path.exists() and old.get("seeds") != seeds:
+        changed.append(f"seeds {old.get('seeds')} -> {seeds}")
+    if lost_lock:
+        changed.append("the lock file was missing, but records were already finalised")
     if changed and not reason:
-        raise ValueError(f"locked records changed or removed ({', '.join(changed)}): "
-                         "give a reason")
+        raise ValueError(f"the locked set changed ({', '.join(changed)}): give a reason")
     relocks = old.get("relocks", [])
     if changed:
         relocks.append({"date": datetime.date.today().isoformat(), "records": changed,
                         "reason": reason})
-    lock_path.write_text(json.dumps({"records": records, "relocks": relocks}, indent=2,
-                                    sort_keys=True) + "\n")
+    lock_path.write_text(json.dumps({"records": records, "relocks": relocks, "seeds": seeds},
+                                    indent=2, sort_keys=True) + "\n")
     return lock_path, _sha(lock_path)
 
 
@@ -329,10 +396,12 @@ def verify(root: Path, set_name: str) -> tuple[list[str], str | None]:
     lock_path = adj_dir / "adjudication.lock.json"
     if not lock_path.exists():
         return ["no adjudication.lock.json"], None
-    locked = json.loads(lock_path.read_text())["records"]
-    present = {str(p.relative_to(adj_dir)): p for p in adj_dir.rglob("*.json")
-               if p != lock_path}
-    problems = [f"missing: {r}" for r in sorted(set(locked) - set(present))]
+    lock_data = json.loads(lock_path.read_text())
+    locked = lock_data["records"]
+    present = _record_files(adj_dir, lock_path)
+    want, problems = expected_records(root, set_name, lock_data.get("seeds"))
+    problems += _set_problems(present, want)
+    problems += [f"missing: {r}" for r in sorted(set(locked) - set(present))]
     problems += [f"not locked: {r}" for r in sorted(set(present) - set(locked))]
     for r in sorted(set(locked) & set(present)):
         if locked[r] != _sha(present[r]):
