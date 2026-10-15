@@ -198,6 +198,7 @@ try:
     from redaction_verifier.model import WARNING_CODES as WARNING_CODES
     from redaction_verifier.model import WARNING_FIELDS as WARNING_FIELDS
     from redaction_verifier.model import Finding as Finding
+    from redaction_verifier.model import MaskIndex as MaskIndex
     from redaction_verifier.model import ScanReport as ScanReport
     from redaction_verifier.model import Secret as Secret
     from redaction_verifier.model import VerifyError as VerifyError
@@ -235,6 +236,7 @@ try:
     from redaction_verifier.views import _vision_recognize_batch as _vision_recognize_batch
     from redaction_verifier.views import extract_ocr_text as extract_ocr_text
     from redaction_verifier.views import extract_visual_text as extract_visual_text
+    from redaction_verifier.views import ocr_page_too_large as ocr_page_too_large
     from redaction_verifier.visible_map.sink import MapSink as MapSink
     from redaction_verifier.visible_map.sink import offer as _offer
 except BaseException as exc:  # pragma: no cover
@@ -341,9 +343,15 @@ def scan_page_layer(
     scatter_readings: Sequence[int] = (),
     scatter_window: int = 5,
     fail_fast: bool = False,
+    incomplete: Callable[[fitz.Page], str | None] | None = None,
     sink: MapSink | None = None,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
+
+    *incomplete*, when given, says why a page cannot be read whole (or
+    None): the page is still read and matched, and also gets a
+    PAGE_FAILED warning, so it never passes as clean (OCR: a page too
+    large for Vision, #128).
 
     The extractor returns several readings per page. The first
     *hard_variants* are genuine reading orders; any others are
@@ -414,15 +422,29 @@ def scan_page_layer(
     for page_index in range(doc.page_count):
         try:
             page = doc.load_page(page_index)
+            why: str | None = None
+            if incomplete is not None:
+                try:
+                    why = incomplete(page)
+                except Exception as exc:   # cannot tell: not fully read
+                    why = f"could not check the page ({exc})"
             variants = extractor(page)
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warn(
                 "PAGE_FAILED",
                 layer,
                 f"{layer}: page {page_index + 1} failed ({exc})",
-                page=page_index + 1,
+                # What went unread is the page's own content: live (#128).
+                page=page_index + 1, storage="live",
             )
             continue
+        if why is not None:
+            report.warn(
+                "PAGE_FAILED",
+                layer,
+                f"{layer}: page {page_index + 1} not fully read ({why})",
+                page=page_index + 1, storage="live",
+            )
         page_no = page_index + 1
         norm_lines = [
             [ln for ln in map(normalize_string, text.split("\n")) if ln]
@@ -601,7 +623,8 @@ def scan_page_layer(
             "REVIEW_FUSED_PATTERN",
             layer,
             f"{layer}: {where}: sequence matching pattern rule {name!r} appears "
-            f"only when lines, columns or pages are fused (sample {mask(sample)})"
+            "only when lines, columns or pages are fused (sample "
+            f"{mask(sample, report.exact_index, full=layer == 'OCR')})"
             " — possibly coincidental concatenation; manual review recommended",
             storage="live",
             rule=name,
@@ -1181,7 +1204,7 @@ def scan_hidden_objects(
                     "REVIEW_HIDDEN_TEXT",
                     "Hidden",
                     f"Hidden: {item.location} contains a sequence matching "
-                    f"pattern rule {name!r} (sample {mask(sample)}) — this content "
+                    f"pattern rule {name!r} (sample {mask(sample, report.exact_index)}) — this content "
                     "is a run of arbitrary text, so the match may be a "
                     "coincidental fusion; manual review recommended",
                     storage="live",
@@ -1290,7 +1313,7 @@ def _collect_exiftool(
                 "REVIEW_METADATA_RAW",
                 "Metadata",
                 f"Metadata: raw exiftool output matches pattern rule {name!r} "
-                f"(sample {mask(sample)}) — may originate from filesystem "
+                f"(sample {mask(sample, report.exact_index)}) — may originate from filesystem "
                 "fields; manual review recommended",
                 storage="live",
                 rule=name,
@@ -2005,7 +2028,7 @@ def _report_payload_hit(
     if hard:
         report.record("Objects", name, where, sample, **origin)
         return
-    shown = f" (sample {mask(sample)})" if sample else ""
+    shown = f" (sample {mask(sample, report.exact_index)})" if sample else ""
     report.warn(
         "REVIEW_OBJECT_TEXT",
         "Objects",
@@ -2392,7 +2415,7 @@ def _match_texts(
                 "Objects",
                 f"Objects: {where}: the document /ID (a generated identifier, "
                 f"written as hex digits) contains a sequence matching pattern rule "
-                f"{name!r} (sample {mask(sample)}) — such identifiers hold digit runs "
+                f"{name!r} (sample {mask(sample, report.exact_index)}) — such identifiers hold digit runs "
                 "by coincidence; manual review recommended",
                 rule=name,
                 adjacency="NOISY_SOURCE",
@@ -2405,7 +2428,7 @@ def _match_texts(
             "REVIEW_ADJACENT_LITERALS",
             "Objects",
             f"Objects: {where}: adjacent literals fuse into a sequence "
-            f"matching pattern rule {name!r} (sample {mask(sample)}) — "
+            f"matching pattern rule {name!r} (sample {mask(sample, report.exact_index)}) — "
             "possibly a coincidental concatenation; manual review recommended",
             rule=name,
             adjacency="JOINED_LITERALS",
@@ -3463,6 +3486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except VerifyError as exc:
             return finish(2, ("RULES_INVALID", str(exc)))
         secrets, patterns = rules.secrets, rules.patterns
+        report.exact_index = MaskIndex(f for s in secrets for f in (s.normalized, s.folded) if f)
 
         matcher = SecretMatcher(secrets)
 
@@ -3573,6 +3597,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             hard_variants=OCR_GENUINE_READINGS,
                             cross_page_reading=OCR_GENUINE_READINGS,
                             fail_fast=args.fail_fast,
+                            incomplete=ocr_page_too_large,
                         )
                     except Exception as exc:
                         report.warn(

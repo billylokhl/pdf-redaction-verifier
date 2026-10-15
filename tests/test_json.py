@@ -361,6 +361,65 @@ class TestOcrFailureFailsClosed:
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
         assert "never completed" in data["warnings"][0]["message"]
 
+    def test_vision_never_returning_exits_2_at_the_deadline(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A stalled Vision held a test run for about 25 minutes (#115).
+        # performRequests has no timeout of its own: the bridge's deadline
+        # must turn it into PAGE_FAILED (exit 2), never a hang or a pass.
+        import threading
+        import time
+        from typing import Any
+
+        import Vision
+
+        from redaction_verifier.views import ocr
+
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
+
+        release = threading.Event()
+        real_handler = Vision.VNImageRequestHandler
+
+        class _Stalls:
+            def __init__(self, real: Any) -> None:
+                self._real = real
+
+            def performRequests_error_(self, requests: Any, error: Any) -> Any:
+                release.wait()
+                return self._real.performRequests_error_(requests, error)
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> Any:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> _Stalls:
+                return _Stalls(real_handler.alloc().initWithData_options_(data, options))
+
+        class _Vision:
+            VNImageRequestHandler = _Handler
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(Vision, name)
+
+        monkeypatch.setattr(ocr, "Vision", _Vision())
+        monkeypatch.setattr(ocr, "VISION_CALL_TIMEOUT_S", 1.0)
+        try:
+            start = time.monotonic()
+            code, data = _run(pdf, rules, tmp_path)
+            assert time.monotonic() - start < 60
+        finally:
+            release.set()
+            for thread in list(ocr._stalled):
+                thread.join(60)
+            # A thread still in Vision would fail every later OCR test here.
+            assert not any(thread.is_alive() for thread in ocr._stalled)
+        assert code == 2
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "did not return within 1 s" in data["warnings"][0]["message"]
+
     def test_a_handler_raising_on_a_vision_thread_exits_2(self, tmp_path) -> None:
         # Real Vision runs the two completion handlers on its own worker
         # threads; an exception escaping one there aborts the process
@@ -648,7 +707,9 @@ class TestNothingSecretLeaks:
         rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn"}])
         code, data = _run(pdf, rules, tmp_path)
         assert code == 1
-        assert {f["sample"] for f in data["findings"]} == {mask(SSN)}
+        # OCR samples are always fully masked; other layers keep the tail.
+        assert {f["sample"] for f in data["findings"] if f["layer"] != "OCR"} == {mask(SSN)}
+        assert {f["sample"] for f in data["findings"] if f["layer"] == "OCR"} <= {"****"}
         assert not self.DIGITS.search(json.dumps(data))
 
     def test_review_samples_are_masked(self, tmp_path) -> None:
@@ -701,3 +762,226 @@ class TestNothingSecretLeaks:
         _, data = _run(pdf, rules, tmp_path)
         for f in data["findings"]:
             assert f["rule"].isprintable()
+
+
+class TestMaskedTailNeverShowsAnExactValue:
+    """Issue #66: a pattern sample's masked tail must not reveal part of an
+    exact value (README: exact values are never shown). Fabricated data."""
+
+    @staticmethod
+    def _samples(tmp_path, text: str, rule_list: list[dict]) -> set[str]:
+        pdf = _pdf(tmp_path / "doc.pdf", text)
+        rules = _rules(tmp_path / "r.json", rule_list)
+        code, data = _run(pdf, rules, tmp_path)
+        assert code == 1
+        return {f["sample"] for f in data["findings"]}
+
+    def test_builtin_type_overlapping_an_exact_value(self, tmp_path) -> None:
+        # Before the fix this showed "****6789" (the value's own tail).
+        samples = self._samples(tmp_path, f"SSN {SSN}", [
+            {"name": "the value", "value": SSN},
+            {"name": "any ssn", "class": "ssn"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_user_pattern_overlapping_an_exact_value(self, tmp_path) -> None:
+        # Before the fix: "****7890", whose "789" comes from the value.
+        samples = self._samples(tmp_path, "ref 123-45-67890", [
+            {"name": "the value", "value": SSN},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_sample_containing_the_whole_value(self, tmp_path) -> None:
+        # The revealed tail ("0000") shares nothing with the value, but the
+        # sample contains it, so even the tail is dropped.
+        samples = self._samples(tmp_path, "ref 123-45-00000", [
+            {"name": "the value", "value": "123-45"},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples == {"", "****"}
+
+    def test_non_overlapping_control_keeps_its_tail(self, tmp_path) -> None:
+        samples = self._samples(tmp_path, "ref 123-45-67890 Jane Q. Example", [
+            {"name": "other value", "value": "Jane Q. Example"},
+            {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+        ])
+        assert samples - {"****"} == {"", "****7890"}   # an OCR copy shows only "****"
+
+
+class TestMaskHelper:
+    @pytest.mark.parametrize("sample, exact, shown", [
+        ("123-45-6789", ["123456789"], "****"),    # tail comes from the value
+        ("123-45-60000", ["12345"], "****"),       # sample contains the value
+        ("abc-12345", ["x45y"], "****"),           # 2 consecutive chars overlap
+        ("abc-12345", ["x4y5z"], "****"),          # any shared character hides the tail
+        ("abc-12345", ["xyz"], "****2345"),        # nothing shared: kept
+        ("123-45-67890", ["0ok"], "****"),         # tail ends with the value's first char
+        ("abcd", ["xyzabc"], "****"),              # tail begins with the value's last char
+        ("ab", ["b"], "****"),                     # 1-character tail
+        ("ab", ["q"], "****b"),                    # 1-character control
+        ("123-45-6789", [], "****6789"),           # no exact values
+        ("123-45-6789", [""], "****6789"),         # an empty value matches nothing
+        ("a", ["a"], "****"),                      # too short to reveal anything
+    ])
+    def test_cases(self, sample, exact, shown) -> None:
+        assert mask(sample, exact) == shown
+
+
+def test_review_warning_text_is_masked_against_exact_values(tmp_path) -> None:
+    # Fused across lines: a REVIEW_FUSED_PATTERN warning embeds a sample.
+    # "0ok" is an exact value whose first character ends the sample.
+    pdf = _pdf(tmp_path / "doc.pdf", "ref 123-45-", "67890 ok")
+    rules = _rules(tmp_path / "r.json", [
+        {"name": "v", "value": "0ok"},
+        {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
+    ])
+    _, data = _run(pdf, rules, tmp_path)
+    messages = [w["message"] for w in data["warnings"] if w["code"] == "REVIEW_FUSED_PATTERN"]
+    assert messages and all("7890" not in m for m in messages)
+
+
+class TestMaskNonAsciiAndCost:
+    def test_non_latin_letters_in_the_tail_are_compared(self, tmp_path) -> None:
+        # The ASCII-only normalizer drops O-slash; the tail "-O-slash"
+        # belongs to the exact value and must not be shown.
+        pdf = _pdf(tmp_path / "doc.pdf", "Ref ABC-Øvre 12")
+        rules = _rules(tmp_path / "r.json", [
+            {"name": "v", "value": "Øvre 12"},
+            {"name": "p", "pattern": r"[A-Z]{3}-\w"},
+        ])
+        _, data = _run(pdf, rules, tmp_path)
+        samples = {f["sample"] for f in data["findings"]}
+        assert samples == {"", "****"}
+
+    @pytest.mark.parametrize("sample, value, shown", [
+        ("ABC-Ø", "Øvre 12", "****"),                       # Latin, non-ASCII
+        ("kod-中文", "中文 12", "****"),              # CJK
+        ("abc-жук", "жук 5", "****"),   # Cyrillic
+        ("SSN \u0661\u0662\u0663-\u0664\u0665-\u0666\u0667\u0668\u0669", "123-45-6789", "****"),
+        ("123-99-5\u06606\u0660", "9956", "****"),          # matcher drops the interleaved digits
+        ("x1234\u4e2d5", "12345678", "****"),                # sample and tail in the matcher form
+        ("555-55-6712", ("1\u00d82", "12"), "****"),   # plus the matcher form "12"
+        ("123-45-6781", ("\u738b12", "12"), "****"),   # edge overlap, CJK lead
+        ("ABC-Ø", "Zebra 12", "****-Ø"),                    # control: kept
+    ])
+    def test_helper(self, sample, value, shown) -> None:
+        # A tuple stands for the two forms verify.py indexes per value:
+        # the searched (normalized) form and the wide fold.
+        values = [value] if isinstance(value, str) else list(value)
+        assert mask(sample, values) == shown
+
+    def test_cost_does_not_scale_with_the_number_of_values(self) -> None:
+        import time
+
+        from redaction_verifier.model import MaskIndex
+
+        values = [f"v{i:06d}-{i * 7919 % 1000003:07d}" for i in range(200_000)]
+        index = MaskIndex(values)
+        start = time.perf_counter()
+        for _ in range(2000):
+            mask("ref 000000-0000000 and more text", index)
+        assert time.perf_counter() - start < 2.0
+
+
+def test_value_the_matcher_normalizes_differently_is_still_masked(tmp_path) -> None:
+    # The matcher searches "12" for the value "1<O-slash>2"; the sample's
+    # tail "6712" is exactly what it found, so it must not be shown.
+    pdf = _pdf(tmp_path / "doc.pdf", "SSN 555-55-6712")
+    rules = _rules(tmp_path / "r.json", [
+        {"name": "v", "value": "1Ø2"},
+        {"name": "any ssn", "class": "ssn"},
+    ])
+    _, data = _run(pdf, rules, tmp_path)
+    assert {f["sample"] for f in data["findings"]} == {"", "****"}
+
+
+class TestEveryReviewWarningMasksAgainstExactValues:
+    """Each REVIEW_* warning text that embeds a sample masks it against the
+    exact values (here the whole SSN, so the tail must be dropped)."""
+
+    @staticmethod
+    def _index_report() -> ScanReport:
+        from redaction_verifier.model import MaskIndex
+
+        report = ScanReport()
+        report.exact_index = MaskIndex([SSN])
+        return report
+
+    @staticmethod
+    def _patterns() -> list:
+        from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES, PatternRule, _valid_ssn
+
+        return [PatternRule("Any SSN", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]), _valid_ssn)]
+
+    @staticmethod
+    def _assert_masked(report: ScanReport, code: str) -> None:
+        messages = [w for w in report.warnings if getattr(w, "code", "") == code]
+        assert messages, code
+        assert all("(sample ****)" in str(w) and "6789" not in str(w) for w in messages)
+
+    def test_hidden_text(self) -> None:
+        doc = fitz.open()
+        doc.new_page()
+        doc.embfile_add("notes.txt", f"attachment {SSN}".encode(), filename="notes.txt")
+        report = self._index_report()
+        verify.scan_hidden_objects(doc, SecretMatcher([]), self._patterns(), report)
+        self._assert_masked(report, "REVIEW_HIDDEN_TEXT")
+
+    def test_metadata_raw(self) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"import sys; sys.stdout.write('not json {SSN}')"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        report = self._index_report()
+        verify._collect_exiftool(proc, SecretMatcher([]), self._patterns(), report)
+        self._assert_masked(report, "REVIEW_METADATA_RAW")
+
+    def test_object_text_payload(self) -> None:
+        report = self._index_report()
+        verify._report_payload_hit(report, "object 5", "Any SSN", SSN, hard=False, origin={})
+        self._assert_masked(report, "REVIEW_OBJECT_TEXT")
+
+    @pytest.mark.parametrize("trailer, code", [
+        (b"/ID [(123456789) <44556677>]", "REVIEW_OBJECT_TEXT"),
+        (b"/ID [(123-45-) (6789)]", "REVIEW_ADJACENT_LITERALS"),
+    ])
+    def test_trailer_id_warnings(self, tmp_path, trailer, code) -> None:
+        from .test_trailers import NO_VALUES, _with_trailer
+
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(trailer))
+        report = self._index_report()
+        doc = fitz.open(path)
+        try:
+            verify.scan_trailers(path, doc, NO_VALUES, self._patterns(), report)
+        finally:
+            doc.close()
+        self._assert_masked(report, code)
+
+    def test_fused_pattern_on_the_ocr_layer_is_fully_masked(self) -> None:
+        # Fused-line warnings come from the Text and OCR layers; for OCR the
+        # sample is never shown even when it shares nothing with a value.
+        assert mask("ABC-12345", [], full=True) == "****"
+
+
+class TestOcrSamplesAreAlwaysFullyMasked:
+    """OCR can misread a letter as a look-alike of an exact value's letter
+    (a Greek name read as Latin-looking text), which no folding recognises;
+    so an OCR sample never shows a tail."""
+
+    def test_json_and_text_reports(self, capsys) -> None:
+        from redaction_verifier.report import print_report
+
+        report = ScanReport()
+        report.record("OCR", "any", "page 1 (OCR)", "ref-2OõI", page=1)
+        report.record("Text", "any", "page 1 (visual text layer)", "ref-2OõI", page=1)
+        data = build_json_report(
+            report, 1, target=Path("t.pdf"), tool_version="x", ocr_available=True)
+        by_layer = {f["layer"]: f["sample"] for f in data["findings"]}
+        assert by_layer == {"OCR": "****", "Text": "****2OõI"}
+        print_report(report, Path("t.pdf"))
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if "STILL PRESENT" in ln]
+        ocr_line = next(ln for ln in lines if "OCR" in ln.split("|")[2])
+        text_line = next(ln for ln in lines if "Text" in ln.split("|")[2])
+        assert "2OõI" not in ocr_line and "2OõI" in text_line

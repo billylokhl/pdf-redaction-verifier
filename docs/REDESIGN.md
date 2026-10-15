@@ -517,7 +517,17 @@ Guards against same-author bias:
   shrink.
 - A committed **real-redactor tier**: small binaries with fake data and
   recorded provenance — a redactor POC, Acrobat Redact, a macOS
-  Preview box, Word export with a shape over text.
+  Preview box, Word export with a shape over text. Extended by a local
+  **real-redactor set** (`eval/redactor_set`, eval/README.md): 20
+  fabricated documents from five producers, each with a truth manifest
+  of every planted secret, run through a redaction tool as-is and
+  re-saved with garbage collection, then classed per secret by an
+  oracle independent of the verifier (raw bytes, libqpdf, poppler and
+  tesseract) and adjudicated and locked per file, then measured by
+  `scorecard redactor-set run` (silent misses per file and per planted
+  instance, downgrades, and U3's exit-`0` share on correctly redacted
+  outputs; counts only). Six of its measured outputs are committed in
+  the tier, each with its locked adjudication in its sidecar.
 - A **blind red-team slot**: cases written from `COVERAGE.md` and the
   threat model by someone (or an agent) who has not read the code.
 
@@ -658,7 +668,27 @@ artifact.
   than legacy on any case, except those in `accepted_diffs.yaml`.
 - **Legacy is otherwise frozen.** Known gaps found meanwhile become
   `known_gap` cases closed by the new path; a legacy hotfix is the
-  owner's call per gap.
+  owner's call per gap. A gap is raised for that decision only when it
+  is one of:
+  - **H1.** An exit `0` on a layout plausible for a real redactor
+    (evidence: the real-redactor set of §7a, an owner report, or a
+    documented redactor behaviour).
+  - **H2.** An outage, crash, hang or resource exhaustion on a supported
+    platform or valid input.
+  - **H3.** CI or tooling breakage, or a performance regression caused by
+    a merged fix.
+  - **H4.** The tool exposing secret material in its own output.
+  - **H5.** A user-facing feature the owner requested.
+
+  Everything else is "pin and defer": a `known_gap` case, a README "Known
+  gaps" entry, a §8 row naming the closing phase (or an issue if no phase
+  covers it); deferring is also the owner's call and can be batched.
+  **Any loosening**, accidental or not, needs a root cause,
+  `weaker: true` in `accepted_diffs.yaml`, an explicit owner decision and
+  a CHANGELOG line describing the layout. Any move to exit `0` needs a
+  per-case owner sign-off, and `1`→`2` is preferred over →`0`. "Main only
+  catches it because of a bug" is a reason to bring a case to the owner,
+  never to loosen it automatically.
 
 ## 7. Plan
 
@@ -671,7 +701,7 @@ artifact.
 | **0e. Gallery** | Generated from the case library. | — |
 | **1. Decisions** ✅ done — all nine ADRs accepted by the owner on 2026-09-27 | ADRs: [encryption](adr/0001-encryption-and-decryption-cross-check.md); [benign parser-warning categories](adr/0002-benign-parser-warning-categories.md); [`NOT_APPLICABLE` list](adr/0003-not-applicable-reasons.md); [image-OCR envelope method](adr/0004-image-ocr-envelope.md); [pattern-class default tier](adr/0005-pattern-class-default-tier.md); [recursion budget](adr/0006-recursion-and-decode-budget.md); [orphaned content streams](adr/0007-orphaned-content-streams.md). Spike S1b: [consumption witness](adr/0008-consumption-witness-granularity.md). Found while measuring 0008: [benign interpretation warnings](adr/0009-benign-interpretation-warnings.md). Four further owner decisions on images the same day, recorded in ADRs 0003/0004 (and 0007, 0009): A, no size excusal; B, in the owner's words, "any image data in the file beyond the main decoded picture (EXIF/other thumbnails, extra JPEG 2000 codestreams, extra JBIG2 pages) counts as 'decodes to more than declared', so the image is flagged"; C, image-decoder errors and data-loss warnings always flag, reviewed-harmless warnings are vouched for only by the image's own witness from 4b, unrecognised ones flag; D, images nothing uses are always `FLAGGED`, with "used" defined by the owner (drawn by the current revision, by content that runs when a page is shown, some of it landing on the page; fail-closed). Drawn strips under a box are an open question before 4b. Measured on a 2,031-file real corpus (484 text-bearing), both denominators: parser-agreement flag rate 32.4% raw / 7.2% refined (text-bearing); pattern-class false-hard rate 23.1% for `ssn`/`us-phone` alone (text-bearing; the 45.5% four-class union overstates it -- `email` is a true positive); orphaned-content-stream rate 11.4% (text-bearing); unindexed non-whitespace byte rate 3.1e-6 by bytes; consumption-witness reconciliation 100.0% of measured text pages (2,345/2,345; 856 form-drawing pages unmeasured), after root-causing bugs in the measuring spike itself; interpretation-warning rate 11.2%/45.7% (all/text-bearing, against the pinned PyMuPDF 1.28.2 -- down from 32.2%/53.5% on 1.27.2.3, about 3x on all files but about 1.2x on text-bearing files) -- the largest single Phase 1 finding, not sized before this pass; 7.6% of text-bearing files under ADR 0009's accepted guarded rule (with the annotation guard). Full numbers: [`eval/spikes/RESULTS.md`](../eval/spikes/RESULTS.md). | ADRs approved — met 2026-09-27 |
 | **2. Move** ✅ done — step 1: model, matching, rules (#24); step 2: report, views (#27); step 3: tests decoupled from `verify.py`'s re-export (#29) | Move pure parts into the package; port behavioural tests to the case library or CLI; rewrite mutation tests against new module paths. Step 1 (#24): `redaction_verifier/model.py` (`VerifyError`, `Secret`, `Finding`, `Warn`/`WarnList`, `ScanReport` and the warning-code/storage/layer/adjacency constants); `redaction_verifier/matching/` (`values.py` — normalizer, `SecretMatcher`, `RollingScanner`; `validators.py` — the Luhn/SSA/card/email/NANP validators; `patterns.py` — `PatternRule`, `BUILTIN_PATTERN_CLASSES`, `match_patterns`, `PatternScanner`); `redaction_verifier/rules/` (the redactor-config mapping tables, the shared rule builders, `RuleSet`, `load_rules` and the JSON/YAML loaders). Step 2 (#27): `redaction_verifier/views/` (`text.py` — the layout-aware visual text extractor: `_reconstruct`, `_join_cluster`, `extract_visual_text`, `TEXT_GENUINE_READINGS` and the line-clustering tolerance constants; `ocr.py` — the Apple Vision OCR bridge: `_vision_recognize_batch`, `extract_ocr_text`, `OCR_DPI`, and the one source of truth for `_OCR_IMPORTS_OK`); `redaction_verifier/report/` (`text.py` — `_sanitize_report_text`, `print_report`; `json.py` — `build_json_report`, `write_json_report`, `JSON_SCHEMA_VERSION`). `verify.py` re-exports every name used outside the package (`from redaction_verifier.X import Y as Y`; three implementation-detail constants private to a single matching submodule are not re-exported, since nothing outside it ever reaches them) so existing imports, `verify.X` references and the CLI are unchanged; a ruff `flake8-tidy-imports` banned-api rule (`TID251`, scoped to exclude `verify.py`/tests/eval) stops the package from importing back, and the package import is guarded the same fail-closed way as the PyMuPDF import (missing package → `[ERROR]` + exit 2, never a traceback and exit 1). The views package's `import fitz` is plain (no guard of its own): a failure propagates out of `redaction_verifier` and is caught by the same guard; the Vision/Foundation import inside `views/ocr.py` keeps its ordinary-failure degrade (`except Exception: _OCR_IMPORTS_OK = False`) but no longer has its own dedicated fatal-message guard for a BaseException there, since the package must never import verify to call `_fatal_import` itself — that case is now reported as the generic "cannot import redaction_verifier" instead of a Vision-specific message (test_cli.py's import-guard tests were extended accordingly, plus a dedicated case pinning that an ordinary Vision `ImportError` still degrades rather than exits fatally). `build_json_report` no longer owns the tool version (`verify.__version__` stays in `verify.py`, the single source pyproject.toml's dynamic version reads); its caller passes it in as `tool_version`. Object/revision scanning, hidden-object handling, qpdf/exiftool and `main`/`run_cli` stay in `verify.py` for later steps. Step 3 (#29): every test and eval module that used a moved name through `verify.X` (`tests/*.py`, plus `eval/gallery/build.py`, `eval/caselib/run.py` and `eval/spikes/pattern_class_false_hard.py`) now imports it directly from the `redaction_verifier` submodule that defines it — `ScanReport`/`Secret`/`Warn`/`WarnList`/`WARNING_CODES`/`WARNING_FIELDS`/`LAYERS`/`STORAGE_CLASSES`/`VerifyError` from `.model`; `SecretMatcher`/`PatternRule`/`normalize_string`/`BUILTIN_PATTERN_CLASSES`/`match_patterns`/`mask`/the validators/`_fold_for_patterns` from `.matching`; `RuleSet`/`load_rules`/`ENTITY_TYPE_TO_CLASS`/`_make_class_rule` from `.rules`; `extract_visual_text`/`TEXT_GENUINE_READINGS`/`_OCR_IMPORTS_OK` from `.views`; `JSON_SCHEMA_VERSION`/`build_json_report` from `.report` — with no change to what any test does or asserts. `verify.py`'s own re-export block is untouched (compatibility for the CLI and external users; it retires only at Phase 6, see §6) and its remaining `verify.X` monkeypatches (`print_report`, plus the legacy-only `scan_pdf_objects`, `check_hidden_layers`, `_looks_binary`, `_strip_pdf_strings`, `_is_opaque_stream`, `_pdf_string_spans`, ...) are unchanged, since each is patched on the module its own caller looks it up on (`print_report`'s caller — `main`/`run_cli` — still lives in `verify.py`, so patching `verify.print_report` is still correct, not a leftover). `tests/test_import_boundaries.py` is a new regression guard: it parses `verify.py`'s own re-export block with `ast` to compute the "moved names" set (so it can never go stale), then parses every `tests/*.py` file the same way and fails on any `verify.<moved name>` attribute access — proven to catch a real regression and to have zero false positives on names `verify.py` defines itself. `tests/test_mutation.py`'s four guard-necessity mutations (`_looks_binary`, `_strip_pdf_strings`, `_is_opaque_stream`, `_pdf_string_spans`) all target the legacy object-scanning layer that stays in `verify.py` until Phase 6, so none needed retargeting to a new module path — only their fixture-construction calls moved to direct imports; all four still fail as designed when their mutation is applied (still "kill" the bug), confirmed by re-running them. No behavioural tests were restructured or moved into the case library/CLI: every remaining `verify.X` reference in the suite names something that still lives in `verify.py`. | Per-case differential identical — met: scorecard diff unchanged (386 compared, 10 changed, 10 accepted, 0 unlisted, 0 crashed); test count did not drop (1,027 → 1,029, +2 for the new import-boundary guard) |
-| **3a. Inventory** — revised 2026-09-28 by [ADR 0010](adr/0010-readers-are-the-authority.md) (readers are the authority; agreement gate; work budget; canonical xref) — in progress: 3a-1 (#32), 3a-2 (#34), 3a-3 (#36), 3a-3b (#39), 3a-4a (#41), 3a-4b (#43) and 3a-5 (`build_inventory`, #45) and 3a-6 (the inventory agreement gate, `python -m scorecard inventory`, #47) landed; 3a-6b (#50: the gate's first local corpus run failed; root-caused fixes -- number magnitudes the readers read differently flagged, every value compared with MuPDF and libqpdf through pikepdf per [ADR 0010](adr/0010-readers-are-the-authority.md)'s amendment, a written allowlist of qpdf messages) landed; 3a-6c (#53: the owner's pending decisions -- updated linearized files and offset-0 xref entries accepted, odd comment lines flagged) landed; a fix after it flags a catalog qpdf cannot open (`/Pages` not a dictionary, `MISSING_PAGE_TREE`; a stream catalog, `MISSING_ROOT`), found by the dev-profile mutation fuzz, and an object stream whose generation is not 0 (`XREF_OFFSET_MISMATCH`); 3a-7's rules are [ADR 0011](adr/0011-reference-graph-canonical-form.md) (accepted 2026-10-04, #54; amended 2026-10-11, items 4, 5 and 8; 3a-7 planned as five PRs, 3a-7a-e; 3a-7a, references, and 3a-7b, the page tree, landed); PR sequence and owner decisions in [phase3a-plan.md](phase3a-plan.md) | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. Fix, in the new tokenizer, the two PDF-32000 §7.3.4.2 line-ending bugs Phase 1 found in `verify._decode_pdf_string` (a backslash-end-of-line continuation is kept as a literal newline instead of contributing nothing; a raw CRLF inside a literal is not normalised to a single LF) -- today's tool appears to fail closed on every case tried despite this (normalisation strips the stray newline before matching), but the string decoder is on the exit-0 audit surface (Principle 2) and the bug is real. From the Phase 1 decisions: add and pin `pikepdf` for decryption, confirm its decrypted-but-unfiltered read matches the `xref_stream_raw` stage, and add a fixture whose earlier revision carries a different `/Encrypt` ([ADR 0001](adr/0001-encryption-and-decryption-cross-check.md)); add, before Phase 4b, the hidden-image case (a 10×10 image whose samples spell the SSN), the JPEG-comment case (a JPEG whose comment segment holds the SSN, present in the encoded `DCTDecode` bytes but not the decoded pixels), the EXIF-thumbnail case (a small JPEG whose EXIF thumbnail shows the SSN; the image must be `FLAGGED`) and next to it the extra-rows case (a referenced 200×20 DeviceGray image with a blank declared frame plus 20 extra rows holding an SSN render; the image must be `FLAGGED`; today's tool exits `0`, see §8's note below the K-table) ([ADR 0003](adr/0003-not-applicable-reasons.md), [ADR 0004](adr/0004-image-ocr-envelope.md) decision B), and the pixel-text-under-the-floor case, a leftover image under 8×32 holding pixel-drawn text (caselib's existing `leftover.small-image`, K21, a 7 px tall SSN render, already expects `LEFTOVER_IMAGE`; add the strips variant K21 describes, two leftover 90×7 strips of one render, which pins decision D, and next to it a strips-under-a-box case, both strips drawn with a black box painted over them, which today's tool exits `0` on) ([ADR 0004](adr/0004-image-ocr-envelope.md)) — done (`eval/caselib/families/image_bytes.py`: `leftover.hidden-sample-bytes`, `leftover.hidden-sample-bytes-pattern-rule`, `page.hidden-sample-bytes`, `page.hidden-sample-bytes-pattern-rule`, `page.jpeg-comment-ssn`, `page.jpeg-exif-thumbnail` (K39), `page.image-extra-rows` (K37), `leftover.ssn-strips`, `page.ssn-strips-joined`, `page.ssn-strips-under-box` (K38), `page.ssn-strips-unused-resource`; each built and run against today's `verify.py` rather than assumed from the ADRs' own tables — most are today's silent misses (`known_gap`); `page.hidden-sample-bytes`, `page.jpeg-comment-ssn` and `page.ssn-strips-joined` are controls the tool already gets right, pinned alongside the gaps for contrast); re-derive the unit budget ([ADR 0006](adr/0006-recursion-and-decode-budget.md)); measure the overlap of "always `FLAGGED`" orphans with today's exit `2` ([ADR 0007](adr/0007-orphaned-content-streams.md)), and the unmeasured cost of decision D under the owner's definition of "used": every unused image flagged, including images listed but never drawn, drawn only in an earlier revision, a hidden layer or annotation, page thumbnails and `/Alternates` images, and off-page or clipped-away images ([ADR 0004](adr/0004-image-ocr-envelope.md) decision D). 3a-1 (#32), in shadow mode (nothing the CLI ships imports it): the ledger types in `ledger.py`, re-exported from `model.py` (`Status`; `NAReason`, exactly ADR 0003's four, pinned by a test; a closed `FlagReason`; `UnitKind`; frozen `UnitRef`/`Span`/`Flag`/`Unit` -- a `Flag` carries only named plain integers, never document bytes); `budget.py` (`Limits` with ADR 0006's placeholders, a flat 20 Gpx ceiling on the derived OCR run cap and named parse limits, and a `Budget` whose `charge_*` methods return False on exhaustion, never raise, and report each exhausted counter once as a `BUDGET_EXHAUSTED` flag -- the unit cap is re-derived from this phase's measurements with headroom, owner decision 2026-09-27; hitting a cap means the file cannot exit 0); `inventory/` with `tile()`, an elementary-interval sweep that partitions every byte into owned, `CONTESTED`, `WHITESPACE` or `UNINDEXED` (flagged) regions -- a run of contested bytes is one region with one flag carrying the true claimant count and at most `max_contested_owners` (16) owners listed, so n claims give O(n) regions and flags however they overlap -- clips/flags claims past the end, refuses and flags (`CLAIM_INVALID`) nested refs, gap-kind claims and top-level claims of the nested-only kinds (`OBJSTM_MEMBER`, `STREAM_SLACK`) before hashing them, and flags a unit's partial self-overlap (`SELF_OVERLAP`); and `check_tiling()`, the pure geometric check the parent will re-run in 3b (which must also re-check gap labels against the raw bytes). 3a-2 (#34): `inventory/lexer.py`, a never-raising, linear-time lexer whose tokens carry kind and span only, each anomaly a flag on its token (`UNTERMINATED`, `INVALID_HEX_DIGIT`, `INVALID_NAME_ESCAPE`, `STRAY_DELIMITER`); `inventory/strings.py`, whose literal decoder fixes the two `_decode_pdf_string` line-ending bugs named above in the new code only (the legacy decoder stays frozen), plus hex, name and text-string decoding (UTF-16BE, UTF-16LE or UTF-8 by byte-order mark, language tags stripped with the tagged text kept, else PDFDocEncoding; raw bytes kept). 3a-3 (#36): `inventory/objects.py`, an iterative object parser whose values keep their byte spans; it flags every ambiguity instead of resolving it (a repeated key -- with whether the values are textually identical, per ADR 0002 -- a `/Length` that disagrees with `endstream`, bytes between the two as `STREAM_SLACK`, tokens after the value, a missing `endobj`), keeps any token that fits nowhere as a decoded, flagged stray, and caps tokens, nesting and flags per object. Hypothesis is pinned in the `test` extra with a derandomized `ci` profile (the default under `CI`); property tests check `tile()` byte by byte against an oracle, claim-order independence, and that `check_tiling()` accepts every tiling and rejects single perturbations. `tests/test_import_boundaries.py` now also guards the process boundary: `import verify` loads neither `redaction_verifier.inventory` nor `pikepdf`, importing the inventory and budget loads no rules, matching, report, views, `verify` or `fitz` module, and no child-side module (`inventory/`, `budget.py`, `ledger.py`) imports anything outside an allowlist (`__future__`, `bisect`, `collections`, `dataclasses`, `enum`, `typing`, `re` and the child-side package itself; a module is added only when child-side code needs it, after review), reaches `sys.modules`/`sys.meta_path`, names a banned module in a string, or mentions `__import__`, exec, eval, compile, `__builtins__` or `__loader__` at all (by name, attribute or string, so an alias or a getattr is caught; deliberate obfuscation is left to review). mypy runs strict on `redaction_verifier.inventory`, `.budget` and `.ledger`. | Tiling holds on every corpus file; no crashes |
+| **3a. Inventory** — revised 2026-09-28 by [ADR 0010](adr/0010-readers-are-the-authority.md) (readers are the authority; agreement gate; work budget; canonical xref) — in progress: 3a-1 (#32), 3a-2 (#34), 3a-3 (#36), 3a-3b (#39), 3a-4a (#41), 3a-4b (#43) and 3a-5 (`build_inventory`, #45) and 3a-6 (the inventory agreement gate, `python -m scorecard inventory`, #47) landed; 3a-6b (#50: the gate's first local corpus run failed; root-caused fixes -- number magnitudes the readers read differently flagged, every value compared with MuPDF and libqpdf through pikepdf per [ADR 0010](adr/0010-readers-are-the-authority.md)'s amendment, a written allowlist of qpdf messages) landed; 3a-6c (#53: the owner's pending decisions -- updated linearized files and offset-0 xref entries accepted, odd comment lines flagged) landed; a fix after it flags a catalog qpdf cannot open (`/Pages` not a dictionary, `MISSING_PAGE_TREE`; a stream catalog, `MISSING_ROOT`), found by the dev-profile mutation fuzz, and an object stream whose generation is not 0 (`XREF_OFFSET_MISMATCH`); 3a-7's rules are [ADR 0011](adr/0011-reference-graph-canonical-form.md) (accepted 2026-10-04, #54; amended 2026-10-11, items 4, 5 and 8; 3a-7 planned as five PRs, 3a-7a-e; 3a-7a, references, 3a-7b, the page tree, and 3a-7c, resource scopes and name trees, landed; amended 2026-10-12, item 4's text rule, owner decision 10); PR sequence and owner decisions in [phase3a-plan.md](phase3a-plan.md) | Own parser, byte tiling, ambiguity detection, reference graph, encryption; Hypothesis property tests (ranges tile the file exactly). Shadow mode. Fix, in the new tokenizer, the two PDF-32000 §7.3.4.2 line-ending bugs Phase 1 found in `verify._decode_pdf_string` (a backslash-end-of-line continuation is kept as a literal newline instead of contributing nothing; a raw CRLF inside a literal is not normalised to a single LF) -- today's tool appears to fail closed on every case tried despite this (normalisation strips the stray newline before matching), but the string decoder is on the exit-0 audit surface (Principle 2) and the bug is real. From the Phase 1 decisions: add and pin `pikepdf` for decryption, confirm its decrypted-but-unfiltered read matches the `xref_stream_raw` stage, and add a fixture whose earlier revision carries a different `/Encrypt` ([ADR 0001](adr/0001-encryption-and-decryption-cross-check.md)); add, before Phase 4b, the hidden-image case (a 10×10 image whose samples spell the SSN), the JPEG-comment case (a JPEG whose comment segment holds the SSN, present in the encoded `DCTDecode` bytes but not the decoded pixels), the EXIF-thumbnail case (a small JPEG whose EXIF thumbnail shows the SSN; the image must be `FLAGGED`) and next to it the extra-rows case (a referenced 200×20 DeviceGray image with a blank declared frame plus 20 extra rows holding an SSN render; the image must be `FLAGGED`; today's tool exits `0`, see §8's note below the K-table) ([ADR 0003](adr/0003-not-applicable-reasons.md), [ADR 0004](adr/0004-image-ocr-envelope.md) decision B), and the pixel-text-under-the-floor case, a leftover image under 8×32 holding pixel-drawn text (caselib's existing `leftover.small-image`, K21, a 7 px tall SSN render, already expects `LEFTOVER_IMAGE`; add the strips variant K21 describes, two leftover 90×7 strips of one render, which pins decision D, and next to it a strips-under-a-box case, both strips drawn with a black box painted over them, which today's tool exits `0` on) ([ADR 0004](adr/0004-image-ocr-envelope.md)) — done (`eval/caselib/families/image_bytes.py`: `leftover.hidden-sample-bytes`, `leftover.hidden-sample-bytes-pattern-rule`, `page.hidden-sample-bytes`, `page.hidden-sample-bytes-pattern-rule`, `page.jpeg-comment-ssn`, `page.jpeg-exif-thumbnail` (K39), `page.image-extra-rows` (K37), `leftover.ssn-strips`, `page.ssn-strips-joined`, `page.ssn-strips-under-box` (K38), `page.ssn-strips-unused-resource`; each built and run against today's `verify.py` rather than assumed from the ADRs' own tables — most are today's silent misses (`known_gap`); `page.hidden-sample-bytes`, `page.jpeg-comment-ssn` and `page.ssn-strips-joined` are controls the tool already gets right, pinned alongside the gaps for contrast); re-derive the unit budget ([ADR 0006](adr/0006-recursion-and-decode-budget.md)); measure the overlap of "always `FLAGGED`" orphans with today's exit `2` ([ADR 0007](adr/0007-orphaned-content-streams.md)), and the unmeasured cost of decision D under the owner's definition of "used": every unused image flagged, including images listed but never drawn, drawn only in an earlier revision, a hidden layer or annotation, page thumbnails and `/Alternates` images, and off-page or clipped-away images ([ADR 0004](adr/0004-image-ocr-envelope.md) decision D). 3a-1 (#32), in shadow mode (nothing the CLI ships imports it): the ledger types in `ledger.py`, re-exported from `model.py` (`Status`; `NAReason`, exactly ADR 0003's four, pinned by a test; a closed `FlagReason`; `UnitKind`; frozen `UnitRef`/`Span`/`Flag`/`Unit` -- a `Flag` carries only named plain integers, never document bytes); `budget.py` (`Limits` with ADR 0006's placeholders, a flat 20 Gpx ceiling on the derived OCR run cap and named parse limits, and a `Budget` whose `charge_*` methods return False on exhaustion, never raise, and report each exhausted counter once as a `BUDGET_EXHAUSTED` flag -- the unit cap is re-derived from this phase's measurements with headroom, owner decision 2026-09-27; hitting a cap means the file cannot exit 0); `inventory/` with `tile()`, an elementary-interval sweep that partitions every byte into owned, `CONTESTED`, `WHITESPACE` or `UNINDEXED` (flagged) regions -- a run of contested bytes is one region with one flag carrying the true claimant count and at most `max_contested_owners` (16) owners listed, so n claims give O(n) regions and flags however they overlap -- clips/flags claims past the end, refuses and flags (`CLAIM_INVALID`) nested refs, gap-kind claims and top-level claims of the nested-only kinds (`OBJSTM_MEMBER`, `STREAM_SLACK`) before hashing them, and flags a unit's partial self-overlap (`SELF_OVERLAP`); and `check_tiling()`, the pure geometric check the parent will re-run in 3b (which must also re-check gap labels against the raw bytes). 3a-2 (#34): `inventory/lexer.py`, a never-raising, linear-time lexer whose tokens carry kind and span only, each anomaly a flag on its token (`UNTERMINATED`, `INVALID_HEX_DIGIT`, `INVALID_NAME_ESCAPE`, `STRAY_DELIMITER`); `inventory/strings.py`, whose literal decoder fixes the two `_decode_pdf_string` line-ending bugs named above in the new code only (the legacy decoder stays frozen), plus hex, name and text-string decoding (UTF-16BE, UTF-16LE or UTF-8 by byte-order mark, language tags stripped with the tagged text kept, else PDFDocEncoding; raw bytes kept). 3a-3 (#36): `inventory/objects.py`, an iterative object parser whose values keep their byte spans; it flags every ambiguity instead of resolving it (a repeated key -- with whether the values are textually identical, per ADR 0002 -- a `/Length` that disagrees with `endstream`, bytes between the two as `STREAM_SLACK`, tokens after the value, a missing `endobj`), keeps any token that fits nowhere as a decoded, flagged stray, and caps tokens, nesting and flags per object. Hypothesis is pinned in the `test` extra with a derandomized `ci` profile (the default under `CI`); property tests check `tile()` byte by byte against an oracle, claim-order independence, and that `check_tiling()` accepts every tiling and rejects single perturbations. `tests/test_import_boundaries.py` now also guards the process boundary: `import verify` loads neither `redaction_verifier.inventory` nor `pikepdf`, importing the inventory and budget loads no rules, matching, report, views, `verify` or `fitz` module, and no child-side module (`inventory/`, `budget.py`, `ledger.py`) imports anything outside an allowlist (`__future__`, `bisect`, `collections`, `dataclasses`, `enum`, `typing`, `re` and the child-side package itself; a module is added only when child-side code needs it, after review), reaches `sys.modules`/`sys.meta_path`, names a banned module in a string, or mentions `__import__`, exec, eval, compile, `__builtins__` or `__loader__` at all (by name, attribute or string, so an alias or a getattr is caught; deliberate obfuscation is left to review). mypy runs strict on `redaction_verifier.inventory`, `.budget` and `.ledger`. | Tiling holds on every corpus file; no crashes |
 | **3b. Ledger + verdict** | Obligations, parent anchors, child protocol and completion sentinel, witnesses, single verdict function, shadow and enforced verdicts, worst-of shipping, `--explain`. The verdict function maps every stream the reference graph labels `ORPHANED` to `FLAGGED` whatever its decoder reports, with a test where a `DECODED` orphan still yields `FLAGGED` ([ADR 0011](adr/0011-reference-graph-canonical-form.md) item 5, applying ADR 0007 and decision D by walk); decision D's stricter "used" -- drawn by the current revision's running content -- is computed in 4a/4b, since the graph's `DRAWABLE` is only an upper bound. | Shipped exit identical to reference on every case; shadow verdict reported; a truncated or empty child report exits `2` |
 | **3c. Parser agreement** | As §4. Close the two check gaps [ADR 0002](adr/0002-benign-parser-warning-categories.md) accepted for now: a benign-offset body inside an `/ObjStm`, and duplicate keys compared on the first token only. | Flag rate as measured in Phase 1 |
 | **3d. Sandbox** | Limits, watchdog, private temp dir around the child from 3b. Prerequisite for 4b–4c. | Bomb/hang cases exit `2` |
@@ -751,6 +781,158 @@ for a later PR: the additive
 `--json` fields this phase calls for (a per-layer status block,
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
+
+## 7a. Operating rules
+
+Adopted 2026-10-12. They complement §6 and §7 and override none of them
+(worst-of verdict, "never less strict", legacy frozen).
+
+### Milestones
+
+Owner's use: before sharing a redacted PDF, know whether any secret from
+the rules file is still recoverable. Each milestone is reported to the
+owner together with what it does not yet cover.
+
+**U, "usable, with listed gaps"** (legacy plus the 3a work):
+- **U1, case library.** Every leak case exits `1` or `2` except the pinned
+  `known_gap` cases; each appears in README "Known gaps" with its layout,
+  and CI fails if one is missing. K39 is listed in README "Known gaps" first (#33); the detection gap itself closes in 4b.
+- **U2, real-redactor recall.** On the real-redactor set below: 0 silent
+  misses against an independent oracle. A miss blocks U until it is fixed
+  or the owner accepts it as a listed gap (pinning alone does not count).
+  Downgrades (expected `1`, got `2`) are reported.
+- **U3, usability on good redactions.** The share of correctly redacted
+  real-redactor outputs (e.g. saved with garbage collection) that exit `0`
+  is reported, against the owner's target of 100% (2026-10-14). If good
+  files mostly exit `2`, the tool is not usable.
+- **U4, false alarms on clean files**, on the text-bearing stratum of the
+  real corpus: with exact-value rules only, false hard findings below 1%;
+  built-in pattern classes stay at their ADR 0005 baseline until Phase 5;
+  the review rate (exit `2`) is measured as a baseline, with no new budget (4a's gate governs later changes).
+- **U5, robustness and platform.** 0 crashes or timeouts on the corpora; a
+  user-password file exits `2`; results are certified only on macOS with
+  OCR working on the owner's OS version (Linux runs cannot certify scans); macOS 27 parity is to be a documented local check (see Owner decisions).
+
+**R, "reliable"** (redesign): U holds, plus 3d (bomb and hang cases exit
+`2`), 3a-8/9 (owner-password decryption checked), 4a (content kinds
+enforced; K3-K6 closed), 4b (image kinds; K21 and the strips cases exit
+`2`; recall measured; the open question on drawn strips under a box
+answered by the owner) and Phase 5 (built-in pattern false hard < 1% on text-bearing
+real files). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
+phase is unspecified (e.g. K7); these stay listed in README until closed.
+
+Estimates are rough and re-baselined at each phase close-out: U about
+3-4 weeks now that the real-redactor set is estimated at 10-14 days in its lane plan (assuming it finds
+no blocking miss; a miss adds an owner decision and an open-ended legacy
+fix); R about 18-25 weeks of redesign-lane work. Recent pace was bursty
+and 3b and 4a are larger, structural phases.
+
+### Review policy
+
+This amends the standing "fix all majors" rule. Every PR still gets an
+independent adversarial review of its final content, docs in sync and
+green CI before merge.
+
+**Blocking, in every round:**
+- an exit `0` or verdict regression against main on any input, unless
+  owner-approved under §6;
+- a secret or real data in the tool's output or the public repo, or
+  naming a third-party redaction tool;
+- deleting or overwriting a user file;
+- a crash, hang or resource exhaustion;
+- false or misleading documentation of verdict behaviour;
+- a ratchet or allowlist growing without the required flag;
+- a missing or vacuous test for the PR's own verdict change.
+
+**Scope test, from round 1.** A finding outside the PR's problem, or about
+pre-existing behaviour, is not fixed in the PR: it becomes a pinned case
+and an issue, raised to the owner under §6, unless leaving it out makes
+the PR weaker than main (then the owner chooses between including it and
+accepting a documented weaker result).
+
+**Realism** is classified by the reviewer or the coordinator, not the PR author;
+disputes go to the owner. **Round count** is not a cut-off: at round 3 the
+PR is re-scoped or checked in with the owner, splitting does not reset the
+count, and if round 3 still finds blocking issues the next review uses a
+fresh reviewer.
+
+**Review evidence** (owner, 2026-10-14). Every PR body ends with a "Review"
+section naming the commit SHA each review round covered and its verdict.
+The coordinator merges only if the last review's commit equals the PR head,
+except for merge commits from main whose resolution was itself checked. Any
+change after the last review, however small (nit fixes, wording, tests),
+gets a confirmation pass on the final head before merge.
+
+### PR scope
+
+- One problem per PR (the scope test above).
+- About 600 changed lines of code (excluding tests, case data and docs)
+  triggers a split decision before implementation; it is not a hard cap.
+- `verify.py` (any part) and `redaction_verifier/views/*` have one open PR
+  each at a time; others queue behind it, each merging main first.
+- Add-only shared files (existing entries are not edited): CHANGELOG, `eval/accepted_diffs.yaml`,
+  `eval/caselib/cells.py`. Row-scoped edits only in the §7/§8 tables,
+  README, DESIGN and COVERAGE (closing a gap edits its row).
+
+### Real-redactor set
+
+Extends the committed tier `eval/caselib/real/` (`origin="redactor"`,
+provenance sidecars, privacy scrub and provenance tests; tools are named
+only generically in the repo).
+- **Committed:** a small, fully fabricated, scrubbed subset. Larger sets
+  live in a gitignored local stratum; only aggregate counts are published.
+- **Oracle, independent of the verifier:** per file, which fabricated
+  secrets remain recoverable, from decompression plus a raw search, a
+  render plus OCR, and manual adjudication recorded per file. Correctly
+  redacted variants are included for U3.
+- **Decided (2026-10-12):** the owner's redactor run plain (LLM off first;
+  its backend is local, so no cost), plus a garbage-collected re-save; 20
+  templates x 1 seed, mirroring the owner's real document types.
+- It comes before any H1 hotfix decision.
+
+### Feature work
+
+Visible map stage 1 is finished by reusing #68's readings
+through an interface; at about 6,000 lines it needs an explicit split plan
+before review. A new feature request gets a short design and a review, and
+the owner sets its priority against the critical path.
+
+### Coordination
+
+- **Lanes, one owner each:** redesign phases; evidence (the
+  real-redactor set and U measurements); Text and the visible map; OCR;
+  tooling, CI and small fixes. A lane's items run in order and lanes run
+  in parallel.
+- A lane owner claims its files in a shared registry before starting; no
+  second PR opens on claimed files. `verify.py` and views PRs are
+  serialised as above; shared files are append-only.
+- Merge main before every review round.
+- A session that needs a decision stops and reports. Unanswered means
+  blocked, never a default to a looser outcome.
+- The coordinator (the maintainer the owner designates) summarises each merge batch to the owner: merged, blocked,
+  decisions needed.
+
+### Owner decisions
+
+- **2026-10-12:** milestone R is 4a + 4b + 3d + 3a-8/9 + Phase 5, with 4c
+  and 4d listed as gaps. This extends the "4a + 4b" bar given on
+  2026-09-27.
+- **2026-10-12:** the review-policy amendment above is approved.
+- **2026-10-12:** #66 (H4: masked tail revealing exact-value characters)
+  is to be fixed ahead of the rest (PR #100).
+- **2026-10-12:** the H1 candidates (#71, #64, K12, K37-K39) are decided
+  per gap after the real-redactor set exists; until then they stay
+  pinned and listed.
+- **2026-10-12:** U3's target is set after the first measurement.
+  Superseded 2026-10-14: the target is 100%.
+- **2026-10-14:** U3's target is 100% of correctly redacted real-redactor
+  outputs exiting `0`.
+- **2026-10-14:** every PR body ends with a "Review" section (commit SHA
+  and verdict per round); a change after the last review gets a
+  confirmation pass on the final head (see Review policy).
+- **2026-10-12:** visible map stage 1 now; S2-S4 after 4a.
+- **2026-10-12:** macOS 27 parity is a documented local check rather than
+  CI coverage; the check is still to be written down.
 
 ## 8. Known gaps found by this review
 

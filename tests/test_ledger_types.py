@@ -119,6 +119,8 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         classic().replace(b"/Root 1 0 R", b"/Root 1 0 R /Info 9 0 R", 1)),
     FlagReason.PAGE_TREE: lambda: _inventoried(  # /Count 2 over one page
         classic().replace(b"/Count 1", b"/Count 2", 1)),
+    FlagReason.NAME_TREE: lambda: _inventoried(_written(b" /Names << /Dests [] >>")),
+    FlagReason.RESOURCE_SCOPE: lambda: _inventoried(_written(b"", form=True)),
     FlagReason.COMMENT_LINE: lambda: _inventoried(
         classic().replace(b"%PDF-1.7\n", b"%PDF-1.7\n% 4 0 obj\n", 1)),
 }
@@ -333,3 +335,20 @@ def test_unit_ref_labels_are_plain_ints_or_none(label: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         UnitRef(UnitKind.OBJECT, 0, **label)
     assert UnitRef(UnitKind.OBJECT, 0, obj=0, gen=None).obj == 0
+
+
+def _written(catalog: bytes, form: bool = False) -> bytes:
+    """A one-page file with *catalog* entries; *form*: the page draws a
+    form XObject that has no /Resources."""
+    from scorecard.pdfgen import Writer
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    table[1] = (1, w.obj(1, b"<< /Type /Catalog /Pages 2 0 R%s >>" % catalog), 0)
+    table[2] = (1, w.obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"), 0)
+    resources = b"<< /XObject << /F 4 0 R >> >>" if form else b"<< >>"
+    table[3] = (1, w.obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources %s >>"
+                          % resources), 0)
+    if form:
+        table[4] = (1, w.stream(4, b" /Subtype /Form /BBox [0 0 9 9]", b"0 0 m 9 9 l S"), 0)
+    w.epilogue(w.table(table, b"/Size %d /Root 1 0 R" % (max(table) + 1)))
+    return bytes(w.out)

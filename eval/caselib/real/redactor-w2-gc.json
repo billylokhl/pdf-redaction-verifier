@@ -1,0 +1,151 @@
+{
+  "file": "redactor-w2-gc.pdf",
+  "sha256": "958e8bbd22ea2015b44f939a025260be0dce1e5bfe5df92ba6fb4c238e83e2da",
+  "size_bytes": 44486,
+  "size_cap_bytes": 100000,
+  "origin": "redactor",
+  "case_id": "page.redactor-w2-gc",
+  "source_case": null,
+  "source_case_note": "The real-redactor set (eval/redactor_set): template D01, seed 0, producer chrome; the exact bytes measured.",
+  "tool": {
+    "description": "a PyMuPDF-based redaction tool",
+    "version": "unrecorded",
+    "date": "2026-10-14",
+    "settings": {
+      "llm_detection": false,
+      "invocation": "<pdf> --config <yaml>",
+      "config": "# Fabricated values only (eval/redactor_set/persona.py).\nentity_types: []\nexact_values:\n  - \"Jordan Q. Testperson\"\n  - \"Avery R. Samplename\"\n  - \"666-51-4073\"\n  - \"666-38-2914\"\n  - \"1600 Fictional Ave\"\n  - \"731904628155\"\n  - \"997382611\"\n  - \"4111 1111 1111 1111\"\n  - \"00-4857261\"\n  - \"03/14/1971\"\n  - \"jordan.testperson@example.com\"\npatterns:\n  - '\\d{3}-\\d{2}-\\d{4}'\n  - '\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b'\nscrub_metadata: true\n",
+      "method": "m2",
+      "garbage": 4,
+      "deflate": true,
+      "gc_pymupdf": "1.27.2.3",
+      "note": "m1: the tool as it is run day to day. m2: m1's output re-saved with garbage collection in the tool's own environment, which can differ in detail from a collecting save inside the tool."
+    }
+  },
+  "fabricated_data_statement": "Every value in this document -- the household's names, SSNs, address, account, routing and card numbers, EIN, date of birth and email -- is fabricated (eval/redactor_set/persona.py) and cannot belong to a real person.",
+  "redacted_values": [
+    {
+      "name": "NAME1",
+      "value": "Jordan Q. Testperson"
+    },
+    {
+      "name": "NAME2",
+      "value": "Avery R. Samplename"
+    },
+    {
+      "name": "SSN1",
+      "value": "666-51-4073"
+    },
+    {
+      "name": "SSN2",
+      "value": "666-38-2914"
+    },
+    {
+      "name": "ADDR",
+      "value": "1600 Fictional Ave"
+    },
+    {
+      "name": "ACCT",
+      "value": "731904628155"
+    },
+    {
+      "name": "ROUT",
+      "value": "997382611"
+    },
+    {
+      "name": "CARD",
+      "value": "4111 1111 1111 1111"
+    },
+    {
+      "name": "EIN",
+      "value": "00-4857261"
+    },
+    {
+      "name": "DOB",
+      "value": "03/14/1971"
+    },
+    {
+      "name": "EMAIL",
+      "value": "jordan.testperson@example.com"
+    },
+    {
+      "name": "SSN pattern",
+      "pattern": "\\d{3}-\\d{2}-\\d{4}"
+    },
+    {
+      "name": "Card pattern",
+      "pattern": "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"
+    }
+  ],
+  "metadata_fields_scrubbed": [],
+  "metadata_fields_scrubbed_note": "Nothing was scrubbed: these are the exact bytes measured. info_fields lists every value left.",
+  "info_fields": [],
+  "oracle": {
+    "adjudicator": "agent (Opus), Lane B",
+    "adjudication_date": "2026-10-14",
+    "lock_sha256": "699690c19665dbc46479f2496245b4608bd54d920a56e8aef85bb4db2198cc1d",
+    "truth": "clean",
+    "expected_exit": 0,
+    "secrets": {
+      "ADDR": "removed",
+      "EIN": "removed",
+      "NAME1": "removed",
+      "SSN1": "removed"
+    },
+    "instances": [
+      {
+        "secret": "SSN1",
+        "loc": "T1",
+        "class": "removed",
+        "written": "666-51-4073",
+        "encoding": "page-text",
+        "fingerprints": [
+          "001900190019001000180014001000170013001a0016"
+        ],
+        "channels": [],
+        "r1_witness": false
+      },
+      {
+        "secret": "EIN",
+        "loc": "T1",
+        "class": "removed",
+        "written": "00-4857261",
+        "encoding": "page-text",
+        "fingerprints": [
+          "0013001300100017001b0018001a001500190014"
+        ],
+        "channels": [],
+        "r1_witness": false
+      },
+      {
+        "secret": "NAME1",
+        "loc": "T1",
+        "class": "removed",
+        "written": "Jordan Q. Testperson",
+        "encoding": "page-text",
+        "fingerprints": [
+          "002d0052005500470044005100030034001100030037004800560057005300480055005600520051"
+        ],
+        "channels": [],
+        "r1_witness": false
+      },
+      {
+        "secret": "ADDR",
+        "loc": "T1",
+        "class": "removed",
+        "written": "1600 Fictional Ave",
+        "encoding": "page-text",
+        "fingerprints": [
+          "001400190013001300030029004c00460057004c005200510044004f0003002400590048"
+        ],
+        "channels": [],
+        "r1_witness": false
+      }
+    ]
+  },
+  "labels_summary": {
+    "truth": "clean",
+    "cells": [],
+    "expected_exit": 0
+  }
+}
