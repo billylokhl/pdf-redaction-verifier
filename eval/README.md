@@ -357,6 +357,9 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     apart, the share that exits `0`, with the warning codes behind every
     exit `2`.
 
+  Each run appends the lock's sha256 to `results/lock-history.json`; a
+  lock that differs from the last one measured (relabelled after the
+  verifier ran) needs `--lock-change-reason`, which the history keeps.
   Only counts, with the lock's sha256, reach stdout and `--json`;
   per-file rows go to `results/<date>.json` in the local root. It exits
   `1` when any output gets no verdict (a crash, a timeout, an error

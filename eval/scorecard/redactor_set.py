@@ -33,7 +33,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from .metrics import CaseMetricRow, compute_metrics
 from .runner import CliResult, current_python, error_code, run_cli
@@ -391,6 +391,25 @@ def render(counts: Mapping[str, Any], sha: str) -> str:
     return "\n".join(lines)
 
 
+def check_lock_history(root: Path, sha: str, reason: str) -> str | None:
+    """Every measurement appends the lock's sha256 to
+    `results/lock-history.json`. A lock that differs from the last one
+    measured -- relabelled after the verifier has run -- needs a reason,
+    which the history keeps; returns the refusal, or None. (The local
+    root can still be rewritten by hand: the published counts carry the
+    sha256, which is what ties a number to its labels.)"""
+    path = root / "results" / "lock-history.json"
+    history = json.loads(path.read_text()) if path.exists() else []
+    if history and history[-1]["lock_sha256"] != sha and not reason:
+        return ("the adjudication lock changed since the last measurement "
+                f"({history[-1]['lock_sha256'][:12]} -> {sha[:12]}): pass --lock-change-reason")
+    history.append({"date": datetime.date.today().isoformat(), "lock_sha256": sha,
+                    "reason": reason if history and history[-1]["lock_sha256"] != sha else ""})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(history, indent=2) + "\n")
+    return None
+
+
 def write_detail(root: Path, detail: list[dict[str, Any]], counts: Mapping[str, Any],
                  sha: str) -> Path:
     out = root / "results" / f"{datetime.date.today().isoformat()}.json"
@@ -415,6 +434,10 @@ def main(args: Any) -> int:
                              boundary=REDACTOR_SET_DIR)
     rules_path = args.rules or root / "config" / "redact.yaml"
     sha = lock_sha(root, args.set)
+    refusal = check_lock_history(root, sha, args.lock_change_reason)
+    if refusal:
+        print(f"ERROR: {refusal}", file=sys.stderr)
+        return 1
     runs = run(root, args.set, rules_path, verify_path=candidate_verify_path(repo_root()),
                workdir=root / "results" / "verifier", timeout=args.timeout,
                workers=args.workers or default_workers(),

@@ -260,3 +260,13 @@ def test_run_cli_passes_a_secrets_file_as_it_is(tmp_path, monkeypatch):
 def test_the_redactor_set_root_is_gitignored():
     gitignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text()
     assert "/eval/scorecard/redactor_set_local/" in gitignore.splitlines()
+
+
+def test_a_changed_lock_needs_a_reason_and_is_kept(tmp_path):
+    assert rs.check_lock_history(tmp_path, "a" * 64, "") is None
+    assert rs.check_lock_history(tmp_path, "a" * 64, "") is None      # unchanged
+    assert "lock changed" in rs.check_lock_history(tmp_path, "b" * 64, "")
+    assert rs.check_lock_history(tmp_path, "b" * 64, "owner relabel, D07") is None
+    import json
+    history = json.loads((tmp_path / "results" / "lock-history.json").read_text())
+    assert [h["reason"] for h in history] == ["", "", "owner relabel, D07"]

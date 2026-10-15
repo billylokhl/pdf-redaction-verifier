@@ -449,6 +449,8 @@ def build_parser() -> argparse.ArgumentParser:
     rs_run.add_argument("--workers", type=int, default=None)
     rs_run.add_argument("--json", type=Path, default=None,
                         help="also write the counts (shareable) as JSON here")
+    rs_run.add_argument("--lock-change-reason", default="",
+                        help="why the adjudication lock differs from the last one measured")
     rs_run.add_argument("--allow-outside", action="store_true",
                         help="allow a --root outside the gitignored redactor_set_local/")
     rs_run.set_defaults(func=_cmd_redactor_set_run)
