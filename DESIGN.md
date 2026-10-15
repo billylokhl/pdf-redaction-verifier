@@ -517,6 +517,18 @@ without calling Vision, so a stuck Vision costs one deadline per run,
 not one per call or page. A page whose calls each return in time can
 still take up to its 147 calls' worth of deadlines; that is slow, not
 unbounded.
+The redesign's inventory (Phase 3a, shadow mode) charges every parse and
+walk to a work budget of 64 units per byte of the file plus a floor of
+1,000,000 ([ADR 0010](docs/adr/0010-readers-are-the-authority.md)); past
+it the file is flagged `BUDGET_EXHAUSTED`, never certified. What the
+reference graph's labels keep per revision (3a-7e-1) is charged at least
+its size in bytes as well -- a new reachable set, new structural records,
+a new revision record -- so the labels retain at most one byte per unit
+of work: at most 64 times the file's size plus about 1 MB, however many
+revisions rewrite it. Measured on many-revision shapes (each revision
+reaching a new object, adding an object stream, adding structural
+records, or only adding a cross-reference stream, n = 40 to 2,000):
+0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per byte of the file (a test pins the one-byte bound).
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
@@ -654,7 +666,12 @@ the gap is stated rather than implied away.
   to the document set. Measured on 488 real text-bearing PDFs with no
   secret in them, `ssn` or `us-phone` raised a hard finding on 28.3%,
   mostly digit runs inside hex or alphanumeric ids
-  (eval/spikes/RESULTS.md, "Phase 5 baseline").
+  (eval/spikes/RESULTS.md, "Phase 5 baseline"). So a class is not a
+  secret: with `--no-strict-classes` its matches are notices that never
+  change the exit code ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
+  `redaction_verifier/matching/policy.py` decides which rules are
+  informational, and `ScanReport` routes their findings to its notices as
+  they are recorded and their review warnings before the verdict).
 
 [docs/REDESIGN.md](docs/REDESIGN.md) is the plan to replace enumeration
 (searching the places this tool knows about) with an accounted ledger

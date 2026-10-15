@@ -518,7 +518,67 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     (R3, R6, R7). The item-7 timing test: revisions and objects scaled together (n vs 8n) --
     within the linear bound or flagged BUDGET_EXHAUSTED. The oracle's added per-revision
     page loads and pikepdf instances grow its cost (#52 item 4): re-measure the oracle's
-    time with each PR.
+    time with each PR. Split in three PRs (coordinator decisions Q1-Q8, 2026-10-15, owner
+    informed): 7e-1 reachable and STRUCTURAL with the REACHABLE gate, 7e-2 DRAWABLE,
+    ORPHANED and per-body labels, 7e-3 item 7 and the cost briefing.
+    Done (3a-7e-1 PR): labels.py gives each revision `Inventory.labels` -- its reachable
+    object numbers (every edge from the trailer, /Parent included: Q1, an ADR 0011 note) and
+    its STRUCTURAL records by stream body (the kind, the reachable source and key, or the
+    chain): cross-reference streams of the revision's chain, object streams home to a live
+    compressed entry (one home to nothing gets no label, Q4), the hint stream at the accepted
+    linearization dictionary's first /H offset (`Chain.linearization`; stale /L included,
+    Q8), and by key from reachable objects /Metadata, /EF entries, /JS and the catalog's
+    /OutputIntents profiles, the target a stream without /Subtype /Image or /Form, /BBox or
+    /Width. No flags (R3); a revision that reads nothing new shares its labels by identity --
+    as does one that only rewrites reachable objects with the same references (number,
+    generation, key path; none read for a by-key record, none an object stream home), the
+    catalog rewrite most updates make (found by the full suite: walking every such revision
+    again was revisions x objects on the trees tests' shapes), and one walked again to the
+    same labels; one without a page list resets the reuse; every step charged, labels made
+    again charged per retained element (RECORD_WORK 32); `Inventory.graph_work` (Q6). Gate (Q5): Check.REACHABLE, per
+    revision, ours exactly against MuPDF's `tobytes(garbage=1)` and libqpdf's QDF write;
+    the spike found both keep exactly every object a reference reaches from the trailer, and
+    that each writer drops references it rewrites though its reader reads them (a stream's
+    /Length, the trailer's /Encrypt, and in qpdf the trailer's /ID and /DecodeParms without
+    /Filter): added back as each reader reads them, failing closed where such a target holds
+    references (found by the gate runs: a trailer /ID by reference in 2 corpus files; an
+    uncompressed PDF attachment whose own table MuPDF's written file then holds, in the case
+    library). Measured on the final code: corpus 1,920 agree / 153 flagged / 0 unflagged
+    disagreements, unchanged (2,080 revisions' reachable sets compared); case library
+    435/27/0 (462 cases, 516 revisions); fuzz 501/1,499/0 (1,259 revisions). The check adds
+    p50 0.003 s, p90 0.009 s, p99 0.046 s, max 0.96 s per file to the corpus oracle (oracle
+    p50 0.329 s, p90 0.457, p99 0.946, max 20.0, against 3a-7d's 0.319, 0.422, 0.802,
+    17.0). STRUCTURAL in the
+    unflagged files' current revisions: hint streams 400 files (76 under a stale /L), XMP 712
+    files, JavaScript 86 files (159 streams), cross-reference streams 55 files (150), object
+    streams 55 files (284), embedded files 1, output intents 0. Graph work per file p50 634,
+    p99 26,503, max 132,589 units. Linearity: lines per charged unit about 11-12, at most 15
+    and not growing from n to 8n; the reviewer-style mutants on the charges are caught or
+    covered by another charge of the same loop.
+    Review of #153, round 1: (B1) item 5's keys label a stream only on the holder item 5
+    names -- /JS on an action with /S /JavaScript, /EF on a /Type /Filespec, /Metadata on an
+    allowlisted /Type or an image or form XObject -- and never on a resource-category or
+    /CharProcs dictionary (a Type 3 glyph or shading named /JS or /Metadata is drawn), each
+    reproducer a test agreeing with the gate; the reuse rule also compares what each body
+    holding those keys makes of them. (B2) A test per reuse condition, each failing under its
+    mutant. (B3) Labels' memory: the cross-reference streams one shared list, structural
+    records made on demand, whatever is new charged at least its size in bytes -- 0.30 to
+    0.86 bytes per unit of the labels' own work, at most 52.5 per byte of the file (was
+    316x on an xref-only shape;
+    DESIGN.md, "Bounded resources"). The hint stream only where nothing reachable references
+    it; MuPDF's rewritten /ID elements added back; an object stream a reference reaches is a
+    known gap, failing closed. Re-measured on c938578: corpus 1,920 / 153 / 0 (2,080
+    revisions), case library 437/27/0 (464 cases, 518 revisions), fuzz 501/1,499/0;
+    STRUCTURAL counts unchanged; graph work per file now p50 2,573, p99 47,960, max 232,020
+    (the memory charges); corpus work per byte max 5.98; the REACHABLE check p50 0.002 s,
+    p99 0.031 s, max 0.73 s (oracle p50 0.258 s). Lines per charged unit of the walk's own
+    work at most about 10 (memory charges zeroed in the linearity tests, tested apart).
+    Round 2: appearances (/AP's /N, /D, /R, their states) are holders drawn by name like
+    resource categories; a holder's /Type or /S read through a reference is part of the
+    reuse rule's read set (a REUSE test). For 7e-2 and 3b: a stream with both STRUCTURAL
+    and DRAWABLE labels is treated as drawable -- a page's /Contents also named by the
+    catalog's /Metadata is labelled XMP while it is drawn, and the worst status of every
+    label's decoder must win (ADR 0011 item 5), never the XMP decoder alone.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page

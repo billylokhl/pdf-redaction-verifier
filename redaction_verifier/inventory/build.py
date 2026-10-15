@@ -35,6 +35,7 @@ from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .annotations import build_annotations
 from .graph import Body, build_graph
+from .labels import build_labels
 from .pages import build_pages
 from .trees import build_trees
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
@@ -179,6 +180,7 @@ class _Builder:
         # The graph runs before the budget's flags are gathered: one it
         # leaves unfinished is never an unflagged inventory.
         trailers = [chain.sections[group[0]].trailer for group in chain.revisions]
+        graph_start = self.budget.work
         graph, graph_flags = build_graph(len(chain.revisions), self.changes, self._body_of,
                                          self._home_number, trailers, self.budget)
         self.flags.extend(graph_flags)
@@ -192,6 +194,10 @@ class _Builder:
             len(chain.revisions), self.changes, self._body_of, self._home_number, trailers,
             pages, self.budget)
         self.flags.extend(annotation_flags)
+        labels = build_labels(len(chain.revisions), self.changes, self._body_of,
+                              self._home_number, graph.edges, graph.trailers, pages,
+                              self._xref_streams(chain), self._hint_stream(chain), self.budget)
+        graph_work = self.budget.work - graph_start
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -202,7 +208,33 @@ class _Builder:
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
                          self.objects, self.streams, entries, graph, pages, trees,
-                         annotations, synthesized)
+                         annotations, synthesized, labels, graph_work)
+
+    def _xref_streams(self, chain: Chain) -> list[list[UnitRef]]:
+        """Each revision's own cross-reference streams (its sections', a
+        hybrid's /XRefStm included), as the OBJECT units read there."""
+        found: list[list[UnitRef]] = []
+        for group in chain.revisions:
+            units: list[UnitRef] = []
+            for index in group:
+                for part in (chain.sections[index], chain.sections[index].xref_stm):
+                    if part is None or not part.is_stream:
+                        continue
+                    ref = self.objects.get(part.offset)
+                    if ref is not None and ref.start == part.offset:
+                        units.append(ref)
+            found.append(units)
+        return found
+
+    def _hint_stream(self, chain: Chain) -> UnitRef | None:
+        """The stream object starting at the first offset /H names in the
+        accepted linearization dictionary (ADR 0011 item 5), if any."""
+        hint = chain.linearization.get(b"H") if chain.linearization is not None else None
+        first = hint.items[0] if isinstance(hint, PdfArray) and hint.items else None
+        offset = first.value if isinstance(first, PdfInt) else None
+        ref = self.objects.get(offset) if offset is not None else None
+        return ref if ref is not None and ref.start == offset and offset in self.stream_data \
+            else None
 
     def _claim(self, ref: UnitRef, span: Span, flags: tuple[Flag, ...] = ()) -> None:
         self.claims.append((ref, span))

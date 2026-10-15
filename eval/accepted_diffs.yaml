@@ -1674,3 +1674,583 @@
     Measured on the weekly macOS 26 runner.'
   cell: live.pixels
   pr: '#128'
+- case: layout.two-column-wrap
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here a right-column line sits between the halves
+    of a value wrapped inside the left column; with OCR the reference already exits 2 on OCR''s
+    own JOINED_LINES warning, and the candidate adds the Text layer''s, so only the count
+    changes (exit 2 -> 2). Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  cell: match.columns
+  pr: '#68'
+  env: ocr
+- case: layout.raw-font-coded-two-column-wrap
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here a right-column line sits between the halves
+    of a value wrapped inside the left column; with OCR the reference already exits 2 on OCR''s
+    own JOINED_LINES warning, and the candidate adds the Text layer''s, so only the count
+    changes (exit 2 -> 2). Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  cell: match.columns
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-ssn
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-ssn-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-multi
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-multi-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-overlapping
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.repeated-line-wraps-overlapping-pattern
+  old:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+  new:
+    exit: 2
+    error: null
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 2
+    - - - SHORT
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 4
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'PR #68, owner decision of 2026-10-11: the Text layer''s review net assembles a
+    known value from two or three pieces of different lines within five consecutive lines,
+    in any order (SecretMatcher.scattered), within a page and across a page break, so a value
+    split around a header, footer or other text, or with its halves in reverse order, is a
+    manual-review warning, never a finding. Here the values wrapped across lines and pages
+    are also assembled across the breaks, one more review warning per value on a file that
+    was already exit 2. Measured with OCR on the weekly macOS 26 runner (run 38735403761),
+    where Vision adds its own JOINED_LINES review warnings to both sides, so the keys differ
+    from this case''s unscoped no-OCR entry, which this one replaces with OCR (#147).'
+  pr: '#68'
+  env: ocr
+- case: layout.rotated270-split-pages-ssn
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
+- case: layout.rotated270-split-pages-ssn-pattern
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
+- case: layout.rotated270-split-pages-multi
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
+- case: layout.rotated270-split-pages-multi-pattern
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
+- case: layout.rotated270-split-pages-overlapping
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SHORT
+        - hard
+        - live
+      - 1
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SHORT
+        - hard
+        - live
+      - 1
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
+- case: layout.rotated270-split-pages-overlapping-pattern
+  old:
+    exit: 1
+    error: null
+    findings:
+    - - - SHORT
+        - hard
+        - live
+      - 1
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    exit: 1
+    error: null
+    findings:
+    - - - SHORT
+        - hard
+        - live
+      - 1
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - SHORT
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+    - - - SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  reason: 'OCR layer, attributed to PR #91 (OCR reads pages with vertical lines turned and
+    unstacked) in #147, not yet confirmed on macOS 26: on this /Rotate 270 page split across
+    a page break, Vision on the weekly macOS 26 runner (run 38735403761) reports vertical
+    lines, so OCR''s turned readings feed its cross-page review net, which adds a JOINED_PAGES
+    review warning per value. The Text layer''s hard finding stays, so the exit stays 1. No
+    difference without OCR (Linux), and none in a local macOS 27 run of the candidate; the
+    reference cannot be compared on macOS 27, where eval-ref-0 fails every OCR page.'
+  cell: match.page-break
+  pr: '#91'
+  env: ocr
