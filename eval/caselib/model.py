@@ -107,10 +107,44 @@ def expect(exit: int, findings: tuple[tuple[str, str], ...] = (),
 class KnownGap:
     """Today's tool gets this case wrong. *today* pins exactly what it
     reports instead, so any change — a fix, a partial fix (0 → 2), a
-    broken generator — fails the test until the label is updated."""
+    broken generator — fails the test until the label is updated.
+
+    For a bomb case (``Case.bomb``) today's tool may give no answer at
+    all: *outcome* pins that instead of *today* -- ``"hang"`` (killed at
+    the case's wall-clock cap), ``"memory"`` (killed at its memory cap) or
+    ``"error:CODE"`` (the CLI reported error CODE). Exactly one of the two
+    is set; if the case stops doing it, the test fails like any closed gap."""
 
     cell: str
-    today: Expect
+    today: Expect | None = None
+    outcome: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.today is None) == (self.outcome is None):
+            raise ValueError(f"known gap {self.cell}: give exactly one of today and outcome")
+        if self.outcome is not None and not (
+                self.outcome in ("hang", "memory")
+                or (self.outcome.startswith("error:") and len(self.outcome) > 6)):
+            raise ValueError(f"known gap {self.cell}: outcome must be hang, memory or "
+                             f"error:CODE, not {self.outcome!r}")
+
+
+@dataclass(frozen=True)
+class Bomb:
+    """A bomb or hang case (Phase 3d): built small, but made to cost a
+    reader time or memory. It is never scanned in the test process -- the
+    case library's test, the gallery, the scorecard and its differential
+    skip it -- and tests/test_bomb_cases.py judges it out of process,
+    through redaction_verifier.sandbox, killed at these caps (reviewed
+    like a label, sized from the owner's Mac with headroom for CI)."""
+
+    wall_clock_s: float
+    memory_bytes: int
+
+    def __post_init__(self) -> None:
+        if not 0 < self.wall_clock_s <= 900 or self.memory_bytes <= 0:
+            raise ValueError("a bomb's caps must be positive, and its wall clock at most 900 s "
+                             "(the suite's own timeout)")
 
 
 # The macOS the case labels are measured on: the owner's (README: results
@@ -177,6 +211,8 @@ class Case:
     # from the weekly macOS runner, where OCR runs on the CPU, and reviewed
     # like a label. None: the run's --timeout (default 60 s).
     scan_timeout: float | None = None
+    # A bomb or hang case: judged out of process under these caps.
+    bomb: Bomb | None = None
 
     @property
     def family(self) -> str:
@@ -221,6 +257,12 @@ class Case:
                                  "differs on an older macOS")
             if self.older_macos.today == self.expected:
                 raise ValueError(f"{self.id}: older_macos.today equal to expected: use None")
+        if self.known_gap is not None and self.known_gap.outcome is not None \
+                and self.bomb is None:
+            raise ValueError(f"{self.id}: only a bomb case can pin a hang, memory or error "
+                             "outcome")
+        if self.bomb is not None and (self.perf or self.scan_timeout is not None):
+            raise ValueError(f"{self.id}: a bomb case's caps replace perf and scan_timeout")
         if self.scan_timeout is not None and (
                 isinstance(self.scan_timeout, bool)
                 or not isinstance(self.scan_timeout, (int, float))
@@ -261,6 +303,7 @@ def case(
     perf: bool = False,
     older_macos: OlderMacOS | None = None,
     scan_timeout: float | None = None,
+    bomb: Bomb | None = None,
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -276,7 +319,7 @@ def case(
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
             requires=frozenset(requires), grid=grid, params=params,
             privacy_allowlist=privacy_allowlist, perf=perf, older_macos=older_macos,
-            scan_timeout=scan_timeout,
+            scan_timeout=scan_timeout, bomb=bomb,
         )
         return build
     return register

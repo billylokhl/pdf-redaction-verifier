@@ -160,7 +160,7 @@ def label_changes(registry: Mapping[str, Any],
             continue
         class_only = len(class_names) == len(case.rules)
         labels = [("expected", case.expected)]
-        if case.known_gap is not None:
+        if case.known_gap is not None and case.known_gap.today is not None:
             labels.append(("known_gap.today", case.known_gap.today))
         if case.older_macos is not None and case.older_macos.today is not None:
             labels.append(("older_macos.today", case.older_macos.today))
@@ -306,7 +306,7 @@ def _scan_case(case: Any, workdir: Path, have: frozenset[str] | None = None) -> 
     from caselib.run import judge
 
     labels = {"expected": case.expected}
-    if case.known_gap is not None:
+    if case.known_gap is not None and case.known_gap.today is not None:
         labels["known_gap.today"] = case.known_gap.today
     if case.older_macos is not None and case.older_macos.today is not None:
         labels["older_macos.today"] = case.older_macos.today
@@ -327,7 +327,7 @@ def select_cases(registry: Mapping[str, Any], have: frozenset[str], *,
     can build (*any_requires*: whatever they require). The A/B/C options
     are judged on the leak cases only."""
     return [c for _, c in sorted(registry.items())
-            if (any_requires or not (c.requires - have)) and not c.perf
+            if (any_requires or not (c.requires - have)) and not c.perf and c.bomb is None
             and any(r.get("class") in CLASSES for r in c.rules)]
 
 
