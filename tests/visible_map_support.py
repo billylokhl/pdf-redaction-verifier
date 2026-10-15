@@ -26,6 +26,7 @@ from typing import Any
 import pymupdf as fitz
 
 import verify
+from redaction_verifier.rules import load_rules
 from redaction_verifier.visible_map import plan
 from redaction_verifier.visible_map.plan import MapPlan
 from redaction_verifier.visible_map.sink import MapSink, offer
@@ -99,7 +100,7 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
             if not doc.needs_pass:
                 offer(the_sink, "document", doc.page_count)
         header = {
-            "rules": plan.rules_header(verify.load_rules(rules)),
+            "rules": plan.rules_header(load_rules(rules)),
             "sink": the_sink.to_header(),
             "report": report,
             "exit_code": code,
