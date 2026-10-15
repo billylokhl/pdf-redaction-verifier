@@ -39,21 +39,23 @@ REAL_CORPUS_DIR = Path(__file__).resolve().parent / "real_corpus"
 DEFAULT_MANIFEST = REAL_CORPUS_DIR / "manifest.json"
 
 
-def ensure_local_only(path: Path, *, allow_outside: bool = False) -> Path:
+def ensure_local_only(path: Path, *, allow_outside: bool = False,
+                      boundary: Path = REAL_CORPUS_DIR) -> Path:
     """Refuse a manifest or output *path* outside the gitignored
-    `real_corpus/` directory, unless the caller explicitly opts out. The
-    whole point of that directory is that its contents — SHA-256s,
-    relative file names, and scan artifacts that can carry a target's own
-    basename — never get committed or shared by accident; a path outside
-    it loses that guarantee silently."""
+    `real_corpus/` directory (or another gitignored *boundary*, such as
+    the real-redactor set's `redactor_set_local/`), unless the caller
+    explicitly opts out. The whole point of that directory is that its
+    contents — SHA-256s, relative file names, and scan artifacts that can
+    carry a target's own basename — never get committed or shared by
+    accident; a path outside it loses that guarantee silently."""
     if allow_outside:
         return path
     resolved = path.resolve()
-    boundary = REAL_CORPUS_DIR.resolve()
-    if resolved != boundary and boundary not in resolved.parents:
+    inside = boundary.resolve()
+    if resolved != inside and inside not in resolved.parents:
         raise SystemExit(
             f"refusing to use {path} — it is outside the local-only, gitignored "
-            f"{REAL_CORPUS_DIR} (docs: eval/README.md, \"The real-world corpus\").\n"
+            f"{boundary} (docs: eval/README.md, \"The real-world corpus\").\n"
             "Pass --allow-outside if you really mean this (e.g. an external drive) — "
             "you are then responsible for never committing or sharing that path."
         )

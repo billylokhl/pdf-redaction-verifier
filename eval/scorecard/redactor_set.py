@@ -1,0 +1,438 @@
+"""`scorecard redactor-set run`: the verifier measured on the real-redactor
+set (eval/README.md, "The real-redactor set"; operating plan milestone U,
+items U2 and U3).
+
+The set's outputs (a redaction tool run as-is, method m1, and re-saved
+with garbage collection, method m2) each carry an adjudication record,
+frozen under `adjudication.lock.json` before the verifier ever ran on
+them (`redactor_set.adjudicate`). This module runs the verifier's CLI on
+every locked output and compares, per method:
+
+- per file (`metrics.compute_metrics`): a silent miss is a leaking file
+  that exits 0; a downgrade, expected 1 and got 2;
+- per instance (U2): every planted instance the adjudication left
+  recoverable (partial residue included, owner decision 2026-10-14) must
+  be named by a finding, or for an expected exit 2 at least a warning,
+  that carries one of its rules and a storage class it can sit in. A
+  file that exits non-zero for another secret does not excuse it;
+- U3: of the m2 outputs whose truth is clean (the clean control, which
+  had nothing to redact, apart), the share that exits 0, and the warning
+  codes behind every exit 2.
+
+Only counts reach stdout and `--json`. Per-file rows go to
+`<root>/results/<date>.json`, inside the gitignored local root.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import datetime
+import json
+import re
+import sys
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from .metrics import CaseMetricRow, compute_metrics
+from .runner import CliResult, current_python, error_code, run_cli
+
+REDACTOR_SET_DIR = Path(__file__).resolve().parent / "redactor_set_local"
+METHODS = ("m1", "m2")
+
+# Where the adjudicated evidence sits -> the verifier storage classes
+# (redaction_verifier.model.STORAGE_CLASSES) a report may give it.
+# "orphaned" in the oracle means an object nothing references; the
+# verifier calls that "orphaned" when it trusts its reachability walk and
+# "unreferenced" when not. After the final %%EOF ("unindexed") the
+# verifier has no reachability to trust.
+STORAGES: dict[str, frozenset[str]] = {
+    "live": frozenset({"live"}),
+    "orphaned": frozenset({"orphaned", "unreferenced"}),
+    "superseded": frozenset({"superseded"}),
+    "unindexed": frozenset({"unreferenced", "orphaned"}),
+    "pixels-live": frozenset({"live"}),
+    "pixels-orphaned": frozenset({"orphaned", "unreferenced"}),
+}
+
+# Instance outcomes, best first.
+HIT = "hit"                      # a finding (or, where review is expected, a warning) names it
+DOWNGRADED = "downgraded"        # expected a finding; only a warning names it
+AMBIGUOUS = "ambiguous"          # named, but by a (rule, storage) another instance shares
+MISS = "miss"                    # nothing names it with its rule and storage
+OUTCOMES = (HIT, DOWNGRADED, AMBIGUOUS, MISS)
+
+
+def storage_of(row: Mapping[str, Any]) -> str:
+    """The storage of a recoverable row's evidence: the drafted one, an
+    adjudicator's override, or (for a row the oracle could not place) the
+    one its cell names."""
+    override = row.get("override") or {}
+    where = override.get("where") or row.get("where") or "unknown"
+    if where != "unknown":
+        return str(where)
+    cell = str(override.get("cell") or row.get("cell") or "")
+    head = cell.split(".")[0]
+    if head.startswith(("orphaned", "leftover")):
+        return "orphaned"
+    if head in ("superseded", "unindexed"):
+        return head
+    return "unknown"
+
+
+def load_rules(path: Path) -> tuple[list[str], list[str]]:
+    """The exact values and patterns of a redactor-style YAML rules file,
+    as strings (never YAML-coerced), in file order."""
+    import yaml
+
+    data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
+    return list(data.get("exact_values") or []), list(data.get("patterns") or [])
+
+
+def rules_for(secret_value: str, written: str | None, exact: list[str],
+              patterns: list[str]) -> frozenset[str]:
+    """The verifier rule names that can report an instance: the exact
+    value configured for its secret, and every pattern that matches the
+    string as written (or the configured value, when the oracle found it
+    somewhere no planted instance was written)."""
+    names = {f"exact_values[{i}]" for i, v in enumerate(exact) if v == secret_value}
+    text = written if written is not None else secret_value
+    names |= {f"patterns[{i}]" for i, p in enumerate(patterns)
+              if re.search(p, text, re.IGNORECASE)}
+    return frozenset(names)
+
+
+@dataclass
+class InstanceScore:
+    secret: str
+    loc: str
+    cls: str
+    cell: str | None
+    storage: str
+    expected_exit: int
+    known_gap: bool
+    provisional: bool
+    outcome: str = MISS
+    named_by: list[str] = field(default_factory=list)
+
+
+def _entry_id(e: Mapping[str, Any]) -> str:
+    return (f"{e.get('layer')}:{e.get('rule')}@{e.get('storage')}"
+            f"/p{e.get('page')}/o{e.get('object')}/{e.get('location') or e.get('code')}")
+
+
+def _names(e: Mapping[str, Any], rules: frozenset[str], storages: frozenset[str] | None,
+           page: int | None) -> bool:
+    """Whether report entry *e* names an instance with these rules, in one
+    of these storages and, when both say, on its page (the report counts
+    pages from 1, the truth manifest from 0)."""
+    if e.get("rule") not in rules:
+        return False
+    if storages is not None and e.get("storage") not in storages:
+        return False
+    return page is None or e.get("page") is None or e.get("page") == page + 1
+
+
+def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
+                    report: Mapping[str, Any], exact: list[str],
+                    patterns: list[str], values: Mapping[str, str]) -> list[InstanceScore]:
+    """Score every recoverable row of a locked, finalised adjudication
+    record against the verifier's JSON report. *values* maps a secret id
+    to its configured value."""
+    findings = [f for f in report.get("findings", []) if f.get("tier") == "hard"]
+    warnings = list(report.get("warnings", []))
+    scores: list[InstanceScore] = []
+    for row in record["instances"]:
+        override = row.get("override") or {}
+        cls = override.get("class", row["class"])
+        if cls == "removed":
+            continue
+        index = row["index"]
+        base = truth["instances"][index] if index >= 0 else None
+        written = base["written"] if base else None
+        rules = rules_for(values[row["secret"]], written, exact, patterns)
+        storage = storage_of(row)
+        storages = STORAGES.get(storage)  # None: unknown, any storage names it
+        page = base.get("page") if base and storage in ("live", "pixels-live") else None
+        score = InstanceScore(
+            secret=row["secret"], loc=row["loc"], cls=cls,
+            cell=override.get("cell", row.get("cell")), storage=storage,
+            expected_exit=int(override.get("expected_exit", row.get("expected_exit"))),
+            known_gap=bool(row.get("known_gap")), provisional=bool(row.get("provisional")))
+        by_finding = sorted({_entry_id(e) for e in findings if _names(e, rules, storages, page)})
+        by_warning = sorted({_entry_id(e) for e in warnings if _names(e, rules, storages, page)})
+        if by_finding or (score.expected_exit == 2 and by_warning):
+            score.outcome, score.named_by = HIT, by_finding or by_warning
+        elif by_warning:
+            score.outcome, score.named_by = DOWNGRADED, by_warning
+        scores.append(score)
+    # One report entry cannot vouch for two instances: a named instance
+    # counts only if a one-to-one matching of named instances to the
+    # entries naming them covers it (largest matching, by augmenting
+    # paths). Those it cannot cover are ambiguous, not hits.
+    owner: dict[str, int] = {}
+
+    def augment(i: int, seen: set[str]) -> bool:
+        for entry in sorted(scores[i].named_by):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            if entry not in owner or augment(owner[entry], seen):
+                owner[entry] = i
+                return True
+        return False
+
+    named = [i for i, sc in enumerate(scores) if sc.outcome != MISS]
+    matched = {i for i in named if augment(i, set())}
+    for i in named:
+        if i not in matched:
+            scores[i].outcome = AMBIGUOUS
+    return scores
+
+
+@dataclass
+class FileRun:
+    record: dict[str, Any]
+    truth: dict[str, Any]
+    result: CliResult
+
+    @property
+    def method(self) -> str:
+        return str(self.record["method"])
+
+    @property
+    def clean_control(self) -> bool:
+        return bool(self.truth.get("clean_control"))
+
+
+def metric_row(run: FileRun) -> CaseMetricRow:
+    report = run.result.report
+    return CaseMetricRow(
+        case_id=f"{run.method}/{run.record['stem']}",
+        truth=run.record["truth"],
+        expected_exit=int(run.record["expected_exit"]),
+        # The exit as reported: the set runs where every view is
+        # available (run() refuses a report without OCR).
+        actual_exit=None if run.result.crashed else int(report["exit_code"]),  # type: ignore[index]
+        has_hard_finding=bool(report and any(f.get("tier") == "hard"
+                                             for f in report.get("findings", []))),
+        crashed=run.result.crashed,
+        timed_out=run.result.timed_out,
+        elapsed=run.result.elapsed,
+        error_code=error_code(run.result),
+    )
+
+
+def load_locked(root: Path, set_name: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Every locked adjudication record of *set_name* with its truth
+    manifest; refuses a lock that does not verify."""
+    from redactor_set import adjudicate
+
+    problems, _ = adjudicate.verify(root, set_name)
+    if problems:
+        raise SystemExit("adjudication lock does not verify:\n  " + "\n  ".join(problems))
+    adj_dir = root / "adjudication" / set_name
+    out = []
+    for path in sorted(adj_dir.rglob("*.json")):
+        if path.name == "adjudication.lock.json":
+            continue
+        record = json.loads(path.read_text())
+        truth = json.loads((root / set_name / f"{record['stem']}.truth.json").read_text())
+        out.append((record, truth))
+    return out
+
+
+def lock_sha(root: Path, set_name: str) -> str:
+    from redactor_set import adjudicate
+
+    _, sha = adjudicate.verify(root, set_name)
+    return sha or ""
+
+
+def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
+              values: Mapping[str, str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """(counts for stdout and --json, per-file rows for the local root)."""
+    counts: dict[str, Any] = {}
+    detail: list[dict[str, Any]] = []
+    for method in METHODS:
+        mruns = [r for r in runs if r.method == method]
+        if not mruns:
+            continue
+        rows = [metric_row(r) for r in mruns]
+        file_metrics = compute_metrics(rows).to_jsonable()
+        outcomes: Counter[str] = Counter()
+        by_loc: dict[str, Counter[str]] = {}
+        misses_by_cell: Counter[str] = Counter()
+        known_gap_by_cell: Counter[str] = Counter()
+        partial: Counter[str] = Counter()
+        provisional = 0
+        for run, row in zip(mruns, rows):
+            scores = ([] if run.result.report is None else
+                      score_instances(run.record, run.truth, run.result.report, exact,
+                                      patterns, values))
+            for s in scores:
+                outcomes[s.outcome] += 1
+                by_loc.setdefault(s.loc, Counter())[s.outcome] += 1
+                if s.outcome != HIT:
+                    if s.known_gap:
+                        known_gap_by_cell[str(s.cell)] += 1
+                    else:
+                        misses_by_cell[f"{s.cell} ({s.outcome})"] += 1
+                if s.cls == "partial":
+                    partial[s.outcome] += 1
+                provisional += s.provisional
+            detail.append({
+                "method": method, "stem": run.record["stem"], "doc": run.record["doc"],
+                "truth": row.truth, "expected_exit": row.expected_exit,
+                "actual_exit": row.actual_exit, "crashed": row.crashed,
+                "error_code": row.error_code,
+                "warning_codes": sorted({w.get("code") for w in
+                                         (run.result.report or {}).get("warnings", [])}),
+                "instances": [s.__dict__ for s in scores],
+            })
+        counts[method] = {
+            "files": file_metrics,
+            "instances": {
+                "recoverable": sum(outcomes.values()),
+                **{o: outcomes[o] for o in OUTCOMES},
+                "by_location": {loc: dict(c) for loc, c in sorted(by_loc.items())},
+                "not_hit_by_cell": dict(sorted(misses_by_cell.items())),
+                "known_gap_not_hit_by_cell": dict(sorted(known_gap_by_cell.items())),
+                "partial_residue": dict(partial),
+                "provisional_mapping": provisional,
+            },
+        }
+    counts["u3"] = u3(runs)
+    return counts, detail
+
+
+def u3(runs: list[FileRun]) -> dict[str, Any]:
+    """Of the m2 outputs whose truth is clean, the share that exits 0;
+    the clean control (nothing to redact) on its own line."""
+    good = [r for r in runs if r.method == "m2" and r.record["truth"] == "clean"]
+    measured = [r for r in good if not r.clean_control]
+    exits = Counter(metric_row(r).actual_exit for r in measured)
+    reasons: Counter[str] = Counter()
+    for r in measured:
+        if r.result.report and r.result.report["exit_code"] == 2:
+            reasons.update({w.get("code") for w in r.result.report.get("warnings", [])})
+    control = [metric_row(r).actual_exit for r in good if r.clean_control]
+    n = len(measured)
+    return {
+        "n": n,
+        "exit_0": exits[0],
+        "exit_2": exits[2],
+        "exit_1_false_hard": exits[1],
+        "share_exit_0": round(exits[0] / n, 3) if n else None,
+        "exit_2_warning_codes": dict(sorted(reasons.items())),
+        "clean_control_exits": dict(Counter(control)),
+    }
+
+
+def run(root: Path, set_name: str, rules_path: Path, *, verify_path: Path, workdir: Path,
+        timeout: float, workers: int, seeds: set[int] | None = None) -> list[FileRun]:
+    """Run the verifier on every locked output (of *seeds*, when given)."""
+    locked = [(rec, truth) for rec, truth in load_locked(root, set_name)
+              if rec["method"] in METHODS and (seeds is None or truth.get("seed") in seeds)]
+    python_exe = current_python()
+
+    def one(item: tuple[dict[str, Any], dict[str, Any]]) -> FileRun:
+        rec, truth = item
+        case_id = f"{rec['method']}-{rec['sha256'][:16]}"
+        result = run_cli(python_exe, verify_path, root / rec["output"], [], workdir, case_id,
+                         timeout=timeout, secrets_file=rules_path)
+        return FileRun(rec, truth, result)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return list(pool.map(one, locked))
+
+
+def unmeasured(runs: list[FileRun]) -> list[str]:
+    """Why a run cannot be counted: a crash, a timeout, an error report,
+    or a report made without OCR (pixels instances would be unmeasured).
+    By method and sha prefix only."""
+    problems = []
+    for r in runs:
+        tag = f"{r.method}/{r.record['sha256'][:12]}"
+        report = r.result.report
+        if r.result.timed_out:
+            problems.append(f"{tag}: timed out")
+        elif r.result.crashed or report is None:
+            problems.append(f"{tag}: crashed")
+        elif report.get("error"):
+            problems.append(f"{tag}: error {error_code(r.result)}")
+        elif not report.get("environment", {}).get("ocr_available"):
+            problems.append(f"{tag}: OCR unavailable")
+    return problems
+
+
+def render(counts: Mapping[str, Any], sha: str) -> str:
+    lines = [f"adjudication lock sha256 {sha}"]
+    for method in METHODS:
+        if method not in counts:
+            continue
+        f, i = counts[method]["files"], counts[method]["instances"]
+        lines.append(f"{method}: files {f['total']} (leak {f['leak_cases']}, clean "
+                     f"{f['clean_cases']}); silent miss {f['silent_miss']}, downgrade "
+                     f"{f['downgrade']}, false hard {f['false_hard']}")
+        lines.append(f"  instances recoverable {i['recoverable']}: hit {i[HIT]}, downgraded "
+                     f"{i[DOWNGRADED]}, ambiguous {i[AMBIGUOUS]}, miss {i[MISS]}")
+        for cell, n in i["not_hit_by_cell"].items():
+            lines.append(f"    not hit: {cell}: {n}")
+        for cell, n in i["known_gap_not_hit_by_cell"].items():
+            lines.append(f"    not hit, known gap: {cell}: {n}")
+        if i["partial_residue"]:
+            lines.append(f"  partial residue: {i['partial_residue']}")
+    u = counts["u3"]
+    lines.append(f"U3: {u['exit_0']} of {u['n']} correctly redacted m2 outputs exit 0 "
+                 f"(exit 2: {u['exit_2']}, exit 1: {u['exit_1_false_hard']}); exit-2 codes "
+                 f"{u['exit_2_warning_codes']}; clean control exits {u['clean_control_exits']}")
+    return "\n".join(lines)
+
+
+def write_detail(root: Path, detail: list[dict[str, Any]], counts: Mapping[str, Any],
+                 sha: str) -> Path:
+    out = root / "results" / f"{datetime.date.today().isoformat()}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"lock_sha256": sha, "counts": counts, "files": detail},
+                              indent=2, sort_keys=True, default=str) + "\n")
+    return out
+
+
+def persona_values() -> dict[str, str]:
+    from redactor_set.persona import SECRETS
+
+    return {s.id: s.value for s in SECRETS}
+
+
+def main(args: Any) -> int:
+    from .corpus import ensure_local_only
+    from .differential import default_workers
+    from .refs import candidate_verify_path, repo_root
+
+    root = ensure_local_only(args.root, allow_outside=args.allow_outside,
+                             boundary=REDACTOR_SET_DIR)
+    rules_path = args.rules or root / "config" / "redact.yaml"
+    sha = lock_sha(root, args.set)
+    runs = run(root, args.set, rules_path, verify_path=candidate_verify_path(repo_root()),
+               workdir=root / "results" / "verifier", timeout=args.timeout,
+               workers=args.workers or default_workers(),
+               seeds=set(args.seed) if args.seed else None)
+    if not runs:
+        print("ERROR: no locked outputs to measure.", file=sys.stderr)
+        return 1
+    exact, patterns = load_rules(rules_path)
+    counts, detail = summarise(runs, exact, patterns, persona_values())
+    print(render(counts, sha))
+    path = write_detail(root, detail, counts, sha)
+    print(f"per-file rows: {path.relative_to(root)} (local only)", file=sys.stderr)
+    if args.json:
+        args.json.write_text(json.dumps({"lock_sha256": sha, **counts}, indent=2,
+                                        sort_keys=True) + "\n")
+    problems = unmeasured(runs)
+    if problems:
+        print("ERROR: not every output got a verdict:\n  " + "\n  ".join(problems),
+              file=sys.stderr)
+        return 1
+    return 0
