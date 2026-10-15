@@ -908,6 +908,48 @@ def test_a_leftover_with_an_impossible_process_id_is_left_alone(tmp_path) -> Non
     assert junk.exists()
 
 
+_LATE_SIGNAL = (
+    "import os, signal, sys, time\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "import verify\n"
+    "armed = []\n"
+    "real_main = verify.main\n"
+    "def main(argv=None):\n"
+    "    code = real_main(argv)\n"
+    "    armed.append(code)\n"
+    "    return code\n"
+    "verify.main = main\n"
+    "class Out:\n"
+    "    def __init__(self, real):\n"
+    "        self.real = real\n"
+    "    def write(self, text):\n"
+    "        return self.real.write(text)\n"
+    "    def flush(self):\n"
+    "        if armed:\n"
+    "            os.kill(os.getpid(), getattr(signal, sys.argv[2]))\n"
+    "            time.sleep(0.05)\n"
+    "        self.real.flush()\n"
+    "sys.stdout = Out(sys.stdout)\n"
+    "verify.run_cli(sys.argv[3:])\n"
+)
+
+
+@pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM"])
+@pytest.mark.parametrize("flag", [False, True])
+def test_a_signal_in_the_last_flush_keeps_the_verdict(signame, flag, tmp_path) -> None:
+    """After main() has returned the verdict, run_cli's last flush: a
+    signal there must not kill the process instead of exiting with the
+    verdict (issue #130), with or without the map."""
+    pdf = _leaky(tmp_path)
+    rules = write_rules(tmp_path, SSN_RULES)
+    extra = ["--visible-map", str(tmp_path / "out.pdf")] if flag else []
+    proc = subprocess.run(
+        [sys.executable, "-c", _LATE_SIGNAL, str(REPO_ROOT), signame,
+         "--target", str(pdf), "--secrets", str(rules), *extra],
+        capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+
+
 def test_closed_stderr_keeps_map_status_off_stdout(tmp_path) -> None:
     """With fd 2 closed, print(file=sys.stderr) would fall back to stdout:
     the map's status must vanish instead, so stdout stays identical."""
@@ -1052,7 +1094,7 @@ def test_the_parent_holds_no_more_memory_with_many_pages(tmp_path) -> None:
     find): the flag adds no per-page memory to the parent."""
     rules = write_rules(tmp_path, SSN_RULES)
     target = _dense_pdf(tmp_path / "dense.pdf", 2000)
-    assert _overhead(target, rules, tmp_path / "out.pdf", runs=2) < 10 * MB
+    assert _overhead(target, rules, tmp_path / "out.pdf") < 10 * MB
 
 
 # The map step alone, in a fresh interpreter with no scan to hide behind:

@@ -3841,6 +3841,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     map_job.close()
                 except Exception as exc:
                     _map_status(f"[ERROR] could not close the visible map's target: {exc}")
+                if _EXIT_AFTER_MAIN:
+                    # run_cli: the process ends right after this. Block the
+                    # signals before handing them back, so one that lands
+                    # in the last flush dies pending with os._exit instead
+                    # of undoing the verdict (#130).
+                    _block_exit_signals()
                 _restore_map_signals()
     except BaseException as exc:
         # BaseException, not Exception: a SystemExit (or other
@@ -3851,6 +3857,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         # other args) is unaffected: it is raised by parser.parse_args()
         # well before this try block starts.
         return crash(exc)
+
+
+# Set by run_cli only: main() is the whole process, which ends right
+# after it returns (in-process callers keep their signals as they were).
+_EXIT_AFTER_MAIN = False
+
+
+def _block_exit_signals() -> None:
+    """Block SIGINT and SIGTERM for the rest of the process (run_cli only:
+    os._exit follows). Best effort; never raises."""
+    with contextlib.suppress(BaseException):
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
 
 
 def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
@@ -3873,6 +3891,8 @@ def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
     because nothing here needs cleanup: findings are already printed and
     the PDF and subprocesses are closed by the time main() returns.
     """
+    global _EXIT_AFTER_MAIN
+    _EXIT_AFTER_MAIN = True
     try:
         code = main(argv)
     except SystemExit:
@@ -3901,6 +3921,9 @@ def run_cli(argv: Sequence[str] | None = None) -> NoReturn:
     # here we would skip os._exit and land back in the teardown this
     # function exists to avoid. main() guards its own stream loop the
     # same way.
+    # The verdict is decided: a SIGINT or SIGTERM from here on must not
+    # turn it into a death by signal (#130).
+    _block_exit_signals()
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
