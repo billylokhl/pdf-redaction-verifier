@@ -133,7 +133,8 @@ def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = No
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
     if finding.sample:
-        text += f" {mask(finding.sample, exact if exact is not None else ())}"
+        full = finding.layer == "OCR"
+        text += f" {mask(finding.sample, exact if exact is not None else (), full=full)}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
 

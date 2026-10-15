@@ -64,7 +64,7 @@ class TestParser:
                        "ORPHANED object 143"),
             ReportLine("pattern #1 (patterns[0]) ****5916", "Text", "on a page",
                        "page 3 (visual text layer)"),
-            ReportLine("built-in type: SSN ****6789", "OCR", "on a page", "page 1"),
+            ReportLine("built-in type: SSN ****", "OCR", "on a page", "page 1"),
         ]
 
     def test_an_unparseable_finding_line_fails_loudly(self) -> None:
@@ -138,7 +138,8 @@ class TestLabels:
     def test_pattern_and_builtin_samples_stay_masked(self, capsys, yaml_rules) -> None:
         out = _render(capsys, _leaky_report(), yaml_rules)
         assert "ACCT" not in out and "123-45" not in out
-        assert "5916" in out and "6789" in out
+        # The OCR finding is always fully masked (look-alike misreadings).
+        assert "5916" in out and "6789" not in out
 
     def test_native_names_are_quoted_sanitized_and_capped(self, capsys, tmp_path) -> None:
         name = "evil | Text | \x1b[31mspoof" + "x" * 60

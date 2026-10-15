@@ -77,7 +77,7 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
-def mask(matched: str, exact: MaskIndex | Iterable[str] = ()) -> str:
+def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = False) -> str:
     """Mask a matched sample for the report.
 
     Reveals at most 4 trailing characters and never more than half the
@@ -88,10 +88,12 @@ def mask(matched: str, exact: MaskIndex | Iterable[str] = ()) -> str:
     digits of any script, case and accents ignored). Only '****' is shown
     when the sample contains an exact value, when two consecutive revealed
     characters (or a lone revealed character) occur in one, or when the
-    tail touches one at an edge by a single character.
+    tail touches one at an edge by a single character. *full* (used for OCR
+    samples, whose characters may be look-alike misreadings of an exact
+    value's letters) never shows a tail.
     """
     reveal = min(4, len(matched) // 2)
-    if not reveal:
+    if full or not reveal:
         return "****"
     index = exact if isinstance(exact, MaskIndex) else MaskIndex(exact)
     if index:

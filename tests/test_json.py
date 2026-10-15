@@ -648,7 +648,9 @@ class TestNothingSecretLeaks:
         rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn"}])
         code, data = _run(pdf, rules, tmp_path)
         assert code == 1
-        assert {f["sample"] for f in data["findings"]} == {mask(SSN)}
+        # OCR samples are always fully masked; other layers keep the tail.
+        assert {f["sample"] for f in data["findings"] if f["layer"] != "OCR"} == {mask(SSN)}
+        assert {f["sample"] for f in data["findings"] if f["layer"] == "OCR"} <= {"****"}
         assert not self.DIGITS.search(json.dumps(data))
 
     def test_review_samples_are_masked(self, tmp_path) -> None:
@@ -745,7 +747,7 @@ class TestMaskedTailNeverShowsAnExactValue:
             {"name": "other value", "value": "Jane Q. Example"},
             {"name": "long ref", "pattern": r"\d{3}-\d{2}-\d{5}"},
         ])
-        assert samples == {"", "****7890"}
+        assert samples - {"****"} == {"", "****7890"}   # an OCR copy shows only "****"
 
 
 class TestMaskHelper:
@@ -832,3 +834,94 @@ def test_value_the_matcher_normalizes_differently_is_still_masked(tmp_path) -> N
     ])
     _, data = _run(pdf, rules, tmp_path)
     assert {f["sample"] for f in data["findings"]} == {"", "****"}
+
+
+class TestEveryReviewWarningMasksAgainstExactValues:
+    """Each REVIEW_* warning text that embeds a sample masks it against the
+    exact values (here the whole SSN, so the tail must be dropped)."""
+
+    @staticmethod
+    def _index_report() -> ScanReport:
+        from redaction_verifier.model import MaskIndex
+
+        report = ScanReport()
+        report.exact_index = MaskIndex([SSN])
+        return report
+
+    @staticmethod
+    def _patterns() -> list:
+        from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES, PatternRule, _valid_ssn
+
+        return [PatternRule("Any SSN", re.compile(BUILTIN_PATTERN_CLASSES["ssn"][0]), _valid_ssn)]
+
+    @staticmethod
+    def _assert_masked(report: ScanReport, code: str) -> None:
+        messages = [w for w in report.warnings if getattr(w, "code", "") == code]
+        assert messages, code
+        assert all("(sample ****)" in str(w) and "6789" not in str(w) for w in messages)
+
+    def test_hidden_text(self) -> None:
+        doc = fitz.open()
+        doc.new_page()
+        doc.embfile_add("notes.txt", f"attachment {SSN}".encode(), filename="notes.txt")
+        report = self._index_report()
+        verify.scan_hidden_objects(doc, SecretMatcher([]), self._patterns(), report)
+        self._assert_masked(report, "REVIEW_HIDDEN_TEXT")
+
+    def test_metadata_raw(self) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"import sys; sys.stdout.write('not json {SSN}')"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        report = self._index_report()
+        verify._collect_exiftool(proc, SecretMatcher([]), self._patterns(), report)
+        self._assert_masked(report, "REVIEW_METADATA_RAW")
+
+    def test_object_text_payload(self) -> None:
+        report = self._index_report()
+        verify._report_payload_hit(report, "object 5", "Any SSN", SSN, hard=False, origin={})
+        self._assert_masked(report, "REVIEW_OBJECT_TEXT")
+
+    @pytest.mark.parametrize("trailer, code", [
+        (b"/ID [(123456789) <44556677>]", "REVIEW_OBJECT_TEXT"),
+        (b"/ID [(123-45-) (6789)]", "REVIEW_ADJACENT_LITERALS"),
+    ])
+    def test_trailer_id_warnings(self, tmp_path, trailer, code) -> None:
+        from .test_trailers import NO_VALUES, _with_trailer
+
+        path = tmp_path / "t.pdf"
+        path.write_bytes(_with_trailer(trailer))
+        report = self._index_report()
+        doc = fitz.open(path)
+        try:
+            verify.scan_trailers(path, doc, NO_VALUES, self._patterns(), report)
+        finally:
+            doc.close()
+        self._assert_masked(report, code)
+
+    def test_fused_pattern_on_the_ocr_layer_is_fully_masked(self) -> None:
+        # Fused-line warnings come from the Text and OCR layers; for OCR the
+        # sample is never shown even when it shares nothing with a value.
+        assert mask("ABC-12345", [], full=True) == "****"
+
+
+class TestOcrSamplesAreAlwaysFullyMasked:
+    """OCR can misread a letter as a look-alike of an exact value's letter
+    (a Greek name read as Latin-looking text), which no folding recognises;
+    so an OCR sample never shows a tail."""
+
+    def test_json_and_text_reports(self, capsys) -> None:
+        from redaction_verifier.report import print_report
+
+        report = ScanReport()
+        report.record("OCR", "any", "page 1 (OCR)", "ref-2OõI", page=1)
+        report.record("Text", "any", "page 1 (visual text layer)", "ref-2OõI", page=1)
+        data = build_json_report(
+            report, 1, target=Path("t.pdf"), tool_version="x", ocr_available=True)
+        by_layer = {f["layer"]: f["sample"] for f in data["findings"]}
+        assert by_layer == {"OCR": "****", "Text": "****2OõI"}
+        print_report(report, Path("t.pdf"))
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if "STILL PRESENT" in ln]
+        ocr_line = next(ln for ln in lines if "OCR" in ln.split("|")[2])
+        text_line = next(ln for ln in lines if "Text" in ln.split("|")[2])
+        assert "2OõI" not in ocr_line and "2OõI" in text_line

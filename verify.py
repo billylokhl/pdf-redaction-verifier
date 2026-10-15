@@ -592,7 +592,8 @@ def scan_page_layer(
             "REVIEW_FUSED_PATTERN",
             layer,
             f"{layer}: {where}: sequence matching pattern rule {name!r} appears "
-            f"only when lines, columns or pages are fused (sample {mask(sample, report.exact_index)})"
+            "only when lines, columns or pages are fused (sample "
+            f"{mask(sample, report.exact_index, full=layer == 'OCR')})"
             " — possibly coincidental concatenation; manual review recommended",
             storage="live",
             rule=name,

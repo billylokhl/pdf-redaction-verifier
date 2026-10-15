@@ -472,7 +472,9 @@ none at all (just `****`) when the sample contains an exact value or its
 revealed tail shares two consecutive characters (or a lone character,
 or a single edge character) with one (compared both as the form the matcher
 searches and as letters and digits of any script, case, accents and
-punctuation ignored, non-ASCII decimal digits as ASCII; the index of exact values is
+punctuation ignored, non-ASCII decimal digits as ASCII; look-alike
+characters from other scripts are not recognised, so OCR-layer samples,
+where misreadings happen, never show a tail at all; the index of exact values is
 built once per run) — and
 control characters are stripped, so a crafted PDF cannot inject escape
 sequences into the terminal and the report cannot re-leak what it found.
