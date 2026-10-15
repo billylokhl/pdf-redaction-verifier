@@ -115,8 +115,10 @@ class TestSelfCheck:
                                [{"name": "ssn", "value": SSN}, {"name": "pair", "pattern": r"\d\d"}])
         pairs = [b for b in the_plan.boxes if b.label.startswith("pattern rule #1")]
         assert pairs and {b.label for b in pairs} == {"pattern rule #1 ****"}
-        assert all("****" == i.label.split(" ")[-1] for i in the_plan.listed
-                   if i.label.startswith("pattern rule #1"))
+        # Other \d\d matches (in the target's random /ID, say) may show a
+        # digit, but never one of the value's.
+        assert not any(set(i.label.split(" ")[-1][4:]) & set(SSN) for i in the_plan.listed
+                       if i.label.startswith("pattern rule #1"))
 
     def test_a_one_character_report_sample_on_a_value_is_hidden(self) -> None:
         rules = plan.Rules({"secrets": [["ssn", "123456789"]], "patterns": [],
@@ -258,6 +260,17 @@ class TestRendering:
         _run, the_plan, out = drawn(monkeypatch, tmp_path, _save(doc, tmp_path / "many.pdf"))
         assert len(the_plan.boxes) == plan.MAX_BOXES_PER_PAGE
         assert "INCOMPLETE: box cap reached on p.1" in map_text(out)
+
+    def test_the_map_is_the_same_bytes_every_time(self, tmp_path, monkeypatch) -> None:
+        """No random /ID: the map of one plan is one byte string, so no
+        random hex can match a short rule in a reader's search."""
+        pdf = _value_pdf(tmp_path / "same.pdf")
+        run = run_main(monkeypatch, pdf, write_rules(tmp_path, SSN_RULES))
+        data = pdf.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        first = render.build_map(data, digest, run.header)[0]
+        assert first == render.build_map(data, digest, run.header)[0]
+        assert b"/ID" not in first
 
     def test_latin_escapes(self) -> None:
         assert render.latin("café — 文") == "café -- \\u{6587}"

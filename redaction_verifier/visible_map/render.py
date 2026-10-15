@@ -391,7 +391,9 @@ def render(plan: MapPlan) -> tuple[bytes, Writer]:
     map_pages(w, plan)
     w.commit()
     w.doc.set_metadata(dict(META))
-    data = w.doc.tobytes(garbage=4, deflate=True)
+    # No /ID: the map is the same bytes for the same plan, and holds no
+    # random hex a reader (or a short rule) could mistake for data.
+    data = w.doc.tobytes(garbage=4, deflate=True, no_new_id=True)
     return markers.insert_markers(data), w
 
 
