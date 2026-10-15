@@ -914,6 +914,7 @@ def test_find_pdfs_matches_any_case_and_counts_what_it_skips(tmp_path):
         (root / name).write_bytes(b"%PDF-1.7\n")
     os.symlink(root / "a.pdf", root / "link-to-file.pdf")  # a link to a file is that file
     os.symlink(root / "missing.pdf", root / "dangling.pdf")
+    os.symlink("loop.pdf", root / "loop.pdf")  # a link to itself: not a regular file
     (root / "folder.pdf").mkdir()  # a directory named like a PDF is walked, not recorded
     (root / "folder.pdf" / "e.pdf").write_bytes(b"%PDF-1.7\n")
     outside = tmp_path / "outside"
@@ -924,8 +925,8 @@ def test_find_pdfs_matches_any_case_and_counts_what_it_skips(tmp_path):
     found = find_pdfs(root)
     assert [p.relative_to(root).as_posix() for p in found.pdfs] == [
         "B.PDF", "a.pdf", "folder.pdf/e.pdf", "link-to-file.pdf", "sub/c.Pdf"]
-    assert (found.other_files, found.not_regular, found.linked_dirs, found.unreadable_dirs) == (
-        2, 1, 1, 0)
+    assert (found.other_files, found.not_regular, found.linked_dirs, found.unreadable_dirs,
+            found.unreadable_files) == (2, 2, 1, 0, 0)
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
@@ -979,6 +980,7 @@ def test_corpus_build_counts_unreadable_files_without_naming_them(tmp_path, caps
     for text in ("private-", str(root)):
         assert text not in captured.out + captured.err
     assert [p.name for p in (tmp_path / "out").iterdir()] == ["manifest.json"]
+    assert (tmp_path / "out" / "manifest.json").stat().st_mode & 0o777 == 0o600  # new: private
 
 
 @pytest.mark.parametrize("layout", ["empty", "no-pdf", "only-unreadable", "unlistable"])
@@ -1072,7 +1074,7 @@ def test_manifest_write_is_atomic_and_leaves_nothing_behind(tmp_path, monkeypatc
     out.mkdir()
     manifest = out / "manifest.json"
     manifest.write_text("previous manifest\n")
-    manifest.chmod(0o600)
+    manifest.chmod(0o640)  # not mkstemp's 0600, so keeping the mode is tested
     bystander = out / "manifest.json.partial"
     bystander.write_text("a user's own file\n")
 
@@ -1088,7 +1090,7 @@ def test_manifest_write_is_atomic_and_leaves_nothing_behind(tmp_path, monkeypatc
 
     corpus_mod.build_manifest(root, manifest_path=manifest)
     assert len(json.loads(manifest.read_text())["entries"]) == 6
-    assert (manifest.stat().st_mode & 0o777) == 0o600
+    assert (manifest.stat().st_mode & 0o777) == 0o640
     assert bystander.read_text() == "a user's own file\n"
     assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "manifest.json.partial"]
 
@@ -1097,6 +1099,32 @@ def test_manifest_write_is_atomic_and_leaves_nothing_behind(tmp_path, monkeypatc
     manifest.write_text("previous manifest\n")
     corpus_mod.build_manifest(root, manifest_path=link)
     assert link.is_symlink() and len(json.loads(manifest.read_text())["entries"]) == 6
+
+
+@_POSIX_NON_ROOT
+@pytest.mark.parametrize("protect", ["manifest", "directory"])
+def test_manifest_write_refuses_a_protected_manifest_or_directory(tmp_path, protect):
+    """A plain write refused a write-protected manifest (exit 1); renaming a
+    new file over it would replace it silently. Both it and an unwritable
+    directory are refused without a path, leaving everything as it was."""
+    import scorecard.corpus as corpus_mod
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    out = tmp_path / "private-out"
+    out.mkdir()
+    manifest = out / "manifest.json"
+    manifest.write_text("previous manifest\n")
+    locked = manifest if protect == "manifest" else out
+    locked.chmod(0o444 if protect == "manifest" else 0o555)
+    try:
+        with pytest.raises(SystemExit, match="refusing to write") as exc:
+            corpus_mod.build_manifest(root, manifest_path=manifest)
+    finally:
+        locked.chmod(0o600 if protect == "manifest" else 0o700)
+    assert "private-out" not in str(exc.value)
+    assert manifest.read_text() == "previous manifest\n"
+    assert [p.name for p in out.iterdir()] == ["manifest.json"]
 
 
 def test_find_pdfs_refuses_a_root_that_is_not_a_directory(tmp_path):

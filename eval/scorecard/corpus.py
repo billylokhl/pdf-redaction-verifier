@@ -283,15 +283,24 @@ def _write_atomically(path: Path, text: str) -> None:
     """Replace *path*'s content with *text* all at once. The temporary file
     is created exclusively (never clobbering or following anything already
     there) with mode 0600, or the existing file's mode; it is removed if
-    anything fails. A symbolic link at *path* is written through, as a
+    anything fails. A write-protected manifest, or one in a directory that
+    cannot be written, is refused without a path. A symbolic link at *path* is written through, as a
     plain write would (`ensure_local_only` checked where it resolves)."""
     target = Path(os.path.realpath(path))
-    target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        mode: int | None = stat.S_IMODE(target.stat().st_mode)
-    except FileNotFoundError:
-        mode = None
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".partial")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            mode: int | None = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        # A write-protected manifest is refused, as a plain write would be:
+        # renaming over it would replace a file the user protected.
+        if mode is not None and not os.access(target, os.W_OK):
+            raise SystemExit("refusing to write: --manifest is write-protected")
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.",
+                                   suffix=".partial")
+    except OSError:
+        raise SystemExit("refusing to write: --manifest's directory is not writable") from None
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(text)
