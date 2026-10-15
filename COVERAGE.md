@@ -35,7 +35,7 @@ cells).
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
 | `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, or an EXIF/other thumbnail beyond the main decoded picture | — |
-| `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map · ✗ otherwise, or running across the page edge | ✗ | — |
+| `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map, also written vertically or running across the page edge · ✗ if the font has no Unicode map | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
 | `unused-resource` | **Referenced but never drawn** — an unused page resource | ✓ Objects | ✗ | ✗ | — |
@@ -134,11 +134,18 @@ resource but never drawn, they are not detected.
 These are not storage places but ways a value can be split so that no
 matcher sees it whole. Each is ✗:
 
-- A value split across a page break with a header, footer or page number
-  between its halves, or where a page's last line is not its
-  reading-order last line (two-column layouts, text rotated 270°).
-- A value wrapped inside one column of a multi-column page — joining a
-  page's lines interleaves the columns.
+- A value split around other text into more than three pieces, or with
+  its pieces more than five lines apart (see the review net below).
+- A letter-spaced value in fine print that the page's reading breaks into
+  one-character lines around other text — more than three pieces
+  (`match.letter-spaced-stack`).
+- A value wrapped over two fine-print lines closer together than the
+  line tolerance, set by the page's larger glyphs, which merges them into
+  one interleaved line (`match.tight-fine-print`). OCR, where it runs,
+  flags this one (exit `2`); it does not catch the letter-spaced stack.
+- A page-break split whose halves are written in different directions,
+  one horizontal and one vertical: no reading joins text of two
+  directions (`match.mixed-direction-split`).
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
@@ -154,6 +161,61 @@ matcher sees it whole. Each is ✗:
   In pixels only OCR can, and on macOS 27 it reads the stack as one
   sideways line, usually misread, so the value usually does not match. What
   macOS 26 returns was not measured.
+
+A value split around other text is read at the manual-review tier
+(`match.page-break-furniture`, `match.columns`): the Text layer's review
+net assembles a known value from two or three pieces of different lines
+within five consecutive lines, in any order — the end of one line,
+optionally a whole line, the start of another — so a value split across
+a page break with a header, footer or page number between its halves, a
+value wrapped inside one column of a two-column page, or one whose
+halves come in reverse order is a manual-review warning (exit `2`),
+never a finding (owner decision, 2026-10-11). Phase 5's geometry
+matching remains the fix for the hard tier. Five lines allow a header
+and a footer between the halves of a value in three pieces; the bound
+keeps unrelated lines of a page from being pooled into a value. Cost,
+measured with the Text layer alone: 3 of 6,000 files of a fabricated
+fuzz of clean off-page layouts and none of a 2,072-file corpus of real
+PDFs gain a review warning.
+
+One page-break split is read at the manual-review tier only
+(`match.page-break-off-page-half`): a value one of whose halves lies
+wholly off the page — the first half below or beside page 1's last line,
+or the second half above the next page's top edge. Text wholly off a
+page reads like a slug, which does not run on from or into the visible
+text, so the join is a manual-review warning (exit `2`), not a finding.
+A first half that is the visible text's last line, running on past the
+edge, is a hard page seam.
+
+Before #68, on a rotated page whose crop box does not sit on the media
+box, the old visible area misplaced some off-page text onto the page,
+and some of these layouts were findings (`1`) by that accident; they
+are manual review (`2`) now: a page-break split with either half wholly
+off the page (owner decisions, 2026-10-10 and 2026-10-11), a value
+wrapped from a visible line onto a line wholly off the page (2026-10-11),
+and vertically written text split at a page break with a half off the
+page, since the vertical readings across the edge feed no hard seam.
+
+One known false alarm comes with it (`false-alarm.slug-beside-visible-line`):
+a slug just past the page edge, only a word space from visible text on
+its baseline ('Page 7' then 'Job 123-45'), reads as one line with that
+text, exactly like a value running past the edge. If that line and the
+next page's first line together form a value, the page seam makes it a
+finding (`1`) on a clean document. A slug a column break away from
+visible text (a page number at the margin, the slug well past the edge)
+is read only as off-page text and gives manual review at most.
+
+A value formed by visible and off-page parts is a manual-review
+warning (exit `2`), never a finding and never silent, at every rotation
+(owner decisions, 2026-10-11): a visible part and an off-page part a
+column break apart on one line (`REVIEW_CROSS_LINE`, pinned by the
+clean `page.raw-font-coded-baseline-off-page-*` cases), a value wrapped
+from the last visible line onto a line wholly below the page
+(`REVIEW_CROSS_LINE`), or carried from a page's last line onto text
+wholly above the next page's top edge (`REVIEW_CROSS_PAGE`; both
+pinned by `page.raw-font-coded-carried-off-page-*`). The same joins
+flag, by design, the odd clean page whose visible text and an off-page
+slug happen to form a value: review-tier noise, 3 of 6,000 files of a fabricated fuzz of clean off-page layouts (0.05%) and none of a 2,072-file corpus of real PDFs, read by the Text layer alone.
 
 ## What ⚑ costs, and what comes next
 
@@ -176,4 +238,8 @@ flagging it:
 
 The Binary layer (qpdf) is a cross-check with a second PDF parser rather
 than a row of its own: it sees only objects reachable from the file's
-root, so it is not a backstop for orphaned or superseded content.
+root, so it is not a backstop for orphaned or superseded content. The
+document `/ID` elements qpdf generates in its output (they are not in the
+file) are blanked before that scan whenever they can be told apart from
+the file's own; the file's own `/ID` element that qpdf keeps is still
+scanned, as qpdf writes it (hex).

@@ -356,7 +356,13 @@ The reference runs with a `qpdf` shim first on its `PATH` that adds
 `/ID` seeded by the current second, which the case library's `SHORT`
 rule (`45-67` → `4567`) matched about once in 2,000 scans — a warning
 that came and went with the clock. The shim removes only that input; the
-candidate passes the flag itself.
+candidate passes the flag itself. The candidate also blanks the `/ID`
+elements qpdf generates before its Binary sweep (CHANGELOG, "Binary
+layer: the `/ID` qpdf generates is not scanned"), which the reference
+cannot: a case whose generated `/ID` spelled a value rule would be a
+stable "warning removed" difference, listed with that reason (and as
+weaker only when it moves the case's exit to 0: weaker is judged by exit
+code).
 Exact legacy warning codes and messages are deliberately not part of the
 key. `OCR_UNAVAILABLE`/`TOOL_MISSING` warnings are dropped and the exit
 recomputed without them first (mirroring `caselib.run.judge`), so the key
@@ -499,6 +505,45 @@ username, hostname, or email address in it.
 `corpus build` picks up only files named `*.pdf` in lower case: rename or
 link any `.PDF` files first, or they are silently left out.
 
+A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
+abort on the first password-protected or corrupt file, so the exemption
+below could never be reached. Each entry now carries `probe`: `"ok"`,
+`"password"` (opens but needs a password: the CLI's `PDF_PASSWORD`),
+`"unreadable"` (MuPDF cannot open it: the CLI's `PDF_UNREADABLE`) or
+`"text-unreadable"` (opens, but reading a page's text fails; the CLI has
+no matching error code and scans it normally). Such a file's
+`text_bearing` is `null`, unknown, and its producer family `"unknown"`,
+since neither was read; multi-revision is still measured from the raw
+bytes. `corpus run` counts a `"password"` or `"unreadable"` file only in
+`all` (its exit 2 is a review verdict, as below), in `text-unknown`, and
+in `probe:password` or `probe:unreadable` — never in a measured stratum
+(text-bearing, text-free, the revision strata or a producer family). The
+CLI's error report on it has no findings, so there it would only add an
+unscanned file to the false-hard denominator: as text-bearing, of the
+stratum the redesign's targets are measured on. `all` does include them,
+so its false-hard denominator counts files nothing scanned: read false
+hard on a measured stratum.
+
+That placement is decided by the build-time probe, so `corpus run` exits
+1 when the scan does not bear the probe out, listing each such file by
+SHA-256 prefix (`probe` lines): a `"password"` or `"unreadable"` file the
+CLI did not report as `PDF_PASSWORD` / `PDF_UNREADABLE` (a PyMuPDF
+upgrade can make a file readable, and its findings would otherwise
+vanish from every measured stratum), an `"ok"` file the CLI could not
+open, and every `"text-unreadable"` file, which the CLI scans but no
+text stratum can hold. Rebuild the manifest for the first two. A
+text-unreadable file keeps the run failing until the owner decides how
+to count it: open an issue rather than deleting the file, since dropping
+every file the tool struggles with would bias the corpus toward easy
+files and flatter the rates. The build
+prints only how many there were, never which, and never keeps the
+exception's message (it can name the path). A manifest written before
+the field existed loads with `probe` `"ok"`; one written now does not
+load in older code (it rejects the new field), so rebuild it after
+switching back. An unknown `probe` value, a `text_bearing` that is not
+`true`, `false` or `null`, or a pair that disagrees (`text_bearing` is
+known exactly when the probe is `"ok"`), is refused, not made a stratum.
+
 ```bash
 # Build the manifest from a directory of real PDFs (never committed):
 PYTHONPATH=eval:. python -m scorecard corpus build --root ~/corpus
@@ -513,7 +558,8 @@ PYTHONPATH=eval:. python -m scorecard corpus run --root ~/corpus \
 
 `corpus run` exits 1 when a manifest file is missing, changed or vanishes
 mid-run (it scans only the rest), when any scan has no verdict as above,
-or when nothing was scanned — each would leave the clean-side rates
+when a scan contradicts the build-time probe (above), or when nothing
+was scanned — each would leave the clean-side rates
 describing something other than the manifest. The per-file lines name a
 file by its SHA-256 prefix; the `MISSING`/`CHANGED` lines before them give its
 manifest path, since that is what you fix. One exception (owner's
@@ -585,8 +631,19 @@ What each part of the output means:
   `stream_data`, `object_value`, `member_value`, `trailer_value`,
   `libqpdf_warning`, `dead_bodies`, `qpdf_check` (a WARNING or ERROR
   line outside the written allowlist below), `mupdf_warning`,
-  `needs_password`, `encryption`, `oracle_error`, `tiling`),
-  `crashes`, `timeouts`, `unverified`, `inconsistent`.
+  `needs_password`, `encryption`, `page_list` and `page_attribute`
+  (since 3a-7b: each revision's pages in order, and each page's
+  inherited `/Resources`, `/MediaBox`, `/CropBox`, `/Rotate` as written,
+  against MuPDF's own inheritance and a second libqpdf instance that
+  pushes them to the pages, owner decision 9; and the page as MuPDF
+  shows it -- media box, crop box, rotation, rectangle -- against what
+  those attributes say it is), `oracle_error`, `tiling`),
+  `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
+  a user password is an unflagged `needs_password` disagreement, so it
+  fails the gate. `corpus build` can now record such a file (above),
+  where it used to abort, so a corpus holding one fails `inventory run`
+  instead of never reaching it; how the gate should count it is still
+  open (issue #48, item 3).
 - `unflagged_agree`, and `unflagged_agree_encrypted`: encrypted files
   whose object sets agree but whose bytes and values are not compared
   until 3a-8/9. A revision is exempted only when our trailer, MuPDF and
@@ -596,8 +653,8 @@ What each part of the output means:
   trailers carry an `/Encrypt` entry.
 - `qpdf_check_errors_on_agree`: agreeing files where `qpdf --check`
   printed an `ERROR` line (exit 2) the allowlists cover (page-tree
-  semantics, the reference graph's, 3a-7). ERROR lines are gated like
-  WARNING lines since 3a-6b.
+  semantics until 3a-7b, which flags them; now only page content
+  syntax). ERROR lines are gated like WARNING lines since 3a-6b.
 - `flagged`, `flag_rate`, and `flags`: files per flag reason, the top ten
   reasons, and files with exactly one reason. A flagged file is never
   compared with the readers: the inventory said the readers may disagree,
@@ -629,27 +686,34 @@ What each part of the output means:
   is compared with libqpdf exactly (kinds, string bytes, integers and
   reals as written, references by number and generation) and with MuPDF
   allowing a real one 32-bit float step from ours (MuPDF holds reals in
-  32 bits); a reference to an object number with no body reads as null.
+  32 bits); references are compared as written -- since 3a-7a the
+  inventory flags any that does not resolve (`REF_DANGLING`,
+  `REF_GENERATION`), so none reaches the comparison.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
-applied to `--check` lines and to libqpdf's warnings alike: page-tree
-semantics (3a-7's) and a content stream's own syntax (Phase 4's), as in
-3a-6 -- substrings of a line, not anchored (issue #44 tracks narrowing
-them); and since 3a-6b, entries that each match one whole line on
+applied to `--check` lines and to libqpdf's warnings alike: a content
+stream's own syntax (Phase 4's), as in 3a-6 -- a substring of a line, not
+anchored (issue #46 tracks narrowing it; the page-tree substrings went
+with 3a-7b, which flags any tree off the canonical shape, as did the
+retyped-catalog exemption); and since 3a-6b, entries that each match one whole line on
 the exact path, each with a reader-agreement test in
 `tests/test_inventory_values.py`: linearization hint-table lint
 (`LINEARIZATION_LINT`, only on `--check` lines of a file qpdf calls
 linearized; 15 messages of qpdf's linearization checker:
 readers do not read objects through hint tables), Flate data cut short
 in a stream the inventory does not decode (`TRUNCATED_FLATE`, at that
-stream's data start; content decoding is Phase 4's), and a reference to
-object 0, which both readers read as null (`OBJECT_ZERO_REFERENCE`,
-until 3a-7 flags dangling references); since 3a-6c, qpdf's warning on an
-in-use entry at offset 0 (`OFFSET_ZERO`, tested in
-`tests/test_inventory_decisions.py`), which the inventory reads as no
-object -- the oracle drops such an entry from qpdf's map only after MuPDF
-and libqpdf have both read it as null.
+stream's data start; content decoding is Phase 4's) -- the entry for a
+reference to object 0 (`OBJECT_ZERO_REFERENCE`) went with 3a-7a, which
+flags it `REF_DANGLING`; since 3a-6c, qpdf's warning on an in-use entry
+at offset 0 (`OFFSET_ZERO`, tested in `tests/test_inventory_decisions.py`),
+which the inventory reads as no object -- the oracle drops such an entry
+from qpdf's map only after MuPDF and libqpdf have both read it as null.
+And one whole-line entry on qpdf's own line, which carries no path
+(issue #88): a page content stream's syntax error in a token starting at
+byte 0, which qpdf prints with no offset, `page object N G stream N G
+(content): ...` (one stream or an array of them; `CONTENT_AT_ZERO`) --
+content syntax is Phase 4's, as for the `(content, offset N)` form.
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader

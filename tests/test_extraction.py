@@ -9,6 +9,12 @@ import json
 import math
 from typing import Any
 
+import caselib
+from caselib.families.raw_cells import (BASELINE_GAPS, BREAK_LAYOUTS, OFF_PAGE_CARRY,
+                                        SCATTERED, TABLE_ROW_OFF_PAGE, page_break_at_edge,
+                                        table_row_beside_off_page, value_carried_off_page,
+                                        value_scattered,
+                                        visible_beside_off_page)
 import pymupdf as fitz
 import pytest
 
@@ -16,9 +22,13 @@ import verify
 
 from redaction_verifier.matching import SecretMatcher, normalize_string
 from redaction_verifier.model import ScanReport, Secret
-from redaction_verifier.views import TEXT_GENUINE_READINGS, extract_visual_text, ocr
+from redaction_verifier.rules import load_rules
+from redaction_verifier.views import (TEXT_GENUINE_READINGS, TEXT_SEAM_READINGS,
+                                      TEXT_SCATTER_READINGS, TEXT_TAILS_INTO_NEXT_PAGE,
+                                      extract_visual_text,
+                                      ocr)
 
-from .conftest import HAS_OCR, SSN
+from .conftest import HAS_OCR, SSN, report_lines, run_verify
 
 
 def _dom_finds(page: fitz.Page, normalized_secret: str) -> bool:
@@ -97,6 +107,104 @@ class TestVisualOrder:
             doc.close()
 
 
+
+def _overhanging_crop_page(crop: tuple[float, float, float, float] | None, rotate: int,
+                           on_page: tuple[int, int], off_page: tuple[int, int],
+                           user_unit: float = 1) -> fitz.Document:
+    """A 595x842 page with an optional crop box (one reaching past the
+    media box, too), rotated, with the SSN drawn once inside the visible
+    area and once outside it."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    # Set directly: PyMuPDF's set_cropbox refuses a box past the media box.
+    if crop is not None:
+        doc.xref_set_key(page.xref, "CropBox", "[%g %g %g %g]" % crop)
+    doc.xref_set_key(page.xref, "Rotate", str(rotate))
+    if user_unit != 1:
+        doc.xref_set_key(page.xref, "UserUnit", str(user_unit))
+    font = doc.get_new_xref()
+    doc.update_object(font, "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>")
+    doc.xref_set_key(page.xref, "Resources", f"<</Font<</F1 {font} 0 R>>>>")
+    contents = doc.get_new_xref()
+    doc.update_object(contents, "<<>>")
+    doc.update_stream(contents, (
+        f"BT /F1 9 Tf {on_page[0]} {on_page[1]} Td (VISIBLE {SSN}) Tj ET\n"
+        f"BT /F1 9 Tf {off_page[0]} {off_page[1]} Td (HIDDEN 987654321) Tj ET\n"
+    ).encode())
+    doc.xref_set_key(page.xref, "Contents", f"{contents} 0 R")
+    return fitz.open("pdf", doc.tobytes())
+
+
+class TestVisibleAreaOnRotatedCrops:
+    """Glyphs are reported with the visible area (crop box ∩ media box,
+    scaled by /UserUnit) at the origin whatever the rotation. Derotating
+    page.rect has the right size but, on a rotated page whose crop box
+    reaches past its media box or whose /UserUnit is not 1, the wrong
+    offset — which filed visible text as off-page (reading 3) and could
+    split a value between the two readings."""
+
+    # (crop box, a point inside crop ∩ media, a point inside the media box
+    # but outside the crop box), all in PDF user space.
+    CASES = [
+        ((0, 200, 612, 992), (300, 500), (300, 100)),
+        ((-100, -100, 400, 600), (150, 300), (450, 300)),
+        ((200, 300, 900, 1000), (300, 600), (60, 600)),
+        ((50, 60, 500, 700), (200, 400), (520, 400)),  # control: inside the media box
+    ]
+
+    @staticmethod
+    def _assert_readings(doc: fitz.Document) -> None:
+        try:
+            page = doc[0]
+            # Positive control: MuPDF itself shows the one and not the other.
+            shown = page.get_text("text")
+            assert "VISIBLE" in shown and "HIDDEN" not in shown
+            readings = extract_visual_text(page)
+            visible, off = readings[0], readings[3]
+            assert SSN.replace("-", "") in normalize_string(visible), readings
+            assert "HIDDEN" not in visible
+            assert "HIDDEN" in off and "VISIBLE" not in off
+        finally:
+            doc.close()
+
+    @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+    @pytest.mark.parametrize(("crop", "on_page", "off_page"), CASES)
+    def test_visible_and_off_page_text_land_in_the_right_reading(
+        self, crop, on_page, off_page, rotate
+    ) -> None:
+        self._assert_readings(_overhanging_crop_page(crop, rotate, on_page, off_page))
+
+    @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+    @pytest.mark.parametrize(("crop", "on_page", "off_page"), [
+        (None, (100, 100), (700, 100)),               # past the media box
+        ((0, 200, 612, 992), (300, 500), (300, 100)),  # crop past the media box
+    ])
+    def test_user_unit_other_than_one(self, crop, on_page, off_page, rotate) -> None:
+        # /UserUnit 2 doubles the page and every glyph position alike.
+        self._assert_readings(
+            _overhanging_crop_page(crop, rotate, on_page, off_page, user_unit=2))
+
+    @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+    @pytest.mark.parametrize("crop", [
+        (700, 100, 900, 400),   # wholly outside the media box
+        (60, 60, 60, 60),       # a point inside it
+    ])
+    def test_empty_crop_box_and_media_box_intersection(self, crop, rotate) -> None:
+        # Nothing is drawn, and MuPDF falls back to a 612x792 frame at the
+        # origin. The readings follow that frame at every rotation, as at
+        # /Rotate 0: inside it, reading 0; past it, reading 3.
+        doc = _overhanging_crop_page(crop, rotate, (150, 150), (700, 150))
+        try:
+            page = doc[0]
+            assert page.get_text("text").strip() == ""          # control
+            assert sorted(page.rect[2:]) == [612, 792]           # control
+            readings = extract_visual_text(page)
+            assert "VISIBLE" in readings[0] and "HIDDEN" not in readings[0], readings
+            assert "HIDDEN" in readings[3] and "VISIBLE" not in readings[3], readings
+        finally:
+            doc.close()
+
+
 def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
     """One list of lines per page (an empty list is a blank page);
     rotate=90 writes each line vertically."""
@@ -113,15 +221,23 @@ def _build(pages: list[list[str]], *, rotate: int = 0) -> fitz.Document:
 
 def _scan(doc: fitz.Document, *, layer: str = "Text", extractor=None,
           hard_variants: int = TEXT_GENUINE_READINGS,
-          secrets=(("SSN", SSN),), fail_fast: bool = False) -> ScanReport:
+          seam_variants: int | None = TEXT_SEAM_READINGS,
+          tails_into_next: tuple[int, ...] = TEXT_TAILS_INTO_NEXT_PAGE,
+          scatter_readings: tuple[int, ...] = TEXT_SCATTER_READINGS,
+          secrets=(("SSN", SSN),), patterns=(), fail_fast: bool = False) -> ScanReport:
+    """scan_page_layer as the CLI runs the Text layer (pass hard_variants,
+    seam_variants=None, tails_into_next=() and scatter_readings=() for
+    OCR)."""
     report = ScanReport()
     matcher = SecretMatcher(
         [Secret(name, normalize_string(v)) for name, v in secrets])
     try:
         verify.scan_page_layer(doc, matcher, report, layer=layer,
                                extractor=extractor or extract_visual_text,
-                               note="visual text layer", patterns=[],
-                               hard_variants=hard_variants, fail_fast=fail_fast)
+                               note="visual text layer", patterns=patterns,
+                               hard_variants=hard_variants, seam_variants=seam_variants,
+                               tails_into_next=tails_into_next,
+                               scatter_readings=scatter_readings, fail_fast=fail_fast)
     finally:
         doc.close()
     return report
@@ -174,7 +290,10 @@ class TestSamePageTiers:
 
     def test_each_page_gets_its_own_cross_line_warning(self) -> None:
         report = _scan_pages([["a 123-45-", "6789 x"], ["b 123-45-", "6789 y"]])
-        assert report.warnings == [line(1), line(2)]
+        # Page 2 also draws a page-break review: page 1's '6789 x' and
+        # page 2's 'b 123-45-' form the value in reverse order, a few lines
+        # apart (SecretMatcher.scattered).
+        assert report.warnings == [line(1), line(2), crossing(2)]
 
     def test_confirmed_leak_draws_no_coincidence_warning(self) -> None:
         # Regression: vertical readings called a secret found hard on one
@@ -345,7 +464,9 @@ class TestPageBreakBackstop:
         # muted the page-break warning for the real split on pages 2-4.
         report = _scan_pages([["Qty 123-45", "6789 units"],
                               ["Employee SSN 123-45"], [], ["6789 end of record"]])
-        assert report.warnings == [line(1), crossing(4)]
+        # crossing(2): page 2's '...123-45' and page 1's '6789 units' form
+        # the value in reverse order across the first break, also reviewed.
+        assert report.warnings == [line(1), crossing(2), crossing(4)]
 
     def test_a_confirmed_leak_does_not_hide_another_location(self) -> None:
         report = _scan_pages([["SSN 123-45-6789", "id 123", "45-"], ["6789 x"]])
@@ -358,6 +479,344 @@ class TestPageBreakBackstop:
         assert report.warnings == [crossing(2)]
 
 
+
+# The case library's font-coded layouts: horizontal text running past the
+# crop box or past the media box under a crop box that reaches beyond it,
+# and text written vertically off the page, each at /Rotate 0 and 270.
+ACROSS_THE_EDGE = sorted(
+    case_id for case_id in caselib.load()
+    if case_id.startswith(("page.raw-font-coded-runs-", "page.raw-font-coded-vertical-off-page-")))
+NO_ACROSS_READINGS = 4    # readings 0-3, as before the readings across the edge
+
+
+class TestReadingsAcrossTheVisibleEdge:
+    """Readings 4-6 read every glyph of one writing direction, visible or
+    not, so a value running across the edge of the visible area, or
+    written vertically outside it, is read whole and found hard. Text
+    wholly off the page never makes a hard page seam, a column gap keeps
+    an off-page slug apart from a visible line on its baseline, and the
+    line tolerance across the edge is the visible text's."""
+
+    def test_the_layouts_are_in_the_case_library(self) -> None:
+        assert len(ACROSS_THE_EDGE) == 8, ACROSS_THE_EDGE
+
+    @pytest.mark.parametrize("case_id", [*ACROSS_THE_EDGE, "page.runs-off-right-edge-embedded-font"])
+    def test_font_coded_value_is_found_hard(self, case_id: str, tmp_path) -> None:
+        pdf = tmp_path / "case.pdf"
+        caselib.REGISTRY[case_id].build(pdf)
+        assert _where(_scan(fitz.open(pdf))) == [PAGE.format(1)]
+
+        # Without readings 4-6 the value is split or scrambled: no reading
+        # holds it whole, so nothing is found hard.
+        def without_across(page: fitz.Page) -> list[str]:
+            readings = extract_visual_text(page)
+            return readings[:NO_ACROSS_READINGS] + readings[TEXT_GENUINE_READINGS:]
+
+        assert _scan(fitz.open(pdf), extractor=without_across,
+                     hard_variants=NO_ACROSS_READINGS).findings == []
+
+    def test_visible_and_off_page_readings_keep_their_content(self) -> None:
+        doc = _overhanging_crop_page((0, 0, 500, 842), 0, (450, 300), (540, 500))
+        try:
+            readings = extract_visual_text(doc[0])
+        finally:
+            doc.close()
+        assert len(readings) == 10
+        visible, outside, across = readings[0], readings[3], readings[4]
+        # 'VISIBLE 123-45-6789' starting at x=450 is cut by the crop box's
+        # edge at x=500: its start on the page, its end off it.
+        assert "VISIBLE" in visible and SSN.replace("-", "") not in normalize_string(visible)
+        assert "HIDDEN" not in visible and "HIDDEN" in outside
+        assert SSN.replace("-", "") not in normalize_string(outside)
+        assert any("VISIBLE" + SSN in line for line in across.split("\n")), across
+
+    @staticmethod
+    def _slug_then_unrelated_first_line() -> fitz.Document:
+        doc = fitz.open()
+        p1 = doc.new_page()
+        p1.insert_text((72, 700), "Quarterly report, page one.")
+        p1.insert_text((72, 900), "JOB 123-45")             # below the page
+        doc.new_page().insert_text((72, 60), "6789 units shipped in March.")
+        return doc
+
+    def test_off_page_slug_at_a_page_break_is_not_a_hard_seam(self) -> None:
+        # Clean control: a slug below page 1 ends with '123-45' and the
+        # unrelated first line of page 2 starts with '6789'. The slug is
+        # wholly off the page, so it is the last line of reading 3 only,
+        # and page 2 has no off-page text to seam it with. The join is
+        # still a page-break crossing (reading 3's tail into page 2's
+        # reading 0), so the manual-review net reports it.
+        report = _scan(self._slug_then_unrelated_first_line())
+        assert report.findings == []
+        assert report.warnings == [crossing(2)]
+
+    def test_off_page_slug_at_a_page_break_end_to_end(self, tmp_path) -> None:
+        # The same control through the CLI, which must pass the Text layer
+        # its seam readings: manual review (2), not a finding (1).
+        pdf = tmp_path / "slug.pdf"
+        doc = self._slug_then_unrelated_first_line()
+        doc.save(pdf)
+        doc.close()
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "SSN", "value": SSN}]))
+        result = run_verify(pdf, rules)
+        assert result.returncode == 2, result.stdout
+        assert report_lines(result.stdout) == []
+
+    def test_a_split_across_a_page_break_stays_hard_beside_a_slug(self) -> None:
+        # The visible readings keep the visible last line: the slug below
+        # page 1 does not hide the split, and is not part of it.
+        doc = fitz.open()
+        p1 = doc.new_page()
+        p1.insert_text((72, 780), "Employee SSN 123-45-")
+        p1.insert_text((72, 900), "JOB-4471 slug")          # below the page
+        doc.new_page().insert_text((72, 60), "6789 was on file.")
+        assert _where(_scan(doc)) == [seam(1, 2)]
+
+    def test_visible_line_and_off_page_slug_on_one_baseline(self, tmp_path) -> None:
+        # A visible line ending '123-45' and an off-page slug starting
+        # '-6789' on the same baseline, far apart. The gap is a column
+        # break, and the slug's segment holds no visible glyph, so reading
+        # 4 leaves it to reading 3: no hard finding for a value rule or the
+        # SSN pattern rule. Reading 9 keeps the line whole, so the value
+        # they form is reviewed (owner decision, 2026-10-11).
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 300), "Invoice 123-45")
+        page.insert_text((640, 300), "-6789 slug")             # past x=595
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        readings = extract_visual_text(page)
+        assert readings[4] == readings[0] == "Invoice123-45", readings
+        assert readings[3] == "-6789slug", readings
+        assert readings[9] == "Invoice123-45\n-6789slug", readings
+        report = _scan(doc, patterns=load_rules(rules).patterns)
+        assert report.findings == []
+        assert [w.code for w in report.warnings] == ["REVIEW_CROSS_LINE", "REVIEW_FUSED_PATTERN"]
+
+    @pytest.mark.parametrize("banner_at", [(640, 200), (50, 900)])   # right of, below the page
+    def test_large_off_page_text_does_not_merge_visible_fine_print(
+            self, banner_at, tmp_path) -> None:
+        # Clean control: two visible 6 pt lines 7 pt apart, their glyphs
+        # interleaved ('1 3 5 7 9' / '2 4 6 8'), beside four 30 pt lines
+        # off the page. Taken from every glyph of reading 4, the line
+        # tolerance would merge the two fine-print lines into '123-45-6789';
+        # it is the visible text's own.
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Clean schedule of parts", fontsize=10)
+        for i, char in enumerate(SSN):
+            page.insert_text((200 + i * 3.6, 400 if i % 2 == 0 else 407), char, fontsize=6)
+        for k in range(4):
+            page.insert_text((banner_at[0], banner_at[1] + 40 * k), "ARCHIVE COPY", fontsize=30)
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        readings = extract_visual_text(page)
+        assert readings[4] == readings[0], readings       # no visible line gains a glyph
+        report = _scan(doc, patterns=load_rules(rules).patterns)
+        assert report.findings == []
+
+
+class TestPageBreakAtTheVisibleEdge:
+    """A value split at a page break whose first half lies at the visible
+    edge: page 1's last line runs past the right edge of the media box
+    (hard: it is the visible text's last line, read across the edge) or
+    lies wholly past it (manual review: a slug beside or below a page is
+    not the start of the next page's text). Never silent, with or without
+    a slug opening page 2, at /Rotate 0 and 270."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", BREAK_LAYOUTS)
+    def test_never_silent(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "break.pdf"
+        page_break_at_edge(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        if layout.startswith("straddling"):
+            assert _where(report) == [seam(1, 2)]
+            assert report.warnings == []
+        else:
+            assert report.findings == []
+            assert report.warnings == [crossing(2)]
+
+
+
+def _slug_beside_visible_text(visible: str, visible_x: float, slug_x: float,
+                              rotate: int = 0) -> fitz.Document:
+    """Page 1: a visible line, and a page number or footer *visible* at
+    *visible_x* on a baseline it shares with an off-page slug 'Job 123-45'
+    at *slug_x* (past the 595 pt right edge); page 2 opens with '6789'."""
+    doc = fitz.open()
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((72, 300), "Quarterly report, page one.")
+    p1.insert_text((visible_x, 830), visible)
+    p1.insert_text((slug_x, 830), "Job 123-45")
+    doc.new_page(width=595, height=842).insert_text((72, 60), "6789 units shipped in March.")
+    if rotate:
+        doc[0].set_rotation(rotate)
+    return fitz.open("pdf", doc.tobytes())
+
+
+# (visible text, its x, the slug's x, /Rotate): the slug is a column-break
+# segment of its own, holding no visible glyph.
+SLUG_BESIDE_VISIBLE = {
+    "page-number": ("7", 560, 640, 0),
+    "page-number-rotated-90": ("7", 560, 640, 90),
+    "footer": ("Confidential - internal use", 300, 700, 0),
+    "page-number-far-away": ("7", 300, 2000, 0),
+}
+
+
+class TestSlugBesideVisibleText:
+    """A slug wholly off the page on a baseline it shares with visible
+    text (a page number, a footer). Reading 4 keeps only the column-break
+    segments that hold a visible glyph, so the slug is reading 3's alone:
+    it never meets the next page's first line at a hard seam, only in the
+    manual-review net, and a value it forms with that visible text on
+    their line is reviewed too, never a finding."""
+
+    @pytest.mark.parametrize("layout", sorted(SLUG_BESIDE_VISIBLE))
+    def test_no_hard_seam(self, layout: str) -> None:
+        visible, visible_x, slug_x, rotate = SLUG_BESIDE_VISIBLE[layout]
+        doc = _slug_beside_visible_text(visible, visible_x, slug_x, rotate)
+        readings = extract_visual_text(doc[0])
+        assert "Job" not in readings[4] and "Job123-45" in readings[3], readings
+        report = _scan(doc)
+        assert report.findings == []
+        assert report.warnings == [crossing(2)]
+
+    def test_no_hard_seam_end_to_end(self, tmp_path) -> None:
+        pdf = tmp_path / "slug.pdf"
+        doc = _slug_beside_visible_text(*SLUG_BESIDE_VISIBLE["page-number"])
+        doc.save(pdf)
+        doc.close()
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "SSN", "value": SSN}]))
+        result = run_verify(pdf, rules)
+        assert result.returncode == 2, result.stdout
+        assert report_lines(result.stdout) == []
+
+    def test_slug_at_a_normal_gap_is_read_as_one_line(self) -> None:
+        # The limit: with no column break between them ('Page 7' and the
+        # slug a word space apart), the line reads 'Page7Job123-45', which
+        # nothing tells apart from a value running past the edge, so its
+        # seam with the next page is hard (the case library pins it as a
+        # false alarm, false-alarm.slug-beside-visible-line).
+        doc = _slug_beside_visible_text("Page 7", 560, 603)
+        readings = extract_visual_text(doc[0])
+        assert readings[4].endswith("Page7Job123-45"), readings
+        assert _where(_scan(doc)) == [seam(1, 2)]
+
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("gap", sorted(BASELINE_GAPS))
+    def test_visible_and_far_off_page_parts_of_a_line_are_reviewed(
+            self, gap: str, rotate: int, tmp_path) -> None:
+        # The case library's 'Acct 123-45' at the margin and '6789 Job' a
+        # column break past the edge, font-coded: no hard finding (nothing
+        # ties the halves), but reviewed, never silent (owner decision,
+        # 2026-10-11). Reading 9 alone joins them.
+        pdf = tmp_path / "baseline.pdf"
+        visible_beside_off_page(pdf, gap, rotate)
+        doc = fitz.open(pdf)
+        readings = extract_visual_text(doc[0])
+        assert "6789" not in readings[4] and "Acct123-45\n6789Job" in readings[9], readings
+        report = _scan(doc)
+        assert report.findings == []
+        assert report.warnings == [line(1)]
+
+
+
+class TestValueCarriedOffThePage:
+    """A value whose second half is wholly off the page: above the next
+    page's top edge, or on a line below the page's bottom edge. Reading 9
+    reads every horizontal glyph, visible or not, so it is reviewed, never
+    silent and never a finding (owner decision, 2026-10-11)."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", OFF_PAGE_CARRY)
+    def test_reviewed(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "carry.pdf"
+        value_carried_off_page(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        assert report.findings == []
+        assert report.warnings == [crossing(2) if layout == "second-half-above" else line(1)]
+
+
+class TestTableRowBesideOffPageText:
+    """Clean controls: a font-coded table row 'Item | 123 | 45 | 6789'
+    inside the crop box, beside wide single-digit cells or a letter-spaced
+    slug past it on the same baseline. The column breaks of a line read
+    across the edge are set by its visible glyphs, so the off-page text's
+    wide gaps cannot fuse the cells into a hard value."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", TABLE_ROW_OFF_PAGE)
+    def test_no_hard_finding(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "row.pdf"
+        table_row_beside_off_page(pdf, layout, rotate)
+        rules = tmp_path / "rules.json"
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        doc = fitz.open(pdf)
+        readings = extract_visual_text(doc[0])
+        assert "123\n45\n6789" in readings[4], readings
+        report = _scan(doc, patterns=load_rules(rules).patterns)
+        assert report.findings == []
+
+
+
+class TestScatteredValues:
+    """The review net assembles a value from two or three pieces of nearby
+    lines, in any order (SecretMatcher.scattered): around a header or
+    footer, within a page or across a page break, or with its halves in
+    reverse order. Review only, never a finding (owner decision,
+    2026-10-11); Phase 5's geometry matching is the hard-tier fix."""
+
+    @pytest.mark.parametrize("rotate", [0, 270])
+    @pytest.mark.parametrize("layout", SCATTERED)
+    def test_reviewed(self, layout: str, rotate: int, tmp_path) -> None:
+        pdf = tmp_path / "scattered.pdf"
+        value_scattered(pdf, layout, rotate)
+        report = _scan(fitz.open(pdf))
+        assert report.findings == []
+        assert report.warnings == [crossing(2) if layout == "furniture-at-break" else line(1)]
+
+    def test_matcher_cost_grows_linearly_with_lines(self) -> None:
+        # A dense numeric page with many value rules: eight times the lines
+        # must cost about eight times as much, not sixty-four (the window
+        # bounds the pairs each line is compared with). Generous bound
+        # against timing noise: under sixteen times, best of three.
+        import random
+        import time
+        rng = random.Random(1)
+        m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
+
+        def lines(count: int) -> list[str]:
+            return ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+
+        def cost(ls: list[str]) -> float:
+            best = math.inf
+            for _ in range(3):
+                start = time.perf_counter()
+                m.scattered(ls, 5)
+                best = min(best, time.perf_counter() - start)
+            return best
+
+        small, large = lines(500), lines(4000)
+        assert cost(large) < 16 * cost(small) + 0.05
+
+    def test_matcher_bounds(self) -> None:
+        m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
+        assert m.scattered(["ssn12345", "header", "6789end"], 5) == ["SSN"]
+        assert m.scattered(["6789end", "ssn12345"], 5) == ["SSN"]           # reversed
+        assert m.scattered(["x123", "45", "6789y"], 5) == ["SSN"]           # three pieces
+        # Too far apart for the window, or needing four pieces: not found.
+        assert m.scattered(["x12345", "a", "b", "c", "d", "6789y"], 5) == []
+        assert m.scattered(["x12", "34", "56", "789y"], 5) == []
+        # Across a page break, a piece must come from each side.
+        assert m.scattered(["x12345", "6789y", "next page"], 5, across=2) == []
+        assert m.scattered(["x12345", "next page", "6789y"], 5, across=1) == ["SSN"]
+
+
 class TestPageBreaksOcr:
     """The same rules on the OCR path: two genuine readings that can differ."""
 
@@ -368,6 +827,7 @@ class TestPageBreaksOcr:
             doc.new_page()
         by_page = dict(enumerate(readings))
         return _scan(doc, layer="OCR", hard_variants=ocr.OCR_GENUINE_READINGS,
+                     seam_variants=None, tails_into_next=(), scatter_readings=(),
                      extractor=lambda page: by_page[page.number])
 
     def test_seam_in_the_second_reading_only(self) -> None:

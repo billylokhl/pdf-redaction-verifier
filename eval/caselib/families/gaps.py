@@ -594,14 +594,11 @@ def unindexed_container(path: Path) -> None:
     "The SSN wrapped across two lines inside the left column of a two-column "
     "page, with an unrelated line of the right column sitting between them at "
     "the same height: joining the page's lines top-to-bottom (not column by "
-    "column) puts that unrelated text between the two halves. OCR happens to "
-    "read this particular page column by column and gives the honest "
-    "line-wrap review warning anyway (REVIEW_CROSS_LINE, as in "
-    "layout.py's match.line-wrap), so the silent-miss gap is judged only "
-    "where OCR is absent.",
+    "column) puts that unrelated text between the two halves. The Text layer's "
+    "review net assembles a value from nearby lines around such text "
+    "(REVIEW_CROSS_LINE, as in layout.py's match.line-wrap); OCR happens to "
+    "read this particular page column by column and gives the same warning.",
     expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
-    known_gap=KnownGap("match.columns", expect(0)),
-    requires=("no-ocr",),
     mistake="Nobody redacted the value; it wraps across two lines inside one column of "
             "a two-column layout.",
     recovery="Read the page column by column, not strictly top-to-bottom.",

@@ -14,16 +14,16 @@ import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from scorecard.inventory import PAGE_TREE_SEMANTICS, chain_of, qpdf_map
+from scorecard.inventory import chain_of, inventory, qpdf_map
 
 from redaction_verifier.inventory.objects import NumberRule, ObjectParser, PdfInt
 from redaction_verifier.inventory.xref import COMPRESSED, FREE, IN_USE, Entry
 
 from .conftest import requires_qpdf
 
-# The shared oracle's helpers (scorecard.inventory): qpdf's object map, the
-# page-tree warnings qpdf --check may give, read_chain with a fresh budget.
-_qpdf_map, _PAGE_TREE_SEMANTICS = qpdf_map, PAGE_TREE_SEMANTICS
+# The shared oracle's helpers (scorecard.inventory): qpdf's object map,
+# read_chain with a fresh budget.
+_qpdf_map = qpdf_map
 
 BODIES = {
     1: b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -185,10 +185,13 @@ def _ours(entries: dict[int, Entry]) -> dict[int, tuple[str, int, int]]:
             for n, e in entries.items() if e.kind != FREE and n != 0}
 
 
-def _agree(data: bytes, tmp: Path) -> None:
+def _agree(data: bytes, tmp: Path) -> bool:
+    """Compare an unflagged file with both readers; False when flagged."""
     chain = chain_of(data)
-    if chain.flags:
-        return
+    # Flagged by the chain or anywhere in the inventory (since 3a-7b a page
+    # tree off the canonical shape too): the readers may disagree, we said so.
+    if chain.flags or inventory(data).flags:
+        return False
     # Our own invariants first -- revision 0 is otherwise only ever checked
     # against the whole file, never against its own cut: each revision ends
     # after every older one, and holds every in-use object whole.
@@ -220,26 +223,26 @@ def _agree(data: bytes, tmp: Path) -> None:
         assert _qpdf_map(path) == (_ours(chain.object_map(revision)), 0), revision
         # --check parses every object, not just the table: it sees an object
         # that runs past the prefix cut (--show-xref and opening do not).
-        # Only page-tree semantics are exempt: the reference graph's (3a-7).
+        # Nothing is exempt (page-tree semantics were, until 3a-7b flagged them).
         check = subprocess.run(["qpdf", "--check", str(path)], capture_output=True,
                                timeout=60)
         # The qpdf version is in the message: its warnings differ across
         # releases (Linux CI runs 11.x, macOS Homebrew 12.x).
         version = subprocess.run(["qpdf", "--version"], capture_output=True).stdout[:40]
         structural = [line for line in (check.stdout + check.stderr).splitlines()
-                      if line.startswith(b"WARNING")
-                      and not any(pattern in line for pattern in _PAGE_TREE_SEMANTICS)]
+                      if line.startswith(b"WARNING")]
         assert structural == [], (revision, version, structural[:3])
         pymupdf.TOOLS.mupdf_warnings()
         doc = pymupdf.open(stream=blob, filetype="pdf")
         assert (doc.is_repaired, pymupdf.TOOLS.mupdf_warnings()) == (False, ""), revision
+    return True
 
 
 @requires_qpdf
 @pytest.mark.parametrize("build", [classic, xref_stream, lambda: xref_stream(True),
                                    incremental])
 def test_canonical_chains_agree_with_the_readers(build, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    _agree(build(), tmp_path)
+    assert _agree(build(), tmp_path)
 
 
 @requires_qpdf
@@ -260,7 +263,7 @@ def test_pymupdf_written_files_agree_with_the_readers(
     chain = chain_of(path.read_bytes())
     assert chain.flags == (), [f.reason.name for f in chain.flags]
     assert len(chain.revisions) >= 1 + updates
-    _agree(path.read_bytes(), tmp_path)
+    assert _agree(path.read_bytes(), tmp_path)
 
 
 @requires_qpdf
@@ -325,7 +328,7 @@ def test_a_hybrid_without_overlap_agrees_with_the_readers(tmp_path: Path) -> Non
     chain = chain_of(data)
     assert chain.flags == ()
     assert chain.object_map()[5] == Entry(COMPRESSED, 4, 0)
-    _agree(data, tmp_path)
+    assert _agree(data, tmp_path)
 
 
 def test_an_older_revision_cannot_point_past_its_own_end() -> None:
@@ -464,7 +467,7 @@ def test_qpdf_linearized_files_read_as_one_revision(tmp_path: Path, objstms: str
     chain = chain_of(data)
     assert chain.flags == (), [f.reason.name for f in chain.flags]
     assert chain.revisions == ((0, 1),)
-    _agree(data, tmp_path)
+    assert _agree(data, tmp_path)
 
 
 def freed_object_stream() -> bytes:
@@ -513,7 +516,7 @@ def test_an_indirect_length_resolves_and_a_wrong_one_is_flagged() -> None:
 
 @requires_qpdf
 def test_an_indirect_length_agrees_with_the_readers(tmp_path: Path) -> None:
-    _agree(indirect_length(12), tmp_path)
+    assert _agree(indirect_length(12), tmp_path)
 
 
 # ── Object numbers both readers read the same way (3a-6b, NumberRule) ─────
@@ -588,7 +591,7 @@ def test_free_entries_past_mupdfs_object_limit_are_flagged() -> None:
 
 @requires_qpdf
 def test_a_high_number_below_the_cap_agrees_with_the_readers(tmp_path: Path) -> None:
-    _agree(_at_cap(200, 1), tmp_path)
+    assert _agree(_at_cap(200, 1), tmp_path)
 
 
 # ── A catalog qpdf can open (found by the mutation fuzz) ──────────────────
@@ -659,5 +662,8 @@ def test_qpdf_cannot_open_what_is_flagged(data: bytes, reason: str, tmp_path: Pa
 
 
 @requires_qpdf
-def test_a_direct_page_tree_agrees_with_the_readers(tmp_path: Path) -> None:
-    _agree(_direct(), tmp_path)
+def test_a_direct_page_tree_is_flagged_by_the_page_tree_rules(tmp_path: Path) -> None:
+    # qpdf opens it (the chain accepts it), but ADR 0011 item 2's canonical
+    # tree has an indirect root (3a-7b): flagged, never compared.
+    assert {f.reason.name for f in inventory(_direct()).flags} == {"PAGE_TREE"}
+    assert not _agree(_direct(), tmp_path)

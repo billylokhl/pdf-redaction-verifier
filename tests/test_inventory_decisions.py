@@ -138,11 +138,13 @@ def test_an_object_stream_home_at_offset_zero_is_flagged(home: int) -> None:
 @requires_qpdf
 @pytest.mark.parametrize("extra", [b"", b" /Probe 4 0 R"])
 def test_offset_zero_entries_read_as_null_in_both_readers(tmp_path: Path, extra: bytes) -> None:
-    # Referenced or not, both readers read null (a dangling reference is
-    # the reference graph's to flag, 3a-7).
+    # Both readers read null; a reference to it is dangling (3a-7, R1).
     data = _offset_zero(extra=extra)
     found = compare(data, tmp_path)
-    assert found.agrees, found
+    if extra:
+        assert found.flagged and found.reasons == (FlagReason.REF_DANGLING,), found
+    else:
+        assert found.agrees, found
 
 
 @requires_qpdf
