@@ -663,7 +663,11 @@ What each part of the output means:
   against MuPDF's own inheritance and a second libqpdf instance that
   pushes them to the pages, owner decision 9; and the page as MuPDF
   shows it -- media box, crop box, rotation, rectangle -- against what
-  those attributes say it is), `oracle_error`, `tiling`),
+  those attributes say it is), `name_tree` (since 3a-7c: each
+  revision's `/EmbeddedFiles` entries, keys as text and values as
+  written, against MuPDF's `pdf_load_name_tree` and libqpdf's name-tree
+  helper; an encrypted revision's keys are not compared until 3a-9, and
+  its non-empty name trees are flagged), `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password cannot be certified, so it is **flagged**, not a
   disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
@@ -748,6 +752,13 @@ And one whole-line entry on qpdf's own line, which carries no path
 byte 0, which qpdf prints with no offset, `page object N G stream N G
 (content): ...` (one stream or an array of them; `CONTENT_AT_ZERO`) --
 content syntax is Phase 4's, as for the `(content, offset N)` form.
+Since 3a-7c, qpdf's warning on an empty name- or number-tree root
+(`name/number tree node has neither non-empty /Names nor /Kids`, or
+`/Nums`; `EMPTY_TREE_ROOT`, whole line on the exact path): both readers
+read such a root as empty (owner decision R5), and the inventory flags
+any empty node below a root, so on an unflagged file the line is a
+root's; reader-agreement tests for `/EmbeddedFiles`, `/Dests` and
+`/PageLabels` in `tests/test_inventory_trees.py`.
 
 **What to share: the `--json` aggregate only.** It holds counts, rates
 and timings -- no file name, path, SHA-256, document bytes or reader
