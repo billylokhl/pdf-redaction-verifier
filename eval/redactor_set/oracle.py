@@ -290,9 +290,8 @@ def r2_scan(path: Path, prints: dict[str, list[str]]) -> tuple[list[Evidence], l
             if not isinstance(obj, pikepdf.Stream):
                 continue
             if obj.get("/Subtype") == "/Image" or ("/Width" in obj and "/Height" in obj):
-                img = _to_image(obj)
-                if img is not None:
-                    images.append((f"{label} image", storage, img))
+                # None when this channel cannot decode it: gather() notes it.
+                images.append((f"{label} image", storage, _to_image(obj)))
                 continue
             if obj.objgen in font_files:
                 continue
@@ -310,7 +309,8 @@ def r2_scan(path: Path, prints: dict[str, list[str]]) -> tuple[list[Evidence], l
             for form in prints:
                 where = f"{label} {role}"
                 plain = [n for h, n in oracle_raw.text_forms(form) if h != "hex"]
-                codes = [bytes.fromhex(p) for p in prints[form] if p]
+                codes = [bytes.fromhex(p) for p in prints[form] if p] + \
+                    [form.encode("utf-16-be")]
                 if any(n in data for n in plain) or any(c in b for c in codes for b in blocks):
                     hits.append(Evidence("R2", where, "whole", storage, role=role, form=form))
                 elif role in ("xmp", "embedded") and (
@@ -334,6 +334,7 @@ def _to_image(stream: Any) -> Any:
         return Image.frombytes(mode, (w, h), data[:w * h * (3 if mode == "RGB" else 1)])
     except Exception:          # an image this channel cannot decode is noted, not fatal
         return None
+
 
 
 # ── R3: pdfminer ───────────────────────────────────────────────────────
@@ -434,8 +435,15 @@ def _eligible(inst: Instance, e: Evidence) -> bool:
 
 def _covered_by_r2(e: Evidence, r2: list[Evidence]) -> bool:
     """An R1 hit on a current body is the same evidence as R2's hit of
-    that form (R2 reads every current object, and places it by role)."""
-    return e.channel == "R1" and e.storage == "" and any(x.form == e.form for x in r2)
+    that form (R2 reads every current object, and places it by role) --
+    but only if R2 found as much: a whole R1 hit needs a whole R2 one (a
+    whole value in bytes R2 does not read, a comment or free bytes
+    between objects, is not covered by R2's partial)."""
+    if e.channel != "R1" or e.storage != "":
+        return False
+    if e.how == "whole":
+        return any(x.form == e.form and x.how == "whole" for x in r2)
+    return any(x.form == e.form for x in r2)
 
 
 def classify(inst: Instance | None, ev: list[Evidence]) -> str:
@@ -489,6 +497,11 @@ def gather(path: Path, truth: DocTruth, work: Path, *, with_v: bool = True) -> C
                    counts=h.kind not in oracle_raw.NOT_RECOVERABLE_ALONE, role=h.kind,
                    form=h.form) for h in r1rep.hits]
     r2, images = r2_scan(path, prints)
+    unread = [where for where, _, img in images if img is None]
+    if unread:
+        notes.append(f"V: {len(unread)} image(s) or thumbnail(s) not decodable, so not OCR'd "
+                     f"({', '.join(unread)})")
+    images = [x for x in images if x[2] is not None]
     r3 = r3_pages(path)
     pngs: list[Path] = []
     page_ocr: list[str] = []
@@ -559,17 +572,20 @@ def attribute(truth: DocTruth, ch: Channels, work: Path) -> list[InstanceResult]
                                    uncertain))
 
     # Unattributed: counting hits no instance claimed (and not an R1
-    # duplicate of something R2 saw), plus page-level text and OCR on a
-    # page where no instance of that secret sits.
+    # duplicate of something R2 saw), plus page-level text and OCR that
+    # no instance's own evidence already accounts for. A page-level
+    # reading is explained only by an instance of that secret that took
+    # that same reading on that page -- a scan or form field on the page
+    # does not explain a text layer the tool added there.
     by_form: dict[str, str] = {}
     for inst in truth.instances:
         for f in forms_of(inst):
             by_form.setdefault(f, inst.secret)
-    pages_of: dict[str, set[int]] = {}
-    for inst in truth.instances:
-        ps = {int(b[0]) for b in inst.part_boxes} | ({inst.page} if inst.page is not None
-                                                     else set())
-        pages_of.setdefault(inst.secret, set()).update(ps)
+    explained: set[tuple[str, str, int]] = set()     # (channel, form, page)
+    for r in rows:
+        for e in r.evidence:
+            if e.how == "whole" and e.page is not None:
+                explained.add((e.channel, e.form, e.page))
     extra: dict[str, list[Evidence]] = {}
     for e in pool:
         if id(e) in claimed or not e.counts or _covered_by_r2(e, ch.r2):
@@ -579,13 +595,13 @@ def attribute(truth: DocTruth, ch: Channels, work: Path) -> list[InstanceResult]
             extra.setdefault(sid, []).append(e)
     for p, text in enumerate(ch.r3):
         for form, sid in by_form.items():
-            if form in text and p not in pages_of.get(sid, set()):
+            if form in text and ("R3", form, p) not in explained:
                 extra.setdefault(sid, []).append(Evidence(
                     "R3", f"page {p + 1} live text", "whole", "live", role="content",
                     form=form, page=p))
     for p, text in enumerate(ch.page_ocr):
         for form, sid in by_form.items():
-            if ocr_match(form, text) == "whole" and p not in pages_of.get(sid, set()):
+            if ocr_match(form, text) == "whole" and ("V", form, p) not in explained:
                 extra.setdefault(sid, []).append(Evidence(
                     "V", f"page {p + 1} render", "whole", "live", form=form, page=p))
     for n, (sid, ev) in enumerate(sorted(extra.items())):

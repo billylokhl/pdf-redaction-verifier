@@ -241,6 +241,36 @@ class TestAttribution:
         assert oracle.worst([r.cls for r in rows]) == "recoverable-hidden"
         assert any(r.index < 0 for r in rows)
 
+    def test_an_identity_h_text_layer_over_a_scan_is_not_lost(self, tmp_path) -> None:
+        # The tool blanked the pixels and added a text layer in a CID font
+        # whose codes do not spell the text: only pdfminer reads it, on
+        # the scan's own page. It must not be explained away by the scan.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_redactor_set_generator import _identity_h_page
+
+        _identity_h_page(tmp_path / "s.pdf", "SSN 123-45-6789")
+        pix = Instance("SSN1", "123-45-6789", "S1", "pixels", 0, [72, 80, 200, 96])
+        truth = DocTruth("X", 0, "t", 1, "t", [pix])
+        ch = oracle.gather(tmp_path / "s.pdf", truth, tmp_path, with_v=False)
+        assert any("123-45-6789" in t for t in ch.r3)
+        rows = oracle.attribute(truth, ch, tmp_path)
+        assert oracle.worst([r.cls for r in rows]) == "recoverable-hidden"
+        assert any(r.index < 0 and r.secret == "SSN1" for r in rows)
+
+    def test_a_unicode_hex_text_layer_is_found_in_stored_content(self) -> None:
+        # A two-byte font whose codes are Unicode, shown as a hex string,
+        # split across TJ operands: R1 reads it from the bytes alone.
+        body = b"BT /F1 9 Tf [<003100320033002d> -20 <00340035002d0036003700380039>] TJ ET"
+        stream = b"1 0 obj << /Length %d >> stream\n" % len(body) + body + \
+            b"\nendstream endobj\n"
+        rep = oracle_raw.scan(b"%PDF-1.7\n" + stream + b"%%EOF\n", {"123-45-6789": []})
+        assert any(h.how == "codes" for h in rep.hits)
+        whole = b"BT /F1 9 Tf <003100320033002d00340035002d0036003700380039> Tj ET"
+        stream = b"1 0 obj << /Length %d >> stream\n" % len(whole) + whole + \
+            b"\nendstream endobj\n"
+        rep = oracle_raw.scan(b"%PDF-1.7\n" + stream + b"%%EOF\n", {"123-45-6789": []})
+        assert any(h.how == "hex16" for h in rep.hits)
+
     def test_a_string_instance_never_takes_page_content(self, tmp_path) -> None:
         pdf = pikepdf.new()
         page = pdf.add_blank_page()
@@ -311,30 +341,50 @@ class TestRawRobustness:
 
 # ── Adjudication records and the lock ──────────────────────────────────
 
-def _root_with_record(tmp_path: Path, cls: str = "recoverable-hidden") -> Path:
-    """A local root holding one output, its truth, an oracle result and a
-    drafted record (adjudicator filled in)."""
-    root = tmp_path / "root"
-    (root / "inputs").mkdir(parents=True)
-    (root / "work").mkdir()
-    out = root / "work" / "D01-s0.pdf"
-    out.write_bytes(b"%PDF-1.7 fabricated\n")
-    truth = DocTruth("D01", 0, "chrome", 1, "t", [T1_SSN])
-    (root / "inputs" / "D01-s0.truth.json").write_text(truth.to_json())
+def _write_record(root: Path, method: str, stem: str, out: Path, truth: DocTruth,
+                  cls: str) -> None:
     ev = [oracle.Evidence("R2", "object 9 content", "whole", "orphaned", role="content",
                           form="123-45-6789")] if cls != "removed" else []
-    result = oracle.FileResult("work/D01-s0.pdf", oracle_raw_sha(out), "D01", "m1",
-                               [oracle.InstanceResult(0, "SSN1", "T1", cls, ev)],
+    result = oracle.FileResult(str(out.relative_to(root)), oracle_raw_sha(out), truth.doc,
+                               method, [oracle.InstanceResult(0, "SSN1", "T1", cls, ev)],
                                {"SSN1": cls}, "leak" if cls != "removed" else "clean")
-    odir = root / "oracle" / "inputs" / "m1"
-    odir.mkdir(parents=True)
-    (odir / "D01-s0.json").write_text(oracle.dumps(result))
+    odir = root / "oracle" / "inputs" / method
+    odir.mkdir(parents=True, exist_ok=True)
+    (odir / f"{stem}.json").write_text(oracle.dumps(result))
     rec = adjudicate.draft(result, json.loads(truth.to_json())["instances"],
-                           oracle_raw_sha(odir / "D01-s0.json"), "chrome", "D01-s0")
+                           oracle_raw_sha(odir / f"{stem}.json"), "chrome", stem)
     rec["adjudicator"] = "agent"
-    adir = root / "adjudication" / "inputs" / "m1"
-    adir.mkdir(parents=True)
-    (adir / "D01-s0.json").write_text(json.dumps(rec))
+    adir = root / "adjudication" / "inputs" / method
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / f"{stem}.json").write_text(json.dumps(rec))
+
+
+def _add_doc(root: Path, stem: str = "D01-s0", seed: int = 0, cls: str = "recoverable-hidden",
+             *, records: bool = True) -> None:
+    """One document of the set: its truth, its m1 and m2 outputs in the
+    run's run.json, their oracle results and (if *records*) drafted
+    records (adjudicator filled in). m1 is ``work/<stem>.pdf``."""
+    (root / "inputs").mkdir(parents=True, exist_ok=True)
+    (root / "work" / "inputs").mkdir(parents=True, exist_ok=True)
+    truth = DocTruth(stem.split("-s")[0], seed, "chrome", 1, "t", [T1_SSN])
+    (root / "inputs" / f"{stem}.truth.json").write_text(truth.to_json())
+    m1, m2 = root / "work" / f"{stem}.pdf", root / "work" / f"{stem}.m2.pdf"
+    m1.write_bytes(b"%PDF-1.7 fabricated\n")
+    m2.write_bytes(b"%PDF-1.7 fabricated, collected\n")
+    run_path = root / "work" / "inputs" / "run.json"
+    run = json.loads(run_path.read_text()) if run_path.exists() else {"documents": {}}
+    run["documents"][stem] = {"exit": 0, "m1": str(m1.relative_to(root)),
+                              "m2": str(m2.relative_to(root))}
+    run_path.write_text(json.dumps(run))
+    if records:
+        _write_record(root, "m1", stem, m1, truth, cls)
+        _write_record(root, "m2", stem, m2, truth, "removed")
+
+
+def _root_with_record(tmp_path: Path, cls: str = "recoverable-hidden") -> Path:
+    """A local root holding one document of the set (see _add_doc)."""
+    root = tmp_path / "root"
+    _add_doc(root, cls=cls)
     return root
 
 
@@ -427,7 +477,7 @@ class TestAdjudication:
         root = _root_with_record(tmp_path)
         adjudicate.lock(root, "inputs")
         (root / "adjudication/inputs/m1/D01-s0.json").unlink()
-        with pytest.raises(ValueError, match="changed or removed"):
+        with pytest.raises(ValueError, match="no record for m1/D01-s0.json"):
             adjudicate.lock(root, "inputs")
 
     def test_a_changed_output_is_refused(self, tmp_path) -> None:
@@ -435,6 +485,84 @@ class TestAdjudication:
         (root / "work/D01-s0.pdf").write_bytes(b"%PDF-1.7 something else\n")
         with pytest.raises(ValueError, match="output file changed"):
             adjudicate.lock(root, "inputs")
+
+
+class TestLockCompleteness:
+    def test_a_record_deleted_before_the_first_lock_is_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        (root / "adjudication/inputs/m2/D01-s0.json").unlink()
+        with pytest.raises(ValueError, match="no record for m2/D01-s0.json"):
+            adjudicate.lock(root, "inputs")
+
+    def test_a_copied_record_is_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        shutil.copy(root / "adjudication/inputs/m1/D01-s0.json",
+                    root / "adjudication/inputs/m1/D01-s0-copy.json")
+        with pytest.raises(ValueError, match="outside the set"):
+            adjudicate.lock(root, "inputs")
+
+    def test_a_record_under_another_method_is_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        a = root / "adjudication/inputs"
+        m1, m2 = (a / "m1/D01-s0.json").read_text(), (a / "m2/D01-s0.json").read_text()
+        (a / "m1/D01-s0.json").write_text(m2)
+        (a / "m2/D01-s0.json").write_text(m1)
+        with pytest.raises(ValueError, match="its method and stem say"):
+            adjudicate.lock(root, "inputs")
+
+    def test_an_output_the_run_did_not_make_is_reported(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        run_path = root / "work/inputs/run.json"
+        run = json.loads(run_path.read_text())
+        run["documents"]["D01-s0"]["m2"] = None
+        run_path.write_text(json.dumps(run))
+        with pytest.raises(ValueError, match="the run has no output"):
+            adjudicate.lock(root, "inputs")
+
+    def test_a_record_added_after_the_lock_needs_a_reason(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        adjudicate.lock(root, "inputs")
+        _add_doc(root, "D02-s0")
+        with pytest.raises(ValueError, match="give a reason"):
+            adjudicate.lock(root, "inputs")
+        adjudicate.lock(root, "inputs", reason="D02 joined the set")
+        assert adjudicate.verify(root, "inputs")[0] == []
+
+    def test_seeds_scope_the_set_and_are_kept_in_the_lock(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        _add_doc(root, "D01-s7", seed=7, records=False)      # out of scope, no records
+        with pytest.raises(ValueError, match="no record for m1/D01-s7.json"):
+            adjudicate.lock(root, "inputs")
+        path, _ = adjudicate.lock(root, "inputs", seeds=[0])
+        assert json.loads(path.read_text())["seeds"] == [0]
+        assert adjudicate.verify(root, "inputs")[0] == []
+        with pytest.raises(ValueError, match="no record for m1/D01-s7.json"):
+            adjudicate.lock(root, "inputs", seeds=[0, 7])     # widened, not adjudicated
+        _add_doc(root, "D01-s7", seed=7)
+        with pytest.raises(ValueError, match="give a reason"):
+            adjudicate.lock(root, "inputs", seeds=[0, 7])
+        adjudicate.lock(root, "inputs", seeds=[0, 7], reason="seed 7 joins (owner)")
+        assert adjudicate.verify(root, "inputs")[0] == []
+
+    def test_a_deleted_lock_file_needs_a_reason(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        path, _ = adjudicate.lock(root, "inputs")
+        path.unlink()
+        with pytest.raises(ValueError, match="lock file was missing"):
+            adjudicate.lock(root, "inputs")
+        adjudicate.lock(root, "inputs", reason="lock file lost; relabel none")
+        assert json.loads(path.read_text())["relocks"][0]["reason"].startswith("lock file")
+
+    def test_a_leaking_row_cannot_expect_exit_0(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        rec = json.loads((root / "adjudication/inputs/m1/D01-s0.json").read_text())
+        rec["instances"][0]["override"] = {"reason": "x", "expected_exit": 0,
+                                           "cell": "orphaned.font"}
+        with pytest.raises(ValueError, match="cannot expect exit 0"):
+            adjudicate.finalize_record(rec)
+        rec["instances"][0]["override"] = {"reason": "x", "expected_exit": 1}
+        with pytest.raises(ValueError, match="must give its cell"):
+            adjudicate.finalize_record(rec)
 
 
 class TestCalibration:
@@ -446,10 +574,16 @@ class TestCalibration:
         (root / "inputs" / "D01-s0.pdf").write_bytes(b"%PDF-1.7\n")
         truth = DocTruth("D01", 0, "chrome", 1, "t", [T1_SSN])
         (root / "inputs" / "D01-s0.truth.json").write_text(truth.to_json())
-        for cls, code in (("partial", 1), ("recoverable-visible", 0)):
-            monkeypatch.setattr(oracle, "run", lambda *a, cls=cls, **k: oracle.FileResult(
+        stored = oracle.Evidence("R2", "content", "whole", "live", role="content",
+                                 form="123-45-6789")
+        seen = oracle.Evidence("V", "page 1 box", "whole", "live", form="123-45-6789", page=0)
+        for cls, ev, code in (("partial", [], 1),
+                              # The render alone does not prove the stored channels.
+                              ("recoverable-visible", [seen], 1),
+                              ("recoverable-visible", [seen, stored], 0)):
+            monkeypatch.setattr(oracle, "run", lambda *a, cls=cls, ev=ev, **k: oracle.FileResult(
                 "inputs/D01-s0.pdf", "0", "D01", "m0",
-                [oracle.InstanceResult(0, "SSN1", "T1", cls)], {"SSN1": cls}, "leak"))
+                [oracle.InstanceResult(0, "SSN1", "T1", cls, ev)], {"SSN1": cls}, "leak"))
             assert oracle_cli.run_oracle(root, "inputs", ["m0"], []) == code
 
 

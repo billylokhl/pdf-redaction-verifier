@@ -42,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
         if name == "adjudicate":
             p.add_argument("action", choices=("draft", "lock", "verify"))
             p.add_argument("--reason", default="")
+            p.add_argument("--seed", type=int, action="append", default=None,
+                           help="draft and lock only this seed's documents (repeatable; "
+                                "the lock keeps it)")
     args = parser.parse_args(argv)
     root = gen.local_root(args.root, allow_outside=args.allow_outside)
     config = gen.write_config(root)
@@ -62,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
                           [s for s in args.only.split(",") if s])
     elif args.cmd == "adjudicate":
         from .oracle_cli import run_adjudicate
-        return run_adjudicate(root, args.set, args.action, args.reason)
+        return run_adjudicate(root, args.set, args.action, args.reason, args.seed)
     return 0
 
 
