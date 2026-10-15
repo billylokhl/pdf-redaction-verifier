@@ -104,7 +104,7 @@ Blanking is narrow by design: only a trailer of qpdf's exact shape at the very e
 - a match split by the hold boundary is still found.
 
 ### Changed
-**CI: full-macos time limit 25 → 35 minutes** (`.github/workflows/tests.yml`, H3): the full suite takes about 21 minutes on main, 84% of the old limit, and the Phase 5 recorder-parity test (#134) pushed it past 25 on runner variance, so the job was cancelled at 67% with no test failing. No test or verdict change.
+**CI: full-macos time limit 25 → 35 minutes** (`.github/workflows/tests.yml`, H3): the full suite takes about 21 minutes on main, 84% of the old limit. With the Phase 5 recorder-parity test (#134) a branch run took 23.8 minutes and the next was cancelled at the 25-minute limit (run 38737399523). No test or verdict change.
 
 **Docs: name forms in the rules file** (docs only). README's Rules file section now tells users to list every written form of a secret as its own value ("Testperson, Jordan Q." and "Jordan Q. Testperson", with and without a middle initial, email and username forms), and says which variants matching already treats as one (case, punctuation, spacing, accents, fullwidth). README Known gaps and COVERAGE's Matching limits list two accepted gaps found by the real-redactor measurement: a reordered name and a fragment of a name are not found unless listed (owner decision, 2026-10-15). Verdict changes: none.
 
