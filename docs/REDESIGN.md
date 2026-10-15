@@ -798,8 +798,8 @@ owner together with what it does not yet cover.
   Downgrades (expected `1`, got `2`) are reported.
 - **U3, usability on good redactions.** The share of correctly redacted
   real-redactor outputs (e.g. saved with garbage collection) that exit `0`
-  is reported, against a target the owner sets after the first
-  measurement. If good files mostly exit `2`, the tool is not usable.
+  is reported, against the owner's target of 100% (2026-10-14). If good
+  files mostly exit `2`, the tool is not usable.
 - **U4, false alarms on clean files**, on the text-bearing stratum of the
   real corpus: with exact-value rules only, false hard findings below 1%;
   built-in pattern classes stay at their ADR 0005 baseline until Phase 5;
@@ -851,6 +851,13 @@ PR is re-scoped or checked in with the owner, splitting does not reset the
 count, and if round 3 still finds blocking issues the next review uses a
 fresh reviewer.
 
+**Review evidence** (owner, 2026-10-14). Every PR body ends with a "Review"
+section naming the commit SHA each review round covered and its verdict.
+The coordinator merges only if the last review's commit equals the PR head,
+except for merge commits from main whose resolution was itself checked. Any
+change after the last review, however small (nit fixes, wording, tests),
+gets a confirmation pass on the final head before merge.
+
 ### PR scope
 
 - One problem per PR (the scope test above).
@@ -873,9 +880,9 @@ only generically in the repo).
   secrets remain recoverable, from decompression plus a raw search, a
   render plus OCR, and manual adjudication recorded per file. Correctly
   redacted variants are included for U3.
-- **Decided (2026-10-12):** the owner's redactor run plain with `--config`
-  (LLM off first), plus a garbage-collected re-save; 20 templates x 1
-  seed, mirroring the owner's real document types.
+- **Decided (2026-10-12):** the owner's redactor run plain (LLM off first;
+  its backend is local, so no cost), plus a garbage-collected re-save; 20
+  templates x 1 seed, mirroring the owner's real document types.
 - It comes before any H1 hotfix decision.
 
 ### Feature work
@@ -912,6 +919,12 @@ the owner sets its priority against the critical path.
   per gap after the real-redactor set exists; until then they stay
   pinned and listed.
 - **2026-10-12:** U3's target is set after the first measurement.
+  Superseded 2026-10-14: the target is 100%.
+- **2026-10-14:** U3's target is 100% of correctly redacted real-redactor
+  outputs exiting `0`.
+- **2026-10-14:** every PR body ends with a "Review" section (commit SHA
+  and verdict per round); a change after the last review gets a
+  confirmation pass on the final head (see Review policy).
 - **2026-10-12:** visible map stage 1 now; S2-S4 after 4a.
 - **2026-10-12:** macOS 27 parity is a documented local check rather than
   CI coverage; until documented it is tracked as a gap.
