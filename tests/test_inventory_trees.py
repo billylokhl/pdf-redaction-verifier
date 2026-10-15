@@ -19,7 +19,13 @@ from redaction_verifier.inventory.objects import PdfRef
 from redaction_verifier.inventory.trees import NameTreeRule
 from redaction_verifier.ledger import FlagReason
 
+# Lines the inventory executes per unit of work the measured step charges,
+# at most (#94; tests/steps.py): the trees measured 2.5-3.7, the graph's
+# resource scopes 11.4 (the graph's own tests bound it at 24).
+LINES_PER_UNIT = {"build_trees": 8, "build_graph": 24}
+
 from .conftest import requires_qpdf
+from .steps import charged_steps
 
 SSN = b"123-45-6789"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] /Resources << >> >>"
@@ -127,8 +133,6 @@ def test_a_non_empty_tree_in_an_encrypted_revision_is_flagged(tmp_path: Path) ->
 
 
 def test_a_wide_tree_stays_linear() -> None:
-    import time
-
     def wide(leaves: int) -> bytes:
         objects: dict[int, bytes] = {}
         kids = []
@@ -138,17 +142,9 @@ def test_a_wide_tree_stays_linear() -> None:
             kids.append(b"%d 0 R" % (10 + i))
         objects[4] = b"<< /Kids [" + b" ".join(kids) + b"] >>"
         return _file(b" /Names << /Dests 4 0 R >>", objects)
-    times = []
-    for n in (2000, 16000):
-        data = wide(n)
-        budget = Budget(file_size=len(data))
-        started = time.process_time()
-        assert build_inventory(data, budget=budget).flags == ()
-        times.append((time.process_time() - started, budget.work))
-    (t_s, w_s), (t_l, w_l) = times
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
-    assert w_l < 10 * w_s, times
+    (w_s, f_s), (w_l, f_l) = _measure(wide, 2000)
+    assert f_s == () and f_l == ()
+    assert w_l < 10 * w_s, (w_s, w_l)
 
 
 # ── Resource scopes (ADR 0011 item 3) ─────────────────────────────────────
@@ -324,15 +320,17 @@ def test_an_update_breaking_a_tree_flags_that_revision() -> None:
 
 
 # ── Linearity (ADR 0010: work counts, n vs 8n) ────────────────────────────
-def _measure(make, n: int):  # type: ignore[no-untyped-def]
-    import time
+def _measure(make, n: int, entry: str = "build_trees"):  # type: ignore[no-untyped-def]
+    """(work, flags) of the whole build at *n* and 8n. No uncharged loop
+    (#94): the lines the inventory executes while build.<entry> runs stay
+    under a fixed bound per unit of work that step charges (tests/steps.py)."""
     out = []
     for size in (n, 8 * n):
         data = make(size)
         budget = Budget(file_size=len(data))
-        started = time.process_time()
-        inv = build_inventory(data, budget=budget)
-        out.append((time.process_time() - started, budget.work, inv.flags))
+        step, lines, inv = charged_steps(data, entry, budget)
+        assert lines <= LINES_PER_UNIT[entry] * step, (size, lines, step)
+        out.append((budget.work, inv.flags))
     return out
 
 
@@ -354,11 +352,9 @@ def _deep(levels: int) -> bytes:
 
 
 def test_a_deep_tree_stays_linear() -> None:
-    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(_deep, 1000)
+    (w_s, f_s), (w_l, f_l) = _measure(_deep, 1000)
     assert f_s == () and f_l == ()
     # Work counts are the exact measure (8x the bytes, within 10x the work).
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
     assert w_l < 10 * w_s, (w_s, w_l)
 
 
@@ -367,10 +363,8 @@ def test_many_trees_naming_one_node_stay_linear() -> None:
         names = b" ".join(b"/T%d 4 0 R" % i for i in range(keys))
         leaf = b"<< /Names [" + b" ".join(b"(k%08d) 1" % i for i in range(keys)) + b"] >>"
         return _file(b" /Names << %s >>" % names, {4: leaf})
-    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(shared, 1000)
+    (w_s, f_s), (w_l, f_l) = _measure(shared, 1000)
     assert FlagReason.NAME_TREE in {f.reason for f in f_l}
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
     assert w_l < 10 * w_s, (w_s, w_l)
 
 
@@ -403,10 +397,8 @@ def _forms(forms: int, updates: int, toggle: bool = False) -> bytes:
 
 
 def test_scopes_over_many_revisions_stay_linear() -> None:
-    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(lambda n: _forms(n, n), 300)
+    (w_s, f_s), (w_l, f_l) = _measure(lambda n: _forms(n, n), 300, "build_graph")
     assert f_s == () and f_l == ()
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
     assert w_l < 10 * w_s, (w_s, w_l)
 
 
@@ -582,11 +574,9 @@ def test_a_shared_limits_array_of_a_long_key_is_charged() -> None:
                      else b"/Names [%s 1]" % key)
             objects[node] = b"<< %s %s >>" % (b"/Limits 6 0 R" if i else b"", below)
         return _file(b" /Names << /Dests 100 0 R >>", objects)
-    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(chain, 200)
+    (w_s, f_s), (w_l, f_l) = _measure(chain, 200)
     for flags in (f_s, f_l):
         assert {f.reason for f in flags} <= {FlagReason.BUDGET_EXHAUSTED}
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
     assert FlagReason.BUDGET_EXHAUSTED in {f.reason for f in f_l}
 
 
@@ -625,10 +615,8 @@ def _catalog_rewrites(keys: int, revisions: int) -> bytes:
 
 
 def test_rewriting_the_catalog_does_not_walk_the_trees_again() -> None:
-    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(lambda n: _catalog_rewrites(n, n), 300)
+    (w_s, f_s), (w_l, f_l) = _measure(lambda n: _catalog_rewrites(n, n), 300)
     assert f_s == () and f_l == ()
-    # TODO(#113): the wall-clock half was dropped (it flaked under CI load,
-    # as #94's did); restore it as steps.py's line events per unit charged.
     assert w_l < 10 * w_s, (w_s, w_l)
     inv = _inventory(_catalog_rewrites(20, 5))
     assert all(t is inv.trees[-1] for t in inv.trees)  # one result, reused

@@ -16,6 +16,8 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any, TypeVar
 
+from redaction_verifier.budget import Budget
+
 T = TypeVar("T")
 
 
@@ -54,16 +56,18 @@ def lines_executed(files: set[str], call: Callable[[], T]) -> tuple[T, int]:
     return result, count
 
 
-def charged_steps(data: bytes, entry: str) -> tuple[int, int, Any]:
+def charged_steps(data: bytes, entry: str,
+                  budget: Budget | None = None) -> tuple[int, int, Any]:
     """Build *data*'s inventory; return (the work charged inside
     build.<entry> -- one part of the inventory, e.g. "build_graph" --, the
     lines executed in every inventory module and the budget while that
     part ran -- the callbacks it makes into build.py included --, the
-    inventory)."""
+    inventory). *budget*, if given, is the one the whole build charges
+    (its total work is the caller's to read)."""
     import redaction_verifier.inventory.build as build_module
-    from redaction_verifier.budget import Budget
     from redaction_verifier.inventory import build_inventory
-    budget = Budget(file_size=len(data))
+    if budget is None:
+        budget = Budget(file_size=len(data))
     files = _inventory_files()
     measured: list[tuple[int, int]] = []
     real = getattr(build_module, entry)
