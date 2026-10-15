@@ -348,8 +348,10 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
   per-file rows go to `results/<date>.json` in the local root. It exits
   `1` when any output gets no verdict (a crash, a timeout, an error
   report) or was scanned without OCR, and `0` otherwise: misses are what
-  it measures. `--seed` restricts it to one seed's documents (the
-  owner's first run is 20 templates at one seed).
+  it measures. `--seed` restricts it to one seed's documents. The
+  owner's first run is 20 templates at seed 0 (owner decision,
+  2026-10-12): a second seed generated locally is out of scope, and its
+  drafts are kept outside `adjudication/`, unlocked and unmeasured.
 
 Nothing in `redactor_set/` imports the verifier or PyMuPDF
 (`tests/test_redactor_set_generator.py` and
