@@ -35,7 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from .inventory import Agreement, Check
 
@@ -339,7 +339,49 @@ def _pending(results: Sequence[FileResult]) -> dict[str, Any]:
             "files_with_dead_bodies": files("dead_bodies"),
             "dead_bodies": total("dead_bodies"),
         },
+        "labels": _labels([r for r in measured if r.verdict == AGREE]),
     }
+
+
+def _labels(agree: Sequence[FileResult]) -> dict[str, Any]:
+    """3a-7e-1 (ADR 0011 item 5), over the unflagged files' current
+    revisions: files and streams with each STRUCTURAL kind, hint streams
+    under a stale /L (coordinator decision Q8), and the reference graph's
+    work (item 7)."""
+    kinds = sorted({key for r in agree for key in r.measures if key.startswith("structural_")})
+    work = [r.measures.get("graph_work", 0) for r in agree]
+    return {
+        "files": len(agree),
+        "structural_files": {key[len("structural_"):]: sum(
+            1 for r in agree if r.measures.get(key, 0) > 0) for key in kinds},
+        "structural_streams": {key[len("structural_"):]: sum(
+            r.measures.get(key, 0) for r in agree) for key in kinds},
+        "hint_stream_stale_files": sum(1 for r in agree if r.measures.get("hint_stream_stale")),
+        "files_missing_labels": sum(1 for r in agree if r.measures.get("labels_missing")),
+        "graph_work": _percentiles(work, 0),
+        "drawing": _drawing(agree),
+    }
+
+
+# The 3a-7e-2 measures (scorecard.inventory.drawing_measures), each reported
+# as files with any and the total count.
+_DRAWING_KEYS: Final = (
+    "streams_current", "drawable_current", "orphaned_current", "bodies_streams",
+    "bodies_drawable", "bodies_structural", "bodies_drawable_structural", "bodies_orphaned",
+    "orphaned_older_only", "orphaned_current_labelled_older", "mupdf_listed", "closure_gap")
+
+
+def _drawing(agree: Sequence[FileResult]) -> dict[str, Any]:
+    """3a-7e-2 (ADR 0011 item 5), over the unflagged files: streams by
+    label (the current revision's, and by body across revisions),
+    orphans by class, /Metadata orphaned on annotations and ICC profiles,
+    and the closure gap against MuPDF's page listings -- files with any,
+    and the total."""
+    keys = [*_DRAWING_KEYS, *sorted({key for r in agree for key in r.measures
+                                     if key.startswith(("orphan_class_", "orphan_metadata_",
+                                                        "closure_gap_"))})]
+    return {key: {"files": sum(1 for r in agree if r.measures.get(key, 0) > 0),
+                  "total": sum(r.measures.get(key, 0) for r in agree)} for key in keys}
 
 
 def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = None
@@ -399,6 +441,8 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
                                          for r in agree if r.agreement),
             "values": sum(r.agreement.values_compared for r in agree if r.agreement),
             "annotations": sum(r.agreement.annotations_compared for r in agree if r.agreement),
+            "reachable_revisions": sum(r.agreement.reachable_compared
+                                       for r in agree if r.agreement),
         },
         "oracle": {
             "crashes": sum(1 for o in oracle_runs if o.outcome == "crash"),
@@ -410,6 +454,9 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
         "timing": {
             "build_seconds": _percentiles(r.build.elapsed for r in built),
             "oracle_seconds": _percentiles(o.elapsed for o in oracle_runs if o.outcome == "ok"),
+            # The REACHABLE check's share of the oracle's time (3a-7e-1).
+            "reachable_seconds": _percentiles(r.agreement.reachable_ms / 1000
+                                              for r in agree if r.agreement),
             "work_per_byte": _percentiles(work, 2),
         },
         "pending_decisions": _pending(results),
@@ -484,6 +531,7 @@ def render(agg: dict[str, Any]) -> str:
     timing = agg["timing"]
     lines.append(f"  build seconds {timing['build_seconds']}")
     lines.append(f"  oracle seconds {timing['oracle_seconds']}")
+    lines.append(f"  reachable check seconds {timing.get('reachable_seconds', {})}")
     lines.append(f"  work per byte {timing['work_per_byte']}")
     for name, values in agg["pending_decisions"].items():
         lines.append(f"  {name}: {values}")

@@ -94,13 +94,17 @@ class Chain:
     """Every section, newest first; the final startxref; flags.
     ``revisions`` groups section indexes: normally one section per
     revision, but a linearized file's first-page section and the main
-    section its /Prev points *forward* to are one revision (§F.3.4)."""
+    section its /Prev points *forward* to are one revision (§F.3.4).
+    ``linearization``: that pair's linearization dictionary (the file's
+    first object), set only when the pair is accepted as the base
+    revision; its /H names the hint stream (labels.py)."""
 
     sections: tuple[Section, ...]
     startxref: int | None
     tail: Span | None
     flags: tuple[Flag, ...]
     revisions: tuple[tuple[int, ...], ...] = ()
+    linearization: PdfDict | None = None
 
     def revision_end(self, revision: int) -> int:
         """Where *revision*'s bytes end: its prefix cut."""
@@ -158,6 +162,7 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
         sections.append(section)
         offset = section.prev
     revisions: list[tuple[int, ...]] = []
+    linearization: PdfDict | None = None
     i = 0
     while i < len(sections):
         prev = sections[i].prev
@@ -170,14 +175,16 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
             # incremental update may follow it (owner decision 7,
             # 2026-10-03: 80 corpus files; each revision is still checked
             # against both readers by the agreement gate).
-            if (i + 2 != len(sections) or sections[i + 1].prev is not None
-                    or not _linearized(data, parser, sections[i].offset)):
+            pair = (_linearization(data, parser, sections[i].offset)
+                    if i + 2 == len(sections) and sections[i + 1].prev is None else None)
+            if pair is None:
                 flags.append(Flag(FlagReason.XREF_TABLE_MALFORMED, sections[i].span,
                                   (("object", -1),)))
                 revisions.append((i,))
                 i += 1
                 continue
-            if i > 0 and _linearized_length(data, parser, sections[i].offset) == len(data):
+            linearization = pair
+            if i > 0 and _int(pair.get(b"L")) == len(data):
                 # Updated, yet its /L names the whole file: a reader that
                 # trusts linearization reads the stale first-page section
                 # (qpdf --check then calls the file linearized and errs).
@@ -198,7 +205,7 @@ def read_chain(data: bytes, limits: Limits | None = None, *, budget: Budget) -> 
     chain = Chain(chain.sections, chain.startxref, chain.tail, tuple(flags), chain.revisions)
     return Chain(chain.sections, chain.startxref, chain.tail,
                  chain.flags + tuple(_check_revisions(data, chain, parser, lengths)),
-                 chain.revisions)
+                 chain.revisions, linearization)
 
 
 class _Lengths:
@@ -532,16 +539,6 @@ def _linearization(data: bytes, parser: ObjectParser, first_section: int) -> Pdf
             and obj.value.get(b"Linearized") is not None):
         return obj.value
     return None
-
-
-def _linearized(data: bytes, parser: ObjectParser, first_section: int) -> bool:
-    return _linearization(data, parser, first_section) is not None
-
-
-def _linearized_length(data: bytes, parser: ObjectParser, first_section: int) -> int | None:
-    """The linearization dictionary's /L: the file's length when written."""
-    found = _linearization(data, parser, first_section)
-    return _int(found.get(b"L")) if found is not None else None
 
 
 def _dictionary_at(parser: ObjectParser, offset: int, end: int,

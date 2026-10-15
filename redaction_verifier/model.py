@@ -297,6 +297,12 @@ class ScanReport:
     # lines, --json, warning text) can drop a tail that would reveal part
     # of one. Set once the rules are loaded.
     exact_index: MaskIndex = field(default_factory=MaskIndex, compare=False, repr=False)
+    # ADR 0012: the rules whose matches are informational (matching.policy.
+    # informational_rules), and what they matched: findings as they are
+    # recorded, review warnings once settle_notices() runs. Neither ever
+    # counts toward the exit code. Empty in strict mode.
+    informational: frozenset[str] = frozenset()
+    notices: list[Finding | Warn] = field(default_factory=list)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
@@ -307,7 +313,23 @@ class ScanReport:
         finding = Finding(layer, secret_name, location, sample, **origin)
         if finding not in self._seen:
             self._seen.add(finding)
-            self.findings.append(finding)
+            # Routed here, not later, so nothing that reads `leaked` during
+            # the scan (--fail-fast, the crash path) counts a notice.
+            (self.notices if secret_name in self.informational else self.findings).append(finding)
+
+    def settle_notices(self) -> None:
+        """Move every warning raised for an informational rule (its `rule`
+        field) from the warnings to the notices. Call it before the exit
+        code is computed or the report written; it is idempotent. A warning
+        without a `rule` (every coverage warning) always stays."""
+        if not self.informational:
+            return
+        moved = [w for w in self.warnings
+                 if isinstance(w, Warn) and w.fields.get("rule") in self.informational]
+        if moved:
+            self.notices.extend(moved)
+            ids = {id(w) for w in moved}  # identity: a Warn compares as its text
+            self.warnings[:] = [w for w in self.warnings if id(w) not in ids]
 
     @property
     def leaked(self) -> bool:

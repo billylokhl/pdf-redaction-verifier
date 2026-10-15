@@ -733,6 +733,17 @@ page), 12 workers turned four-page cases that take about 9 s alone into
 45–68 s, sent the VM into swap, timed eight cases out, and made a pass
 over the library take 11.4 minutes instead of 6.7.
 
+A case that is slow on purpose, but is not a `perf` file, carries its own
+limit, `scan_timeout` (seconds, `caselib/model.py`): the scorecard's
+`diff` and `metrics` give that case the larger of it and `--timeout`.
+Only `page.dense-sideways-scan` (K43) has one, 300 s, and a test lists
+the cases that do, so adding one is a reviewed change. A page full of
+vertical lines gets the most OCR work the readings allow (#70's upright
+re-reads plus #91's turned and unstacked readings): 78 Vision calls, about 8 s alone on Apple silicon (5.5 s of it Vision) but 151 s on the
+weekly runner, where the reference takes 10 s. It timed out at 60 s
+there (#147). It stays a regular case rather than `perf`, so pytest,
+including `full-macos` on every PR, still judges it.
+
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
 key ("old"), the candidate's ("new"), a reason, the COVERAGE.md cell, and
@@ -758,6 +769,44 @@ Two rules keep the file honest:
   skipped *this run* only because the environment can't run it
   (`requires: ocr` on Linux, say) is not flagged: it may be exactly
   right on the environment that does run it.
+
+**Environment scope (`env`).** The same change can normalise to
+different keys with and without OCR: on the weekly macOS run, Vision
+adds its own review warnings to both sides of a case the Text layer
+changed (#147). An entry may therefore say `env: ocr` or `env: no-ocr`,
+the case library's `requires` vocabulary; any other value, or `env:` with
+no value, is refused when the file loads, and an entry without the field
+applies in every environment. Which one a run is in is
+`caselib.run.available()`: `ocr` when the Vision bridge imports.
+
+- An entry out of scope for this run neither matches a difference nor
+  counts as stale here. It is checked where it is in scope: `no-ocr`
+  entries by `scorecard-diff` on every PR, `ocr` entries only by the
+  weekly job, so record `ocr` keys from that job's JSON artifact (on
+  macOS 27, `eval-ref-0` fails every OCR page, so a local run there does
+  not give the reference's keys).
+- An entry for a case id the library no longer has is stale in every
+  environment, in scope or not.
+- An entry scoped to an environment takes the place of the same case's
+  *unscoped* entries in that environment; they still match, and are still
+  checked for staleness, everywhere else. This is how an existing entry is
+  narrowed without editing it, since the file is add-only (docs/REDESIGN.md
+  §7a): append a scoped entry for the environment where the old one does
+  not hold. PR #68's eight `layout.two-column-wrap`,
+  `layout.raw-font-coded-two-column-wrap` and `layout.repeated-line-wraps-*`
+  entries were recorded without OCR and are left as they are; the `env: ocr`
+  entries for the same cases appended in #147 replace them with OCR.
+- A case whose entries are scoped to both environments cannot also have
+  an unscoped one (it would be in scope nowhere, so never checked); the
+  file is refused. A test on the committed file also refuses an entry
+  scoped to an environment its case can never run in (`env: ocr` on a
+  `requires: no-ocr` case), and an unscoped entry replaced in the only
+  environment its case runs in.
+
+Scoping only ever takes entries out of a run, never adds one, so it
+cannot accept a difference the file would have refused without it. The
+other rules apply to a scoped entry unchanged: an exact old/new match,
+and `weaker: true` with an owner decision for any loosening.
 
 **Metrics**: the same case library, run through the candidate CLI alone
 and judged against case labels — no reference needed:
@@ -909,6 +958,17 @@ CLI itself reads), so whatever values `--secrets` names live there too,
 not just in the file you pointed at. `--out` defaults under
 `eval/scorecard/real_corpus/scan-workdir` (gitignored, guarded the same
 way as `--manifest`) for exactly this reason.
+
+**Use a non-sequential value in `--secrets`.** The case library's SSN,
+`123-45-6789`, is deliberately easy to read, but its digits are in order,
+and real files hold digit tables: a hex string that decodes to a character
+table beginning `0123456789`, or a run of one-character strings `1`, `2`,
+... `9` (for example, a font's character-code table), which the Objects layer reads back
+to back so that a value split across strings is still caught. Both contain
+`123456789`, so a corpus run with the case library's value reports false
+hard findings that a real value never would (eval/spikes/RESULTS.md,
+"Value false hards with a sequential test value"). A value such as
+`666-51-4073` does not collide.
 
 ### Pattern-class false-hard baseline (Phase 5, measurement only)
 
@@ -1097,7 +1157,19 @@ What each part of the output means:
   agreeing with either reading; not exact below 4x. MuPDF's warnings while
   it loads and draws those two copies are the gate's own and are
   discarded; the file's own -- its pages loaded, its appearances
-  synthesized -- are gated as before), `oracle_error`, `tiling`),
+  synthesized -- are gated as before), `reachable` (since 3a-7e-1,
+  coordinator decision Q5: each revision's reachable objects, ours
+  exactly against what MuPDF keeps writing it with `tobytes(garbage=1)`
+  and libqpdf keeps writing it in QDF mode, read from its `%% Original
+  object ID` comments; the references a writer rewrites though its
+  reader reads them -- a stream's indirect `/Length`, the trailer's
+  `/Encrypt` and `/ID`, in qpdf a stream's `/DecodeParms` without
+  `/Filter` (libqpdf reads it as written; its writer drops it, no filter
+  using it) -- are
+  added back as each reader reads them, and one whose target holds
+  references of its own fails closed, `templates` naming the reader and
+  "not exact"; ADR 0011's notes of 2026-10-15, 3a-7e-1),
+  `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password cannot be certified, so it is **flagged**, not a
   disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
@@ -1130,7 +1202,9 @@ What each part of the output means:
 - `regions`: files, regions and bytes left UNINDEXED or CONTESTED in the
   file's own tiling (object streams' decoded tilings are not included).
 - `timing`: percentiles of the build child's wall clock (interpreter
-  start included), the oracle's, and the work units charged per byte.
+  start included), the oracle's, and the work units charged per byte;
+  since 3a-7e-1 also `reachable_seconds`, the `reachable` check's share
+  of the oracle's time on agreeing files (#52 item 4).
 - `pending_decisions`: counts for the owner's open decisions --
   incremental updates to linearized files (#44 item 1: a linearized file
   with more than one revision; `/L` off the file's length is reported
@@ -1143,7 +1217,35 @@ What each part of the output means:
   docs/phase3a-plan.md): updated linearized files are canonical (unless
   their `/L` names the updated file's whole length), odd
   comment lines are flagged `COMMENT_LINE`, the rest stay flagged; the
-  counts are still reported, to watch them.
+  counts are still reported, to watch them. `labels` (since 3a-7e-1,
+  ADR 0011 item 5; costs for the owner, R6 and R7): over the unflagged
+  files' current revisions, files and streams with each `STRUCTURAL`
+  kind, files whose hint stream sits under a stale `/L` (an updated
+  linearized file: coordinator decision Q8), files with a revision
+  without labels, and percentiles of `graph_work`, the work the
+  reference graph's stages charged (ADR 0011 item 7). `labels.drawing`
+  (since 3a-7e-2; `scorecard.inventory.drawing_measures`), each as files
+  with any and the total over the unflagged files:
+  - the current revision's live streams, `DRAWABLE` and `ORPHANED`
+    (`streams_current`, `drawable_current`, `orphaned_current`);
+  - per body across revisions: stream bodies, drawable, structural, both,
+    orphaned (`bodies_*`);
+  - orphans for the verdict that the current revision does not call
+    orphaned (`orphaned_older_only`), and the converse
+    (`orphaned_current_labelled_older`);
+  - the current revision's orphans by class (`orphan_class_*`): the use
+    kind of the path that first reaches each from the trailer (thumbnail,
+    piece_info, appearance, properties, ...), `unreachable_source`,
+    `unreferenced`, `objstm` (home to no live entry), and the verdict's
+    `dead_body` and `older_body`;
+  - `/Metadata` streams orphaned on an annotation or an ICC profile
+    (`orphan_metadata_*`, for 3a-7e-3's briefing);
+  - the closure gap, measured and never gated: streams MuPDF lists on the
+    current revision's pages that are not `DRAWABLE` (`closure_gap`, and by
+    listing `closure_gap_contents`, `_images` (with soft masks),
+    `_xobjects` and `_annotations` (`pdf_annot_ap`)), out of
+    `mupdf_listed`. Any gap goes to an ADR 0011 note, never into the
+    lists.
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform
@@ -1158,6 +1260,8 @@ What each part of the output means:
   inventory flags any that does not resolve (`REF_DANGLING`,
   `REF_GENERATION`), so none reaches the comparison. `annotations` (since
   3a-7d): annotations listed and classified against MuPDF, per revision.
+  `reachable_revisions` (since 3a-7e-1): revisions whose reachable set
+  both readers confirmed.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),
@@ -1213,8 +1317,10 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
-  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
+  (`.github/workflows/scorecard-weekly.yml`). A run recently took 58-62
+  minutes (pytest ~22, scorecard diff ~23, metrics ~12; about 35 when first
+  measured, about 50 on 2026-10-12); the job's limit is 120. Each branch has its own queue, so
+  a branch can dispatch it as its pre-merge macOS+OCR check (#147).
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

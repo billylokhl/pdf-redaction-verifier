@@ -42,12 +42,14 @@ from typing import Any, Sequence
 import pymupdf as fitz
 
 from redaction_verifier.matching import mask
-from redaction_verifier.model import WARNING_FIELDS, ScanReport, Warn
+from redaction_verifier.model import WARNING_FIELDS, Finding, ScanReport, Warn
 from redaction_verifier.report.text import _sanitize_report_text
 
 # Bumped when a field of the --json report is renamed, removed or changes
-# meaning; adding a field does not bump it.
-JSON_SCHEMA_VERSION: int = 1
+# meaning; adding a field does not bump it. 2: `notices` (ADR 0012) -- with
+# built-in classes informational, a class match no longer appears in
+# `findings` or `warnings`, which changes what those mean.
+JSON_SCHEMA_VERSION: int = 2
 
 
 def build_json_report(
@@ -77,25 +79,20 @@ def build_json_report(
                     value = value.replace(form, path.name)
         return _sanitize_report_text(value)
 
-    findings = sorted(
-        (
-            {
-                "layer": f.layer,
-                "rule": text(f.secret_name),
-                "tier": "hard",
-                "storage": f.storage,
-                "object": f.object,
-                "revision": f.revision,
-                "page": f.page,
-                "location": text(f.location),
-                "sample": text(mask(f.sample, report.exact_index, full=f.layer == "OCR")) if f.sample else "",
-            }
-            for f in report.findings
-        ),
-        key=lambda d: json.dumps(d, sort_keys=True),
-    )
-    warnings = []
-    for w in report.warnings:
+    def finding_entry(f: Finding) -> dict[str, Any]:
+        return {
+            "layer": f.layer,
+            "rule": text(f.secret_name),
+            "tier": "hard",
+            "storage": f.storage,
+            "object": f.object,
+            "revision": f.revision,
+            "page": f.page,
+            "location": text(f.location),
+            "sample": text(mask(f.sample, report.exact_index, full=f.layer == "OCR")) if f.sample else "",
+        }
+
+    def warning_entry(w: str) -> dict[str, Any]:
         # mypy narrows on a direct `isinstance(w, Warn)` check, not
         # through a bool variable holding its result — real, but the same
         # limitation this code always had under verify.py's own (until
@@ -111,8 +108,31 @@ def build_json_report(
             value = fields.get(name)
             entry[name] = text(value) if isinstance(value, str) else value
         entry["message"] = text(w)
-        warnings.append(entry)
-    warnings.sort(key=lambda d: json.dumps(d, sort_keys=True))
+        return entry
+
+    # Every field a finding or a warning has, so a notice has one shape.
+    notice_fields = ("layer", "rule", "storage", "object", "revision", "page",
+                     "location", "sample", "code", *WARNING_FIELDS, "message")
+
+    def notice_entry(n: Finding | Warn) -> dict[str, Any]:
+        """A built-in class match that does not count toward the verdict
+        (ADR 0012): the fields of the finding or review warning it would
+        have been, every field present (null when it does not apply); the
+        warning's own kind is kept as `warning_kind`."""
+        if isinstance(n, Finding):
+            base, tier, warning_kind = finding_entry(n), "hard", None
+        else:
+            base, tier = warning_entry(n), "review"
+            warning_kind = base.pop("kind")
+        return {"kind": "class-match", "tier": tier, "warning_kind": warning_kind,
+                **{k: base.get(k) for k in notice_fields}}
+
+    def ordered(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(entries, key=lambda d: json.dumps(d, sort_keys=True))
+
+    findings = ordered([finding_entry(f) for f in report.findings])
+    warnings = ordered([warning_entry(w) for w in report.warnings])
+    notices = ordered([notice_entry(n) for n in report.notices])
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "tool": {"name": "pdf-redaction-verifier", "version": tool_version},
@@ -128,6 +148,7 @@ def build_json_report(
         "error": ({"code": error[0], "message": text(error[1])} if error else None),
         "findings": findings,
         "warnings": warnings,
+        "notices": notices,
     }
 
 

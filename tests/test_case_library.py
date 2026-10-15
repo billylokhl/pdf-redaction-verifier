@@ -131,6 +131,19 @@ class TestOlderMacOS:
             Case(**fields)
 
 
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), True, "120"])
+def test_scan_timeout_must_be_a_positive_number(value) -> None:
+    with pytest.raises(ValueError, match="scan_timeout"):
+        Case(id="page.slow-scan", truth="clean", cells=(), expected=expect(0),
+             story="unit test", build=lambda path: None, scan_timeout=value)
+
+
+def test_scan_timeout_accepts_seconds() -> None:
+    case = Case(id="page.slow-scan", truth="clean", cells=(), expected=expect(0),
+                story="unit test", build=lambda path: None, scan_timeout=240)
+    assert case.scan_timeout == 240
+
 # ── judge()'s warning-storage check ──────────────────────────────────────
 
 
