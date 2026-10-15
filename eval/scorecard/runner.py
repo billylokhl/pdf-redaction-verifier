@@ -62,15 +62,21 @@ def run_cli(
     *,
     timeout: float = DEFAULT_TIMEOUT,
     env: Mapping[str, str] | None = None,
+    secrets_file: Path | None = None,
 ) -> CliResult:
     """Run `python verify_path --target target --secrets ... --json ...`
     as a subprocess and return its outcome. *workdir* holds the scratch
     rules/report files, named after *case_id* so parallel runs (and runs
     against different refs) never collide. *env*, if given, replaces the
-    child's environment (default: inherit this process's)."""
+    child's environment (default: inherit this process's). *secrets_file*,
+    if given, is passed as `--secrets` as it is (a redactor-style YAML,
+    say) and *rules* is ignored."""
     workdir.mkdir(parents=True, exist_ok=True)
-    rules_path = workdir / f"{case_id}.rules.json"
-    rules_path.write_text(json.dumps(list(rules)))
+    if secrets_file is not None:
+        rules_path = secrets_file
+    else:
+        rules_path = workdir / f"{case_id}.rules.json"
+        rules_path.write_text(json.dumps(list(rules)))
     report_path = workdir / f"{case_id}.report.json"
     report_path.unlink(missing_ok=True)  # never judge a stale report
 

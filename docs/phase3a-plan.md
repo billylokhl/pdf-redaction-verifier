@@ -459,6 +459,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
     memoized per field node; a /Parent cycle among fields flags FIELD_TREE (P5). Linearity: many fields deep
     in a /Parent chain over many revisions.
+    An annotation without /Subtype (#106: MuPDF warns, the gate disagrees) is flagged or
+    shown to agree, removing the strict xfail on
+    tests/test_inventory_build.py::test_an_annotation_without_a_subtype_is_flagged_or_agrees.
     Done (3a-7d PR): annotations.py lists each revision's annotations as MuPDF does (every
     /Annots item resolving to a dictionary, a stream's included, but Link and Popup, /Subtype
     resolved; listed twice, listed twice) and classifies each as MuPDF 1.28 draws it, checked
@@ -475,7 +478,7 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     confirmation, via the coordinator): FIELD_TREE also for more than 100 field nodes above a
     widget (qpdf --check then calls the widget unreachable from /AcroForm: measured, 100 pass,
     101 fail); APPEARANCE_UNSUPPORTED (AppearanceRule) for an annotation MuPDF would
-    synthesize but cannot -- a /Subtype outside the 18 it builds (absent, not a name, /Movie,
+    synthesize but cannot -- a /Subtype outside the 18 it builds (absent: #106, its xfail removed; not a name, /Movie,
     /Screen, /3D, ...) or a widget whose inherited /FT is not /Btn, /Ch, /Sig or /Tx written
     as a name: MuPDF warns "cannot create appearance stream" and draws the stored /AP
     instead (contradicting item 5's "a widget under /NeedAppearances is synthesized") or

@@ -431,8 +431,10 @@ def test_mutated_files_are_flagged_or_agree_with_the_readers(
 
 
 # ── Member values and bounds (PR #45 review) ──────────────────────────────
+# Member 6 is the page's annotation (/Annots [6 0 R]), so a dictionary
+# there carries a /Subtype: one without it makes MuPDF warn (#106, below).
 _MEMBER_VALUES = [b"null", b"true", b"false", b"3 0 R", b"123", b"-4", b"1.5", b"/Foo",
-                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 >>", b"[1 2]"]
+                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 /Subtype /Link >>", b"[1 2]"]
 
 
 def _members_at(values: list[bytes], seps: list[bytes], head_sep: bytes,
@@ -491,6 +493,16 @@ def test_members_at_any_bound_are_flagged_or_agree_with_the_readers(
     offsets anywhere, mid-token included: flagged, or read as the readers
     read them."""
     inventory_agrees(_members_at(values, seps, head_sep, shifts, first_shift), tmp_path)
+
+
+@requires_qpdf
+def test_an_annotation_without_a_subtype_is_flagged_or_agrees(tmp_path: Path) -> None:
+    # The #106 counterexample: an annotation without /Subtype and without a
+    # stored appearance. MuPDF tries to synthesize one, cannot, and warns
+    # ("cannot create appearance stream"); since 3a-7d the inventory flags
+    # it, APPEARANCE_UNSUPPORTED (tests/test_inventory_annotations.py).
+    found = compare(_members_at([b"<< /K 1 >>", b"true"], [b"", b""], b"", [0, 0], 0), tmp_path)
+    assert found.flagged and FlagReason.APPEARANCE_UNSUPPORTED in found.reasons, found
 
 
 # ── Allowlisted leniency: comment lines after the header and %%EOF ────────

@@ -8,6 +8,7 @@
     PYTHONPATH=eval:. python -m scorecard inventory run --root DIR [--json OUT]
     PYTHONPATH=eval:. python -m scorecard inventory caselib [--json OUT]
     PYTHONPATH=eval:. python -m scorecard inventory fuzz [--count N] [--seed S] [--json OUT]
+    PYTHONPATH=eval:. python -m scorecard redactor-set run [--root DIR] [--json OUT]
 
 See eval/README.md.
 """
@@ -434,7 +435,39 @@ def build_parser() -> argparse.ArgumentParser:
     add_gate(inv_fuzz)
     inv_fuzz.set_defaults(func=_cmd_inventory_fuzz)
 
+    rs_p = sub.add_parser("redactor-set", help="the verifier on the real-redactor set (U2, U3)")
+    rs_sub = rs_p.add_subparsers(dest="redactor_set_command", required=True)
+    rs_run = rs_sub.add_parser("run", help="measure every locked output; counts only")
+    rs_run.add_argument("--root", type=Path, default=_redactor_set_dir(),
+                        help="the set's local root (default eval/scorecard/redactor_set_local)")
+    rs_run.add_argument("--set", default="inputs", help="which generated set (default inputs)")
+    rs_run.add_argument("--rules", type=Path, default=None,
+                        help="rules file (default ROOT/config/redact.yaml, the redactor's own)")
+    rs_run.add_argument("--seed", type=int, action="append", default=None,
+                        help="measure only this seed's documents (repeatable; default all locked)")
+    rs_run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    rs_run.add_argument("--workers", type=int, default=None)
+    rs_run.add_argument("--json", type=Path, default=None,
+                        help="also write the counts (shareable) as JSON here")
+    rs_run.add_argument("--lock-change-reason", default="",
+                        help="why the adjudication lock differs from the last one measured")
+    rs_run.add_argument("--allow-outside", action="store_true",
+                        help="allow a --root outside the gitignored redactor_set_local/")
+    rs_run.set_defaults(func=_cmd_redactor_set_run)
+
     return parser
+
+
+def _redactor_set_dir() -> Path:
+    from .redactor_set import REDACTOR_SET_DIR
+
+    return REDACTOR_SET_DIR
+
+
+def _cmd_redactor_set_run(args: argparse.Namespace) -> int:
+    from . import redactor_set
+
+    return redactor_set.main(args)
 
 
 def main(argv: list[str] | None = None) -> int:

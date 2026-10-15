@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import math
+import threading
+import time
 from typing import Any
 
 import caselib
@@ -783,26 +785,58 @@ class TestScatteredValues:
     def test_matcher_cost_grows_linearly_with_lines(self) -> None:
         # A dense numeric page with many value rules: eight times the lines
         # must cost about eight times as much, not sixty-four (the window
-        # bounds the pairs each line is compared with). Generous bound
-        # against timing noise: under sixteen times, best of three.
+        # bounds the pairs each line is compared with). Deterministic: the
+        # cost is the number of source lines executed in the matcher's
+        # module (every loop iteration there, whatever it touches), not
+        # wall-clock time, so machine load cannot flake it. Bound: under
+        # twelve times (linear is eight) at each of two steps, 62 -> 500 ->
+        # 4000 lines; each run stops once past the bound, so a quadratic
+        # fails in seconds instead of running for minutes.
         import random
-        import time
+        import sys
+        from types import FrameType
+
+        from redaction_verifier.matching import values
+
         rng = random.Random(1)
         m = SecretMatcher([Secret(f"s{i}", "%09d" % rng.randrange(10**9)) for i in range(150)])
+        source = values.__file__
+        executed = [0]
+        budget = [math.inf]
 
-        def lines(count: int) -> list[str]:
-            return ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+        class OverBudget(Exception):
+            pass
 
-        def cost(ls: list[str]) -> float:
-            best = math.inf
-            for _ in range(3):
-                start = time.perf_counter()
+        def local(frame: FrameType, event: str, arg: Any) -> Any:
+            if event == "line":
+                executed[0] += 1
+                if executed[0] > budget[0]:
+                    raise OverBudget
+            return local
+
+        def outer(frame: FrameType, event: str, arg: Any) -> Any:
+            return local if frame.f_code.co_filename == source else None
+
+        def cost(count: int) -> int:
+            ls = ["%d" % rng.randrange(10 ** rng.randint(1, 8)) for _ in range(count)]
+            executed[0] = 0
+            previous = sys.gettrace()
+            sys.settrace(outer)
+            try:
                 m.scattered(ls, 5)
-                best = min(best, time.perf_counter() - start)
-            return best
+            except OverBudget:
+                pass
+            finally:
+                sys.settrace(previous)
+            return executed[0]
 
-        small, large = lines(500), lines(4000)
-        assert cost(large) < 16 * cost(small) + 0.05
+        tiny = cost(62)
+        assert tiny > 0
+        budget[0] = 12 * tiny
+        small = cost(500)
+        assert small < 12 * tiny
+        budget[0] = 12 * small
+        assert cost(4000) < 12 * small
 
     def test_matcher_bounds(self) -> None:
         m = SecretMatcher([Secret("SSN", normalize_string(SSN))])
@@ -930,6 +964,15 @@ class TestOcrVerticalLines:
 
         with pytest.raises(fitz.mupdf.FzErrorBase):   # the page fails: PAGE_FAILED
             self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), refuse)
+
+    def test_a_timed_out_re_read_fails_the_page(self, monkeypatch) -> None:
+        # Not dropped like a Vision error: Vision is stuck, and each later
+        # re-read would wait out a deadline of its own (#115).
+        def stuck(call: int) -> tuple[list[str], list[str]]:
+            raise ocr.VisionTimeout("Apple Vision did not return")
+
+        with pytest.raises(ocr.VisionTimeout):   # the page fails: PAGE_FAILED
+            self._confirm(monkeypatch, ([ROTATED_90, HORIZONTAL], []), stuck)
 
     def test_a_bug_in_a_re_read_is_not_swallowed(self, monkeypatch) -> None:
         def bug(call: int) -> tuple[list[str], list[str]]:
@@ -1200,6 +1243,14 @@ class TestOcrExtraReadings:
         with pytest.raises(AttributeError):   # the page fails: PAGE_FAILED
             ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
 
+    def test_a_timed_out_extra_read_fails_the_page(self, monkeypatch) -> None:
+        def stuck(png: bytes) -> Any:
+            raise ocr.VisionTimeout("Apple Vision did not return")
+
+        monkeypatch.setattr(ocr, "_vision_recognize_batch", stuck)
+        with pytest.raises(ocr.VisionTimeout):   # the page fails: PAGE_FAILED
+            ocr._extra_readings(self._png(), *A4_PX, ([STACK], []), [[False], []])
+
     def test_a_bug_in_an_extra_reading_fails_the_page(self, monkeypatch) -> None:
         def bug(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap:
             raise AttributeError("no such method")
@@ -1408,6 +1459,7 @@ class _FakeRequest:
         self.handler = handler
         self.correction: bool | None = None
         self.observations: list[Any] | None = None
+        self.cancelled = False
 
     def setRecognitionLevel_(self, level: Any) -> None:
         pass
@@ -1418,15 +1470,21 @@ class _FakeRequest:
     def results(self) -> list[Any] | None:
         return self.observations
 
+    def cancel(self) -> None:
+        self.cancelled = True
 
-def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
+
+def _fake_vision(plans: dict[bool, tuple[str, Any]],
+                 made: list[_FakeRequest] | None = None) -> Any:
     """A stand-in for the Vision module. *plans* says, per language
     correction setting, what performRequests does with that request:
     ("text", [lines]) runs its handler with those observations, ("none",
     None) runs it with results() None, ("error", message) runs it with an
     error, ("raises", exc) runs it on an observation whose topCandidates_
     raises *exc*, and ("skip", None) never runs it — all while
-    still reporting success. Handlers run on the calling thread here; on
+    still reporting success. ("hang", event) blocks performRequests
+    until *event* is set, as a stalled Vision would (#115), then runs
+    nothing. Handlers run on the calling thread here; on
     real Vision they run on worker threads, where an exception escaping
     one aborts the process, so the handler itself must not let one out.
     """
@@ -1436,7 +1494,10 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
             self._make = make
 
         def initWithCompletionHandler_(self, handler: Any) -> _FakeRequest:
-            return _FakeRequest(handler)
+            request = _FakeRequest(handler)
+            if made is not None:
+                made.append(request)
+            return request
 
         def initWithData_options_(self, data: Any, options: Any) -> Any:
             return self._make()
@@ -1458,6 +1519,8 @@ def _fake_vision(plans: dict[bool, tuple[str, Any]]) -> Any:
                 elif kind == "raises":
                     request.observations = [_RaisingObservation(value)]
                     request.handler(request, None)
+                elif kind == "hang":
+                    value.wait()
             return True, None
 
     class _Request:
@@ -1536,3 +1599,112 @@ class TestVisionBridgeCompletion:
         # reading here would let the page pass as read with nothing on it.
         with pytest.raises(RuntimeError, match=message):
             self._recognize(monkeypatch, plans)
+
+
+class TestVisionDeadline:
+    """performRequests has no timeout of its own: a stalled Vision once
+    held a test run for about 25 minutes with no CPU in use (#115). Each
+    Vision call is waited on for at most VISION_CALL_TIMEOUT_S, and a page
+    it times out on fails (PAGE_FAILED, exit 2), never hangs and never
+    passes. Fakes stand in for Vision and Foundation, so these run on
+    every platform."""
+
+    DEADLINE = 0.5
+
+    @pytest.fixture
+    def stalled(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """A Vision whose performRequests never returns until the test
+        ends (released, so no stalled thread outlives the test)."""
+        from types import SimpleNamespace
+
+        release = threading.Event()
+        made: list[_FakeRequest] = []
+        monkeypatch.setattr(ocr, "VISION_CALL_TIMEOUT_S", self.DEADLINE)
+        monkeypatch.setattr(ocr, "Vision", _fake_vision(
+            {True: ("hang", release), False: ("hang", release)}, made), raising=False)
+        monkeypatch.setattr(ocr, "NSData", SimpleNamespace(
+            dataWithBytes_length_=lambda data, length: data), raising=False)
+        monkeypatch.setattr(ocr, "NSDictionary", SimpleNamespace(
+            dictionary=lambda: {}), raising=False)
+        try:
+            yield SimpleNamespace(release=release, made=made)
+        finally:
+            release.set()
+            for thread in list(ocr._stalled):
+                thread.join(10)
+            assert not any(thread.is_alive() for thread in ocr._stalled)
+
+    def test_a_call_vision_never_finishes_raises_at_the_deadline(self, stalled) -> None:
+        start = time.monotonic()
+        with pytest.raises(ocr.VisionTimeout, match="did not return within 0.5 s"):
+            ocr._vision_recognize_batch(b"png")
+        elapsed = time.monotonic() - start
+        assert self.DEADLINE <= elapsed < self.DEADLINE + 5
+        assert len(stalled.made) == 2 and all(r.cancelled for r in stalled.made)
+
+    def test_a_timeout_is_no_read_failure_a_re_read_may_drop(self) -> None:
+        # _READ_FAILURES are dropped per read; a timeout must fail the page.
+        assert not issubclass(ocr.VisionTimeout, ocr._READ_FAILURES)
+
+    def test_while_a_stalled_call_runs_the_next_fails_at_once(self, stalled) -> None:
+        with pytest.raises(ocr.VisionTimeout):
+            ocr._vision_recognize_batch(b"png")
+        start = time.monotonic()
+        with pytest.raises(ocr.VisionTimeout, match="an earlier call has not returned"):
+            ocr._vision_recognize_batch(b"png")
+        assert time.monotonic() - start < self.DEADLINE
+        assert len(stalled.made) == 2   # Vision was not called again
+
+    def test_once_the_stalled_call_returns_vision_is_used_again(
+        self, stalled, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with pytest.raises(ocr.VisionTimeout):
+            ocr._vision_recognize_batch(b"png")
+        stalled.release.set()
+        for thread in list(ocr._stalled):
+            thread.join(10)
+        monkeypatch.setattr(ocr, "Vision", _fake_vision(
+            {True: ("text", [SSN]), False: ("text", [SSN])}), raising=False)
+        on, off = ocr._vision_recognize_batch(b"png")
+        assert [o.text for o in on] == [o.text for o in off] == [SSN]
+
+    def test_an_error_inside_performrequests_still_reaches_the_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> Any:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> Any:
+                return self
+
+            def performRequests_error_(self, requests: Any, error: Any) -> Any:
+                raise ValueError("NSInvalidArgumentException")
+
+        vision = _fake_vision({True: ("text", []), False: ("text", [])})
+        vision.VNImageRequestHandler = _Handler
+        monkeypatch.setattr(ocr, "Vision", vision, raising=False)
+        monkeypatch.setattr(ocr, "NSData", SimpleNamespace(
+            dataWithBytes_length_=lambda data, length: data), raising=False)
+        monkeypatch.setattr(ocr, "NSDictionary", SimpleNamespace(
+            dictionary=lambda: {}), raising=False)
+        with pytest.raises(ValueError, match="NSInvalidArgumentException"):
+            ocr._vision_recognize_batch(b"png")
+
+    def test_pages_vision_never_finishes_fail_and_the_scan_ends(self, stalled) -> None:
+        # The CLI's OCR layer over three pages: each is PAGE_FAILED, none
+        # is read as clean, and the run costs one deadline, not three.
+        doc = _build([[f"SSN {SSN}"], ["page two"], ["page three"]])
+        start = time.monotonic()
+        report = _scan(doc, layer="OCR", extractor=ocr.extract_ocr_text,
+                       hard_variants=ocr.OCR_GENUINE_READINGS, seam_variants=None,
+                       tails_into_next=(), scatter_readings=())
+        assert time.monotonic() - start < self.DEADLINE + 5
+        assert not report.findings
+        assert [(w.code, w.layer, w.fields.get("page")) for w in report.warnings] == [
+            ("PAGE_FAILED", "OCR", 1), ("PAGE_FAILED", "OCR", 2), ("PAGE_FAILED", "OCR", 3)]
+        assert "did not return within" in report.warnings[0]
+        assert all("earlier call has not returned" in w for w in report.warnings[1:])

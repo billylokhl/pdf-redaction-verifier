@@ -19,7 +19,8 @@ clean.
 A cell that relies on OCR assumes the OCR layer ran. When it cannot run —
 off macOS, without the Vision bridge, on a page where Vision raises an
 error (every page on macOS 27 until the fix in the CHANGELOG), or on a
-page where Vision reports success without delivering both readings —
+page where Vision reports success without delivering both readings, or
+on a page where a Vision call does not return within its deadline —
 the run never exits `0` (`2`, or `1` if another layer found a leak). If
 Vision delivers a reading without error but misses text, nothing flags
 it: the OCR cells' ✓ assumes Vision's reading (¹² below).
@@ -148,6 +149,13 @@ matcher sees it whole. Each is ✗:
 
 - A value split around other text into more than three pieces, or with
   its pieces more than five lines apart (see the review net below).
+- A name written in a form the rules do not list: a reordered name
+  ("TESTPERSON, JORDAN Q" against "Jordan Q. Testperson") or a fragment
+  of one, such as a first name alone inside an email address. A value
+  rule is matched whole after normalization (case, punctuation, spacing);
+  the tool generates no reorderings and does not look for parts of a
+  listed value. Not detected unless each form is listed as its own value
+  (see README, Rules file).
 - A letter-spaced value in fine print that the page's reading breaks into
   one-character lines around other text — more than three pieces
   (`match.letter-spaced-stack`).
