@@ -30,7 +30,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from . import corpus as corpus_mod
 from .match_shapes import OUT_ENV, SALT_ENV, record_key
@@ -41,8 +41,9 @@ RECORDER = HERE / "pattern_recorder.py"
 BUILTIN_RULES = HERE / "builtin_classes.rules.json"
 CLASSES: tuple[str, ...] = ("ssn", "credit-card", "email", "us-phone")
 # ADR 0005: a validated email match is a true positive for "an address is
-# here", and credit-card measured 0%; the union a Phase 5 fix must bring
-# under 1% is the digit classes that miscolour unrelated numbers.
+# here", and credit-card measured 0% on page text (1.4% of text-bearing
+# files under the full CLI, Phase 5 PR 1); the unions are the digit
+# classes that miscolour unrelated numbers.
 UNIONS: dict[str, tuple[str, ...]] = {
     "ssn|us-phone": ("ssn", "us-phone"),
     "ssn|us-phone|credit-card": ("ssn", "us-phone", "credit-card"),
@@ -98,13 +99,17 @@ def _stratum(entry: corpus_mod.CorpusEntry) -> str:
 
 
 def reduce_result(stratum: str, result: CliResult, records: dict[str, Any],
-                  salt: str = "") -> FileResult:
+                  salt: str = "", class_of: Mapping[str, str] | None = None) -> FileResult:
     """Join each hard finding in the CLI's --json report to the recorder's
     shape for the same `record_key(salt, rule, masked sample)`. A finding
     with no record is counted as UNJOINED, never dropped. A crash, timeout
     or CLI error with no finding (an unreadable or encrypted file) is
     unmeasured: it has nothing to count, so it never pads a rate's
-    denominator."""
+    denominator. *class_of* maps a rule's name to its built-in class (by
+    default a rule counts only if it is named after its class, as in
+    builtin_classes.rules.json); the FileResult is keyed by class."""
+    if class_of is None:
+        class_of = {c: c for c in CLASSES}
     report = result.report
     if result.crashed or report is None:
         return FileResult(stratum, False, result.returncode, unmeasured_reason="crash")
@@ -118,16 +123,20 @@ def reduce_result(stratum: str, result: CliResult, records: dict[str, Any],
         joins.setdefault(rec["key"], set()).add(rec["shape"])
     hard = []
     for f in report.get("findings", []):
-        if f.get("tier") != "hard" or f.get("rule") not in CLASSES:
+        cls = class_of.get(f.get("rule", ""))
+        if f.get("tier") != "hard" or cls is None:
             continue
         found = joins.get(record_key(salt, f["rule"], f.get("sample", "")))
         shape = (min(found, key=lambda s: KEEP_ORDER.index(s) if s in KEEP_ORDER else -1)
                  if found else UNJOINED)
-        hard.append(HardFinding(f["rule"], f.get("layer") or "?", f.get("storage"), shape))
+        hard.append(HardFinding(cls, f.get("layer") or "?", f.get("storage"), shape))
     review = frozenset(
-        w["rule"] for w in report.get("warnings", []) if w.get("rule") in CLASSES
+        class_of[w["rule"]] for w in report.get("warnings", []) if w.get("rule") in class_of
     )
-    shapes = {rule: frozenset(v) for rule, v in records.get("shapes", {}).items()}
+    shapes: dict[str, frozenset[str]] = {}
+    for rule, v in records.get("shapes", {}).items():
+        if rule in class_of:
+            shapes[class_of[rule]] = shapes.get(class_of[rule], frozenset()) | frozenset(v)
     return FileResult(stratum, True, report.get("exit_code"), tuple(hard), review, shapes)
 
 
