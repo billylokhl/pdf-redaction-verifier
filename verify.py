@@ -649,7 +649,7 @@ def _minimal_subprocess_env() -> dict[str, str]:
 
 def _start_tool(
     report: ScanReport, layer: str, name: str, argv: Sequence[str],
-    env: dict[str, str], cwd: str,
+    env: dict[str, str], cwd: str, stderr: int = subprocess.DEVNULL,
 ) -> subprocess.Popen[bytes] | None:
     """Launch an external tool; a start failure degrades the layer loudly.
 
@@ -659,7 +659,7 @@ def _start_tool(
     """
     try:
         return subprocess.Popen(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            list(argv), stdout=subprocess.PIPE, stderr=stderr,
             env=env, cwd=cwd,
         )
     except FileNotFoundError:
@@ -717,7 +717,9 @@ def start_hidden_tools(
     env = _minimal_subprocess_env()
     scratch = tempfile.TemporaryDirectory(prefix="pdf-redaction-verifier-")
 
-    def launch(name: str, layer: str, args: Sequence[str]) -> subprocess.Popen[bytes] | None:
+    def launch(
+        name: str, layer: str, args: Sequence[str], stderr: int = subprocess.DEVNULL,
+    ) -> subprocess.Popen[bytes] | None:
         exe = shutil.which(name)
         if exe is None:
             report.warn(
@@ -727,7 +729,7 @@ def start_hidden_tools(
                 tool=name,
             )
             return None
-        return _start_tool(report, layer, name, [exe, *args], env, scratch.name)
+        return _start_tool(report, layer, name, [exe, *args], env, scratch.name, stderr)
 
     procs = {
         "exiftool": launch("exiftool", "Metadata", ["-config", "", "-json", "--", target]),
@@ -736,10 +738,13 @@ def start_hidden_tools(
         # sweeps — so a short all-hex value rule (e.g. "45-67" -> "4567")
         # matched it about once in 2,000 runs, and the same file's verdict
         # depended on the clock. With it, the /ID qpdf writes is derived
-        # from the file alone.
+        # from the file alone. stderr is kept: on exit 3 its warning lines
+        # decide whether the output can still be certified
+        # (_qpdf_warnings_unverified).
         "qpdf": launch(
             "qpdf", "Binary",
             ["--qdf", "--object-streams=disable", "--deterministic-id", target, "-"],
+            stderr=subprocess.PIPE,
         ),
     }
     return procs, scratch
@@ -3236,11 +3241,481 @@ def _strip_generated_ids(tail: bytes, input_ids: frozenset[str] | None) -> bytes
     return tail[:start] + b"  /ID [<" + kept[0] + b"><" + kept[1] + b">]" + tail[end:]
 
 
+# ── qpdf exit 3: which warnings are provably harmless ───────────────────
+# Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check; ADR
+# 0002's note of that date). qpdf exits 3 when it succeeded with warnings.
+# The Binary layer used to treat every exit 3 as TOOL_EXIT_NONZERO (exit
+# 2), because a truncated input also exits 3 with tail objects missing. It
+# now reads qpdf's stderr, and exit 3 stops forcing exit 2 only when EVERY
+# line is one of five kinds AND that kind's check against this file's own
+# bytes passes. Anything else -- a line it cannot parse, a kind not listed
+# here (xref reconstruction, integer overflow, ...), a check that cannot
+# decide, a cap exceeded -- keeps TOOL_EXIT_NONZERO (fail closed).
+#
+# Nothing qpdf printed is ever echoed: the result is one of the fixed
+# reasons below. Every check is linear in the file's size and bounded by
+# the caps; exceeding one fails closed.
+QPDF_STDERR_CAP_BYTES: int = 1 << 20
+QPDF_WARNING_LINES_CAP: int = 10_000
+QPDF_CHECK_MAX_FILE_BYTES: int = 512 << 20
+QPDF_CHECK_MAX_TOKENS: int = 5_000_000
+QPDF_CHECK_MAX_DEPTH: int = 64
+QPDF_XREF_DECODE_CAP: int = 64 << 20
+
+_PDF_WS = b"\x00\t\n\x0c\r "
+_PDF_REGULAR = rb"[^\x00\t\n\x0c\r ()<>\[\]{}/%]"
+# Whitespace or comments. A comment must end at its end of line, so a run
+# of '%' has one reading only and the pattern cannot backtrack.
+_PDF_GAP = rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*[\r\n])+"
+# One token at a position. A ')' '>' '{' '}' on its own matches nothing
+# and fails the parse.
+_PDF_TOKEN = re.compile(
+    rb"(?P<ws>[\x00\t\n\x0c\r ]+)|(?P<comment>%[^\r\n]*)"
+    rb"|(?P<dopen><<)|(?P<dclose>>>)|(?P<hex><[0-9A-Fa-f\x00\t\n\x0c\r ]*>)"
+    rb"|(?P<aopen>\[)|(?P<aclose>\])|(?P<name>/" + _PDF_REGULAR + rb"*)"
+    rb"|(?P<lit>\()|(?P<regular>" + _PDF_REGULAR + rb"+)"
+)
+_PDF_LITERAL_STOP = re.compile(rb"[()\\]")
+_PDF_UINT = re.compile(rb"\d{1,10}")
+# Any "N G obj", generously: comments allowed between the parts, and a
+# number glued to a non-digit before it still counts. A false header only
+# ever makes a check fail closed.
+_PDF_HEADER = re.compile(rb"(?<![0-9])(\d+)" + _PDF_GAP + rb"(\d+)" + _PDF_GAP + rb"obj")
+_PDF_ESCAPED_NAME = re.compile(rb"/" + _PDF_REGULAR + rb"*#" + _PDF_REGULAR + rb"*")
+
+# The kinds (stderr line after "WARNING: <target> ").
+_QPDF_REF00 = re.compile(
+    rb"\(object \d{1,10} \d{1,5}, offset \d{1,15}\): "
+    rb"treating bad indirect reference \(0 0 R\) as null")
+_QPDF_OFFSET0 = re.compile(
+    rb"\(object (\d{1,10}) \d{1,5}\): object has offset 0 - a common error "
+    rb"handled correctly by qpdf and most other applications")
+_QPDF_DUPKEY = re.compile(
+    rb"\(object (\d{1,10}) (\d{1,5}), offset (\d{1,15})\): dictionary has "
+    rb"duplicated key (/[!-~]+); last occurrence overrides earlier ones")
+_QPDF_ENDOBJ = re.compile(
+    rb"\((xref stream: )?object (\d{1,10}) (\d{1,5}), offset (\d{1,15})\): expected endobj")
+_QPDF_FLATE = re.compile(
+    rb"\(offset (\d{1,15})\): input stream is complete but output may still be valid")
+_QPDF_TAIL_LINES = frozenset({
+    b"qpdf: operation succeeded with warnings",
+    b"qpdf: operation succeeded with warnings; resulting file may have some problems",
+})
+
+
+class _QpdfCheckFailed(Exception):
+    """A byte check could not prove its kind harmless (fail closed)."""
+
+
+def _pdf_name(raw: bytes) -> bytes:
+    """A name token's bytes after the '/', with #xx escapes decoded."""
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        if raw[i] == 0x23 and re.fullmatch(rb"[0-9A-Fa-f]{2}", raw[i + 1:i + 3]):
+            out.append(int(raw[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.append(raw[i])
+            i += 1
+    return bytes(out)
+
+
+@dataclass
+class _PdfStream:
+    obj: tuple[int, int]
+    dict_items: tuple[tuple[bytes, Any], ...]   # (decoded key, value), in order
+    start: int                                 # first data byte
+    end: int                                   # one past the last
+
+
+@dataclass
+class _PdfTiling:
+    """What one front-to-back pass over the file found, keyed by the
+    offsets qpdf's messages use."""
+    # end of a dictionary's "<<" -> (object, keys seen twice, values all equal)
+    dup_dicts: dict[int, tuple[tuple[int, int], frozenset[bytes], bool]] = field(
+        default_factory=dict)
+    # start of the token found where "endobj" belonged, when only
+    # whitespace separates the two -> (object, its stream if it has one)
+    missing_endobj: dict[int, tuple[tuple[int, int], _PdfStream | None]] = field(
+        default_factory=dict)
+    streams: dict[int, _PdfStream] = field(default_factory=dict)
+
+
+class _PdfLexer:
+    """A minimal PDF tokenizer and value parser over the whole file, with
+    a token budget and a nesting limit (both fail closed)."""
+
+    def __init__(self, data: bytes, headers: dict[int, list[int]]) -> None:
+        self.data = data
+        self.headers = headers
+        self.budget = QPDF_CHECK_MAX_TOKENS
+        self.dup_dicts: dict[int, tuple[frozenset[bytes], bool]] = {}
+
+    def token(self, pos: int) -> tuple[str, int, int]:
+        data = self.data
+        while True:
+            if pos >= len(data):
+                return "eof", pos, pos
+            self.budget -= 1
+            if self.budget < 0:
+                raise _QpdfCheckFailed("token budget")
+            m = _PDF_TOKEN.match(data, pos)
+            if m is None:
+                raise _QpdfCheckFailed("unexpected byte")
+            kind = m.lastgroup or ""
+            if kind in ("ws", "comment"):
+                pos = m.end()
+                continue
+            if kind == "lit":
+                return kind, pos, self._literal_end(pos)
+            return kind, pos, m.end()
+
+    def _literal_end(self, pos: int) -> int:
+        depth = 0
+        i = pos
+        while True:
+            m = _PDF_LITERAL_STOP.search(self.data, i)
+            if m is None:
+                raise _QpdfCheckFailed("unterminated string")
+            c = m.group()
+            if c == b"\\":
+                i = m.end() + 1
+                continue
+            depth += 1 if c == b"(" else -1
+            i = m.end()
+            if depth == 0:
+                return i
+
+    def value(self, pos: int, depth: int = 0) -> tuple[int, Any]:
+        """Parse one value; return (end offset, a comparable form)."""
+        if depth > QPDF_CHECK_MAX_DEPTH:
+            raise _QpdfCheckFailed("nesting")
+        kind, s, e = self.token(pos)
+        data = self.data
+        if kind == "dopen":
+            items: list[tuple[bytes, Any]] = []
+            p = e
+            while True:
+                k, ks, ke = self.token(p)
+                if k == "dclose":
+                    break
+                if k != "name":
+                    raise _QpdfCheckFailed("dictionary key")
+                p, v = self.value(ke, depth + 1)
+                items.append((_pdf_name(data[ks + 1:ke]), v))
+            first: dict[bytes, Any] = {}
+            dups: set[bytes] = set()
+            same = True
+            for key, v in items:
+                if key in first:
+                    dups.add(key)
+                    same = same and first[key] == v
+                else:
+                    first[key] = v
+            if dups:
+                self.dup_dicts[e] = (frozenset(dups), same)
+            return ke, ("dict", tuple(items))
+        if kind == "aopen":
+            elems: list[Any] = []
+            p = e
+            while True:
+                k, ks, ke = self.token(p)
+                if k == "aclose":
+                    return ke, ("array", tuple(elems))
+                p, v = self.value(ks, depth + 1)
+                elems.append(v)
+        if kind in ("name", "hex", "lit"):
+            return e, (kind, data[s:e])
+        if kind == "regular":
+            tok = data[s:e]
+            if _PDF_UINT.fullmatch(tok):
+                k2, s2, e2 = self.token(e)
+                if k2 == "regular" and _PDF_UINT.fullmatch(data[s2:e2]):
+                    k3, s3, e3 = self.token(e2)
+                    if k3 == "regular" and data[s3:e3] == b"R":
+                        return e3, ("ref", int(tok), int(data[s2:e2]))
+            if tok in (b"obj", b"endobj", b"stream", b"endstream", b"R",
+                       b"xref", b"trailer", b"startxref"):
+                raise _QpdfCheckFailed("keyword as value")
+            return e, ("regular", tok)
+        raise _QpdfCheckFailed("value")
+
+    def is_header(self, pos: int) -> bool:
+        k1, s1, e1 = self.token(pos)
+        if k1 != "regular" or not _PDF_UINT.fullmatch(self.data[s1:e1]):
+            return False
+        k2, s2, e2 = self.token(e1)
+        if k2 != "regular" or not _PDF_UINT.fullmatch(self.data[s2:e2]):
+            return False
+        k3, s3, e3 = self.token(e2)
+        return k3 == "regular" and self.data[s3:e3] == b"obj"
+
+    def direct_int(self, v: Any) -> int:
+        """An integer value, resolving an indirect one only when exactly
+        one 'N G obj' for it exists anywhere in the file."""
+        if v[0] == "ref":
+            spots = self.headers.get(v[1], [])
+            if len(spots) != 1:
+                raise _QpdfCheckFailed("indirect length")
+            k, s, e = self.token(spots[0])
+            _, _, e = self.token(e)
+            _, _, e = self.token(e)                 # past "N G obj"
+            _, v = self.value(e)
+        if v[0] != "regular" or not _PDF_UINT.fullmatch(v[1]):
+            raise _QpdfCheckFailed("integer")
+        return int(v[1])
+
+
+def _pdf_headers(data: bytes) -> dict[int, list[int]]:
+    """Every 'N G obj' header anywhere in the bytes, by object number."""
+    found: dict[int, list[int]] = {}
+    for m in _PDF_HEADER.finditer(data):
+        found.setdefault(int(m.group(1)), []).append(m.start())
+    return found
+
+
+def _pdf_tile(data: bytes, headers: dict[int, list[int]]) -> _PdfTiling:
+    """Walk the file front to back: objects (streams skipped by their
+    /Length), xref tables, trailers and startxref, with only whitespace and
+    comments between them. Anything else fails the walk, and every check
+    that needs it then fails closed."""
+    lex = _PdfLexer(data, headers)
+    out = _PdfTiling()
+    pos = 0
+    while True:
+        kind, s, e = lex.token(pos)
+        if kind == "eof":
+            return out
+        tok = data[s:e] if kind == "regular" else b""
+        if tok == b"xref":
+            pos = e
+            while True:
+                k, s2, e2 = lex.token(pos)
+                t = data[s2:e2]
+                if k == "regular" and (_PDF_UINT.fullmatch(t) or t in (b"n", b"f")):
+                    pos = e2
+                    continue
+                break
+            continue
+        if tok == b"trailer":
+            pos, v = lex.value(e)
+            if v[0] != "dict":
+                raise _QpdfCheckFailed("trailer")
+            continue
+        if tok == b"startxref":
+            k, s2, e2 = lex.token(e)
+            if k != "regular" or not _PDF_UINT.fullmatch(data[s2:e2]):
+                raise _QpdfCheckFailed("startxref")
+            pos = e2
+            continue
+        if not lex.is_header(s):
+            raise _QpdfCheckFailed("top level")
+        _, s1, e1 = lex.token(s)
+        _, s2, e2 = lex.token(e1)
+        _, _, e3 = lex.token(e2)
+        obj = (int(data[s1:e1]), int(data[s2:e2]))
+        before = set(lex.dup_dicts)
+        vend, v = lex.value(e3)
+        for offset in set(lex.dup_dicts) - before:
+            dups, same = lex.dup_dicts[offset]
+            out.dup_dicts[offset] = (obj, dups, same)
+        k, s4, e4 = lex.token(vend)
+        stream = None
+        if v[0] == "dict" and k == "regular" and data[s4:e4] == b"stream":
+            if data[e4:e4 + 2] == b"\r\n":
+                start = e4 + 2
+            elif data[e4:e4 + 1] == b"\n":
+                start = e4 + 1
+            else:
+                raise _QpdfCheckFailed("stream keyword")
+            lengths = [val for key, val in v[1] if key == b"Length"]
+            if len(lengths) != 1:
+                raise _QpdfCheckFailed("stream length")
+            end = start + lex.direct_int(lengths[0])
+            if end > len(data):
+                raise _QpdfCheckFailed("stream length")
+            k, s5, e5 = lex.token(end)
+            if data[end:s5].strip(_PDF_WS) or k != "regular" or data[s5:e5] != b"endstream":
+                raise _QpdfCheckFailed("endstream")
+            stream = _PdfStream(obj, v[1], start, end)
+            out.streams[start] = stream
+            vend = e5
+            k, s4, e4 = lex.token(vend)
+        if k == "regular" and data[s4:e4] == b"endobj":
+            pos = e4
+            continue
+        # No endobj: harmless only if the object's end is followed by
+        # nothing but whitespace, then the next object, xref or startxref.
+        clean = not data[vend:s4].strip(_PDF_WS) and (
+            (k == "regular" and data[s4:e4] in (b"xref", b"startxref"))
+            or lex.is_header(s4))
+        if not clean:
+            raise _QpdfCheckFailed("stray bytes before endobj")
+        out.missing_endobj[s4] = (obj, stream)
+        pos = vend
+
+
+def _xref_stream_rows_complete(data: bytes, stream: _PdfStream, lex: _PdfLexer) -> bool:
+    """Whether a Flate xref stream decodes every row its /Index (or
+    /Size) declares. Anything but the plain shapes fails closed."""
+    d = dict(stream.dict_items)
+    if len(d) != len(stream.dict_items):
+        return False
+    filt = d.get(b"Filter")
+    if filt is not None and filt[0] == "array" and len(filt[1]) == 1:
+        filt = filt[1][0]
+    if filt is None or filt[0] != "name" or _pdf_name(filt[1][1:]) != b"FlateDecode":
+        return False
+    w = d.get(b"W")
+    if w is None or w[0] != "array" or len(w[1]) != 3:
+        return False
+    widths = [lex.direct_int(x) for x in w[1] if x[0] == "regular"]
+    if len(widths) != 3:
+        return False
+    row = sum(widths)
+    index = d.get(b"Index")
+    if index is None:
+        entries = lex.direct_int(d.get(b"Size", ("none",)))
+    else:
+        if index[0] != "array" or len(index[1]) % 2 or any(x[0] != "regular" for x in index[1]):
+            return False
+        entries = sum(lex.direct_int(x) for x in index[1][1::2])
+    parms = d.get(b"DecodeParms")
+    if parms is not None and parms[0] == "array" and len(parms[1]) == 1:
+        parms = parms[1][0]
+    predictor = 1
+    if parms is not None:
+        if parms[0] != "dict":
+            return False
+        p = dict(parms[1])
+        if set(p) - {b"Predictor", b"Columns", b"Colors", b"BitsPerComponent"}:
+            return False
+        predictor = lex.direct_int(p.get(b"Predictor", ("regular", b"1")))
+        columns = lex.direct_int(p.get(b"Columns", ("regular", b"1")))
+        if lex.direct_int(p.get(b"Colors", ("regular", b"1"))) != 1:
+            return False
+        if lex.direct_int(p.get(b"BitsPerComponent", ("regular", b"8"))) != 8:
+            return False
+        if predictor >= 10:
+            if columns != row:
+                return False
+            row += 1
+        elif predictor != 1:
+            return False
+    try:
+        decoded = zlib.decompressobj().decompress(
+            data[stream.start:stream.end], QPDF_XREF_DECODE_CAP + 1)
+    except zlib.error:
+        return False
+    if len(decoded) > QPDF_XREF_DECODE_CAP:
+        return False
+    return row > 0 and len(decoded) >= row * entries
+
+
+def _stream_type(stream: _PdfStream) -> bytes:
+    """A stream's /Type, escapes decoded; b"" when it has none. A stream
+    that could be an object stream without saying so (a /First key, an
+    indirect or repeated /Type, duplicated keys) counts as one."""
+    d = dict(stream.dict_items)
+    if len(d) != len(stream.dict_items) or b"First" in d:
+        return b"ObjStm"
+    typ = d.get(b"Type")
+    if typ is None:
+        return b""
+    if typ[0] != "name":
+        return b"ObjStm"
+    return _pdf_name(typ[1][1:])
+
+
+def _has_object_or_xref_streams(data: bytes) -> bool:
+    """Whether any name in the file, escapes decoded, is /ObjStm or /XRef:
+    then an object's body could be stored where a header scan cannot see
+    it (an object stream, reachable through an xref stream's entries)."""
+    if b"/ObjStm" in data or b"/XRef" in data:
+        return True
+    return any(_pdf_name(m.group()[1:]) in (b"ObjStm", b"XRef")
+               for m in _PDF_ESCAPED_NAME.finditer(data))
+
+
+def _qpdf_warnings_unverified(stderr: bytes | None, target: str, data: bytes | None) -> str | None:
+    """None when every line qpdf wrote to stderr is a warning kind the
+    owner accepted (2026-10-15) AND its check against *data* (the file's
+    bytes) passes; otherwise a short fixed reason, never file text."""
+    if stderr is None or data is None:
+        return "qpdf's warnings could not be read"
+    if len(stderr) >= QPDF_STDERR_CAP_BYTES or len(data) > QPDF_CHECK_MAX_FILE_BYTES:
+        return "too large to check"
+    prefix = b"WARNING: " + os.fsencode(target) + b" "
+    lines = stderr.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    if len(lines) > QPDF_WARNING_LINES_CAP:
+        return "too many qpdf warnings to check"
+    warnings = [line for line in lines if line not in _QPDF_TAIL_LINES]
+    if not warnings:
+        return "no qpdf warning to check"
+    parsed: list[tuple[str, re.Match[bytes]]] = []
+    for line in warnings:
+        if not line.startswith(prefix):
+            return "an unrecognised qpdf warning"
+        rest = line[len(prefix):]
+        for kind, rx in (("ref00", _QPDF_REF00), ("offset0", _QPDF_OFFSET0),
+                         ("dupkey", _QPDF_DUPKEY), ("endobj", _QPDF_ENDOBJ),
+                         ("flate", _QPDF_FLATE)):
+            m = rx.fullmatch(rest)
+            if m is not None:
+                parsed.append((kind, m))
+                break
+        else:
+            return "an unrecognised qpdf warning"
+    try:
+        headers = _pdf_headers(data)
+        tiling: _PdfTiling | None = None
+        lex = _PdfLexer(data, headers)
+        for kind, m in parsed:
+            if kind == "ref00":
+                continue
+            if kind == "offset0":
+                if int(m.group(1)) in headers or _has_object_or_xref_streams(data):
+                    return "an offset-0 object whose body may be stored in the file"
+                continue
+            if tiling is None:
+                tiling = _pdf_tile(data, headers)
+            if kind == "dupkey":
+                obj = (int(m.group(1)), int(m.group(2)))
+                found = tiling.dup_dicts.get(int(m.group(3)))
+                key = m.group(4)[1:]
+                if found is None or found[0] != obj or not found[2] or key not in found[1]:
+                    return "a duplicated key whose values differ"
+            elif kind == "endobj":
+                obj = (int(m.group(2)), int(m.group(3)))
+                gap = tiling.missing_endobj.get(int(m.group(4)))
+                is_xref = m.group(1) is not None
+                if gap is None or gap[0] != obj or (is_xref and (
+                        gap[1] is None or _stream_type(gap[1]) != b"XRef")):
+                    return "bytes between an object and the next one"
+            else:  # flate
+                stream = tiling.streams.get(int(m.group(1)))
+                if stream is None:
+                    return "a truncated Flate stream that could not be located"
+                name = _stream_type(stream)
+                if name == b"ObjStm":
+                    return "a truncated object stream"
+                if name == b"XRef" and not _xref_stream_rows_complete(data, stream, lex):
+                    return "a truncated xref stream"
+    except Exception:  # noqa: BLE001 -- any failure fails closed
+        return "a qpdf warning whose check could not complete"
+    return None
+
+
 def _collect_qpdf(
     proc: subprocess.Popen[bytes],
     matcher: SecretMatcher,
     report: ScanReport,
     input_ids: frozenset[str] | None = None,
+    pdf_bytes: bytes | None = None,
 ) -> None:
     """Sweep qpdf's QDF byte stream as the damaged-file backstop.
 
@@ -3258,6 +3733,11 @@ def _collect_qpdf(
     raw = RollingScanner(matcher)
     got_output = False
     complete = False
+    # qpdf's stderr, read alongside stdout so neither pipe can fill and
+    # stall it; kept up to QPDF_STDERR_CAP_BYTES (a longer one is never
+    # certified: _qpdf_warnings_unverified refuses it).
+    err = bytearray()
+    err_open = proc.stderr is not None
     # The last QPDF_TAIL_HOLD_BYTES are held back until qpdf finishes, so
     # its final trailer can be read whole; everything is scanned in order.
     held = b""
@@ -3282,18 +3762,30 @@ def _collect_qpdf(
             break
         # Use select() so the deadline is enforced even if qpdf stalls
         # mid-stream — a plain read() would block indefinitely.
-        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        watched = ([] if complete else [proc.stdout]) + ([proc.stderr] if err_open else [])
+        if not watched:
+            break
+        ready, _, _ = select.select(watched, [], [], remaining)
         if not ready:
             proc.kill()
             proc.communicate()
             report.warn(
                 "TOOL_TIMEOUT", "Binary", "Binary: qpdf timed out — scan incomplete", tool="qpdf"
             )
+            complete = False
             break
+        if proc.stderr is not None and proc.stderr in ready:
+            data = os.read(proc.stderr.fileno(), QPDF_CHUNK_BYTES)
+            if not data:
+                err_open = False
+            elif len(err) < QPDF_STDERR_CAP_BYTES:
+                err += data[:QPDF_STDERR_CAP_BYTES - len(err)]
+        if proc.stdout not in ready:
+            continue
         chunk = os.read(proc.stdout.fileno(), QPDF_CHUNK_BYTES)
         if not chunk:
             complete = True
-            break
+            continue
         got_output = True
         held += chunk
         if len(held) > QPDF_TAIL_HOLD_BYTES:
@@ -3308,19 +3800,30 @@ def _collect_qpdf(
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
-    # Any nonzero exit degrades the scan — including 3. qpdf documents
-    # exit 3 as "warnings", but empirically a truncated input PDF exits 3
-    # while emitting only a partial QDF stream with tail objects silently
-    # absent, so exit-3 output cannot be certified complete.
+    # Any nonzero exit degrades the scan, and so does exit 3 unless every
+    # warning is a kind the owner accepted whose byte check passes (owner
+    # decision 2026-10-15; _qpdf_warnings_unverified). qpdf documents exit
+    # 3 as "warnings", but a truncated input PDF exits 3 while emitting
+    # only a partial QDF stream with tail objects silently absent, so
+    # exit-3 output is certified only kind by kind, never wholesale.
     if proc.returncode != 0:
-        report.warn(
-            "TOOL_EXIT_NONZERO",
-            "Binary",
-            f"Binary: qpdf exited {proc.returncode} — QDF output may be truncated, "
-            "binary scan may be incomplete",
-            tool="qpdf",
-            returncode=proc.returncode,
-        )
+        why = None
+        if proc.returncode == 3:
+            args = proc.args if isinstance(proc.args, (list, tuple)) else []
+            target = str(args[-2]) if len(args) >= 2 and args[-1] == "-" else ""
+            why = _qpdf_warnings_unverified(
+                bytes(err) if complete and not err_open and target else None,
+                target, pdf_bytes)
+        if proc.returncode != 3 or why is not None:
+            detail = f" ({why})" if why else ""
+            report.warn(
+                "TOOL_EXIT_NONZERO",
+                "Binary",
+                f"Binary: qpdf exited {proc.returncode}{detail} — QDF output may be "
+                "truncated, binary scan may be incomplete",
+                tool="qpdf",
+                returncode=proc.returncode,
+            )
     if not got_output:
         report.warn(
             "TOOL_NO_OUTPUT",
@@ -3358,6 +3861,7 @@ def check_hidden_layers(
     patterns: Sequence[PatternRule],
     report: ScanReport,
     input_ids: frozenset[str] | None = None,
+    pdf_bytes: bytes | None = None,
 ) -> None:
     """Phase 4 collector: reap the tools started by start_hidden_tools.
 
@@ -3378,7 +3882,7 @@ def check_hidden_layers(
             )
     if procs["qpdf"] is not None:
         try:
-            _collect_qpdf(procs["qpdf"], matcher, report, input_ids)
+            _collect_qpdf(procs["qpdf"], matcher, report, input_ids, pdf_bytes)
         except Exception as exc:
             report.warn(
                 "LAYER_CRASHED",
@@ -3697,12 +4201,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("[*] Phase 4: Metadata + binary-stream layers (exiftool / qpdf)...")
                 try:
                     input_ids = None    # strip nothing qpdf wrote
+                    pdf_bytes = None    # certify no qpdf exit 3
                     if procs["qpdf"] is not None:
                         try:
-                            input_ids = _input_document_ids(pdf_path.read_bytes())
+                            pdf_bytes = pdf_path.read_bytes()
+                            input_ids = _input_document_ids(pdf_bytes)
                         except Exception:
                             input_ids = None
-                    check_hidden_layers(procs, matcher, patterns, report, input_ids)
+                    check_hidden_layers(procs, matcher, patterns, report, input_ids, pdf_bytes)
                 except Exception as exc:
                     report.warn(
                         "LAYER_CRASHED",

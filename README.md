@@ -69,7 +69,8 @@ fields: the layer, where the content is stored (`live`, `orphaned`,
 `unreferenced`, `superseded`), the object, revision and page when known,
 and (only on `TOOL_EXIT_NONZERO`) the tool's own `returncode`, so a real
 qpdf failure can be told apart from its benign, version-dependent exit 3
-without parsing the message text. An internal crash is reported the same
+without parsing the message text. (An exit 3 whose every warning checks
+out as harmless gives no warning at all; see Binary below.) An internal crash is reported the same
 way any other operational failure is — `error: {"code": "INTERNAL_ERROR",
 "message": ...}` alongside whatever findings and warnings were already
 recorded, message text never more than the exception's type plus a
@@ -380,6 +381,16 @@ damaged cross-reference table, and it decompresses attachment contents.
   from the file's own (when it cannot, as for a file whose first `/ID`
   element is empty, they are still scanned, and a coincidental match is
   the same on every run).
+- **qpdf's exit 3** ("succeeded with warnings") makes the run exit `2`
+  (`TOOL_EXIT_NONZERO`) unless every warning qpdf printed is one of five
+  kinds the tool can check against the file's own bytes and the check
+  passes (owner decision 2026-10-15): a `(0 0 R)` reference, an xref
+  entry at offset 0 with no stored body of that object anywhere, a
+  duplicated key with identical values, a missing `endobj` followed only
+  by whitespace, or a Flate stream without its end marker that is not an
+  object stream (an xref stream only if every row decodes). Any other
+  warning, including a rebuilt cross-reference table, still exits `2`
+  (COVERAGE.md, footnote 14).
 - **Tier:** always manual-review, never a hard finding.
 
 Each layer extracts text independently, so a blind spot in one extraction

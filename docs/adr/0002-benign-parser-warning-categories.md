@@ -185,3 +185,50 @@ Owner decision: "approve all recommendations."
   compared on the first token only (does not distinguish an indirect
   reference like `5 0 R` from `5 1 R`) -- **until Phase 3c closes them**
   in its real implementation.
+
+## Note (2026-10-15): the legacy Binary layer applies these rules
+
+Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check), a
+loosening under REDESIGN §6/§7a. This ADR was written for the inventory's
+parser-agreement check; the legacy CLI's Binary layer now applies its
+rules, tightened, to qpdf's QDF rewrite (`qpdf --qdf
+--object-streams=disable --deterministic-id`), where any exit 3 used to
+force exit 2. A measurement on the local corpus found 187 exit-3 entries,
+nearly all Quartz files whose only warning was an offset-0 entry, and four
+layouts where that warning was the *only* signal of hidden content.
+
+`verify.py` (`_qpdf_warnings_unverified`) reads qpdf's stderr and lets
+exit 3 pass only when every line is one of these kinds and its check
+against the file's own bytes passes:
+
+1. `treating bad indirect reference (0 0 R) as null`: on its wording alone
+   (object 0 heads the free list; no reader resolves it).
+2. `object has offset 0` (rule 1 above): no `N G obj` header for that
+   number anywhere in the bytes (any generation, comments allowed between
+   the parts, even inside a comment or stream), **and** no name in the
+   file decodes to `/ObjStm` or `/XRef`. This closes the ObjStm gap the
+   2026-09-27 decision accepted: with no object or xref stream at all, no
+   body can hide in one.
+3. `dictionary has duplicated key` (rule 2 above): every duplicated key
+   of that dictionary (found at qpdf's offset, in that object) has values
+   identical token for token, references compared whole. This closes the
+   first-token gap (`5 0 R` and `5 1 R` now differ).
+4. `expected endobj` (rule 3 above, now with its per-object check),
+   including `(xref stream: ...)`: a front-to-back walk of the file
+   (objects, streams skipped by their `/Length`, xref tables, trailers,
+   `startxref`) must reach qpdf's offset with only whitespace (no comment)
+   between the object's end and the next object, `xref` or `startxref`.
+5. `input stream is complete but output may still be valid` (rule 4
+   above, now narrowed): the stream starting at qpdf's offset is not an
+   object stream (`/Type /ObjStm`, an indirect or repeated `/Type`, or a
+   `/First` key all count as one); if it is an xref stream, a plain Flate
+   decode must yield every row its `/Index` (or `/Size`) declares.
+
+Anything else -- xref reconstruction (`file is damaged`, `xref not
+found`, `Attempting to reconstruct`), integer overflow, any other or
+unparseable line, a check that cannot decide, or a cap exceeded -- keeps
+`TOOL_EXIT_NONZERO` (fail closed). On the corpus, 185 of the 187 exit-3
+entries pass (160 of 162 text-bearing); the case library pins the four
+hidden-content layouts, plus differing duplicated filters, at exit 2
+(`eval/caselib/families/qpdf_warnings.py`). The inventory's own Phase 3c
+implementation of these rules is unchanged by this note.

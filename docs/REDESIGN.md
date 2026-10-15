@@ -491,6 +491,14 @@ does not contradict: ADR 0002 narrows only the *parser-agreement*
 cross-check's judgment of when such an instance is additional
 corroborating evidence versus provably inert.
 
+The legacy CLI applies the same rules today, tightened (owner decision
+2026-10-15, a loosening under §7a; ADR 0002's note): the Binary layer
+reads qpdf's stderr, and qpdf's exit 3 no longer forces exit `2` when
+every warning is one of five kinds that a small, linear, capped walk of
+the file's bytes in `verify.py` proves harmless; anything else still
+fails closed. 185 of the corpus's 187 exit-3 entries pass, and the
+text-bearing exit-`2` rate falls from 57.4% to 24.8%.
+
 ## 5. Evaluation: the case library
 
 The case library is the backbone of Phase 0 and serves three purposes:
