@@ -643,28 +643,40 @@ annotation has /AP is read as written before MuPDF loads the copy -- MuPDF write
 it synthesizes into an annotation written directly in /Annots, which the spike would then read
 as STORED. MuPDF's warnings while it loads and draws the two copies are discarded (an /AS entry
 that is not a stream draws nothing but warns "content stream is not a stream" when drawn); the
-file's own warnings are gated as before.
+file's own warnings, its pages reloaded for the list included, are gated as before.
 
 Implementing it found where MuPDF 1.28 reads past ADR 0011 item 5's text (each pinned in
-`tests/test_inventory_annotations.py` against MuPDF's drawing): the signature test reads /FT
-as written (a reference to /Sig is no signature field) and resolves /V and its /Type; a direct
-null is an absent key; references are followed up to nine in a row; only widgets climb
-/Parent (a Square's /Parent cycle draws fine); a widget whose /Parent chain has a cycle makes
-MuPDF fail ("cycle in tree"); qpdf --check reaches a widget through at most 100 field nodes
-above it; and an annotation MuPDF would synthesize but cannot (a /Subtype outside the 18 it
-builds; a widget whose /FT is missing, unknown, or /Btn by reference) makes it warn "cannot
-create appearance stream" and draw the stored /AP instead -- under /NeedAppearances that is
-STORED where the ADR says synthesized -- or nothing. The inventory flags the last three
-(`FIELD_TREE`, `APPEARANCE_UNSUPPORTED`).
+`tests/test_inventory_annotations.py` against MuPDF's drawing; ADR 0011's notes on item 5):
+the signature test reads /FT as written (a reference to /Sig is no signature field) and
+resolves /V and its /Type; a direct null is an absent key; references are followed up to nine
+in a row; only widgets climb /Parent (a Square's /Parent cycle draws fine); a widget whose
+/Parent chain has a cycle makes MuPDF fail ("cycle in tree"): `FIELD_TREE`. An annotation MuPDF
+would synthesize but cannot makes it warn "cannot create appearance stream" and draw the stored
+/AP instead -- under /NeedAppearances that is STORED where the ADR says synthesized -- or
+nothing: a /Subtype outside the 18 it builds, or a widget whose /FT is missing, unknown, or a
+reference to /Btn. Probed for each field type given by reference (as written on the widget, on
+its parent, and through a chain of two references; with and without /NeedAppearances): /Tx,
+/Ch and /Sig are built through references without a warning, /Btn (a check box, a push
+button, a radio button) only written as a name. The inventory flags exactly those
+(`APPEARANCE_UNSUPPORTED`, coordinator decision, 2026-10-15). qpdf --check's own annotation
+and AcroForm analysis -- a widget more than 100 field levels below /Fields ("not reachable from
+/AcroForm"), an annotation listed twice in one /Annots ("duplicate entry") -- is issue #144; a
+first version flagged a /Parent chain deeper than 100, which neither matched qpdf's
+downward walk nor caught it, and was dropped in review.
 
 | Run | Agree | Flagged | Unflagged disagreements |
 | --- | --- | --- | --- |
 | Corpus (2,073) | 1,920 | 153 (7.38%) | 0 |
-| Case library (455) | 428 | 27 | 0 |
+| Case library (461) | 433 | 28 | 0 |
 | Fuzz (2,000, seed 0) | 501 | 1,499 | 0 (no annotation in any generated file) |
 
 Corpus: 778 annotations compared; `FIELD_TREE` and `APPEARANCE_UNSUPPORTED` on no file;
 `SYNTHESIZED` units in 139 files, 400 annotations in the current revisions, all widgets (130
-files, 373 annotations unflagged) -- ADR 0011 measured 139 and 400; in older revisions 14 bodies
-in 9 files not synthesized now (ADR 0011: 13 widgets in 8 files, by its prototype's count). The
-oracle's p50 grew by about 0.4 s a file (two document copies per revision with annotations).
+files, 373 annotations unflagged) -- ADR 0011 measured 139 and 400. Older revisions: 14
+(body, /Annots index) pairs in 9 files are units not among the current revision's (a widget
+whose body a later revision rewrote counts here); by ADR 0011's definition -- a widget, by
+object number, synthesized in an older revision but not now -- 0 ("none of them new", the ADR
+said, of its 13 widgets in 8 files); 57 widgets in 23 unflagged files are synthesized in some
+older revision. Case library: 27 annotations compared. Oracle seconds on the final run (6
+workers): p50 0.32, max 17.0 (3a-7c's run: 0.63 and 20.6); the two copies cost only on
+revisions with annotations.

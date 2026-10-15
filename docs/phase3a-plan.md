@@ -466,32 +466,42 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     /Annots item resolving to a dictionary, a stream's included, but Link and Popup, /Subtype
     resolved; listed twice, listed twice) and classifies each as MuPDF 1.28 draws it, checked
     against MuPDF's drawing on 62 fabricated conditions (tests/test_inventory_annotations.py).
-    Found while implementing, beyond the ADR's text: MuPDF's signature test reads /FT as
-    written (a reference to /Sig is not a signature field) while it resolves /V and its /Type;
-    a direct null is an absent key (/FT, /V, /AS entries); references are followed up to nine
-    in a row (MuPDF's limit); /NeedAppearances must be the boolean true; it and the signature
-    test apply to /Subtype /Widget only, and only widgets climb /Parent. SYNTHESIZED units:
-    one per (annotation body, revision) -- one per /Annots position for an annotation written
-    directly -- UNEXAMINED, no bytes, charged to max_units in every revision; a revision that
-    reads nothing new (the catalog's /AcroForm as written, the same page records, no changed
-    object read) shares its predecessor's result. Two flags (pending the owner's
-    confirmation, via the coordinator): FIELD_TREE also for more than 100 field nodes above a
-    widget (qpdf --check then calls the widget unreachable from /AcroForm: measured, 100 pass,
-    101 fail); APPEARANCE_UNSUPPORTED (AppearanceRule) for an annotation MuPDF would
-    synthesize but cannot -- a /Subtype outside the 18 it builds (absent: #106, its xfail removed; not a name, /Movie,
-    /Screen, /3D, ...) or a widget whose inherited /FT is not /Btn, /Ch, /Sig or /Tx written
-    as a name: MuPDF warns "cannot create appearance stream" and draws the stored /AP
-    instead (contradicting item 5's "a widget under /NeedAppearances is synthesized") or
-    nothing. Gate (eval/scorecard/annotations.py, decision 11): per page, MuPDF's list
-    against ours as a multiset; each annotation's reading by the spike's method, copies
-    paired on a (page, /Annots index) tag, /AP judged as written (MuPDF writes a synthesized
-    appearance into a direct annotation); the copies' MuPDF warnings discarded (a non-stream
-    /AS entry warns only when drawn), the file's own still gated. Measured: corpus 1,920
-    agree / 153 flagged (7.38%) / 0 unflagged disagreements, unchanged; 778 annotations
-    compared; FIELD_TREE and APPEARANCE_UNSUPPORTED 0 files; SYNTHESIZED units in 139 files,
-    400 annotations in the current revisions, all widgets (as ADR 0011 measured; 130 files,
-    373 units unflagged), older revisions 14 bodies in 9 files not synthesized now (ADR 0011:
-    13 widgets in 8 files). Case library 428/27/0 (455 cases); fuzz 501/1,499/0 (2,000, seed 0; unchanged -- its generator writes no annotation).
+    Found while implementing, beyond the ADR's text (ADR 0011's notes on item 5, 2026-10-15):
+    MuPDF's signature test reads /FT as written (a reference to /Sig is not a signature field)
+    while it resolves /V and its /Type; a direct null is an absent key; references are followed
+    up to nine in a row (MuPDF's limit); /NeedAppearances must be the boolean true; it and the
+    signature test apply to /Subtype /Widget only, and only widgets climb /Parent. SYNTHESIZED
+    units: one per (annotation body, revision) -- one per /Annots position for an annotation
+    written directly -- UNEXAMINED, no bytes, charged to max_units in every revision, held as
+    `Inventory.synthesized` records (not a UnitKind: they claim no bytes; a ledger kind is 3b's);
+    a revision that reads nothing new (the catalog's /AcroForm as written, the same page
+    records, no changed object read) shares its predecessor's result, and one without a page
+    list makes the next walk afresh (review round 1). FIELD_TREE flags /Parent cycles only
+    (coordinator decision revised after round 1: depth dropped; qpdf's AcroForm analysis
+    warnings, a widget unreachable from /Fields or listed twice in one /Annots, are issue #144).
+    APPEARANCE_UNSUPPORTED (coordinator decision, 2026-10-15; owner informed), AppearanceRule:
+    an annotation MuPDF would synthesize but cannot -- a /Subtype outside the 18 it builds
+    (absent: #106, its xfail removed; not a name, /Movie, /Screen, /3D, ...) or a widget whose
+    inherited /FT is missing, unknown or a reference to /Btn (/Tx, /Ch and /Sig MuPDF builds
+    through references): MuPDF warns "cannot create appearance stream" and draws the stored
+    /AP instead (under /NeedAppearances: STORED where item 5 says synthesized) or nothing; one
+    flag per cause. Gate (eval/scorecard/annotations.py, decision 11): per page, MuPDF's list
+    against ours as a multiset by object number (by /Annots position for one written
+    directly); each annotation's reading by the spike's method, copies paired on a (page,
+    /Annots index) tag, /AP judged as written (MuPDF writes a synthesized appearance into a
+    direct annotation); MuPDF's warnings discarded only around the two copies (a non-stream
+    /AS entry warns only when drawn), the file's own still gated. Linearity: lines per charged
+    unit at most 15 and not growing from n to 8n; the reviewer's mutants all caught but one
+    equivalent. Measured on the final code: corpus 1,920 agree / 153 flagged (7.38%) / 0
+    unflagged disagreements, unchanged; 778 annotations compared; FIELD_TREE and
+    APPEARANCE_UNSUPPORTED 0 files; SYNTHESIZED units in 139 files, 400 annotations in the
+    current revisions, all widgets (as ADR 0011 measured; 130 files and 373 units unflagged).
+    Older revisions: 14 (body, /Annots index) pairs in 9 files are units not among the
+    current revision's (a widget whose body a later revision rewrote counts); by ADR 0011's
+    definition -- a widget, by object number, synthesized in an older revision and not now --
+    0 (ADR 0011: "13 widgets in 8 files, none of them new"); 57 widgets in 23 unflagged files
+    are synthesized in some older revision. Case library 433/28/0 (461 cases); fuzz
+    501/1,499/0 (2,000, seed 0; its generator writes no annotation).
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
     lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like
