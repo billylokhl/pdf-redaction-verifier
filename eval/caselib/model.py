@@ -37,6 +37,7 @@ WRITERS = frozenset({
     "fitz",        # PyMuPDF — also the library the tool reads with
     "raw",         # hand-assembled bytes (eval/caselib/rawpdf.py)
     "qpdf",        # fitz output rewritten by qpdf
+    "pikepdf",     # written by pikepdf (libqpdf): encryption, among others
     "file",        # a committed file (real tool output), used as is
 })
 ORIGINS = frozenset({"generated", "redactor", "redteam"})

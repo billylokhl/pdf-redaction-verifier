@@ -652,6 +652,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-8 Pin pikepdf (runtime dep per ADR 0001), encrypted fixtures incl. earlier revision
   with a different /Encrypt; confirmation test pikepdf read_raw_bytes == fitz
   xref_stream_raw (decrypted, unfiltered). If it fails → reopen ADR 0001 (owner).
+  Done (Lane A2, 2026-10-15): pinned as a runtime dependency; the encrypted family
+  (`eval/caselib/families/encrypted.py`, writer `pikepdf`: RC4-40, RC4-128, AES-128,
+  AES-256, and an earlier revision under RC4-128 with the current under AES-256); the
+  confirmation holds for every stream on the file and on each earlier revision's
+  prefix cut (`tests/test_pikepdf_raw_stage.py`), so ADR 0001 stands.
 - 3a-9 crypt.py: per-revision decrypt via pikepdf, value-level cross-check vs MuPDF,
   DECRYPTION_MISMATCH / DECRYPTION_UNVERIFIED, /Perms mismatch → flag.
   From 3a-7b's review: decryption depends on each revision's own /Encrypt and /ID, which

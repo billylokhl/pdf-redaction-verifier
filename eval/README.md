@@ -47,8 +47,10 @@ def redacted_no_gc(path):
   `expected` holds there). `before` must be 27, so it never changes a
   label on the owner's macOS.
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
-  `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
-  (committed real-tool output under `caselib/real/`, `origin="redactor"`).
+  `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, `pikepdf`
+  (libqpdf in-process: the encrypted family, `families/encrypted.py`), or
+  `file` (committed real-tool output under `caselib/real/`,
+  `origin="redactor"`).
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
   needs to be judged is missing — or, with `no-ocr`, where OCR is present

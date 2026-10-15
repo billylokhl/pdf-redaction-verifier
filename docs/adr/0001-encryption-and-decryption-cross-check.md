@@ -215,3 +215,27 @@ Owner decision: "approve all recommendations."
 - **Confirm in Phase 3a** that pikepdf's decrypted-but-unfiltered read
   actually exposes the stage this cross-check compares against; this is
   currently unconfirmed.
+
+## Phase 3a-8 (2026-10-15): pinned, fixture added, stage confirmed
+
+- **Pinned.** `pikepdf` is a runtime dependency in `pyproject.toml`,
+  pinned like `pymupdf` (10.16.0 with libqpdf 12.4.2; 10.13.0.post1
+  with libqpdf 12.3.2 on Python 3.10). The shipped CLI still does not
+  import it until the redesign is wired in (tests/test_import_boundaries.py).
+- **Fixture.** `eval/caselib/families/encrypted.py`, written by pikepdf:
+  one case per standard security handler (RC4-40 R2, RC4-128 R3,
+  AES-128 R4, AES-256 R6), and `revision.encrypted-different-handlers`,
+  whose earlier revision is encrypted with RC4-128 and whose current one
+  with AES-256 under a different owner password, so each revision
+  decrypts only with its own `/Encrypt`. Today's verifier reads the
+  secret left in the earlier revision (exit `1`, superseded storage).
+- **Confirmed.** `tests/test_pikepdf_raw_stage.py`: pikepdf's
+  `Stream.read_raw_bytes()` equals MuPDF's `xref_stream_raw` byte for
+  byte, for every stream of every encrypted case (the fitz-written
+  `revision.encrypted-annotated` included), on the file and on each
+  earlier revision's prefix cut as `verify.scan_earlier_revisions` makes
+  it. Both reads are decrypted (the fixtures' filler is absent from the
+  file's bytes and present in both reads) and not yet unfiltered (a
+  Flate stream is still compressed in both). The cross-check 3a-9 builds
+  compares a real stage, so this ADR stands.
+

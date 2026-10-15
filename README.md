@@ -616,7 +616,8 @@ On Debian/Ubuntu the binaries are
 `sudo apt-get install libimage-exiftool-perl qpdf`. Drop `--extra test` if
 you do not need the test suite. The inventory's reader-agreement tests
 (Phase 3a) compare against both the `qpdf` command and the libqpdf inside
-`pikepdf` (in the `test` extra), and need the two at one major.minor
+`pikepdf` (a runtime dependency, which the shipped CLI does not import
+yet), and need the two at one major.minor
 version: 12.4 with Python 3.11+, 12.3 with Python 3.10. Homebrew's qpdf
 12.4 matches; Debian/Ubuntu's packaged qpdf is older, so install the
 matching release binary from qpdf's GitHub releases, as CI does
