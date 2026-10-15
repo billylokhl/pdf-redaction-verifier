@@ -109,6 +109,22 @@ def png_attachment(path: Path) -> None:
     doc.embfile_add("logo.png", png_of("ACME")); save(doc, path)
 
 
+@clean("page.memo-with-thumbnail", "thumbnail.pixels",
+       "A memo whose page carries a harmless /Thumb preview — flagged, since page "
+       "thumbnails are not OCR'd (the cost of the H1 thumbnail hotfix).",
+       expected=expect(2, warnings=(("PAGE_THUMBNAIL", "live"),)))
+def thumbnail(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page(); body(page)
+    pix = fitz.Pixmap(fitz.csGRAY, fitz.Pixmap(png_of("ACME")))
+    thumb = doc.get_new_xref()
+    doc.update_object(thumb, "<< /Type /XObject /Subtype /Image /Width %d /Height %d "
+                             "/BitsPerComponent 8 /ColorSpace /DeviceGray >>"
+                      % (pix.width, pix.height))
+    doc.update_stream(thumb, pix.samples)
+    doc.xref_set_key(page.xref, "Thumb", f"{thumb} 0 R")
+    save(doc, path)
+
+
 @clean("attachment.notes-utf8", "attachment.plain",
        "Notes in Japanese and accented Latin, attached as UTF-8.")
 def utf8_attachment(path: Path) -> None:

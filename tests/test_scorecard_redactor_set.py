@@ -507,3 +507,24 @@ def test_targets_report_pass_or_fail_against_the_owners():
     counts, _ = rs.summarise([run_of("m2", "clean", 0, 0, control=True)], EXACT, PATTERNS_,
                              VALUES)
     assert not counts["targets"]["u3_pass"]
+
+
+
+def test_a_thumbnail_is_caught_by_the_warning_naming_its_page():
+    # Coordinator decision 2026-10-15: thumbnail.pixels (⚑) is caught by
+    # PAGE_THUMBNAIL with exit 2 on the instance's exact page; any other
+    # page, a missing page, another code or exit 1 is a miss.
+    rows = [row(0, "NAME1", loc="P1", where="pixels-live", exit_=2, cell="thumbnail.pixels")]
+    tr = truth(("NAME1", "Jordan Q. Testperson", 1), encoding="pixels")   # page 2
+
+    def thumb(page, code="PAGE_THUMBNAIL", storage="live"):
+        return {"code": code, "rule": None, "storage": storage, "page": page,
+                "message": f"Hidden: page {page} carries a thumbnail image"}
+
+    assert score(rows, tr, [], [thumb(2)])[0].outcome == rs.FLAGGED
+    assert score(rows, tr, [], [thumb(1)])[0].outcome == rs.MISS          # the wrong page
+    assert score(rows, tr, [], [thumb(None)])[0].outcome == rs.MISS       # no page named
+    assert score(rows, tr, [], [thumb(2, code="LEFTOVER_IMAGE")])[0].outcome == rs.MISS
+    assert score(rows, tr, [], [thumb(2, storage="orphaned")])[0].outcome == rs.MISS
+    exit1 = [row(0, "NAME1", loc="P1", where="pixels-live", exit_=1, cell="thumbnail.pixels")]
+    assert score(exit1, tr, [], [thumb(2)])[0].outcome == rs.MISS
