@@ -2254,3 +2254,522 @@
   cell: match.page-break
   pr: '#91'
   env: ocr
+- case: layout.form-boxes-pattern-only-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 1
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.form-boxes-pattern-only; its class match is not a listed secret, so it is a notice and the
+    file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.overlapping-split-pages-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.overlapping-split-pages-pattern-only; its class match is not a listed secret, so it is a
+    notice and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.overlapping-split-short-tail-pattern-only-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.overlapping-split-short-tail-pattern-only; its class match is not a listed secret, so it
+    is a notice and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.overlapping-values-pattern-only-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.overlapping-values-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.repeated-line-wraps-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.repeated-line-wraps-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.rotated-pattern-only-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.rotated-pattern-only; its class match is not a listed secret, so it is a notice and the
+    file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.several-values-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.several-values-pattern-only; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.single-line-pattern-only-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.single-line-pattern-only; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-lines-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-lines-pattern-only; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-over-blank-page-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-over-blank-page-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-pages-needs-later-lines-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-pages-needs-later-lines-pattern-only; its class match is not a listed secret, so it
+    is a notice and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-pages-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-pages-pattern-only; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-three-lines-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-three-lines-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.split-three-pages-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.split-three-pages-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.table-rows-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.table-rows-pattern-only; its class match is not a listed secret, so it is a notice and the
+    file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.table-rows-split-pages-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.table-rows-split-pages-pattern-only; its class match is not a listed secret, so it is a
+    notice and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.two-page-breaks-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_PAGES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.two-page-breaks-pattern-only; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.page-break
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: layout.vertical-stack-pattern-only-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of layout.vertical-stack-pattern-only; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: match.line-wrap
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: page.digit-column-default-mode
+  old:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - Any SSN
+        - review
+        - live
+        - JOINED_LINES
+      - 1
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, clean case relabel): the default-mode
+    twin of page.digit-column; its class match is not a listed secret, so it is a notice and the file
+    certifies (exit 0). Strict mode keeps the original''s label.'
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: page.visible-credit-card-class-rule-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any card number
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of page.visible-credit-card-class-rule; its class match is not a listed secret, so it is a notice
+    and the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: page.visible-email-class-rule-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any email address
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of page.visible-email-class-rule; its class match is not a listed secret, so it is a notice and the
+    file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: page.visible-pattern-rule-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any SSN
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of page.visible-pattern-rule; its class match is not a listed secret, so it is a notice and the file
+    certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr
+- case: page.visible-us-phone-class-rule-default-mode
+  old:
+    error: null
+    exit: 1
+    findings:
+    - - - Any phone number
+        - hard
+        - live
+      - 2
+    warnings: []
+  new:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  reason: 'ADR 0012 policy 1 by default (owner sign-off 2026-10-15, leak case): the default-mode twin
+    of page.visible-us-phone-class-rule; its class match is not a listed secret, so it is a notice and
+    the file certifies (exit 0). Strict mode keeps the original''s label.'
+  cell: live.plain
+  pr: '#160'
+  weaker: true
+  env: no-ocr

@@ -20,6 +20,8 @@ from caselib.policy1 import (
     TWIN_SUFFIX,
 )
 from caselib.run import available, build, scan, today_label
+from scorecard.differential import normalization_have
+from scorecard.keys import effective_exit
 
 load()
 _HAVE = available()
@@ -81,4 +83,7 @@ def test_no_case_outside_the_list_changes_its_exit_in_default_mode(case, tmp_pat
     pdf = build(default, tmp_path / f"{case.id}.pdf")
     result = scan(default, pdf, tmp_path)
     today = (today_label(case) or case.expected).exit
-    assert result.exit_code == today, (case.id, result.exit_code, today)
+    # Judged like the case library's labels: this machine's missing tools
+    # (no OCR on Linux CI) set aside.
+    exit_code = effective_exit(result.report, normalization_have(_HAVE))
+    assert exit_code == today, (case.id, exit_code, today)
