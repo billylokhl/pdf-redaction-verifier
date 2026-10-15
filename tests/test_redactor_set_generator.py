@@ -13,6 +13,7 @@ import ast
 import getpass
 import json
 import re
+import signal
 import sys
 from pathlib import Path
 
@@ -482,6 +483,27 @@ class TestRunner:
         entry = record["documents"]["T1"]                      # type: ignore[index]
         assert entry["exit"] == "timeout" and entry["m1"] is None and entry["m2"] is None
         assert "started" in (tmp_path / "work/probes/m1/T1/stdout.txt").read_text()
+
+    def test_a_group_left_with_unreaped_members_still_times_out(self, tmp_path,
+                                                                 monkeypatch) -> None:
+        # On macOS os.killpg reports EPERM when only unreaped members are
+        # left in the group: the run is still recorded as a timeout, not a
+        # crash that loses the whole run record.
+        from redactor_set import run as run_mod
+
+        config = self._setup(tmp_path, monkeypatch, "import time\ntime.sleep(60)\n")
+        real_killpg = run_mod.os.killpg
+        calls: list[int] = []
+
+        def killpg(pid: int, sig: int) -> None:
+            calls.append(sig)
+            real_killpg(pid, signal.SIGKILL)          # really end it, then report EPERM
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(run_mod.os, "killpg", killpg)
+        record = run_set(tmp_path, "probes", config, timeout=1.0)
+        assert record["documents"]["T1"]["exit"] == "timeout"     # type: ignore[index]
+        assert calls
 
     def test_stale_outputs_are_removed_before_a_run(self, tmp_path, monkeypatch) -> None:
         config = self._setup(tmp_path, monkeypatch, "raise SystemExit(1)\n")
