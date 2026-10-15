@@ -627,23 +627,30 @@ page (the target's name and sha256, the version, the exit code, the
 headline, an INCOMPLETE banner with its reasons, and every finding that
 cannot be boxed, listed by page) and, for each page with something to
 box, a page of the same displayed size with numbered solid, hatched,
-dashed and dotted boxes and a numbered list (a page too small for the
-list gets a band below it). Its only font is Helvetica, never embedded,
+dashed and dotted boxes and a numbered list (a small page is widened and
+given a band below it for the list; a list that does not fit continues
+on overflow pages). The target's name is shown only when no two
+consecutive characters of it occur in an exact value, cut to 60
+characters before it is checked (otherwise "target": the sha256
+identifies the file). Its only font is Helvetica, never embedded,
 written in Latin-1: typographic dashes, quotes and the ellipsis become
 their ASCII forms, and any other character outside Latin-1 is written as
 `\u{XXXX}`. Text the map writes itself is drawn in one colour; every
 string that came from the plan's variable inputs (labels, samples, the
 target's name, an object's role) in another that no fixed text uses, so
 the self-check can tell them apart in the saved file. The self-check has
-two steps. First, every variable string is checked whole, before and
-after escaping, against every rule, and a string that hits is replaced
-by a neutral form, itself checked. Then the saved bytes are reopened
+two steps. First, every variable string is checked whole and as drawn
+(cut to 80 characters), before and after escaping, against every rule
+in every tier the scan uses (values normalized, patterns per line and
+with separators collapsed), and a string that hits is replaced by a
+neutral form, itself checked. Then the saved bytes are reopened
 (they must reopen unrepaired and carry the map's marker,
 `%PRV-VISIBLE-MAP-1`, as line 2 and last line) and all page text (per
 line, knowing each character's colour), the document information, XMP
 and every decompressed stream (knowing which string tokens are fixed
-text) are scanned: a hit is tolerated only where every character of it
-is the tool's own text, and any other hit means no map
+text) are scanned for a value (normalized) or a pattern's strict
+match: a hit is tolerated only where every character of it is the
+tool's own text, and any other hit means no map
 (`SelfCheckFailed`). Nothing on the command line reaches this yet.
 
 ## Sharing a config with the redactor

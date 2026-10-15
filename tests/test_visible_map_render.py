@@ -149,6 +149,13 @@ class TestSelfCheck:
         assert "****6789" not in text and "****" in text
         _assert_absent(out, SSN, "6789")
 
+    def test_a_target_name_holding_part_of_a_value(self, tmp_path, monkeypatch) -> None:
+        pdf = _value_pdf(tmp_path / "Example_Jane_records.pdf")
+        run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
+                                   [{"name": "ssn", "value": SSN}, {"name": "who", "value": NAME}])
+        assert out.exists() and the_plan.target_name == "target"
+        _assert_absent(out, "Example", "Jane")
+
     def test_a_target_named_after_the_secret(self, tmp_path, monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / f"{SSN}.pdf")
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf)
@@ -177,6 +184,7 @@ class TestSelfCheck:
         pdf = _value_pdf(tmp_path / f"{SSN}.pdf")
         run = run_main(monkeypatch, pdf, write_rules(tmp_path, SSN_RULES))
         monkeypatch.setattr(render.Checker, "clean", lambda self, text, *neutral: text)
+        monkeypatch.setattr(plan.Rules, "free_text", lambda self, text, cap, neutral: text)
         data = pdf.read_bytes()
         with pytest.raises(render.SelfCheckFailed):
             render.build_map(data, hashlib.sha256(data).hexdigest(), run.header)
@@ -245,3 +253,103 @@ class TestRendering:
 
     def test_latin_escapes(self) -> None:
         assert render.latin("café — 文") == "café -- \\u{6587}"
+
+
+# ── Each surface of the self-check, on its own (review of part 2) ────
+def _checker() -> render.Checker:
+    checker = render.Checker()
+    checker.use([plan.Secret("ssn", normalize_string(SSN))],
+                [plan.PatternRule("ssn shape", re.compile(r"\d{3}-\d{2}-\d{4}"))])
+    return checker
+
+
+def _clean_writer(text: str = "label") -> render.Writer:
+    w = render.Writer()
+    w.new_page(300, 200)
+    w.text(10, 50, "fixed heading", variable=False)
+    w.text(10, 80, text, variable=True)
+    w.commit()
+    return w
+
+
+def _saved(w: render.Writer) -> bytes:
+    return markers.insert_markers(w.doc.tobytes(garbage=4, deflate=True))
+
+
+class TestSelfCheckSurfaces:
+    def test_a_clean_map_passes(self) -> None:
+        w = _clean_writer()
+        render.check_saved(_saved(w), _checker(), w)
+
+    def test_a_hit_only_in_a_stream(self) -> None:
+        """A stream no page draws (here an unused form XObject): only
+        the stream scan can see it."""
+        w = _clean_writer()
+        xref = w.doc.get_new_xref()
+        w.doc.update_object(xref, "<</Type/XObject/Subtype/Form/BBox[0 0 1 1]>>")
+        w.doc.update_stream(xref, b"BT (" + SSN.encode() + b") Tj ET")
+        page = w.doc[0]
+        kind, value = w.doc.xref_get_key(page.xref, "Resources")
+        holder = int(value.split()[0]) if kind == "xref" else page.xref
+        key = "XObject" if kind == "xref" else "Resources/XObject"
+        w.doc.xref_set_key(holder, key, f"<</Fx {xref} 0 R>>")
+        assert SSN not in page.get_text()
+        with pytest.raises(render.SelfCheckFailed, match="stream"):
+            render.check_saved(_saved(w), _checker(), w)
+
+    def test_a_hit_only_in_page_text(self, monkeypatch) -> None:
+        """With the stream scan blind (no string token decoded), the page
+        text scan alone catches a variable hit."""
+        w = _clean_writer(f"x {SSN}")
+        monkeypatch.setattr(render, "_STRING_TOKEN", re.compile(rb"(?!)"))
+        with pytest.raises(render.SelfCheckFailed, match="page 1 text"):
+            render.check_saved(_saved(w), _checker(), w)
+
+    def test_a_hit_in_the_document_information(self) -> None:
+        w = _clean_writer()
+        w.doc.set_metadata({"title": f"file {SSN}"})
+        with pytest.raises(render.SelfCheckFailed, match="document information"):
+            render.check_saved(_saved(w), _checker(), w)
+
+    def test_a_hit_in_xmp(self) -> None:
+        w = _clean_writer()
+        w.doc.set_xml_metadata(f"<x:xmpmeta xmlns:x='adobe:ns:meta/'>{SSN}</x:xmpmeta>")
+        with pytest.raises(render.SelfCheckFailed, match="XMP"):
+            render.check_saved(_saved(w), _checker(), w)
+
+    def test_variable_text_must_read_back_as_variable(self, monkeypatch) -> None:
+        """If variable text does not read back in its colour, every hit
+        would pass as fixed text: the map is refused."""
+        monkeypatch.setattr(render, "VAR", render.INK)
+        w = _clean_writer()
+        with pytest.raises(render.SelfCheckFailed, match="variable text not found"):
+            render.check_saved(_saved(w), _checker(), w)
+
+    def test_step_one_catches_a_hit_only_with_separators_collapsed(self) -> None:
+        checker = render.Checker()
+        checker.use([], [plan.PatternRule("ssn shape", re.compile(r"\d{3}-\d{2}-\d{4}"))])
+        assert not render.match_patterns("ref 123 -- 45 -- 6789", checker.patterns)
+        assert checker.clean("ref 123 -- 45 -- 6789", "neutral") == "neutral"
+
+    def test_step_one_catches_a_hit_only_after_escaping(self) -> None:
+        checker = render.Checker()
+        checker.use([], [plan.PatternRule("escaped", re.compile(r"\\u\{6587\}"))])
+        assert checker.clean("文", "neutral") == "neutral"
+
+    def test_step_one_checks_the_form_drawn(self) -> None:
+        """A string clean whole but hit once cut to VAR_CAP (the cut drops
+        the digit that kept the pattern from matching) is replaced."""
+        text = "x" * (render.VAR_CAP - 12) + "123-45-67890zz"
+        checker = render.Checker()
+        checker.use([], [plan.PatternRule("ssn", re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"))])
+        assert not checker.hits(text) and checker.hits(render.cap(text))
+        assert checker.clean(text, "neutral") == "neutral"
+
+    def test_literal_strings_are_decoded(self) -> None:
+        assert render._decode_token(rb"(a\(b\)\\c\101\n)") == "a(b)\\cA\n"
+        assert render._decode_token(b"(12\\\n3)") == "123"
+        assert render._decode_token(b"<3132 33>") == "123"
+
+
+def test_a_decomposed_name_is_drawn_composed() -> None:
+    assert render.latin("Jose\u0301") == "Jos\u00e9"

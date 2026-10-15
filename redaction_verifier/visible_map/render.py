@@ -5,9 +5,10 @@ font is Helvetica (base 14, never embedded), which PyMuPDF writes in
 Latin-1: typographic dashes, quotes and the ellipsis become their ASCII
 forms, and any other character outside Latin-1 is written as \\u{XXXX}.
 Text this module writes itself (headings, notes, page numbers, counts,
-codes) is drawn in INK; every string that came from the plan's variable
-inputs is drawn in VAR, a colour no fixed text uses, so the self-check
-can tell them apart in the saved file.
+codes) is drawn in its own colours (INK, ALERT, the box colours); every
+string that came from the plan's variable inputs is drawn in VAR, a
+colour no fixed text uses, so the self-check can tell them apart in the
+saved file.
 
 The self-check has two steps:
 
@@ -24,6 +25,7 @@ The self-check has two steps:
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, Iterable, Sequence
 
 import pymupdf as fitz
@@ -68,7 +70,6 @@ SUMMARY_SIZE = (612.0, 792.0)
 MIN_MAP_SIDE = 144.0
 BAND = 72.0
 VAR_CAP = 80          # characters of one variable string drawn
-NAME_CAP = 60
 
 
 class SelfCheckFailed(Exception):
@@ -80,15 +81,21 @@ _ASCII = str.maketrans({"\u2014": "--", "\u2013": "-", "\u2026": "...", "\u2018"
 
 
 def latin(text: str) -> str:
-    """*text* as the map draws it: printable Latin-1, typographic marks
-    in ASCII, anything else as \\u{XXXX}."""
+    """*text* as the map draws it: composed (NFC, so a macOS file name's
+    "e" plus accent is one character), printable Latin-1, typographic
+    marks in ASCII, anything else as \\u{XXXX}."""
     out = []
-    for ch in text.translate(_ASCII):
+    for ch in unicodedata.normalize("NFC", text).translate(_ASCII):
         if ord(ch) < 256 and ch.isprintable():
             out.append(ch)
         else:
             out.append(f"\\u{{{ord(ch):04X}}}")
     return "".join(out)
+
+
+def cap(text: str) -> str:
+    """*text* as Writer.line draws a variable string: cut to VAR_CAP."""
+    return text if len(text) <= VAR_CAP else text[:VAR_CAP - 1] + "…"
 
 
 class Checker:
@@ -114,10 +121,10 @@ class Checker:
 
     def clean(self, text: str, *neutral: str) -> str:
         """The first of *text* and its *neutral* forms that no rule
-        matches, whole, before or after escaping ("?" as a last resort,
-        which step 2 still checks)."""
+        matches, whole or as drawn (cut to VAR_CAP), before or after
+        escaping ("?" as a last resort, which step 2 still checks)."""
         for candidate in (text, *neutral):
-            if not self.hits(candidate):
+            if not self.hits(candidate) and not self.hits(cap(candidate)):
                 return candidate
         return "?"
 
@@ -178,8 +185,7 @@ class Writer:
         words: list[Segment] = []
         for text, variable in segments:
             if variable:
-                capped = text if len(text) <= VAR_CAP else text[:VAR_CAP - 1] + "…"
-                words.append((capped, True))
+                words.append((cap(text), True))
             else:
                 words.extend((w, False) for w in re.split(r"(?<= )", text) if w)
         x = left
@@ -211,8 +217,7 @@ def _short(sha: str) -> str:
 
 def summary(w: Writer, plan: MapPlan) -> None:
     w.new_page(*SUMMARY_SIZE)
-    name = plan.target_name if len(plan.target_name) <= NAME_CAP else (
-        plan.target_name[:NAME_CAP - 1] + "…")
+    name = plan.target_name         # already cut to plan.NAME_CAP, then checked
     w.line([("VISIBLE MAP (masked)", False)], size=14)
     w.line([("Target ", False), (name, True),
             (f"   sha256 {_short(plan.target_sha256)}   v{plan.version}   exit "
@@ -452,13 +457,28 @@ def _tainted_hit(checker: Checker, chars: str, tainted: Sequence[bool]) -> bool:
 _STRING_TOKEN = re.compile(rb"<(?!<)[0-9A-Fa-f\s]*>|\((?:\\.|[^\\()])*\)", re.S)
 
 
+_ESCAPES = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"f": b"\f"}
+
+
 def _decode_token(token: bytes) -> str:
+    """A PDF string token's bytes, as Latin-1: hex strings, and literal
+    strings with their escapes (\\n, \\ddd octal, an escaped line end
+    as a continuation, any other escaped character as itself)."""
     if token.startswith(b"<"):
         hexdigits = re.sub(rb"\s", b"", token[1:-1])
         if len(hexdigits) % 2:
             hexdigits += b"0"
         return bytes.fromhex(hexdigits.decode()).decode("latin-1")
-    body = re.sub(rb"\\(.)", rb"\1", token[1:-1])
+
+    def escape(m: re.Match[bytes]) -> bytes:
+        esc = m.group(1)
+        if esc[:1].isdigit():
+            return bytes([int(esc, 8) & 0xFF])
+        if esc in (b"\r\n", b"\r", b"\n"):
+            return b""
+        return _ESCAPES.get(esc, esc)
+
+    body = re.sub(rb"\\([0-7]{1,3}|\r\n|.)", escape, token[1:-1], flags=re.S)
     return body.decode("latin-1")
 
 
