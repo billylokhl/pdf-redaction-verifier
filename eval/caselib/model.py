@@ -113,6 +113,25 @@ class KnownGap:
     today: Expect
 
 
+# The macOS the case labels are measured on: the owner's (README: results
+# are certified only there). An OlderMacOS label applies only below it.
+OWNER_MACOS = 27
+
+
+@dataclass(frozen=True)
+class OlderMacOS:
+    """Where Vision on a macOS older than *before* reads this case's page
+    differently from the owner's macOS (README: certified only there), the
+    answer today's tool gives on those versions, as measured on CI's
+    ``macos-latest`` runner: *today* as KnownGap.today pins it (the case's
+    own cell is still a gap there), or None when the case's ``expected``
+    label holds there. It replaces the case's ``known_gap`` only on those
+    versions; everywhere else, the case's own labels apply."""
+
+    before: int
+    today: Expect | None
+
+
 @dataclass(frozen=True)
 class Case:
     id: str
@@ -150,6 +169,8 @@ class Case:
     # excluded from the default test run and the build lock (see
     # tests/test_case_library.py and caselib.lock.lockable).
     perf: bool = False
+    # OCR cases only: what an older macOS's Vision gives, where it differs.
+    older_macos: OlderMacOS | None = None
 
     @property
     def family(self) -> str:
@@ -183,6 +204,17 @@ class Case:
             raise ValueError(f"{self.id}: unknown writer or origin")
         if not self.requires <= REQUIREMENTS:
             raise ValueError(f"{self.id}: unknown requirement(s) {set(self.requires) - REQUIREMENTS}")
+        if self.older_macos is not None:
+            here = self.known_gap.today if self.known_gap else self.expected
+            older = self.older_macos.today or self.expected
+            if self.older_macos.before != OWNER_MACOS:
+                raise ValueError(f"{self.id}: older_macos.before must be {OWNER_MACOS}, the "
+                                 "owner's macOS, so it never replaces a label there")
+            if "ocr" not in self.requires or older == here:
+                raise ValueError(f"{self.id}: older_macos is for an OCR case whose label "
+                                 "differs on an older macOS")
+            if self.older_macos.today == self.expected:
+                raise ValueError(f"{self.id}: older_macos.today equal to expected: use None")
         for entry in self.privacy_allowlist:
             if (not isinstance(entry, dict) or set(entry) != _PRIVACY_ENTRY_KEYS
                     or entry["kind"] not in PRIVACY_KINDS
@@ -215,6 +247,7 @@ def case(
     params: tuple[tuple[str, str], ...] = (),
     privacy_allowlist: tuple[dict[str, str], ...] = (),
     perf: bool = False,
+    older_macos: OlderMacOS | None = None,
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -229,7 +262,7 @@ def case(
             build=build, features=as_tuple(features), writer=writer, origin=origin,
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
             requires=frozenset(requires), grid=grid, params=params,
-            privacy_allowlist=privacy_allowlist, perf=perf,
+            privacy_allowlist=privacy_allowlist, perf=perf, older_macos=older_macos,
         )
         return build
     return register

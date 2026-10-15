@@ -101,8 +101,9 @@ def finalize(doc_id: str, seed: int, built: Built) -> DocTruth:
     declared: page text (every occurrence of every written form), every
     other place text is stored (string objects, XMP, attachments,
     annotation and field appearances; see _store_check), and no
-    residue-shaped piece of a secret in page text outside a declared
-    value (_residue_check). Pixels are declared, not checked."""
+    residue-shaped piece of a secret outside a declared value, in page
+    text (_residue_check) or a text store (_store_residue_check). Pixels
+    are declared, not checked."""
     pages = locate.page_lines(built.pdf)
     instances: list[Instance] = []
     with pikepdf.open(built.pdf) as pdf:
@@ -152,6 +153,7 @@ def finalize(doc_id: str, seed: int, built: Built) -> DocTruth:
     instances.extend(built.other)
     instances.extend(_residue_check(doc_id, pages, built, instances))
     _store_check(doc_id, built.pdf, instances)
+    _store_residue_check(doc_id, built.pdf)
     if not instances and not built.clean_control:
         raise PlantError(f"{doc_id}: no secret planted")
     return DocTruth(doc_id, seed, built.producer, n_pages, built.title, instances,
@@ -224,57 +226,111 @@ def _page_stream_ids(pdf: pikepdf.Pdf) -> tuple[set[tuple[int, int]], set[tuple[
     return page_ids, ap_ids
 
 
+@dataclass(frozen=True)
+class Store:
+    """One place a document stores text outside page content."""
+    kind: str            # "string", "xmp", "embedded", "appearance" or "other"
+    key: str             # the dictionary key holding a string ("" for a stream)
+    text: str            # decoded: a string's text, a stream's bytes as Latin-1
+    data: bytes          # the string's or stream's bytes
+
+
+def text_stores(pdf: pikepdf.Pdf) -> list[Store]:
+    """Every string object (in every object, every stream's dictionary
+    and the trailer, at any depth, decoded whatever its form -- hex,
+    escaped, UTF-16) and every decodable stream that is not page content,
+    a font program or an image."""
+    page_ids, ap_ids = _page_stream_ids(pdf)
+    font_files: set[tuple[int, int]] = set()
+    for obj in pdf.objects:
+        if isinstance(obj, pikepdf.Dictionary) and obj.get("/Type") == "/FontDescriptor":
+            for k in ("/FontFile", "/FontFile2", "/FontFile3"):
+                if k in obj:
+                    font_files.add(obj[k].objgen)
+    stores: list[Store] = []
+
+    def walk(obj: object, key: str = "", depth: int = 0) -> None:
+        if depth > 12:
+            return
+        if isinstance(obj, pikepdf.String):
+            stores.append(Store("string", key, str(obj), bytes(obj)))
+        elif isinstance(obj, pikepdf.Array):
+            for item in obj:
+                if not (isinstance(item, pikepdf.Object) and item.is_indirect):
+                    walk(item, key, depth + 1)
+        elif isinstance(obj, pikepdf.Dictionary):
+            for k in obj.keys():
+                item = obj[k]
+                if not (isinstance(item, pikepdf.Object) and item.is_indirect):
+                    walk(item, k, depth + 1)
+
+    for obj in pdf.objects:
+        if not isinstance(obj, pikepdf.Stream):
+            walk(obj)
+            continue
+        walk(obj.stream_dict)
+        if obj.objgen in page_ids or obj.objgen in font_files or obj.get("/Subtype") == "/Image":
+            continue
+        kind = ("xmp" if obj.get("/Type") == "/Metadata"
+                else "embedded" if obj.get("/Type") == "/EmbeddedFile"
+                else "appearance" if obj.objgen in ap_ids else "other")
+        try:
+            data = obj.read_bytes()
+        except pikepdf.PdfError:
+            continue
+        stores.append(Store(kind, "", data.decode("latin-1"), data))
+    walk(pdf.trailer)
+    return stores
+
+
 def store_occurrences(path: Path) -> set[tuple[str, str]]:
-    """(written form, store kind) for every secret form found outside page
-    content: in a string object ("string"), an XMP stream ("xmp"), an
-    embedded file ("embedded"), an annotation or field appearance
-    ("appearance"), or any other decodable stream ("other"). Font
-    programs and images are the preflight's concern."""
+    """(written form, store kind) for every secret form found in a text
+    store (text_stores): a string object ("string"), an XMP stream
+    ("xmp"), an embedded file ("embedded"), an annotation or field
+    appearance ("appearance"), or any other decodable stream ("other").
+    Font programs and images are the preflight's concern."""
     forms = list(persona.written_forms())
     found: set[tuple[str, str]] = set()
     with pikepdf.open(path) as pdf:
-        page_ids, ap_ids = _page_stream_ids(pdf)
-
-        def walk(obj: object, depth: int = 0) -> None:
-            if depth > 12:
-                return
-            if isinstance(obj, pikepdf.String):
-                text = str(obj)
-                found.update((f, "string") for f in forms if f in text)
-            elif isinstance(obj, pikepdf.Array):
-                for item in obj:
-                    if not (isinstance(item, pikepdf.Object) and item.is_indirect):
-                        walk(item, depth + 1)
-            elif isinstance(obj, pikepdf.Dictionary):
-                for k in obj.keys():
-                    item = obj[k]
-                    if not (isinstance(item, pikepdf.Object) and item.is_indirect):
-                        walk(item, depth + 1)
-
-        for obj in pdf.objects:
-            if isinstance(obj, pikepdf.Stream):
-                walk(obj.stream_dict)
-                if obj.objgen in page_ids or obj.get("/Subtype") == "/Image":
-                    continue
-                if obj.get("/Type") == "/Metadata":
-                    kind = "xmp"
-                elif obj.get("/Type") == "/EmbeddedFile":
-                    kind = "embedded"
-                elif obj.objgen in ap_ids:
-                    kind = "appearance"
-                else:
-                    kind = "other"
-                try:
-                    data = obj.read_bytes()
-                except pikepdf.PdfError:
-                    continue
-                for f in forms:
-                    if f.encode() in data or f.encode("utf-16-be") in data:
-                        found.add((f, kind))
-            else:
-                walk(obj)
-        walk(pdf.trailer)
+        for store in text_stores(pdf):
+            for f in forms:
+                if (f in store.text or f.encode() in store.data
+                        or f.encode("utf-16-be") in store.data):
+                    found.add((f, store.kind))
     return found
+
+
+# Keys whose strings are machine-written numbers (dates, identifiers),
+# where four digits of a secret occur by chance; and the same inside XMP.
+_NUMERIC_KEYS = {"/CreationDate", "/ModDate", "/ID", "/M", "/CheckSum", "/Size",
+                 "/Producer", "/Creator"}   # producers' own version strings
+# Machine-written values wherever they sit: a tagged PDF's element ids
+# (Chrome writes node00048 in /ID, /Headers and the /IDTree), and dates.
+_MACHINE_VALUE = re.compile(r"node\d+|D:[\d+\-Z']+")
+_XMP_NUMERIC = re.compile(r"\d{4}-\d\d-\d\dT[\d:.]+(?:Z|[+-]\d\d:\d\d)?|uuid:[0-9a-fA-F-]+")
+
+
+def _store_residue_check(doc_id: str, path: Path) -> None:
+    """Text stores outside page content hold no residue-shaped piece of a
+    secret outside a written form (persona.residue_in), except in
+    machine-written dates and identifiers."""
+    forms = sorted(persona.written_forms(), key=len, reverse=True)
+    with pikepdf.open(path) as pdf:
+        stores = text_stores(pdf)
+    for store in stores:
+        if store.key in _NUMERIC_KEYS or store.kind in ("appearance", "other") or (
+                store.kind == "string" and _MACHINE_VALUE.fullmatch(store.text)):
+            continue        # appearances repeat their strings; "other" is refused whole
+        text = store.text
+        if store.kind == "xmp":
+            text = _XMP_NUMERIC.sub(" ", text)
+        for form in forms:
+            text = text.replace(form, " ")
+        pieces = persona.residue_in(text)
+        if pieces:
+            where = f"{store.kind} {store.key}".strip()
+            raise PlantError(f"{doc_id}: {where} holds {pieces[0]!r}, a piece of a secret "
+                             "outside any declared value")
 
 
 # Which declared instances may account for a form found in each store.

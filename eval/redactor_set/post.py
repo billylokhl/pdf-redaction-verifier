@@ -103,7 +103,8 @@ def add_thumbnail(pdf: pikepdf.Pdf, page_no: int, png: Path) -> None:
     with Image.open(png) as im:
         grey = im.convert("L")
         w, h, raw = grey.width, grey.height, grey.tobytes()
-    thumb = pdf.make_stream(zlib.compress(raw), Width=w, Height=h, BitsPerComponent=8,
+    thumb = pdf.make_stream(zlib.compress(raw), Type=Name.XObject, Subtype=Name.Image,
+                            Width=w, Height=h, BitsPerComponent=8,
                             ColorSpace=Name.DeviceGray, Filter=Name.FlateDecode)
     pdf.pages[page_no].obj.Thumb = thumb
 

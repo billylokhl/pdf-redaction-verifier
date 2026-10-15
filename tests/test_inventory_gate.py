@@ -228,6 +228,82 @@ def test_children_that_disagree_on_flags_are_inconsistent() -> None:
     assert gate.aggregate([])["gate"]["passed"] is False  # 0 files is never a pass
 
 
+def _agreement(status: str, check: str | None, reasons: list[str] | None = None) -> dict:
+    return {"agreement": {"status": status, "reasons": reasons or [], "check": check,
+                          "revision": 0, "obj": None, "templates": [], "encrypted": False,
+                          "streams_compared": 0, "members_compared": 0,
+                          "qpdf_check_errors": 0, "values_compared": 0},
+            "flags": reasons or [], "measures": {}, "regions": {}}
+
+
+def test_a_file_that_needs_a_password_is_flagged_not_a_disagreement() -> None:
+    """Owner decision (2026-10-12, #48 item 3): a file a reader cannot open
+    without a password cannot be certified, so it is FLAGGED — reported
+    under its own reason, never an agreement and no longer a gate failure.
+    Every other disagreement still gates, and a file that does not tile
+    still fails even when it also needs a password."""
+    job = gate.Job("0" * 64, Path("unused"))
+    unflagged = gate.ChildRun("ok", 0.1, {"flags": {}, "tiles": True})
+    locked = gate.ChildRun("ok", 0.1, _agreement("disagrees", "needs_password"))
+    result = gate.judge(job, 10, unflagged, locked)
+    assert (result.verdict, result.reasons) == (gate.FLAGGED, ("needs_password",))
+    agg = gate.aggregate([result])
+    assert agg["gate"]["passed"] is True and agg["gate"]["unflagged_disagree"] == 0
+    assert agg["flags"]["files_by_reason"] == {"needs_password": 1}
+    other = gate.judge(job, 10, unflagged,
+                       gate.ChildRun("ok", 0.1, _agreement("disagrees", "encryption")))
+    assert other.verdict == gate.DISAGREE
+    torn = gate.judge(job, 10, gate.ChildRun("ok", 0.1, {"flags": {}, "tiles": False}), locked)
+    assert torn.verdict == gate.DISAGREE
+    # The children flagging differently is still INCONSISTENT, password or not.
+    split = gate.judge(job, 10, unflagged,
+                       gate.ChildRun("ok", 0.1, {**_agreement("disagrees", "needs_password"),
+                                                 "flags": ["xref_tail"]}))
+    assert split.verdict == gate.INCONSISTENT
+    # The inventory's own flags, when it has any, stay the reasons reported.
+    flagged = gate.judge(job, 10, gate.ChildRun("ok", 0.1, {"flags": {"xref_tail": 1},
+                                                            "tiles": True}),
+                         gate.ChildRun("ok", 0.1, {**_agreement("disagrees", "needs_password"),
+                                                   "flags": ["xref_tail"]}))
+    assert (flagged.verdict, flagged.reasons) == (gate.FLAGGED, ("xref_tail",))
+
+
+def test_needs_password_is_an_encryption_split_unless_our_trailer_reads_it_encrypted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate flags a needs_password file instead of failing it, so the
+    oracle reports needs_password only when our trailer also has /Encrypt.
+    A file MuPDF wants a password for but our trailer reads as plain is an
+    `encryption` disagreement, which still gates."""
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+    locked = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="user-pw",
+                         owner_pw="owner-pw")
+    assert oracle.compare(locked, tmp_path).check is Check.NEEDS_PASSWORD
+    monkeypatch.setattr(pymupdf.Document, "needs_pass", property(lambda self: 1))
+    plain = build_pdf(Spec())
+    assert oracle.compare(plain, tmp_path).check is Check.ENCRYPTION
+
+
+@requires_qpdf
+def test_a_password_protected_corpus_file_passes_the_gate_as_flagged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), f"SSN {SSN}")
+    locked = tmp_path / "locked.pdf"
+    doc.save(locked, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="user-pw",
+             owner_pw="owner-pw")
+    root, manifest = _corpus(tmp_path, {f"locked-{PLANTED}.pdf": locked.read_bytes(),
+                                        f"agree-{PLANTED}.pdf": build_pdf(OBJSTM)})
+    assert _run(root, manifest, tmp_path) == 0
+    agg = json.loads((tmp_path / "aggregate.json").read_text())
+    assert (agg["files"], agg["flagged"], agg["gate"]["unflagged_disagree"]) == (2, 1, 0)
+    assert agg["flags"]["files_by_reason"] == {"needs_password": 1}
+    captured = capsys.readouterr()
+    assert PLANTED not in captured.out + captured.err
+
+
 def test_a_drifted_corpus_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     names = [f"{PLANTED}-{i}.pdf" for i in range(3)]
     root, manifest = _corpus(tmp_path, {name: build_pdf(Spec(pages=1 + i))

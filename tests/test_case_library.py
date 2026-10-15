@@ -22,8 +22,8 @@ from caselib import CELLS, NEW_CELL_ALLOWLIST, PRIVACY_KINDS, REGISTRY, load
 from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
-from caselib.model import Case, expect
-from caselib.run import Scan, available, build, judge, scan
+from caselib.model import Case, KnownGap, OlderMacOS, expect
+from caselib.run import Scan, available, build, judge, scan, today_label
 from check_ratchets import RATCHET_SETS, _frozenset_literal
 from redaction_verifier.matching import normalize_string
 
@@ -77,14 +77,58 @@ def test_case(case, tmp_path) -> None:
             f"{case.id}: generator output changed — review it, then run "
             "`PYTHONPATH=eval:. python -m caselib.lock`")
     result = scan(case, pdf, tmp_path)
-    if case.known_gap:
-        today = judge(case, result, want=case.known_gap.today)
-        assert today.ok, (f"{case.id}: known gap {case.known_gap.cell} moved — "
+    label = today_label(case)     # known_gap, or this macOS's older_macos label
+    if label is not None:
+        cell = case.known_gap.cell if case.known_gap else case.cells[0]
+        today = judge(case, result, want=label)
+        assert today.ok, (f"{case.id}: known gap {cell} moved — "
                           f"{'; '.join(today.problems)}. Relabel the case.")
-        assert not judge(case, result).ok, f"{case.id}: gap closed — remove known_gap"
+        assert not judge(case, result).ok, f"{case.id}: gap closed — remove its today label"
     else:
         verdict = judge(case, result)
         assert verdict.ok, f"{case.id}: {'; '.join(verdict.problems)}"
+
+
+# ── Labels for an older macOS's Vision ───────────────────────────────────
+
+
+class TestOlderMacOS:
+    """A case whose page an older macOS's Vision reads differently is
+    judged there against that version's label (``older_macos``), and
+    everywhere else against its own."""
+
+    def test_k42_still_exits_0_before_macos_27(self) -> None:
+        case = REGISTRY["layout.scanned-vertical-stack"]
+        assert case.known_gap is None
+        assert today_label(case, major=27) is None and today_label(case, major=28) is None
+        assert today_label(case, major=26) == expect(0)
+
+    def test_k43_is_found_before_macos_27(self) -> None:
+        case = REGISTRY["page.dense-sideways-scan"]
+        assert case.known_gap is not None
+        assert today_label(case, major=27) == case.known_gap.today
+        assert today_label(case, major=26) is None     # its expected label: exit 1
+
+    def test_no_older_label_means_the_case_own(self) -> None:
+        for case in REGISTRY.values():
+            if case.older_macos is None:
+                own = case.known_gap.today if case.known_gap else None
+                assert today_label(case, major=26) == own, case.id
+
+    @pytest.mark.parametrize("kwargs, problem", [
+        ({"requires": frozenset()}, "older_macos is for an OCR case"),
+        ({"older_macos": OlderMacOS(27, None)}, "older_macos is for an OCR case"),
+        ({"known_gap": KnownGap("live.plain", expect(0)),
+          "older_macos": OlderMacOS(27, expect(1))}, "equal to expected"),
+        ({"older_macos": OlderMacOS(28, expect(0))}, "the owner's macOS"),
+    ])
+    def test_an_older_label_must_differ(self, kwargs, problem) -> None:
+        fields = {"id": "page.older-label", "truth": "leak", "cells": ("live.plain",),
+                  "expected": expect(1), "story": "unit test", "build": lambda path: None,
+                  "requires": frozenset({"ocr"}), "older_macos": OlderMacOS(27, expect(0)),
+                  **kwargs}
+        with pytest.raises(ValueError, match=problem):
+            Case(**fields)
 
 
 # ── judge()'s warning-storage check ──────────────────────────────────────

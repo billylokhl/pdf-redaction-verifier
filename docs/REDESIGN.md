@@ -594,8 +594,9 @@ difference fails the gate.
   measured on generated pages alone, with `page.digit-column` and
   `page.scan-image-sideways-90`/`-270` pinning both sides (#74); (d) the
   4b OCR view should re-measure it on the real-world corpus's scanned
-  pages, and (e) read a scanned stack character by character (#61: with
-  a value rule it passes as clean).
+  pages, and (e) find one-character-per-line columns in a scan that
+  Vision does not report as a line (#81; those it does report are
+  unstacked, #61, K42).
 - **Local**: the real-world corpus. The PR commits
   `eval/results/<tree-hash>.json`; CI fails if the hash (computed
   excluding `eval/results/`) does not match the PR's code.
@@ -803,11 +804,18 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K39 | A small JPEG's own EXIF (APP1) thumbnail renders the SSN: a second, fully decodable picture the main image's declared frame never mentions. Only the main picture is ever drawn or OCR'd, and unlike a raw sample byte or a JPEG comment segment, the thumbnail's render is itself DCT/Huffman-compressed pixel data, not literal text bytes, so no raw byte sweep finds it either |
 | K40 | **Fixed** in the current tool (`verify.scan_trailers`, owner decision D on the tier; cases in `eval/caselib/families/trailer.py`): the document `/ID` in a classic trailer holds the secret as a literal string (or as hex-encoded text): the trailer dictionary is not an object, so the Objects layer never read it, and the Binary layer scanned qpdf's rewrite, where the file's first `/ID` element comes back hex-encoded and the second is replaced by qpdf's own. A private (non-standard) trailer key failed the same way for a pattern rule; a known value there got only Binary's manual-review warning. In the new design a trailer is part of its cross-reference unit (§4); its strings must be decoded and matched the same way, under the same tier rule, not only tiled |
 | K41 | **Fixed** with K40. Same, in an earlier revision's trailer: an incremental update writes a new trailer, the earlier-revision scan compared objects, not trailers, and qpdf writes only the current trailer |
+| K42 | **Fixed on macOS 27**, the owner's (on CI's macOS 26 the case still exits `0`, pinned by its `older_macos` label; why was not measured) in the current tool (OCR unstacks a vertical line no upright re-read confirms; case `layout.scanned-vertical-stack` in `eval/caselib/families/ocr_misses.py`, now manual review as its label says): a value one character per line (the SSN's digits) in a scanned page, searched with a value rule (#61). Vision on macOS 27 reads the stack as one sideways line and misreads it (`199140190`), so nothing matched; its glyphs laid out as one line read as written. A stack Vision does not report as a line at all is still missed (#81) |
+| K43 | A dense sideways scan ([#67](https://github.com/billylokhl/pdf-redaction-verifier/issues/67)): 40 lines of 8 pt text turned 90°, the middle one holding the SSN whole, as an image-only page. Vision on macOS 27 reports success but returns 36 lines and leaves out lines 14–21 (and reads 11 and 13 only in part), the SSN's among them, and nothing compares its reading with the page's ink (DESIGN.md's known limitations: Vision reading less does not fail closed). With 20 or 30 lines the page is read whole (and on CI's macOS 26, this page too: exit `1`, its `older_macos` label). **No longer silent**: a page with any vertical line is also read turned 90° and 270°, which finds the SSN's line, as manual review (exit `2`), since a turned reading can misread a stack as a number; the target, the hard finding, is open (and #82, a raster backstop, for lines Vision drops with no vertical line to go by) |
 
 K12-K36 are pinned in `eval/caselib/families/gaps.py` (the remaining
 `UNDOCUMENTED_GAPS`, now empty); K37, K38 and K39 are pinned, alongside
 the rest of ADR 0003/0004's scheduled image cases, in
-`eval/caselib/families/image_bytes.py`. One more case in `gaps.py` is the
+`eval/caselib/families/image_bytes.py`; K40 and K41 (both fixed) in
+`eval/caselib/families/trailer.py`; K42 (fixed) and K43, OCR's misses
+on scanned pages, in `eval/caselib/families/ocr_misses.py`
+(`layout.scanned-vertical-stack`, `page.dense-sideways-scan`; each
+label is what macOS 27's Vision gives, and `older_macos` what CI's
+macOS 26 gives). One more case in `gaps.py` is the
 opposite problem — a **false alarm**, not a silent miss: a clean document whose
 only planted content is a live (referenced), correctly sized image
 XObject whose byte ramp (0..255, repeated) happens to contain the ASCII
@@ -910,10 +918,11 @@ To check in Phase 3b (non-blocking notes from 3a-1's review):
   `dataclasses.annotationlib` is new in 3.14), so the guard bans the
   union recorded from 3.10 to 3.15 (`KNOWN_MODULE_ATTRS`) together with
   what the running Python exposes, and a test fails when the running
-  Python exposes a name the union lacks. CI runs 3.10 and 3.12 only, so
-  a name first exposed by a newer Python is caught only once someone
-  runs the suite on it, and a name a module binds only on first use
-  (3.14's `collections.heapq`) only once something has used it. It is a
+  Python exposes a name the union lacks. CI runs 3.10, 3.12, 3.13 and
+  3.14 (#79), so a name first exposed by a later Python is caught only
+  once someone runs the suite on it, and a name a module binds only on
+  first use (3.14's `collections.heapq`) only once something has used
+  it. It is a
   mistake-catcher, frozen by ADR 0010: plain routes past it remain
   (issue #38) and are closed by the Phase 3b child process, which never
   receives secrets; the OS sandbox follows in 3d. Loosen it

@@ -19,6 +19,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -32,6 +33,33 @@ def _env(name: str) -> str:
     if not value:
         raise SystemExit(f"set {name} (see eval/redactor_set/run.py)")
     return value
+
+
+def _run_group(cmd: list[str], cwd: Path, timeout: float) -> tuple[int | str, str, str]:
+    """Run *cmd* in its own process group; on timeout end the whole group
+    (a wrapper such as ``uv run`` would otherwise leave the tool running
+    and still writing) and return ``"timeout"`` with what it had printed."""
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out, err
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+                out, err = proc.communicate(timeout=10)
+                break
+            except ProcessLookupError:
+                try:
+                    out, err = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:   # a grandchild holds the pipes
+                    out, err = "", ""
+                break
+            except subprocess.TimeoutExpired:
+                out, err = "", ""
+                continue
+        return "timeout", out or "", err or ""
 
 
 def run_set(root: Path, set_name: str, config: Path, *, timeout: float = 300.0) -> dict[str, object]:
@@ -62,15 +90,11 @@ def run_set(root: Path, set_name: str, config: Path, *, timeout: float = 300.0) 
             stale.unlink(missing_ok=True)
         started = time.monotonic()
         entry: dict[str, object] = {"exit": None, "seconds": None, "m1": None, "m2": None}
-        try:
-            proc = subprocess.run([*cmd, str(inp), "--config", str(config)], cwd=doc_dir,
-                                  capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            entry["exit"] = "timeout"
-        else:
-            entry["exit"] = proc.returncode
-            (doc_dir / "stdout.txt").write_text(proc.stdout)
-            (doc_dir / "stderr.txt").write_text(proc.stderr)
+        code, stdout, stderr = _run_group([*cmd, str(inp), "--config", str(config)],
+                                          doc_dir, timeout)
+        entry["exit"] = code
+        (doc_dir / "stdout.txt").write_text(stdout)
+        (doc_dir / "stderr.txt").write_text(stderr)
         entry["seconds"] = round(time.monotonic() - started, 2)
         out = doc_dir / f"{stem}_redacted.pdf"
         if entry["exit"] == 0 and out.exists():
