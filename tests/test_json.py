@@ -796,11 +796,16 @@ class TestMaskNonAsciiAndCost:
         ("ABC-Ø", "Øvre 12", "****"),                       # Latin, non-ASCII
         ("kod-中文", "中文 12", "****"),              # CJK
         ("abc-жук", "жук 5", "****"),   # Cyrillic
-        ("abc-١٢", "١٢٣", "****"),           # Arabic-Indic digits
+        ("SSN \u0661\u0662\u0663-\u0664\u0665-\u0666\u0667\u0668\u0669", "123-45-6789", "****"),
+        ("555-55-6712", ("1\u00d82", "12"), "****"),   # plus the matcher form "12"
+        ("123-45-6781", ("\u738b12", "12"), "****"),   # edge overlap, CJK lead
         ("ABC-Ø", "Zebra 12", "****-Ø"),                    # control: kept
     ])
     def test_helper(self, sample, value, shown) -> None:
-        assert mask(sample, [value]) == shown
+        # A tuple stands for the two forms verify.py indexes per value:
+        # the searched (normalized) form and the wide fold.
+        values = [value] if isinstance(value, str) else list(value)
+        assert mask(sample, values) == shown
 
     def test_cost_does_not_scale_with_the_number_of_values(self) -> None:
         import time
@@ -813,3 +818,15 @@ class TestMaskNonAsciiAndCost:
         for _ in range(2000):
             mask("ref 000000-0000000 and more text", index)
         assert time.perf_counter() - start < 2.0
+
+
+def test_value_the_matcher_normalizes_differently_is_still_masked(tmp_path) -> None:
+    # The matcher searches "12" for the value "1<O-slash>2"; the sample's
+    # tail "6712" is exactly what it found, so it must not be shown.
+    pdf = _pdf(tmp_path / "doc.pdf", "SSN 555-55-6712")
+    rules = _rules(tmp_path / "r.json", [
+        {"name": "v", "value": "1Ø2"},
+        {"name": "any ssn", "class": "ssn"},
+    ])
+    _, data = _run(pdf, rules, tmp_path)
+    assert {f["sample"] for f in data["findings"]} == {"", "****"}

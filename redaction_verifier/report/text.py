@@ -211,7 +211,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     name = _sanitize_report_text(pdf_path.name)
     exact = report.exact_index
     if rules is not None:
-        exact = MaskIndex([*exact.values, *(s.folded or s.normalized for s in rules.secrets)])
+        exact = MaskIndex([*exact.values, *(f for s in rules.secrets for f in (s.normalized, s.folded) if f)])
     print(f"\n{_BAR}")
     if report.leaked:
         print(f"  [FAIL]  SECRETS ARE STILL IN THIS FILE: {name}")

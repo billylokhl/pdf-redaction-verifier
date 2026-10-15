@@ -3432,7 +3432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except VerifyError as exc:
             return finish(2, ("RULES_INVALID", str(exc)))
         secrets, patterns = rules.secrets, rules.patterns
-        report.exact_index = MaskIndex(s.folded or s.normalized for s in secrets)
+        report.exact_index = MaskIndex(f for s in secrets for f in (s.normalized, s.folded) if f)
 
         matcher = SecretMatcher(secrets)
 

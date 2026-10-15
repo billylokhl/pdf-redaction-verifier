@@ -31,11 +31,12 @@ def fold_wide(text: str) -> str:
     """Fold *text* for report masking: NFKD, accents stripped, casefolded,
     and every non-letter/digit removed — but, unlike normalize_string,
     letters and digits of ANY script are kept (CJK, Cyrillic, Ø...), so a
-    masked tail made of them can be compared with an exact value."""
+    masked tail made of them can be compared with an exact value. Decimal
+    digits of any script become ASCII digits."""
     decomposed = unicodedata.normalize("NFKD", text)
+    kept = "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
     return "".join(
-        c for c in "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
-        if c.isalnum()
+        str(unicodedata.decimal(c)) if c.isdecimal() else c for c in kept if c.isalnum()
     )
 
 
@@ -62,6 +63,7 @@ class MaskIndex:
         return any(
             folded[i : i + n] in self.values
             for n in self.lengths
+            if n <= len(folded)
             for i in range(len(folded) - n + 1)
         )
 
