@@ -49,14 +49,16 @@ def _digit_stack(page: fitz.Page) -> None:
         page.insert_text((100, 100 + 14 * i), digit, fontsize=11)
 
 
-def _raw_scan_of(draw: Callable[[fitz.Page], None], clip: fitz.Rect, path: Path) -> None:
+def _raw_scan_of(draw: Callable[[fitz.Page], None], clip: fitz.Rect, path: Path,
+                 size: tuple[int, int] = (612, 792)) -> None:
     """The non-fitz writer's scan: *clip* of a scratch page rendered at
     300 dpi, thresholded to one bit per pixel and drawn at its own place
-    and size on a letter page, the page's only content. Stored (level-0)
-    Flate keeps the bytes the same under every zlib; one bit per pixel
-    keeps the file small."""
+    and size on a page of *size* points (letter by default), the page's
+    only content. Stored (level-0) Flate keeps the bytes the same under
+    every zlib; one bit per pixel keeps the file small."""
+    width_pt, height_pt = size
     scratch = fitz.open()
-    draw(scratch.new_page(width=612, height=792))
+    draw(scratch.new_page(width=width_pt, height=height_pt))
     pix = scratch[0].get_pixmap(dpi=300, clip=clip, colorspace=fitz.csGRAY)
     scratch.close()
     width, height, samples = pix.width, pix.height, pix.samples
@@ -71,8 +73,9 @@ def _raw_scan_of(draw: Callable[[fitz.Page], None], clip: fitz.Rect, path: Path)
     image = flate(b"/Type /XObject /Subtype /Image /Width %d /Height %d "
                   b"/BitsPerComponent 1 /ColorSpace /DeviceGray" % (width, height), bytes(rows))
     objects = one_page(flate(b"", b"q %.2f 0 0 %.2f %.2f %.2f cm /Im1 Do Q" % (
-        clip.width, clip.height, clip.x0, 792 - clip.y1)), o7=image)
-    objects[3] = page(resources=b"<< /XObject << /Im1 7 0 R >> >>")
+        clip.width, clip.height, clip.x0, height_pt - clip.y1)), o7=image)
+    objects[3] = page(resources=b"<< /XObject << /Im1 7 0 R >> >>").replace(
+        b"/MediaBox [0 0 612 792]", b"/MediaBox [0 0 %d %d]" % size)
     path.write_bytes(build(objects))
 
 
@@ -142,3 +145,53 @@ def _dense_sideways_page(page: fitz.Page) -> None:
 )
 def dense_sideways_scan(path: Path) -> None:
     _scan_of(_dense_sideways_page, path)
+
+
+# ── live.pixels.oversized-page (#128) ────────────────────────────────────
+
+def _ssn_lines(font: float) -> Callable[[fitz.Page], None]:
+    def draw(page: fitz.Page) -> None:
+        for i in range(10):
+            page.insert_text((40, 60 + font * 1.25 * i), f"SSN {SSN} is here", fontsize=font)
+    return draw
+
+
+def _oversized_scan(font: float) -> Callable[[Path], None]:
+    """Ten lines of the SSN in *font* pt, scanned (_raw_scan_of) at the top
+    left of a 2400 x 3200 pt page: OCR's 300 dpi render is 10000 x 13334
+    px, far over MAX_OCR_RENDER_SIDE."""
+    def build_case(path: Path) -> None:
+        _raw_scan_of(_ssn_lines(font), fitz.Rect(30, 30, 40 + font * 15, 70 + font * 13),
+                     path, size=(2400, 3200))
+    return build_case
+
+
+case(
+    "page.oversized-scan", truth="leak", cells="live.pixels.oversized-page",
+    writer="raw",
+    story="#128. A scanned image of ten lines of the SSN in 8 pt, at the top left of a "
+          "2400 x 3200 pt page (33 x 44 in), the page's only content. OCR renders a page at "
+          "300 dpi, here 10000 x 13334 px; Vision on macOS 27 reports success on that render "
+          "but returns none of those lines, so the run certified the page clean (exit 0, no "
+          "warnings). A page whose render is longer than 3510 px on a side (about 11.7 in) is "
+          "still read, and is also flagged as not fully read: PAGE_FAILED, exit 2.",
+    expected=expect(2, warnings=(("PAGE_FAILED", "live"),)),
+    rules=({"name": "SSN", "value": SSN},),
+    requires=("ocr",),
+    mistake="Sharing a scan at poster or plan size, trusting it to be read like a letter page.",
+    recovery="Zoom in on the page and read it.",
+)(_oversized_scan(8))
+
+case(
+    "page.oversized-scan-large-print", truth="leak", cells="live.pixels",
+    writer="raw",
+    story="#128. As page.oversized-scan, in 48 pt: Vision on macOS 27 reads this print on the "
+          "same 10000 x 13334 px render. Flagging the page as not fully read must not lose "
+          "what OCR does read: the SSN stays a hard finding (exit 1).",
+    expected=expect(1, findings=(("SSN", "live"),), warnings=(("PAGE_FAILED", "live"),),
+                    layers=(("SSN", "OCR"),)),
+    rules=({"name": "SSN", "value": SSN},),
+    requires=("ocr",),
+    mistake="Sharing a scan at poster or plan size, trusting it to be read like a letter page.",
+    recovery="Zoom in on the page and read it.",
+)(_oversized_scan(48))

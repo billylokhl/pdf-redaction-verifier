@@ -42,6 +42,7 @@ the measurement is reproducible on another machine.
 | `pattern_class_false_hard.py` | Runs `verify.py`'s own built-in pattern classes (imported, not reimplemented) against the real corpus's plain-text page extractions, on both denominators, behind `docs/adr/0005`. Scans page text only — not Metadata or Objects, which today's tool also runs pattern classes over. |
 | `interpretation_warnings.py` | Behind `docs/adr/0009`: how often MuPDF's page *interpreter* itself warns while running a page's content (`page.get_texttrace()`, first, on a freshly opened document), categorised by a normalised warning text and grouped into families, on both denominators — the real cost of REDESIGN §4's "any MuPDF warning → not `DECODED`" rule. Also measures the other call order (`get_text()` first) and docs/adr/0009's accepted rule on the warned pages, with and without its exit-0 guards, using `s1b_consumption_witness.witness` as the per-page witness. |
 | `annotation_appearance.py` | 3a-7d spike (docs/phase3a-plan.md): reads, per annotation, whether MuPDF draws its stored `/AP` or synthesizes one -- MuPDF's trace and 4x pixels of the annotation against a stand-in drawn from the stored `/AP`, batched per file -- on 35 fabricated fixtures covering ADR 0011 item 5's conditions, plus the object-level signals that do not work and the cost at 100-1,600 annotations. No corpus data. |
+| `ocr_render_size.py` | Behind `MAX_OCR_RENDER_SIDE` (#128): how many lines of a block of 10 fabricated SSN lines Apple Vision reads, by the page's size (the 300 dpi render's longest side) and the print's size, at a corner and at the centre; `--distinct` numbers the lines. macOS only, no corpus data. |
 | `image_envelope_stats.py` | Behind `docs/adr/0004`: how many stored images are under 8 px on a side, how many today's 8×32 `verify._text_sized` rule excuses, and how many exceed the 35 Mpx cap, via `doc.xref_get_key` on every object (no decompression), on both denominators. |
 
 ## Running
@@ -55,6 +56,7 @@ python3 eval/spikes/measure_corpus.py
 python3 eval/spikes/pattern_class_false_hard.py
 python3 eval/spikes/interpretation_warnings.py
 python3 eval/spikes/image_envelope_stats.py
+python3 eval/spikes/ocr_render_size.py 792,1008,1224,1440,2400 6,8,10,24   # a table, not JSON
 ```
 
 Every script adds the repo root to `sys.path` itself so `import verify`
