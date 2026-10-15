@@ -414,8 +414,13 @@ def scan_page_layer(
     for page_index in range(doc.page_count):
         try:
             page = doc.load_page(page_index)
+            why: str | None = None
+            if incomplete is not None:
+                try:
+                    why = incomplete(page)
+                except Exception as exc:   # cannot tell: not fully read
+                    why = f"could not check the page ({exc})"
             variants = extractor(page)
-            why = incomplete(page) if incomplete is not None else None
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warn(
                 "PAGE_FAILED",

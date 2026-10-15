@@ -1701,10 +1701,11 @@ class TestOcrPageSize:
 
     @pytest.mark.parametrize("size, too_large", [
         ((612, 792), False),          # letter, 2550 x 3300 px
-        ((595, 842), False),          # A4
-        ((612, 1008), False),         # legal, 4200 px long
-        ((1020, 612), False),         # 4250 px: the cap itself
-        ((1020.5, 612), True),        # 4252 px
+        ((792, 612), False),          # letter, landscape
+        ((595, 842), False),          # A4, 3509 px long
+        ((864, 612), False),          # 3600 px: the cap itself
+        ((864.5, 612), True),         # 3602 px
+        ((612, 1008), True),          # legal, 4200 px long
         ((842, 1191), True),          # A3
         ((792, 1224), True),          # tabloid
         ((216, 2160), True),          # a long receipt: the longest side counts
@@ -1725,13 +1726,14 @@ class TestOcrPageSize:
             verify.scan_page_layer(
                 doc, SecretMatcher([Secret("SSN", normalize_string(SSN))]), report,
                 layer="OCR", extractor=lambda page: readings, note="test",
-                hard_variants=ocr.OCR_GENUINE_READINGS, incomplete=ocr.ocr_page_too_large)
+                hard_variants=ocr.OCR_GENUINE_READINGS,
+                incomplete=lambda page: ocr.ocr_page_too_large(page))
         finally:
             doc.close()
         return report
 
     def test_a_blank_page_of_ordinary_size_is_clean(self) -> None:
-        report = self._scan((612, 1008), ["", "", "", "", "", ""])
+        report = self._scan((595, 842), ["", "", "", "", "", ""])
         assert not report.findings and not report.warnings
 
     def test_a_blank_oversized_page_is_flagged(self) -> None:
@@ -1740,6 +1742,18 @@ class TestOcrPageSize:
         assert [(w.code, w.layer, w.fields.get("page"), w.fields.get("storage"))
                 for w in report.warnings] == [("PAGE_FAILED", "OCR", 1, "live")]
         assert "not fully read (page too large for OCR" in report.warnings[0]
+
+    def test_a_failing_size_check_flags_the_page_and_keeps_its_reading(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(page: fitz.Page) -> str | None:
+            raise ValueError("no size")
+
+        monkeypatch.setattr(ocr, "ocr_page_too_large", broken)
+        report = self._scan((612, 792), [f"SSN {SSN}", "", "", "", "", ""])
+        assert [f.secret_name for f in report.findings] == ["SSN"]
+        assert [w.code for w in report.warnings] == ["PAGE_FAILED"]
+        assert "could not check the page (no size)" in report.warnings[0]
 
     def test_what_ocr_reads_on_an_oversized_page_still_counts(self) -> None:
         # Flagging must never lose a finding: exit 1 stays 1, not 2.

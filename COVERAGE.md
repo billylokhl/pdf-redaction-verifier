@@ -131,14 +131,14 @@ reports no vertical line at all, can still pass as clean; nothing yet
 compares Vision's reading with the ink on the page ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
 How much Vision reads also depends on the size of the print against the
 render's longest side. On macOS 27, a 2400 × 3200 pt page (10000 ×
-13334 px at OCR's 300 dpi) holding 24 pt text came back with no lines
-at all ([#128](https://github.com/billylokhl/pdf-redaction-verifier/issues/128)), and 10 pt print was lost on renders from about 6000 px.
-A page whose render is longer than 4250 px on a side (just over 14 in:
-letter, A4 and legal pages are below it) is therefore still read, and
-whatever OCR finds on it counts, but it is also `PAGE_FAILED` (⚑, exit
-`2` when nothing is found, `page.oversized-scan`). Below that, print
-smaller than about 8 pt can still be missed on the larger pages (6 pt
-was read whole only on letter and A4 pages).
+13334 px at OCR's 300 dpi) came back without any of its ten lines of
+8 pt text ([#128](https://github.com/billylokhl/pdf-redaction-verifier/issues/128)), and on renders from 3900 px long whole blocks of 8 pt
+print were lost, of 10 pt from 4250 px. A page whose render is longer
+than 3600 px on a side (12 in: letter and A4 pages are below it, legal
+pages are not) is therefore still read, and whatever OCR finds on it
+counts, but it is also `PAGE_FAILED` (⚑, exit `2` when nothing is
+found, `page.oversized-scan`). Below that Vision still drops part of a
+block now and then (14 of 20 lines once, on a landscape letter page).
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the

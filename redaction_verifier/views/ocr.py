@@ -82,21 +82,22 @@ MAX_UNSTACK_PIXELS = 4_000_000
 # (#128). A page whose render is longer is still read, so whatever Vision
 # finds on it counts, but it is also flagged as not fully read
 # (ocr_page_too_large: PAGE_FAILED, so it never exits 0). On a larger
-# render Vision reads less and less of the smaller print, and then
-# nothing, and reports success: a 2400 x 3200 pt page (10000 x 13334 px)
-# holding ten lines of 24 pt text came back with no lines at all. What
-# it misses depends on the print's size against the render's longest
-# side, not on the pixel count (an image 8400 px long and 0.4 as wide
-# lost its small print; a square one 7000 px a side, with more pixels,
-# did not). Measured on macOS 27 with blocks of 10 lines at a corner and
-# at the centre, rendered as OCR renders them: 10 pt was read whole up
-# to 5100 px and lost from 6000; 8 pt up to 4500 and lost at 5100; 6 pt
-# reliably only on letter and A4 (3300-3509 px). 4250 px (just over
-# 14 in at 300 dpi: letter, A4 and legal pages are below it) is about
-# 17% below 8 pt's first loss and 30% below 10 pt's. Vision also dropped
-# a block now and then on smaller renders (one of identical 8 pt lines
-# at 3600 px): print below the cap can still be missed (COVERAGE, ¹²).
-MAX_OCR_RENDER_SIDE = 4250
+# render Vision drops more and more of the smaller print, whole blocks
+# of it, and then everything, and reports success: a 2400 x 3200 pt page
+# (10000 x 13334 px) holding ten lines of 8 pt text came back without
+# any of them. The longest side decides, not the pixel count (a narrow
+# render 1640 px wide lost a block a square one with ten times the
+# pixels kept). Measured on macOS 27 (eval/spikes/ocr_render_size.py):
+# blocks of 10 lines of 8 and 10 pt, at a corner, the centre and the
+# opposite corner, on portrait, landscape, square and narrow pages,
+# rendered as OCR renders them. Up to 3700 px every block was read
+# (20 of 20 lines, but for one 18 and one 14); from 3900 px whole 8 pt
+# blocks were lost (0 of 20), and 10 pt ones from 4250 px; past 5100 px
+# most were. 3600 px (12 in at 300 dpi) keeps letter (3300 px) and A4
+# (3509 px) pages below it; a legal page (4200 px) is flagged. Vision
+# can still drop part of a block below the cap (the 14 of 20 above, on
+# a landscape letter page): COVERAGE, note 12.
+MAX_OCR_RENDER_SIDE = 3600
 
 # How long one Vision call (_vision_recognize_batch: both passes on one
 # image) may take before its page fails (PAGE_FAILED, never a pass).

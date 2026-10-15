@@ -296,9 +296,9 @@ flattened to images, text converted to vector outlines.
   not return within 120 seconds (a stalled Vision, #115); while that
   call still has not returned, the later pages fail at once instead of
   each waiting, so the run ends with exit `2` (or `1`) instead of
-  hanging. A page whose 300 dpi render is longer than 4250 px on a side
-  (over about 14 in: larger than legal, such as A3, tabloid, plans and
-  posters) is read, and anything found on it counts, but it also gets a
+  hanging. A page whose 300 dpi render is longer than 3600 px on a side
+  (over 12 in: legal, A3, tabloid, plans and posters; letter and A4
+  pages are not) is read, and anything found on it counts, but it also gets a
   `PAGE_FAILED` warning, so it never exits `0`: on such a render Vision
   reads less and less of the smaller print, and then nothing, without an
   error (#128). Otherwise a page Vision reads without error but

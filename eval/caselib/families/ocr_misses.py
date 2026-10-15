@@ -173,8 +173,8 @@ case(
           "2400 x 3200 pt page (33 x 44 in), the page's only content. OCR renders a page at "
           "300 dpi, here 10000 x 13334 px; Vision on macOS 27 reports success on that render "
           "but returns none of those lines, so the run certified the page clean (exit 0, no "
-          "warnings). A page whose render is longer than 4250 px on a side (just over 14 in) "
-          "is still read, and is also flagged as not fully read: PAGE_FAILED, exit 2.",
+          "warnings). A page whose render is longer than 3600 px on a side (12 in) is still "
+          "read, and is also flagged as not fully read: PAGE_FAILED, exit 2.",
     expected=expect(2, warnings=(("PAGE_FAILED", "live"),)),
     rules=({"name": "SSN", "value": SSN},),
     requires=("ocr",),
@@ -185,7 +185,7 @@ case(
 case(
     "page.oversized-scan-large-print", truth="leak", cells="live.pixels",
     writer="raw",
-    story="#128. As page.oversized-scan, in 24 pt: Vision on macOS 27 reads this print on the "
+    story="#128. As page.oversized-scan, in 48 pt: Vision on macOS 27 reads this print on the "
           "same 10000 x 13334 px render. Flagging the page as not fully read must not lose "
           "what OCR does read: the SSN stays a hard finding (exit 1).",
     expected=expect(1, findings=(("SSN", "live"),), warnings=(("PAGE_FAILED", "live"),),
@@ -194,4 +194,4 @@ case(
     requires=("ocr",),
     mistake="Sharing a scan at poster or plan size, trusting it to be read like a letter page.",
     recovery="Zoom in on the page and read it.",
-)(_oversized_scan(24))
+)(_oversized_scan(48))

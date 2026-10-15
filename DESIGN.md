@@ -563,15 +563,15 @@ the gap is stated rather than implied away.
   empty case, but none exists), so a secret only OCR can see would pass
   as clean, except where the page's size alone says so: Vision reads
   less of a render the smaller its print is against the render's longest
-  side, so a page whose 300 dpi render is longer than 4250 px on a side
-  (`MAX_OCR_RENDER_SIDE`) is read but also `PAGE_FAILED` (#128; measured
-  on macOS 27: 10 pt print read whole up to 5100 px and lost from 6000,
-  8 pt up to 4500 and lost at 5100, and a 2400 × 3200 pt page, 13334 px,
-  lost even 24 pt in one layout; the pixel count did not decide it). The
-  check is on the page's size before Vision runs, never on Vision
-  returning no lines, which a blank page also does. Below the cap, print
-  smaller than about 8 pt can still be missed on the larger pages
-  (#67: on macOS 27, a dense sideways scan whose SSN line
+  side, so a page whose 300 dpi render is longer than 3600 px on a side
+  (`MAX_OCR_RENDER_SIDE`, 12 in: letter and A4 pages are below it) is
+  read but also `PAGE_FAILED` (#128; measured on macOS 27 on four page
+  shapes and three block positions: every block of 8 and 10 pt read up
+  to 3700 px, whole 8 pt blocks lost from 3900 px and 10 pt ones from
+  4250 px; the pixel count did not decide it). The check is on the
+  page's size, made before the page is read, never on Vision returning
+  no lines, which a blank page also does. Below the cap Vision can still
+  drop part of a block (#67: on macOS 27, a dense sideways scan whose SSN line
   Vision drops exited `0`; pinned as `page.dense-sideways-scan`, K43 in
   docs/REDESIGN.md §8, now manual review through the turned readings
   above, which only a page with a vertical line gets; a raster check is
