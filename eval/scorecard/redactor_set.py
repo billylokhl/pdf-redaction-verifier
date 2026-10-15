@@ -60,8 +60,9 @@ STORAGES: dict[str, frozenset[str]] = {
 HIT = "hit"                      # a finding (or, where review is expected, a warning) names it
 DOWNGRADED = "downgraded"        # expected a finding; only a warning names it
 AMBIGUOUS = "ambiguous"          # named, but by a (rule, storage) another instance shares
+FLAGGED = "flagged"              # a ⚑ cell: a warning without a rule covers its storage
 MISS = "miss"                    # nothing names it with its rule and storage
-OUTCOMES = (HIT, DOWNGRADED, AMBIGUOUS, MISS)
+OUTCOMES = (HIT, FLAGGED, DOWNGRADED, AMBIGUOUS, MISS)
 
 
 def storage_of(row: Mapping[str, Any]) -> str:
@@ -134,6 +135,23 @@ def _names(e: Mapping[str, Any], rules: frozenset[str], storages: frozenset[str]
     return page is None or e.get("page") is None or e.get("page") == page + 1
 
 
+def _flagged_cell(cell: str | None) -> bool:
+    """A ⚑ cell (COVERAGE.md): content the verifier finds but cannot read,
+    so it reports the place (exit 2) and no rule can name the value."""
+    from caselib.cells import CELLS
+
+    return cell is not None and cell in CELLS and CELLS[cell].status == "flagged"
+
+
+def _covers(e: Mapping[str, Any], storages: frozenset[str] | None, page: int | None) -> bool:
+    """Whether a warning that names no rule covers this storage (and page)."""
+    if e.get("rule") is not None:
+        return False
+    if storages is None or e.get("storage") not in storages:
+        return False
+    return page is None or e.get("page") is None or e.get("page") == page + 1
+
+
 def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
                     report: Mapping[str, Any], exact: list[str],
                     patterns: list[str], values: Mapping[str, str]) -> list[InstanceScore]:
@@ -143,6 +161,7 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
     findings = [f for f in report.get("findings", []) if f.get("tier") == "hard"]
     warnings = list(report.get("warnings", []))
     scores: list[InstanceScore] = []
+    places: list[list[str]] = []
     for row in record["instances"]:
         override = row.get("override") or {}
         cls = override.get("class", row["class"])
@@ -166,7 +185,16 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
             score.outcome, score.named_by = HIT, by_finding or by_warning
         elif by_warning:
             score.outcome, score.named_by = DOWNGRADED, by_warning
+        # The verifier's report for a ⚑ cell is about a place, not a
+        # value: one "undecodable text (or unread images) in these objects"
+        # warning covers every instance stored there, so it is not
+        # one-to-one matched.
+        place = (sorted({_entry_id(e) for e in warnings if _covers(e, storages, page)})
+                 if _flagged_cell(score.cell) else [])
+        if score.outcome == MISS and place:
+            score.outcome, score.named_by = FLAGGED, place
         scores.append(score)
+        places.append(place)
     # One report entry cannot vouch for two instances: a named instance
     # counts only if a one-to-one matching of named instances to the
     # entries naming them covers it (largest matching, by augmenting
@@ -183,11 +211,16 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
                 return True
         return False
 
-    named = [i for i, sc in enumerate(scores) if sc.outcome != MISS]
+    named = [i for i, sc in enumerate(scores) if sc.outcome not in (MISS, FLAGGED)]
     matched = {i for i in named if augment(i, set())}
     for i in named:
         if i not in matched:
-            scores[i].outcome = AMBIGUOUS
+            # Not provable by a value finding; a ⚑ cell's place warning
+            # still covers it.
+            if places[i]:
+                scores[i].outcome, scores[i].named_by = FLAGGED, places[i]
+            else:
+                scores[i].outcome = AMBIGUOUS
     return scores
 
 
@@ -274,7 +307,7 @@ def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
             for s in scores:
                 outcomes[s.outcome] += 1
                 by_loc.setdefault(s.loc, Counter())[s.outcome] += 1
-                if s.outcome != HIT:
+                if s.outcome not in (HIT, FLAGGED):
                     if s.known_gap:
                         known_gap_by_cell[str(s.cell)] += 1
                     else:
@@ -376,7 +409,8 @@ def render(counts: Mapping[str, Any], sha: str) -> str:
         lines.append(f"{method}: files {f['total']} (leak {f['leak_cases']}, clean "
                      f"{f['clean_cases']}); silent miss {f['silent_miss']}, downgrade "
                      f"{f['downgrade']}, false hard {f['false_hard']}")
-        lines.append(f"  instances recoverable {i['recoverable']}: hit {i[HIT]}, downgraded "
+        lines.append(f"  instances recoverable {i['recoverable']}: hit {i[HIT]}, flagged "
+                     f"(⚑ cell, place reported) {i[FLAGGED]}, downgraded "
                      f"{i[DOWNGRADED]}, ambiguous {i[AMBIGUOUS]}, miss {i[MISS]}")
         for cell, n in i["not_hit_by_cell"].items():
             lines.append(f"    not hit: {cell}: {n}")

@@ -28,7 +28,10 @@ def row(index: int, secret: str, loc: str = "T1", cls: str = "recoverable-hidden
         where: str = "orphaned", exit_: int = 1, **extra: Any) -> dict[str, Any]:
     return {"index": index, "secret": secret, "loc": loc, "class": cls, "where": where,
             "cell": "orphaned.font", "expected_exit": exit_, "known_gap": False,
-            "provisional": False, "override": None, **extra}
+            "provisional": False, "override": None, **extra} if "cell" not in extra else {
+        "index": index, "secret": secret, "loc": loc, "class": cls, "where": where,
+        "expected_exit": exit_, "known_gap": False, "provisional": False, "override": None,
+        **extra}
 
 
 def truth(*instances: tuple[str, str, int]) -> dict[str, Any]:
@@ -98,9 +101,9 @@ def test_a_warning_is_a_hit_where_review_is_expected():
     assert s.outcome == rs.HIT
 
 
-def test_a_warning_without_a_rule_names_nothing():
-    [s] = score([row(0, "SSN1", exit_=2)], truth(("SSN1", "123-45-6789", 0)), [],
-                [warning(None)])
+def test_a_warning_without_a_rule_names_nothing_in_a_read_cell():
+    [s] = score([row(0, "SSN1", exit_=2, cell="orphaned.plain")],
+                truth(("SSN1", "123-45-6789", 0)), [], [warning(None)])
     assert s.outcome == rs.MISS
 
 
@@ -270,3 +273,32 @@ def test_a_changed_lock_needs_a_reason_and_is_kept(tmp_path):
     import json
     history = json.loads((tmp_path / "results" / "lock-history.json").read_text())
     assert [h["reason"] for h in history] == ["", "", "owner relabel, D07"]
+
+
+def test_a_flagged_cell_is_covered_by_a_warning_without_a_rule():
+    # orphaned.font is a ⚑ cell: the verifier reports undecodable text in
+    # an object, with no rule. One such warning covers every instance in
+    # that storage; one in another storage, or with no storage, does not.
+    rows = [row(0, "SSN1", exit_=2), row(1, "NAME1", exit_=2)]
+    tr = truth(("SSN1", "123-45-6789", 0), ("NAME1", "Jordan Q. Testperson", 0))
+    undecodable = warning(None, "orphaned", code="LEFTOVER_UNDECODABLE_TEXT")
+    assert [s.outcome for s in score(rows, tr, [], [undecodable])] == [rs.FLAGGED] * 2
+    assert [s.outcome for s in score(rows, tr, [], [warning(None, "live")])] == [rs.MISS] * 2
+    assert [s.outcome for s in score(rows, tr, [], [warning(None, None)])] == [rs.MISS] * 2
+    # A read (✓) cell is never covered by a warning without a rule.
+    read = [row(0, "SSN1", exit_=2, cell="orphaned.plain")]
+    assert score(read, tr, [], [undecodable])[0].outcome == rs.MISS
+
+
+def test_a_flagged_cell_left_unmatched_falls_back_to_its_place_warning():
+    # Two orphaned images hold NAME1; one value finding names an orphaned
+    # object (it cannot vouch for both), but the "unread images" warning
+    # covers the place: the second instance is flagged, not ambiguous.
+    rows = [row(0, "NAME1", loc="S2", where="pixels-orphaned", exit_=2, cell="orphaned.pixels"),
+            row(1, "NAME1", loc="S2", where="pixels-orphaned", exit_=2, cell="orphaned.pixels")]
+    tr = truth(("NAME1", "Jordan Q. Testperson", 0), ("NAME1", "Jordan Q. Testperson", 1))
+    images = warning(None, "orphaned", code="LEFTOVER_IMAGE")
+    outcomes = sorted(s.outcome for s in score(rows, tr, [finding(NAME1, obj=6)], [images]))
+    assert outcomes == [rs.FLAGGED, rs.HIT]
+    outcomes = sorted(s.outcome for s in score(rows, tr, [finding(NAME1, obj=6)], []))
+    assert outcomes == [rs.AMBIGUOUS, rs.HIT]
