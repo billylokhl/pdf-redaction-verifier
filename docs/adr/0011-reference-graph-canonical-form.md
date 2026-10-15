@@ -1,6 +1,6 @@
 # 0011. The reference graph: canonical form
 
-Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below) and 2026-10-12 (item 4's text rule, measured in 3a-7c)
+Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below), 2026-10-12 (item 4's text rule, measured in 3a-7c) and 2026-10-14 (item 8's annotation gate, P1)
 
 ## Context
 
@@ -365,7 +365,7 @@ every file the graph leaves unflagged:
   and duplicates never arise);
 - each annotation's synthesized-or-drawn classification against
   MuPDF's own (whether the appearance it draws is the stored one), so a
-  misread trigger fails the gate instead of passing review;
+  misread trigger fails the gate instead of passing review (by drawing: amended 2026-10-14, below);
 - the allowlist shrinks: `PAGE_TREE_SEMANTICS`, the retyped-catalog
   exemption and (R1) `OBJECT_ZERO_REFERENCE` go, so
   any qpdf page-tree message on an unflagged file is a disagreement; for
@@ -472,6 +472,27 @@ compares C strings), libqpdf does not. Measured after: 13 files
 case-library cases whose annotation appearance streams draw only paths
 and carry no `/Resources` are flagged, and the rule is revisited with
 real redactor output (plan §5, Lane B) before it is enforced.
+
+### Amendment (2026-10-14, 3a-7d): owner decision 11
+
+**Item 8, the annotation gate's method (P1 = (a)).** MuPDF 1.28 has no
+object-level signal that tells a synthesized appearance from the stored
+one (`pdf_annot_ap`, before or after drawing, and
+`pdf_annot_needs_resynthesis` name the stored one; the 3a-7d spike,
+`eval/spikes/annotation_appearance.py`). The gate therefore compares
+drawings: per revision, a copy with every page's `/Rotate` removed and
+every annotation's `/F` and `/OC` cleared, against the same copy with
+every annotation that has `/AP` replaced by a stand-in `/Square` with the
+same `/Rect`, `/AP` and `/AS`, which MuPDF draws from `/AP`. Each
+annotation is drawn alone in both, by MuPDF's trace device and as pixels
+at 4x, and read as NOTHING (no mark), STORED (trace and pixels equal) or
+SYNTHESIZED; ours synthesized matches SYNTHESIZED or NOTHING, ours not
+synthesized STORED or NOTHING, and MuPDF's annotation list (annotations
+and widgets) is compared with ours page by page as a multiset by object
+number. Not exact: two drawings equal in trace and in 4x pixels read as
+the same, so content that differs only below that resolution -- an
+image's samples, a glyph program -- is not told apart. Item 5 already
+flags a synthesized unit whose rich text could draw an image.
 
 ## Owner decisions
 

@@ -633,3 +633,38 @@ gate tell, per annotation, whether MuPDF draws the stored /AP or an appearance i
   Also covered: a stored /AP holding only clip-mode text, and pages with a widget before a
   square in /Annots. Cost: two document copies per file, linear -- roughly 0.03-0.2 s for 100
   annotations and 0.5-0.8 s for 1,600, by machine.
+
+## Phase 3a-7d: the annotation gate on the implementation
+
+The spike's method (owner decision 11, P1 = (a)) in `eval/scorecard/annotations.py`, against
+`redaction_verifier/inventory/annotations.py`'s classification. Two corrections to the spike's
+code: the copies pair on a (page, /Annots index) key, not page * 10^6 + index; and whether an
+annotation has /AP is read as written before MuPDF loads the copy -- MuPDF writes the appearance
+it synthesizes into an annotation written directly in /Annots, which the spike would then read
+as STORED. MuPDF's warnings while it loads and draws the two copies are discarded (an /AS entry
+that is not a stream draws nothing but warns "content stream is not a stream" when drawn); the
+file's own warnings are gated as before.
+
+Implementing it found where MuPDF 1.28 reads past ADR 0011 item 5's text (each pinned in
+`tests/test_inventory_annotations.py` against MuPDF's drawing): the signature test reads /FT
+as written (a reference to /Sig is no signature field) and resolves /V and its /Type; a direct
+null is an absent key; references are followed up to nine in a row; only widgets climb
+/Parent (a Square's /Parent cycle draws fine); a widget whose /Parent chain has a cycle makes
+MuPDF fail ("cycle in tree"); qpdf --check reaches a widget through at most 100 field nodes
+above it; and an annotation MuPDF would synthesize but cannot (a /Subtype outside the 18 it
+builds; a widget whose /FT is missing, unknown, or /Btn by reference) makes it warn "cannot
+create appearance stream" and draw the stored /AP instead -- under /NeedAppearances that is
+STORED where the ADR says synthesized -- or nothing. The inventory flags the last three
+(`FIELD_TREE`, `APPEARANCE_UNSUPPORTED`).
+
+| Run | Agree | Flagged | Unflagged disagreements |
+| --- | --- | --- | --- |
+| Corpus (2,073) | 1,920 | 153 (7.38%) | 0 |
+| Case library (455) | 428 | 27 | 0 |
+| Fuzz (2,000, seed 0) | FUZZ_AGREE | FUZZ_FLAGGED | FUZZ_DISAGREE |
+
+Corpus: 778 annotations compared; `FIELD_TREE` and `APPEARANCE_UNSUPPORTED` on no file;
+`SYNTHESIZED` units in 139 files, 400 annotations in the current revisions, all widgets (130
+files, 373 annotations unflagged) -- ADR 0011 measured 139 and 400; in older revisions 14 bodies
+in 9 files not synthesized now (ADR 0011: 13 widgets in 8 files, by its prototype's count). The
+oracle's p50 grew by about 0.4 s a file (two document copies per revision with annotations).
