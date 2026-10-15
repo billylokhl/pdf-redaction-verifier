@@ -15,8 +15,9 @@ them yet (shadow mode, §6).
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 
 class VerifyError(Exception):
@@ -26,12 +27,65 @@ class VerifyError(Exception):
 # ──────────────────────────────────────────────────────────────────────────
 # Data model
 # ──────────────────────────────────────────────────────────────────────────
+def fold_wide(text: str) -> str:
+    """Fold *text* for report masking: NFKD, accents stripped, casefolded,
+    and every non-letter/digit removed — but, unlike normalize_string,
+    letters and digits of ANY script are kept (CJK, Cyrillic, Ø...), so a
+    masked tail made of them can be compared with an exact value. Decimal
+    digits of any script become ASCII digits.
+
+    Case is folded before decomposition too, so a letter whose case
+    mapping adds a letter keeps it (Greek iota subscript: "ᾀ" folds to
+    "αι", as its capital "ἈΙ" does), and the Turkish dotless "ı" folds to
+    "i" like its capital "I"."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    kept = "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+    kept = kept.replace("\u0131", "i")
+    return "".join(
+        str(unicodedata.decimal(c)) if c.isdecimal() else c for c in kept if c.isalnum()
+    )
+
+
+class MaskIndex:
+    """The rules' exact values, folded (fold_wide) and indexed once per run
+    so each mask() call costs time proportional to the sample, not to the
+    number of values."""
+
+    def __init__(self, values: Iterable[str] = ()) -> None:
+        self.values: frozenset[str] = frozenset(v for v in map(fold_wide, values) if v)
+        lengths: dict[str, set[int]] = {}
+        for v in self.values:
+            lengths.setdefault(v[0], set()).add(len(v))
+        # Value lengths by first character: a window only tries lengths of
+        # values that start with its first character.
+        self.lengths_by_first: dict[str, tuple[int, ...]] = {
+            c: tuple(sorted(ns)) for c, ns in lengths.items()
+        }
+        self.chars: frozenset[str] = frozenset(c for v in self.values for c in v)
+
+    def __bool__(self) -> bool:
+        return bool(self.values)
+
+    def contained_in(self, folded: str) -> bool:
+        """True when some exact value occurs inside *folded*."""
+        return any(
+            folded[i : i + n] in self.values
+            for i, c in enumerate(folded)
+            for n in self.lengths_by_first.get(c, ())
+            if i + n <= len(folded)
+        )
+
+
 @dataclass(frozen=True)
 class Secret:
     """A named sensitive value's normalized search key."""
 
     name: str
     normalized: str
+    # The value folded for report masking only: like *normalized* but it
+    # keeps every letter and digit of any script (see fold_wide). Empty
+    # means not computed (the mask index then relies on *normalized*).
+    folded: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -238,6 +292,10 @@ class ScanReport:
     findings: list[Finding] = field(default_factory=list)
     warnings: list[str] = field(default_factory=WarnList)
     _seen: set[Finding] = field(default_factory=set, repr=False)
+    # The rules' normalized exact values, so every masked sample (report
+    # lines, --json, warning text) can drop a tail that would reveal part
+    # of one. Set once the rules are loaded.
+    exact_index: MaskIndex = field(default_factory=MaskIndex, compare=False, repr=False)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
