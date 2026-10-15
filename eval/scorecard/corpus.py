@@ -21,9 +21,12 @@ local-only file.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -164,13 +167,17 @@ class CorpusFiles:
     not_regular: int = 0  # *.pdf entries that are not files: broken links, sockets, ...
     linked_dirs: int = 0  # symbolic links to directories: not followed
     unreadable_dirs: int = 0  # directories the walk could not list
+    unreadable_files: int = 0  # *.pdf entries the walk could not even stat
 
-    def skipped(self) -> dict[str, int]:
+    def skipped(self, unread: int = 0) -> dict[str, int]:
+        """Counts by kind; *unread* adds files `build_manifest` could not
+        read, which it leaves out of the manifest."""
         return {
             "file(s) without a .pdf extension": self.other_files,
             "entr(y/ies) named .pdf but not a regular file": self.not_regular,
             "symlinked dir(s) not followed": self.linked_dirs,
             "unreadable dir(s)": self.unreadable_dirs,
+            "unreadable file(s)": self.unreadable_files + unread,
         }
 
 
@@ -179,11 +186,20 @@ def find_pdfs(root: Path) -> CorpusFiles:
     case (`.PDF`, `.Pdf`, ...), sorted, plus counts of what was skipped.
     A symbolic link to a file counts as that file; a link to a directory
     is not followed (a link cycle could otherwise loop), but is counted."""
-    if not root.is_dir():
-        # The caller supplied the path, but it is still never echoed.
+    try:  # the caller supplied the path, but it is still never echoed
+        is_dir = stat.S_ISDIR(root.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_dir = False
+    except OSError:  # Path.is_dir() raises here before 3.14 and its message names the path
+        raise SystemExit("refusing to build: --root cannot be accessed") from None
+    if not is_dir:
         raise SystemExit("refusing to build: --root is not an existing directory")
+    try:  # os.walk would report an unlistable root as one skipped directory
+        os.scandir(root).close()
+    except OSError:
+        raise SystemExit("refusing to build: --root cannot be listed") from None
     pdfs: list[Path] = []
-    other = not_regular = linked = unreadable = 0
+    other = not_regular = linked = unreadable = unreadable_files = 0
 
     def on_error(_exc: OSError) -> None:
         nonlocal unreadable
@@ -195,11 +211,26 @@ def find_pdfs(root: Path) -> CorpusFiles:
             path = Path(dirpath) / name
             if not name.lower().endswith(".pdf"):
                 other += 1
-            elif path.is_file():
-                pdfs.append(path)
             else:
-                not_regular += 1
-    return CorpusFiles(tuple(sorted(pdfs)), other, not_regular, linked, unreadable)
+                # stat() rather than is_file(): from 3.14 is_file() returns
+                # False on any OSError, and before it raises with a message
+                # naming the path. A missing target (a broken link) or a link
+                # loop is not a regular file; any other error is unreadable.
+                try:
+                    regular = stat.S_ISREG(path.stat().st_mode)
+                except (FileNotFoundError, NotADirectoryError):
+                    regular = False
+                except OSError as error:
+                    if error.errno != errno.ELOOP:
+                        unreadable_files += 1
+                        continue
+                    regular = False
+                if regular:
+                    pdfs.append(path)
+                else:
+                    not_regular += 1
+    return CorpusFiles(tuple(sorted(pdfs)), other, not_regular, linked, unreadable,
+                       unreadable_files)
 
 
 def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST,
@@ -207,16 +238,27 @@ def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST,
     """Hash and classify every PDF `find_pdfs` finds under *root* (or the
     already-walked *files*), and write the manifest. Re-running replaces
     it entirely, so a file removed from *root* is dropped and a changed
-    file's hash and strata are refreshed. A file the probe cannot read is
-    recorded with its text layer unknown (see `classify`), never skipped
-    and never fatal."""
+    file's hash and strata are refreshed. A file the probe cannot parse is
+    recorded with its text layer unknown (see `classify`). A file that
+    cannot be read at all (any I/O error: a permission error, say) cannot
+    be hashed, so it is left out and counted — `len(files.pdfs) - len(entries)` — never
+    raised on: the exception's message names the path.
+
+    Refuses (SystemExit, nothing written) when no file could be recorded:
+    a mistyped or unmounted root would otherwise replace a good manifest
+    with an empty one. The manifest is written to a fresh temporary file
+    beside it and renamed into place, so a failed write never leaves half
+    of one or a stray copy (see `_write_atomically`)."""
     if files is None:
         files = find_pdfs(root)
     entries: list[CorpusEntry] = []
     for path in files.pdfs:
-        data = path.read_bytes()
+        try:
+            data = path.read_bytes()
+            text_bearing, multi_revision, family, probe = classify(path)
+        except OSError:
+            continue  # counted by the caller; the message is never kept
         sha256 = hashlib.sha256(data).hexdigest()
-        text_bearing, multi_revision, family, probe = classify(path)
         entries.append(
             CorpusEntry(
                 sha256=sha256,
@@ -227,10 +269,51 @@ def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST,
                 probe=probe,
             )
         )
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if not entries:
+        counts = ", ".join(f"{n} {what}" for what, n in
+                           files.skipped(len(files.pdfs)).items() if n) or "nothing found"
+        raise SystemExit("refusing to write an empty manifest: no readable PDF under --root "
+                         f"({counts}); any existing manifest is left as it was")
     payload = {"entries": [vars(e) for e in entries]}
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _write_atomically(manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return entries
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Replace *path*'s content with *text* all at once. The temporary file
+    is created exclusively (never clobbering or following anything already
+    there) with mode 0600, or the existing file's mode; it is removed if
+    anything fails. A write-protected manifest, or one in a directory that
+    cannot be written, is refused without a path (the cause by its errno
+    name only). A symbolic link at *path* is written through, as a plain
+    write would (`ensure_local_only` checked where it resolves)."""
+    target = Path(os.path.realpath(path))
+    try:
+        # The link's own directory, as a plain write would create; a link
+        # to a missing directory then fails at mkstemp (ENOENT), as it did.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            mode: int | None = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        # A write-protected manifest is refused, as a plain write would be:
+        # renaming over it would replace a file the user protected.
+        if mode is not None and not os.access(target, os.W_OK):
+            raise SystemExit("refusing to write: --manifest is write-protected")
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.",
+                                   suffix=".partial")
+    except OSError as error:  # the cause by name only: the message would name the path
+        cause = errno.errorcode.get(error.errno or 0, type(error).__name__)
+        raise SystemExit(f"refusing to write --manifest ({cause})") from None
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
