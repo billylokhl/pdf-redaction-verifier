@@ -572,7 +572,9 @@ image-heavy ~50 MB file.
 
 Every intended per-case change is listed in `eval/accepted_diffs.yaml`
 (case, old → new, reason, cell) and reviewed in its PR; any unlisted
-difference fails the gate.
+difference fails the gate. An entry may be scoped to `ocr` or `no-ocr`
+where OCR changes the keys (#147); out of scope, it neither matches nor
+counts as stale (eval/README.md).
 
 ### Where each gate runs
 

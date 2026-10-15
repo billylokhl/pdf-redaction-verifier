@@ -749,6 +749,44 @@ Two rules keep the file honest:
   (`requires: ocr` on Linux, say) is not flagged: it may be exactly
   right on the environment that does run it.
 
+**Environment scope (`env`).** The same change can normalise to
+different keys with and without OCR: on the weekly macOS run, Vision
+adds its own review warnings to both sides of a case the Text layer
+changed (#147). An entry may therefore say `env: ocr` or `env: no-ocr`,
+the case library's `requires` vocabulary; any other value, or `env:` with
+no value, is refused when the file loads, and an entry without the field
+applies in every environment. Which one a run is in is
+`caselib.run.available()`: `ocr` when the Vision bridge imports.
+
+- An entry out of scope for this run neither matches a difference nor
+  counts as stale here. It is checked where it is in scope: `no-ocr`
+  entries by `scorecard-diff` on every PR, `ocr` entries only by the
+  weekly job, so record `ocr` keys from that job's JSON artifact (on
+  macOS 27, `eval-ref-0` fails every OCR page, so a local run there does
+  not give the reference's keys).
+- An entry for a case id the library no longer has is stale in every
+  environment, in scope or not.
+- An entry scoped to an environment takes the place of the same case's
+  *unscoped* entries in that environment; they still match, and are still
+  checked for staleness, everywhere else. This is how an existing entry is
+  narrowed without editing it, since the file is add-only (docs/REDESIGN.md
+  §7a): append a scoped entry for the environment where the old one does
+  not hold. PR #68's eight `layout.two-column-wrap`,
+  `layout.raw-font-coded-two-column-wrap` and `layout.repeated-line-wraps-*`
+  entries were recorded without OCR and are left as they are; the `env: ocr`
+  entries for the same cases appended in #147 replace them with OCR.
+- A case whose entries are scoped to both environments cannot also have
+  an unscoped one (it would be in scope nowhere, so never checked); the
+  file is refused. A test on the committed file also refuses an entry
+  scoped to an environment its case can never run in (`env: ocr` on a
+  `requires: no-ocr` case), and an unscoped entry replaced in the only
+  environment its case runs in.
+
+Scoping only ever takes entries out of a run, never adds one, so it
+cannot accept a difference the file would have refused without it. The
+other rules apply to a scoped entry unchanged: an exact old/new match,
+and `weaker: true` with an owner decision for any loosening.
+
 **Metrics**: the same case library, run through the candidate CLI alone
 and judged against case labels — no reference needed:
 

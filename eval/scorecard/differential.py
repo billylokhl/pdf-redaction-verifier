@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
-from .accepted import AcceptedDiff, find_accepted, load_accepted_diffs
+from .accepted import AcceptedDiff, entry_in_scope, find_accepted, load_accepted_diffs
 from .keys import NormalizedKey, effective_exit, normalize
 from .metrics import CaseMetricRow
 from .refs import REFERENCE_REF, candidate_verify_path, repo_root, resolve_commit, worktree_for_ref
@@ -487,7 +487,7 @@ def run_differential(
         candidate = candidate_runs[case.id]
         found = None
         if reference.key is not None and candidate.key is not None and reference.key != candidate.key:
-            found = find_accepted(accepted, case.id, reference.key, candidate.key)
+            found = find_accepted(accepted, case.id, reference.key, candidate.key, have=have)
         diff = CaseDiff(case.id, reference, candidate, found)
         results.append(diff)
         if progress is not None:
@@ -505,6 +505,7 @@ def run_differential(
             results,
             ran_case_ids=frozenset(c.id for c in cases),
             known_case_ids=frozenset(REGISTRY),
+            have=have,
         )
     return DifferentialRun(results, stale)
 
@@ -515,6 +516,7 @@ def stale_accepted_diffs(
     *,
     ran_case_ids: frozenset[str],
     known_case_ids: frozenset[str],
+    have: frozenset[str],
 ) -> tuple[AcceptedDiff, ...]:
     """`accepted_diffs.yaml` entries that are stale: an unused entry for a
     case id that either doesn't exist in the case library at all (removed
@@ -523,7 +525,11 @@ def stale_accepted_diffs(
     change. An unused entry for a case that exists but was skipped this
     run only because this environment can't run it (`requires: ocr` on
     Linux, say) is NOT stale here — it may still be exactly right on the
-    environment that does run it.
+    environment that does run it. Likewise an entry out of scope for this
+    environment (*have*, `accepted.entry_in_scope`): it could not have
+    matched here, and is checked where it is in scope. An entry for a case
+    id the library no longer has is stale in every environment, in scope
+    or not.
 
     Only meaningful against a full run's diffs (every case this
     environment can run, i.e. *case_ids* was None in `run_differential`):
@@ -535,7 +541,9 @@ def stale_accepted_diffs(
     for entry in all_entries:
         if entry in used:
             continue
-        if entry.case not in known_case_ids or entry.case in ran_case_ids:
+        if entry.case not in known_case_ids:
+            stale.append(entry)
+        elif entry.case in ran_case_ids and entry_in_scope(accepted, entry, have):
             stale.append(entry)
     return tuple(stale)
 
