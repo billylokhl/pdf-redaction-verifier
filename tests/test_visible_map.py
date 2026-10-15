@@ -998,6 +998,55 @@ def test_pinned_an_annotation_outside_the_crop_is_unpositioned(tmp_path, monkeyp
         the_plan, "unpositioned")
 
 
+# ── ADR 0012 notices ──────────────────────────────────────────────────
+# A built-in class match no listed value made: a notice under
+# --no-strict-classes. Fabricated SSN-shaped value; the listed value is
+# not in the file, so the scan's verdict has no finding.
+NOTICE_SSN = "234-56-7891"
+NOTICE_RULES = [{"name": "Any SSN", "class": "ssn"}, {"name": "Target", "value": NAME}]
+
+
+class TestNotices:
+    def _pdf(self, tmp_path: Path) -> Path:
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), f"SSN {NOTICE_SSN} here")
+        page.add_freetext_annot(fitz.Rect(100, 300, 400, 330), f"note {NOTICE_SSN}").update()
+        return _save(doc, tmp_path / "notice.pdf")
+
+    def test_a_notice_is_listed_masked_and_never_boxed(self, tmp_path, monkeypatch) -> None:
+        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES,
+                               "--no-strict-classes")
+        assert not run.report["findings"] and run.report["notices"]
+        assert run.header is not None and run.header["informational"] == ["Any SSN"]
+        # Every truth page and hidden item held the class rule; none is boxed.
+        assert not the_plan.boxes
+        listed = sections(the_plan, "notices")
+        assert (1, "built-in type rule #1 ****7891", "Text") in listed
+        assert all(NOTICE_SSN not in label and "234-56" not in label for _p, label, _n in listed)
+        # It sets no flag: nothing here says a secret is visible.
+        assert not the_plan.flags.V and not the_plan.flags.L and not the_plan.flags.X
+        assert "VISIBLE" not in the_plan.headline
+        assert not [i for i in the_plan.listed if i.section != "notices"
+                    and i.section != "unpositioned" and i.section != "not_scanned"]
+
+    def test_strict_classes_still_box_the_match(self, tmp_path, monkeypatch) -> None:
+        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES)
+        assert run.header is not None and run.header["informational"] == []
+        assert run.report["findings"] and not run.report["notices"]
+        assert boxes(the_plan, plan.SOLID) and not sections(the_plan, "notices")
+        assert the_plan.flags.V
+
+    def test_a_header_without_informational_is_refused(self, tmp_path, monkeypatch) -> None:
+        pdf = self._pdf(tmp_path)
+        run, _plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
+        assert run.header is not None
+        header = dict(run.header)
+        del header["informational"]
+        with pytest.raises(KeyError):
+            plan_of(pdf, header)
+
+
 # ── Tiers and truth (design §9 tests 6, 8) ────────────────────────────
 class TestTiers:
     def test_fused_only_and_reconstructed_only_never_get_a_box(self, tmp_path,
