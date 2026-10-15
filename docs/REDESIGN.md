@@ -540,7 +540,8 @@ Generators are portable: built-in or vendored OFL fonts, tools from
 ### Scorecard
 
 Run only through the CLI's `--json` output, one subprocess per file,
-with a timeout — and by default at most one concurrent subprocess per
+with a timeout (a case slow on purpose may carry a longer one of its own,
+`scan_timeout`, #147) — and by default at most one concurrent subprocess per
 core (and per GiB of RAM), since the timeout is wall-clock and would
 otherwise measure contention.
 Compared **per case** against a pinned reference (a git tag, checked

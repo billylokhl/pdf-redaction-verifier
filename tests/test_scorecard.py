@@ -1855,6 +1855,85 @@ def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeyp
     assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}
 
 
+
+# ── per-case timeout (`scan_timeout`, #147) ──────────────────────────────
+
+
+def test_case_timeout_is_the_larger_of_the_runs_and_the_cases():
+    import types
+
+    from scorecard.differential import case_timeout
+
+    assert case_timeout(types.SimpleNamespace(scan_timeout=None), 60) == 60
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 60) == 240
+    # --timeout still raises every case's limit, and never lowers a case's own.
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 600) == 600
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 10) == 240
+    assert case_timeout(types.SimpleNamespace(), 60) == 60
+
+
+def _slow_memo(monkeypatch, seconds):
+    """page.memo with its own scan_timeout, for the run_* tests below."""
+    import dataclasses
+
+    from caselib import REGISTRY, load
+
+    load()
+    monkeypatch.setitem(REGISTRY, "page.memo",
+                        dataclasses.replace(REGISTRY["page.memo"], scan_timeout=seconds))
+
+
+def test_run_differential_gives_both_sides_the_cases_own_timeout(tmp_path, monkeypatch):
+    import contextlib
+
+    import scorecard.differential as differential
+
+    _slow_memo(monkeypatch, 240.0)
+    reference_verify = tmp_path / "reference-verify.py"
+
+    @contextlib.contextmanager
+    def fake_worktree(ref, root=None):
+        yield reference_verify
+
+    seen: dict[str, list[float]] = {"reference": [], "candidate": []}
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        seen["reference" if verify_path == reference_verify else "candidate"].append(timeout)
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "worktree_for_ref", fake_worktree)
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_differential(["page.memo", "page.visible"], out_dir=tmp_path / "out",
+                                  timeout=60)
+    # page.memo gets its own 240 s; page.visible keeps the run's 60 s.
+    assert sorted(seen["reference"]) == [60, 240.0]
+    assert sorted(seen["candidate"]) == [60, 240.0]
+
+
+def test_run_candidate_gives_the_case_its_own_timeout(tmp_path, monkeypatch):
+    import scorecard.differential as differential
+
+    _slow_memo(monkeypatch, 240.0)
+    seen: list[tuple[str, float]] = []
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        seen.append((case_id, timeout))
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_candidate(["page.memo", "page.visible"], out_dir=tmp_path / "out", timeout=60)
+    assert sorted(seen) == [("page.memo", 240.0), ("page.visible", 60)]
+
+
+def test_only_the_dense_sideways_scan_has_its_own_timeout():
+    """A per-case timeout exempts a slow scan from the 60 s gate, so the
+    cases that have one are listed here: adding one is a reviewed change."""
+    from caselib import REGISTRY, load
+
+    load()
+    own = {i: c.scan_timeout for i, c in REGISTRY.items() if c.scan_timeout is not None}
+    assert own == {"page.dense-sideways-scan": 300}
+
 # ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
 
 

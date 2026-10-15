@@ -232,6 +232,15 @@ def select_cases(case_ids: Iterable[str] | None = None, *, have: frozenset[str] 
     return [REGISTRY[i] for i in ids if not (REGISTRY[i].requires - have)]
 
 
+def case_timeout(case: Any, timeout: float) -> float:
+    """The per-file timeout for *case*: the run's *timeout*, or the case's
+    own `scan_timeout` where that is larger (a case slow on purpose, sized
+    on the weekly runner; `caselib.model.Case`). Never shorter than the
+    run's, so `--timeout` can still raise every case's limit."""
+    own = getattr(case, "scan_timeout", None)
+    return timeout if own is None else max(timeout, own)
+
+
 def normalization_have(available_tools: frozenset[str]) -> frozenset[str] | None:
     """What `keys.normalize`/`effective_exit` should treat as *have*: the
     real availability, or None (drop nothing, use the exit exactly as
@@ -453,7 +462,8 @@ def run_differential(
             futures = {
                 pool.submit(
                     run_cli, python_exe, reference_verify, pdfs[case.id], case.rules,
-                    out_dir / "reference", case.id, timeout=timeout, env=reference_env,
+                    out_dir / "reference", case.id, timeout=case_timeout(case, timeout),
+                    env=reference_env,
                 ): case
                 for case in missing
             }
@@ -471,7 +481,7 @@ def run_differential(
         futures = {
             pool.submit(
                 run_cli, python_exe, candidate_verify, pdfs[case.id], case.rules,
-                out_dir / "candidate", case.id, timeout=timeout,
+                out_dir / "candidate", case.id, timeout=case_timeout(case, timeout),
             ): case
             for case in cases
         }
@@ -615,7 +625,7 @@ def run_candidate(
                     case.rules,
                     out_dir / "candidate",
                     case.id,
-                    timeout=timeout,
+                    timeout=case_timeout(case, timeout),
                 )
             ] = case
         for future in concurrent.futures.as_completed(futures):
