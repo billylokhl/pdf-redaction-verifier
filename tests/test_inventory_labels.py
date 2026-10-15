@@ -160,6 +160,10 @@ REACHABLE: list[tuple[str, bytes, list[list[int]]]] = [
                           trailer=b" /Info 4 0 R /Foo 5 0 R /Bar [6 0 R]"),
      [[1, 2, 3, 4, 5, 6]]),
     ("xref-stream-trailer", _xref_stream_trailer(), [[1, 2, 3, 5]]),
+    # /ID by reference (two corpus files): qpdf's writer writes a new one.
+    ("id-by-reference", make(objects={4: b"[<C3D565188EE7777BBA7478BC964D1499>"
+                                         b" <C3D565188EE7777BBA7478BC964D1499>]"},
+                             trailer=b" /ID 4 0 R"), [[1, 2, 3, 4]]),
     ("free-entry", make(free=(4,)), [[1, 2, 3]]),
     # Object and cross-reference streams: no reference reaches them.
     ("object-stream", _object_streams(), [[1, 2, 3, 4, 5]]),

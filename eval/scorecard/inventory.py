@@ -913,8 +913,8 @@ def _reachable_agree(blob: bytes, path: Path, labels: RevisionLabels | None, rev
     `%% Original object ID` comment), every stream's data as it is. A
     writer drops what it rewrites, though its reader reads it: a stream's
     indirect /Length (both write it direct), the trailer's /Encrypt (both
-    write the revision unencrypted) and, in qpdf, a stream's /DecodeParms
-    without /Filter. Those references are added back as each reader reads
+    write the revision unencrypted) and, in qpdf, the trailer's /ID (it
+    writes a new one) and a stream's /DecodeParms without /Filter. Those references are added back as each reader reads
     them, and each such target must hold no reference of its own (an
     integer /Length on an unflagged file): otherwise the reader's set is
     not exact there and the comparison fails closed. The 3a-7e spike
@@ -1028,9 +1028,8 @@ def _libqpdf_reachable(path: Path, undecoded: Collection[int], revision: int) ->
         kept = {(int(n), int(g)) for n, g in re.findall(
             rb"(?m)^%% Original object ID: (\d+) (\d+)$", out.getvalue())}
         rewritten: list[tuple[int, int]] = []
-        encrypt = pdf.trailer.get("/Encrypt")
-        if encrypt is not None:
-            rewritten += _pike_refs(encrypt)
+        # qpdf writes a new /ID; both write the revision unencrypted.
+        rewritten += _pike_refs(pdf.trailer.get("/Encrypt"), pdf.trailer.get("/ID"))
         for objgen in sorted(kept):
             held = pdf.get_object(objgen)
             if not isinstance(held, pikepdf.Stream):
