@@ -29,7 +29,7 @@ import pymupdf
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from scorecard.inventory import compare
+from scorecard.inventory import Check, compare
 from scorecard.pdfgen import (JUNK, MARKER, MUTATION_BYTES, MUTATION_SITES, UPDATE_XREF_KINDS,
                               XREF_KINDS, Spec, Update, Writer, build_pdf, mutated)
 
@@ -495,14 +495,21 @@ def test_members_at_any_bound_are_flagged_or_agree_with_the_readers(
     inventory_agrees(_members_at(values, seps, head_sep, shifts, first_shift), tmp_path)
 
 
+class _Issue106(Exception):
+    """The #106 disagreement itself; any other failure is a real one."""
+
+
 @requires_qpdf
-@pytest.mark.xfail(strict=True, reason="#106: an annotation without /Subtype is not flagged, "
-                   "and MuPDF warns on it (3a-7d's annotation gate)")
+@pytest.mark.xfail(strict=True, raises=_Issue106, reason="#106: an annotation without "
+                   "/Subtype is not flagged, and MuPDF warns on it (3a-7d's annotation gate)")
 def test_an_annotation_without_a_subtype_is_flagged_or_agrees(tmp_path: Path) -> None:
     # The #106 counterexample: MuPDF cannot create its appearance and warns
     # (a MUPDF_WARNING disagreement, failing closed: never certified).
     # Passes once it is flagged or the readers agree (strict: then remove the mark).
-    inventory_agrees(_members_at([b"<< /K 1 >>", b"true"], [b"", b""], b"", [0, 0], 0), tmp_path)
+    found = compare(_members_at([b"<< /K 1 >>", b"true"], [b"", b""], b"", [0, 0], 0), tmp_path)
+    if found.disagrees and found.check is Check.MUPDF_WARNING:
+        raise _Issue106(found)
+    assert not found.disagrees, found
 
 
 # ── Allowlisted leniency: comment lines after the header and %%EOF ────────
