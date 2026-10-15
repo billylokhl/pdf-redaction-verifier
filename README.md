@@ -131,7 +131,16 @@ never hard-fails a clean document. Demotion never discards a match; what
 the tool cannot see at all is listed under [Known gaps](#known-gaps).
 Regex patterns are held to the stricter rule: hard only within one line
 of a genuine reading or one decoded string. Reported samples are masked
-(`****6789`).
+(`****6789`); when a sample contains one of your exact values, or any character it
+would show is a character of one, only `****` is shown, so a report never shows
+any character of an exact value (compared ignoring case, accents and punctuation,
+for letters and digits of any script). The check is per character, not per
+position, because the search can assemble a value from pieces across lines or
+down a column; with numeric exact values, most numeric samples therefore show
+only `****`. Characters that merely look
+like one another (a Greek or Cyrillic letter for a Latin one) are not
+recognised as equal, so a sample read by OCR, where such misreadings happen,
+is always fully masked (`****`), in the report, `--json` and warnings.
 
 ## What it checks — six layers, most likely to find a leak first
 
@@ -589,7 +598,11 @@ version: 12.4 with Python 3.11+, 12.3 with Python 3.10. Homebrew's qpdf
 12.4 matches; Debian/Ubuntu's packaged qpdf is older, so install the
 matching release binary from qpdf's GitHub releases, as CI does
 (`.github/workflows/tests.yml`). With a mismatch those tests fail closed
-and the inventory gate refuses to run. Without uv, `pip install -e '.[test]'`
+and the inventory gate refuses to run. qpdf's macOS release binary reads
+RC4-encrypted files only if it finds OpenSSL's legacy provider; CI sets
+`OPENSSL_MODULES` to Homebrew openssl@3's `lib/ossl-modules` (Homebrew's
+own qpdf needs nothing). Without the provider, the RC4 encrypted-file
+test fails: the gate reads a split on encryption. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
 `python verify.py --target ... --secrets ...` works installed or not; pass
 `--fail-fast` to stop at the first confirmed finding. `verify.py` imports
@@ -714,7 +727,7 @@ and what the file stores.
 | **LLM** | Large language model — the AI the redactor uses to find names and addresses. |
 | **Luhn** | Checksum built into credit-card numbers; random 16-digit strings usually fail it. |
 | **Manual-review warning** | A possible match that needs a human to check it; exits `2`. |
-| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. |
+| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. If the shown tail would repeat two consecutive characters of one of your exact values, or the match overlaps one, only `****` is shown. |
 | **Mutation testing** | Deliberately breaking a guard to prove the tests notice. |
 | **NANP** | North American Numbering Plan — the rules for valid US/Canada phone numbers. |
 | **NFKC** | Unicode step that folds look-alike characters (fullwidth digits, fancy dashes) to plain ones without splitting accents. |

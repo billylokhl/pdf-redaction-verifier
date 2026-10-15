@@ -11,8 +11,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Callable, Collection, Sequence
+from typing import Callable, Collection, Iterable, Sequence
 
+from redaction_verifier.matching.values import normalize_string
+from redaction_verifier.model import MaskIndex, fold_wide
 from redaction_verifier.matching.validators import (
     _valid_card,
     _valid_email,
@@ -75,14 +77,49 @@ BUILTIN_PATTERN_CLASSES: dict[str, tuple[str, Callable[[str], bool] | None]] = {
 }
 
 
-def mask(matched: str) -> str:
+def _tail_chars(tail: str) -> set[str]:
+    """Every character *tail* can stand for in either folding: the wide
+    fold and the matcher's own, of the whole tail and of each character
+    on its own (so a mark or a compatibility form cannot shift a
+    character out of view)."""
+    chars = set(fold_wide(tail)) | set(normalize_string(tail))
+    for c in tail:
+        chars.update(fold_wide(c), normalize_string(c))
+    return chars
+
+
+def mask(matched: str, exact: MaskIndex | Iterable[str] = (), *, full: bool = False) -> str:
     """Mask a matched sample for the report.
 
     Reveals at most 4 trailing characters and never more than half the
     match; the fixed '****' prefix hides the true length.
+
+    *exact* holds the rules' exact values (a MaskIndex, or raw strings),
+    which a report never shows. Only '****' is shown when the sample
+    contains an exact value, or when ANY revealed character is a
+    character of one, compared folded (letters and digits of any script,
+    case and accents ignored, digits of any script as ASCII digits, in
+    both the wide fold and the matcher's own). The rule is per character,
+    not per position, because the value search can assemble a value from
+    pieces anywhere: across characters it ignores ("93Ж8" is found in
+    "x93ΩЖ8"), across lines, and down a column, so any single revealed
+    character may be a piece of a value found elsewhere. *full* (used for
+    OCR samples, whose characters may be look-alike misreadings of an
+    exact value's letters) never shows a tail.
     """
     reveal = min(4, len(matched) // 2)
-    return "****" + (matched[-reveal:] if reveal else "")
+    if full or not reveal:
+        return "****"
+    index = exact if isinstance(exact, MaskIndex) else MaskIndex(exact)
+    if index:
+        tail = matched[-reveal:]
+        if not _tail_chars(tail).isdisjoint(index.chars):
+            return "****"
+        # Both foldings: the wide one, and the matcher's own (which drops
+        # non-ASCII characters interleaved in a match).
+        if index.contained_in(fold_wide(matched)) or index.contained_in(normalize_string(matched)):
+            return "****"
+    return "****" + matched[-reveal:]
 
 
 def match_patterns(
