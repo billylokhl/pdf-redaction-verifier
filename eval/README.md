@@ -161,8 +161,8 @@ against secrets whose every location is known: fabricated documents of
 the kinds people redact, run through the tool, then judged by an oracle
 that shares no code with the verifier and adjudicated per file before the
 verifier ever sees them, so the verifier's silent misses and its exit `0`
-rate on correctly redacted files can be counted (the measurement
-subcommand is a later PR). It is local: everything it
+rate on correctly redacted files can be counted (`scorecard
+redactor-set run`). It is local: everything it
 writes lives under the gitignored `eval/scorecard/redactor_set_local/`
 (the generator refuses any other `--root` unless given
 `--allow-outside`), and only aggregate counts are ever published. A
@@ -177,6 +177,7 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
 PYTHONPATH=eval:. python -m redactor_set oracle --set inputs  # m0, m1, m2 -> oracle/
 PYTHONPATH=eval:. python -m redactor_set adjudicate draft --set inputs
 PYTHONPATH=eval:. python -m redactor_set adjudicate lock --set inputs    # then: verify
+PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
 ```
 
 - **Documents** (`templates.py`): 20 templates — tax forms (a W-2, a
@@ -317,6 +318,38 @@ PYTHONPATH=eval:. python -m redactor_set adjudicate lock --set inputs    # then:
   and prints the lock's own sha256: the lock lives in the gitignored
   root, so the measurement reports that hash beside its counts. Records
   are locked before the verifier runs on the set.
+
+- **Measurement** (`scorecard redactor-set run`, `scorecard/redactor_set.py`):
+  refuses to start unless the adjudication lock verifies, then runs the
+  verifier's CLI on every locked `m1` and `m2` output with the set's own
+  YAML config as `--secrets`, and counts, per method:
+  - per file (`compute_metrics`), with truth and expected exit from the
+    lock: silent misses (a leak that exits `0`), downgrades (expected
+    `1`, got `2`), false hard;
+  - per instance (U2): every row the adjudication left recoverable,
+    partial residue included, must be named by a hard finding carrying
+    one of its rules (its secret's `exact_values[i]`, or a pattern that
+    matches the string as written) in a storage class it can sit in
+    (`live`; `orphaned` or `unreferenced` for an orphaned object;
+    `superseded`) and, for page content, on its page. Where the
+    expected exit is `2`, a warning with the rule and storage will do;
+    where it is `1`, a warning alone is a **downgrade**. A file that
+    exits non-zero for another secret does not excuse an instance. One
+    report entry cannot vouch for two instances: a one-to-one matching
+    of instances to the entries naming them decides, and an instance it
+    cannot cover is **ambiguous**, not a hit. Instances in a known-gap
+    cell are counted apart, by cell; they still need the owner's
+    acceptance;
+  - U3: of the `m2` outputs whose truth is clean, the clean control
+    apart, the share that exits `0`, with the warning codes behind every
+    exit `2`.
+
+  Only counts, with the lock's sha256, reach stdout and `--json`;
+  per-file rows go to `results/<date>.json` in the local root. It exits
+  `1` when any output gets no verdict (a crash, a timeout, an error
+  report) or was scanned without OCR, and `0` otherwise: misses are what
+  it measures. `--seed` restricts it to one seed's documents (the
+  owner's first run is 20 templates at one seed).
 
 Nothing in `redactor_set/` imports the verifier or PyMuPDF
 (`tests/test_redactor_set_generator.py` and
