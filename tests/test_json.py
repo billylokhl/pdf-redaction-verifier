@@ -361,6 +361,65 @@ class TestOcrFailureFailsClosed:
         assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
         assert "never completed" in data["warnings"][0]["message"]
 
+    def test_vision_never_returning_exits_2_at_the_deadline(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A stalled Vision held a test run for about 25 minutes (#115).
+        # performRequests has no timeout of its own: the bridge's deadline
+        # must turn it into PAGE_FAILED (exit 2), never a hang or a pass.
+        import threading
+        import time
+        from typing import Any
+
+        import Vision
+
+        from redaction_verifier.views import ocr
+
+        rules = _rules(tmp_path / "r.json", [{"name": "ssn value", "value": SSN}])
+        pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
+        assert _run(pdf, rules, tmp_path)[0] == 0  # certifiable while OCR works
+
+        release = threading.Event()
+        real_handler = Vision.VNImageRequestHandler
+
+        class _Stalls:
+            def __init__(self, real: Any) -> None:
+                self._real = real
+
+            def performRequests_error_(self, requests: Any, error: Any) -> Any:
+                release.wait()
+                return self._real.performRequests_error_(requests, error)
+
+        class _Handler:
+            @staticmethod
+            def alloc() -> Any:
+                return _Handler()
+
+            def initWithData_options_(self, data: Any, options: Any) -> _Stalls:
+                return _Stalls(real_handler.alloc().initWithData_options_(data, options))
+
+        class _Vision:
+            VNImageRequestHandler = _Handler
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(Vision, name)
+
+        monkeypatch.setattr(ocr, "Vision", _Vision())
+        monkeypatch.setattr(ocr, "VISION_CALL_TIMEOUT_S", 1.0)
+        try:
+            start = time.monotonic()
+            code, data = _run(pdf, rules, tmp_path)
+            assert time.monotonic() - start < 60
+        finally:
+            release.set()
+            for thread in list(ocr._stalled):
+                thread.join(60)
+            # A thread still in Vision would fail every later OCR test here.
+            assert not any(thread.is_alive() for thread in ocr._stalled)
+        assert code == 2
+        assert [(w["code"], w["layer"]) for w in data["warnings"]] == [("PAGE_FAILED", "OCR")]
+        assert "did not return within 1 s" in data["warnings"][0]["message"]
+
     def test_a_handler_raising_on_a_vision_thread_exits_2(self, tmp_path) -> None:
         # Real Vision runs the two completion handlers on its own worker
         # threads; an exception escaping one there aborts the process

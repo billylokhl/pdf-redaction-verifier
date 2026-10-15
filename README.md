@@ -292,7 +292,11 @@ flattened to images, text converted to vector outlines.
   CHANGELOG, this happened to every page on macOS 27.) A page where
   Vision reports success without delivering both readings is also
   `PAGE_FAILED`: a reading counts only once its request's completion
-  handler has run to the end. A page Vision reads without error but
+  handler has run to the end. So is a page where a Vision call does
+  not return within 120 seconds (a stalled Vision, #115); while that
+  call still has not returned, the later pages fail at once instead of
+  each waiting, so the run ends with exit `2` (or `1`) instead of
+  hanging. A page Vision reads without error but
   with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings — except a line Vision reads vertically that an upright
