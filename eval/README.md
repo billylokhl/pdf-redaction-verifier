@@ -1226,8 +1226,8 @@ own machine (`sha256sum`) when a number needs explaining.
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
   (`.github/workflows/scorecard-weekly.yml`). A run recently took 58-62
-  minutes (pytest ~22, scorecard diff ~23, metrics ~12; about 35 before
-  2026-10-12); the job's limit is 120. Each branch has its own queue, so
+  minutes (pytest ~22, scorecard diff ~23, metrics ~12; about 35 when first
+  measured, about 50 on 2026-10-12); the job's limit is 120. Each branch has its own queue, so
   a branch can dispatch it as its pre-merge macOS+OCR check (#147).
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
