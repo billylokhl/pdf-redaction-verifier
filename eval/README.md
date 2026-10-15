@@ -54,7 +54,9 @@ def redacted_no_gc(path):
   test process -- `test_case_library`, the gallery, the scorecard and its
   differential skip it -- and `tests/test_bomb_cases.py` judges it out of
   process through `redaction_verifier.sandbox` (`caselib/bombrun.py`),
-  its whole process group killed at its caps. `today` pins how today's
+  its whole process group killed at its caps -- on macOS, on Linux's
+  Python 3.13 CI leg, or with `RUN_BOMBS=1` (once per platform per CI run;
+  nothing in it depends on the Python version). `today` pins how today's
   tool fails to answer, where it does not (`"hang"`, `"memory"`,
   `"error:CODE"`); the test fails once that changes, as a closed known
   gap does. The cells are COVERAGE.md's `hostile.*` ("Hostile input").

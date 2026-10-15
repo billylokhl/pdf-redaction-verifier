@@ -90,18 +90,20 @@ def flate_orphan(path: Path) -> None:
 
 
 @case("file.bomb-deep-nesting", truth="leak", cells="hostile.deep-nesting", writer="raw",
-      requires=("exiftool", "qpdf"), bomb=Bomb(wall_clock_s=400, memory_bytes=3 * GB),
-      # The page dictionary does not parse, so no reachability walk is
-      # trusted: the content stream's SSN is found as "unreferenced", and
-      # what could not be read is flagged (exiftool times out at 120 s).
+      requires=("qpdf",), bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
+      # The page dictionary does not parse (past MuPDF's nesting limit), so
+      # no reachability walk is trusted: the content stream's SSN is found
+      # as "unreferenced", and what could not be read is flagged. Deeper
+      # nesting costs exiftool quadratically (30,000 levels: its 120 s
+      # timeout) without changing the verdict, so 2,000 keeps CI fast.
       expected=expect(1, findings=(("SSN", "unreferenced"),), warnings=(
           ("HIDDEN_ITEM_FAILED", "live"), ("OBJECT_UNREADABLE", "unreferenced"),
-          ("TOOL_EXIT_NONZERO", None), ("TOOL_TIMEOUT", None))),
-      story="A page showing the SSN, whose dictionary also holds an array nested 30,000 "
+          ("TOOL_EXIT_NONZERO", None))),
+      story="A page showing the SSN, whose dictionary also holds an array nested 2,000 "
             "levels deep.",
       mistake=BUSY, recovery=READ_IT)
 def deep_nesting(path: Path) -> None:
-    deep = b"[" * 30000 + b"]" * 30000
+    deep = b"[" * 2000 + b"]" * 2000
     path.write_bytes(_pdf(_page(FONT + b" /Deep " + deep) + [_stream(SHOW)]))
 
 

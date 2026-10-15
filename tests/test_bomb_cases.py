@@ -7,7 +7,9 @@ case, against its known gap's label or its expected verdict."""
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -22,10 +24,21 @@ HAVE = available()
 BOMBS = sorted(cid for cid, c in REGISTRY.items() if c.bomb is not None)
 
 
+# Judging a bomb costs real time and memory (about a minute for the set),
+# so it runs once per platform per CI run, not on every Python leg: on
+# macOS, on Linux's Python 3.13 leg, or anywhere with RUN_BOMBS=1. Nothing
+# in it depends on the Python version; the structural tests below run on
+# every leg.
+RUN_BOMBS = (os.environ.get("RUN_BOMBS") == "1" or sys.platform == "darwin"
+             or sys.version_info[:2] == (3, 13))
+
+
 def _params():
     for cid in BOMBS:
         missing = REGISTRY[cid].requires - HAVE
         marks = [pytest.mark.skip(reason=f"needs {', '.join(sorted(missing))}")] if missing else []
+        if not RUN_BOMBS:
+            marks.append(pytest.mark.skip(reason="bombs run on macOS, Linux 3.13, or RUN_BOMBS=1"))
         yield pytest.param(cid, id=cid, marks=marks)
 
 
