@@ -953,6 +953,43 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 storage="live",
             )
             continue
+        # A page's /Thumb preview is a second picture of the page that
+        # nothing here renders or OCRs (K24): flag every one, and fail
+        # closed, until Phase 4b reads it. /Thumb is not inheritable in
+        # the spec, but a Pages node carrying one is checked too.
+        try:
+            node, seen, carrier = page.xref, set(), ""
+            while node:
+                if node in seen or len(seen) >= 64:
+                    raise ValueError("page tree cycle or too deep")
+                seen.add(node)
+                if doc.xref_get_key(node, "Thumb")[0] != "null":
+                    carrier = "its own" if node == page.xref else "inherited"
+                    break
+                kind, value = doc.xref_get_key(node, "Parent")
+                node = int(value.split()[0]) if kind == "xref" else 0
+        except Exception as exc:
+            yield Warn(
+                "HIDDEN_ITEM_FAILED",
+                "Hidden",
+                f"Hidden: page {human_page} thumbnail check failed "
+                f"({type(exc).__name__}) — a page thumbnail may be present "
+                "and NOT read; manual review recommended",
+                storage="live",
+                page=human_page,
+            )
+        else:
+            if carrier:
+                yield Warn(
+                    "PAGE_THUMBNAIL",
+                    "Hidden",
+                    f"Hidden: page {human_page} carries a thumbnail image "
+                    f"(/Thumb, {carrier}) that is NOT read or OCR'd — it may "
+                    "still show what the page no longer does; manual review "
+                    "recommended",
+                    storage="live",
+                    page=human_page,
+                )
         try:
             annots = list(page.annots())
         except Exception as exc:

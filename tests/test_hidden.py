@@ -364,3 +364,75 @@ class TestHiddenLayerRegressions:
             Hostile(), SecretMatcher([Secret("x", "y")]), (), report)
         assert report.findings == []
         assert report.degraded, "a layer that scanned nothing must not be silent"
+
+
+def _thumbnail_doc(*, on_pages_node: bool = False) -> fitz.Document:
+    """A clean page plus a small /Thumb image — on the page itself, or on
+    the Pages node above it."""
+    doc = _doc_with_clean_page()
+    thumb = doc.get_new_xref()
+    doc.update_object(thumb, "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 "
+                             "/BitsPerComponent 8 /ColorSpace /DeviceGray >>")
+    doc.update_stream(thumb, bytes(64))
+    page_xref = doc.page_xref(0)
+    holder = page_xref
+    if on_pages_node:
+        holder = int(doc.xref_get_key(page_xref, "Parent")[1].split()[0])
+    doc.xref_set_key(holder, "Thumb", f"{thumb} 0 R")
+    return doc
+
+
+def _hidden_warnings(doc: fitz.Document) -> list:
+    report = ScanReport()
+    verify.scan_hidden_objects(doc, SecretMatcher([Secret("x", "y")]), (), report)
+    return list(report.warnings)
+
+
+class TestPageThumbnails:
+    """H1 hotfix: a page /Thumb is never decoded or OCR'd, so every page
+    carrying one is flagged (exit 2) until Phase 4b reads thumbnails."""
+
+    def test_own_thumbnail_is_flagged(self) -> None:
+        (w,) = _hidden_warnings(_thumbnail_doc())
+        assert (w.code, w.kind, w.layer) == ("PAGE_THUMBNAIL", "coverage", "Hidden")
+        assert w.fields == {"storage": "live", "page": 1}
+        assert "its own" in w
+
+    def test_thumbnail_on_the_pages_node_is_flagged(self) -> None:
+        (w,) = _hidden_warnings(_thumbnail_doc(on_pages_node=True))
+        assert w.code == "PAGE_THUMBNAIL" and "inherited" in w
+
+    def test_no_thumbnail_no_warning(self) -> None:
+        assert _hidden_warnings(_doc_with_clean_page()) == []
+
+    def test_a_failing_check_warns_rather_than_passes(self, monkeypatch) -> None:
+        doc = _thumbnail_doc()
+
+        def boom(self, xref, key):
+            raise RuntimeError("unreadable /Users/someone/secret.pdf")
+
+        monkeypatch.setattr(fitz.Document, "xref_get_key", boom)
+        (w,) = _hidden_warnings(doc)
+        assert w.code == "HIDDEN_ITEM_FAILED" and w.fields["page"] == 1
+        assert "thumbnail" in w and "/Users" not in w     # exception text not echoed
+
+    def test_a_parent_cycle_warns_rather_than_loops(self, monkeypatch) -> None:
+        doc = _doc_with_clean_page()
+        page_xref = doc.page_xref(0)
+        real = fitz.Document.xref_get_key
+
+        def cyclic(self, xref, key):
+            if key == "Parent":
+                return ("xref", f"{page_xref} 0 R")
+            return real(self, xref, key)
+
+        monkeypatch.setattr(fitz.Document, "xref_get_key", cyclic)
+        (w,) = _hidden_warnings(doc)
+        assert w.code == "HIDDEN_ITEM_FAILED"
+
+    def test_cli_exits_2_and_names_no_content(self, tmp_path, ssn_rules) -> None:
+        path = tmp_path / "thumb.pdf"
+        _thumbnail_doc().save(path)
+        result = _scan(path, ssn_rules)
+        assert result.returncode == 2, result.stdout
+        assert "thumbnail image (/Thumb, its own)" in result.stdout

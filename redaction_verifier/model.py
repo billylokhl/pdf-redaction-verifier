@@ -101,6 +101,7 @@ WARNING_CODES: dict[str, str] = {
     "ATTACHMENT_TOO_LARGE": "coverage",
     "ATTACHMENT_EMPTY": "coverage",
     "ATTACHMENT_NOT_TEXT": "coverage",
+    "PAGE_THUMBNAIL": "coverage",
     # scope
     "RULES_UNKNOWN_KEY": "scope",
     "RULES_UNQUOTED_VALUE": "scope",

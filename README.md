@@ -147,7 +147,7 @@ has seen, not measured statistics.
 | 1 | **Text** | is covered by a box but still selectable | characters read with positions, rebuilt into reading order, matched | PyMuPDF |
 | 2 | **Objects** | the page no longer shows but the file still stores | every PDF object decoded and matched; unreferenced ones flagged ORPHANED | PyMuPDF + built-in PDF string parser |
 | 3 | **Metadata** | sits in document properties | every metadata tag dumped and matched | exiftool, PyMuPDF |
-| 4 | **Hidden** | no page renders at all | attachments, annotations, form fields, links, JavaScript, layer names read and matched | PyMuPDF |
+| 4 | **Hidden** | no page renders at all | attachments, annotations, form fields, links, JavaScript, layer names read and matched; page thumbnails flagged | PyMuPDF |
 | 5 | **OCR** | exists only as pixels | each page rendered to an image, text recognized, matched | PyMuPDF, Apple Vision |
 | 6 | **Binary** | survives in the objects qpdf rebuilds — a cross-check for damaged files | reachable objects decompressed, searched for known values | qpdf |
 
@@ -270,6 +270,9 @@ case number that was scrubbed from the page.
   and names (`page.widgets()`), link targets (`page.get_links()`),
   JavaScript in the catalog's `/OpenAction` and the top level of its named
   JavaScript tree, and optional-content group names (`get_ocgs()`).
+  A page carrying a `/Thumb` preview image (on the page, or on a Pages
+  node above it) is flagged `PAGE_THUMBNAIL` (exit `2`): the thumbnail is
+  not decoded or OCR'd, and can still show what the page no longer does.
   Scripts on links, form fields, pages or the catalog's other actions are
   not reported here; a script stored as a string is still caught by the
   Objects layer, and one stored as a stream by Binary (manual review).
@@ -356,7 +359,7 @@ named, not that you named everything.
 secret can still be **not detected** (exit `0`). In short:
 
 - **Pixels the tool does not OCR:** under a box drawn over an image, off
-  the page, in page or XMP thumbnails, in embedded files other than
+  the page, in XMP thumbnails, in embedded files other than
   listed attachments, and in image data beyond an image's declared size
   (rows past its declared height are never drawn). One picture cut into
   thin strips, each too small to read alone, is also missed when a box
@@ -392,10 +395,10 @@ secret can still be **not detected** (exit `0`). In short:
   dash-less pattern numbers wrapped at a line or page break; text at
   extreme coordinates.
 
-Leftover images, leftover text in non-plain font codes, and attachments
-that are not text are **flagged** (exit `2`) rather than read: a clean
-document containing them cannot certify as `0` until the tool learns to
-read them.
+Leftover images, leftover text in non-plain font codes, attachments
+that are not text, and page thumbnails (`/Thumb` preview images, on any
+page) are **flagged** (exit `2`) rather than read: a clean document
+containing them cannot certify as `0` until the tool learns to read them.
 
 Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the

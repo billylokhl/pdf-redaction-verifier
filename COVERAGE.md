@@ -43,7 +43,7 @@ cells).
 | `superseded` | **Superseded versions** — rewritten by an incremental update | ✓ Objects (`earlier revision N`)³ ⁶, trailers¹¹ | ⚑ Objects⁴ | ⚑ Objects⁵ | ⚑ Objects |
 | `metadata` | **Document metadata** — Info dictionary, XMP | ✓ Metadata (Info, XMP), Objects (Info only) | — | ✗ XMP thumbnails | — |
 | `leftover-xmp` | **Orphaned / superseded XMP** | ✓ Objects⁷ | — | ✗ | — |
-| `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ✗ | — |
+| `thumbnail` | **Page thumbnails** (`/Thumb`) | — | — | ⚑ Hidden¹³ | — |
 | `trailer` | **Document trailer** — the `/ID` and any other strings in the trailer dictionary | ✓ Objects (`trailer`)¹¹ | — | — | — |
 | `attachment` | **Attachments** — listed, or attached to an annotation | ✓ Hidden (manual review) | — | ⚑ Hidden | ⚑ Hidden⁸ · ✗ encoded as text² |
 | `embedded-other` | **Other embedded files** — PDF 2.0 `/AF`, rich media | ✓ Binary: known values only (manual review) · ✗ pattern rules | — | ✗ | ✗ |
@@ -127,6 +127,14 @@ turned, a one-character-per-line stack becomes a row Vision misreads as
 a number. A page whose dropped lines are horizontal, or where Vision
 reports no vertical line at all, can still pass as clean; nothing yet
 compares Vision's reading with the ink on the page ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
+
+¹³ Any page carrying a `/Thumb` preview image — on the page itself, or
+on a Pages node above it — gets a `PAGE_THUMBNAIL` warning (exit `2`),
+whatever the image shows: the thumbnail is not decoded or OCR'd yet, and
+a clean document with thumbnails cannot certify as `0` until it is. A
+thumbnail only an earlier revision still holds is covered as that
+revision's superseded or orphaned image (⁵: flagged if big enough to
+hold text, ✗ below the size gate).
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
@@ -237,8 +245,12 @@ slug happen to form a value: review-tier noise, 3 of 6,000 files of a fabricated
 
 A flag is the honest answer to "found it, could not read it", but it means
 a clean document that merely *contains* such content exits `2` too — on
-real-world PDFs this fires rarely (about 1.5% in a corpus of 1,224, all
-genuine leftover glyph-coded text from Adobe tools). Each flag is removed
+real-world PDFs the leftover flags fire rarely (about 1.5% in a corpus of
+1,224, all genuine leftover glyph-coded text from Adobe tools). The page
+thumbnail flag does not: 244 of the 2,073 files in the local corpus
+(11.8%) carry a `/Thumb` (1,149 pages), and 190 of them (9.2% of the
+corpus) that exited `0` before now exit `2` (exact-value rules, OCR on,
+macOS 27). Each flag is removed
 by teaching the tool to read that cell, and each ✗ closed by reading or
 flagging it:
 
