@@ -841,6 +841,56 @@ def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
             yield from walk(int(ref))
 
 
+def _parent_xref(doc: fitz.Document, node: int) -> int:
+    kind, value = doc.xref_get_key(node, "Parent")
+    return int(value.split()[0]) if kind == "xref" else 0
+
+
+def _thumb_carrier(doc: fitz.Document, page_xref: int, memo: dict[int, bool | None]) -> str:
+    """Where a page's /Thumb sits: "its own", "inherited" (on a Pages node
+    above it) or "" (none). Raises on a page tree cycle or unreadable key.
+
+    ``memo`` maps each Pages node already walked to whether it or a node
+    above it carries /Thumb, or None when its walk failed. Every page
+    shares the chain above it, so without the memo N pages under a deep
+    chain cost O(N x depth); with it each node is read once, O(objects).
+    A node whose walk failed stays failed, so a later page reaching it
+    through the memo fails closed too rather than passing.
+    """
+    if doc.xref_get_key(page_xref, "Thumb")[0] != "null":
+        return "its own"
+    path: list[int] = []
+    on_path: set[int] = set()
+    found = False
+    try:
+        node = _parent_xref(doc, page_xref)
+        while node:
+            if node in memo:
+                hit = memo[node]
+                if hit is None:
+                    raise ValueError("page tree walk failed earlier")
+                found = hit
+                break
+            # A walk that never repeats a node cannot visit more nodes
+            # than the file has objects; a repeat (the page itself
+            # included) is a cycle.
+            if node in on_path or node == page_xref or len(path) >= doc.xref_length():
+                raise ValueError("page tree cycle")
+            path.append(node)
+            on_path.add(node)
+            if doc.xref_get_key(node, "Thumb")[0] != "null":
+                found = True
+                break
+            node = _parent_xref(doc, node)
+    except Exception:
+        for walked in path:
+            memo[walked] = None
+        raise
+    for walked in path:
+        memo[walked] = found
+    return "inherited" if found else ""
+
+
 def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     """Yield HiddenItem for content no page renders, or a str warning.
 
@@ -941,6 +991,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 hard=False,
             )
 
+    thumb_memo: dict[int, bool | None] = {}
     for page_index in range(doc.page_count):
         human_page = page_index + 1
         try:
@@ -958,18 +1009,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         # closed, until Phase 4b reads it. /Thumb is not inheritable in
         # the spec, but a Pages node carrying one is checked too.
         try:
-            node, seen, carrier = page.xref, set(), ""
-            while node:
-                # A walk that never repeats a node cannot visit more
-                # nodes than the file has objects; a repeat is a cycle.
-                if node in seen or len(seen) >= doc.xref_length():
-                    raise ValueError("page tree cycle")
-                seen.add(node)
-                if doc.xref_get_key(node, "Thumb")[0] != "null":
-                    carrier = "its own" if node == page.xref else "inherited"
-                    break
-                kind, value = doc.xref_get_key(node, "Parent")
-                node = int(value.split()[0]) if kind == "xref" else 0
+            carrier = _thumb_carrier(doc, page.xref, thumb_memo)
         except Exception as exc:
             yield Warn(
                 "HIDDEN_ITEM_FAILED",

@@ -414,7 +414,9 @@ class TestPageThumbnails:
         monkeypatch.setattr(fitz.Document, "xref_get_key", boom)
         (w,) = _hidden_warnings(doc)
         assert w.code == "HIDDEN_ITEM_FAILED" and w.fields["page"] == 1
-        assert "thumbnail" in w and "/Users" not in w     # exception text not echoed
+        assert "thumbnail" in w
+        # The exception text is file-derived; it must not be echoed.
+        assert "secret.pdf" not in w and "/home" not in w
 
     def test_a_parent_cycle_warns_rather_than_loops(self, monkeypatch) -> None:
         doc = _doc_with_clean_page()
@@ -436,3 +438,75 @@ class TestPageThumbnails:
         result = _scan(path, ssn_rules)
         assert result.returncode == 2, result.stdout
         assert "thumbnail image (/Thumb, its own)" in result.stdout
+
+
+def _raw_chain_pdf(depth: int, npages: int, *, thumb_at_root: bool = False,
+                   cycle: bool = False) -> fitz.Document:
+    """``npages`` pages under a chain of ``depth`` + 1 Pages nodes, written
+    as raw bytes (pikepdf/QPDF refuse trees this deep). ``cycle`` points
+    the second-lowest node's /Parent back at the lowest one."""
+    objs: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 4 0 R >>",
+        2: b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 "
+           b"/ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\0\nendstream",
+        3: b"<< /Length 0 >>\nstream\n\nendstream",
+    }
+    nodes = list(range(4, 4 + depth + 1))          # root .. lowest
+    pages = list(range(nodes[-1] + 1, nodes[-1] + 1 + npages))
+    for k, num in enumerate(nodes):
+        kids = [nodes[k + 1]] if k + 1 < len(nodes) else pages
+        parent = b" /Parent %d 0 R" % nodes[k - 1] if k else b""
+        if cycle and k == len(nodes) - 2:
+            parent = b" /Parent %d 0 R" % nodes[-1]
+        thumb = b" /Thumb 2 0 R" if thumb_at_root and k == 0 else b""
+        objs[num] = b"<< /Type /Pages /Kids [%s] /Count %d%s%s >>" % (
+            b" ".join(b"%d 0 R" % c for c in kids), npages, parent, thumb)
+    for num in pages:
+        objs[num] = (b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] "
+                     b"/Resources << >> /Contents 3 0 R >>" % nodes[-1])
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for num in range(1, max(objs) + 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (num, objs[num])
+    xref_at = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(offsets) + 1)
+    out += b"".join(b"%010d 00000 n \n" % off for off in offsets)
+    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(offsets) + 1, xref_at))
+    return fitz.open(stream=bytes(out), filetype="pdf")
+
+
+class TestPageThumbnailWalkCost:
+    """Every page shares the Pages chain above it; the /Thumb walk must
+    read each node once (memoised), not once per page."""
+
+    DEPTH, PAGES = 300, 300
+
+    def test_many_pages_under_a_deep_chain_cost_linear_reads(self, monkeypatch) -> None:
+        doc = _raw_chain_pdf(self.DEPTH, self.PAGES)
+        assert doc.page_count == self.PAGES
+        real = fitz.Document.xref_get_key
+        calls = 0
+
+        def counting(self, xref, key):
+            nonlocal calls
+            calls += 1
+            return real(self, xref, key)
+
+        monkeypatch.setattr(fitz.Document, "xref_get_key", counting)
+        assert _hidden_warnings(doc) == []
+        # Unmemoised this is ~2 x pages x depth (180,000); memoised it is
+        # a small constant times (pages + depth).
+        assert calls <= 10 * (self.DEPTH + self.PAGES), calls
+
+    def test_a_thumbnail_at_the_root_flags_every_page(self) -> None:
+        warns = _hidden_warnings(_raw_chain_pdf(self.DEPTH, 5, thumb_at_root=True))
+        assert [(w.code, w.fields["page"]) for w in warns] == [
+            ("PAGE_THUMBNAIL", n) for n in range(1, 6)]
+        assert all("inherited" in w for w in warns)
+
+    def test_a_cycle_fails_every_page_even_through_the_memo(self) -> None:
+        warns = _hidden_warnings(_raw_chain_pdf(5, 4, cycle=True))
+        assert [(w.code, w.fields["page"]) for w in warns] == [
+            ("HIDDEN_ITEM_FAILED", n) for n in range(1, 5)]
