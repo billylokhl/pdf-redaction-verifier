@@ -7,6 +7,13 @@ COVERAGE.md cell and PR it belongs to. The differential
 (`scorecard.differential`) fails on any per-case difference that is not
 listed here with an exactly matching old/new pair — any unlisted
 difference is a regression, not noise.
+
+An entry may be scoped to one environment with `env` (`ocr` or
+`no-ocr`, the case library's `requires` vocabulary): the same change
+can normalise to different keys where OCR adds its own warnings to both
+sides. Absent, it applies everywhere. An entry out of scope for this
+run neither matches nor counts as stale here; it is checked where it is
+in scope (`entry_in_scope`).
 """
 
 from __future__ import annotations
@@ -20,6 +27,11 @@ import yaml
 from .keys import NormalizedKey
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "accepted_diffs.yaml"
+
+# The environments an entry may be scoped to: the case library's own
+# OCR-availability vocabulary (`caselib.model.REQUIREMENTS`), which
+# `caselib.run.available()` always reports exactly one of.
+ENVIRONMENTS = frozenset({"ocr", "no-ocr"})
 
 # This project's verdict severity order (README: "the severity order is
 # 0 < 2 < 1" — clean, then cannot-certify, then confirmed leak).
@@ -44,6 +56,7 @@ class AcceptedDiff:
     cell: str | None = None
     pr: str | None = None
     weaker: bool = False
+    env: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         entry: dict[str, Any] = {
@@ -58,6 +71,8 @@ class AcceptedDiff:
             entry["pr"] = self.pr
         if self.weaker:
             entry["weaker"] = True
+        if self.env is not None:
+            entry["env"] = self.env
         return entry
 
 
@@ -74,6 +89,13 @@ def _parse_entry(raw: dict[str, Any]) -> AcceptedDiff:
             f"boolean (true/false), not {raw_weaker!r}"
         )
     weaker = raw_weaker
+    env = raw.get("env")
+    if "env" in raw and (not isinstance(env, str) or env not in ENVIRONMENTS):
+        raise ValueError(
+            f"accepted_diffs.yaml entry for {raw['case']!r}: `env` must be one of "
+            f"{sorted(ENVIRONMENTS)}, not {env!r} (omit it for an entry that applies "
+            "in every environment)"
+        )
     actually_weaker = is_weaker(old.exit, new.exit)
     if actually_weaker and not weaker:
         raise ValueError(
@@ -95,6 +117,7 @@ def _parse_entry(raw: dict[str, Any]) -> AcceptedDiff:
         cell=raw.get("cell"),
         pr=raw.get("pr"),
         weaker=weaker,
+        env=env,
     )
 
 
@@ -110,16 +133,54 @@ def load_accepted_diffs(path: Path = DEFAULT_PATH) -> dict[str, list[AcceptedDif
     for item in raw:
         entry = _parse_entry(item)
         by_case.setdefault(entry.case, []).append(entry)
+    for case_id, entries in by_case.items():
+        scoped = {e.env for e in entries if e.env is not None}
+        if scoped >= ENVIRONMENTS and any(e.env is None for e in entries):
+            raise ValueError(
+                f"accepted_diffs.yaml: {case_id!r} has entries scoped to every environment "
+                f"({sorted(scoped)}), so its unscoped entry is in scope nowhere and could "
+                "never be checked for staleness"
+            )
     return by_case
 
 
+def entry_in_scope(
+    accepted: dict[str, list[AcceptedDiff]], entry: AcceptedDiff, have: frozenset[str]
+) -> bool:
+    """Whether *entry* applies to a run whose capabilities are *have*
+    (`caselib.run.available()`).
+
+    A scoped entry applies where its `env` is in *have*. An unscoped one
+    applies everywhere, except where an entry for the same case is scoped
+    to this environment: that entry takes its place here. This is how an
+    existing entry is narrowed without editing it (the file is add-only,
+    docs/REDESIGN.md §7a): append an entry scoped to the environment where
+    the old one does not hold. The old entry is still matched and checked
+    for staleness in every other environment.
+
+    Scoping can only remove an entry from a run, never add one, so it
+    cannot accept a difference that the unscoped file would have
+    refused."""
+    if entry.env is not None:
+        return entry.env in have
+    return not any(
+        other.env is not None and other.env in have for other in accepted.get(entry.case, ())
+    )
+
+
 def find_accepted(
-    accepted: dict[str, list[AcceptedDiff]], case_id: str, old: NormalizedKey, new: NormalizedKey
+    accepted: dict[str, list[AcceptedDiff]],
+    case_id: str,
+    old: NormalizedKey,
+    new: NormalizedKey,
+    *,
+    have: frozenset[str],
 ) -> AcceptedDiff | None:
-    """The accepted-diffs entry that exactly covers this case's reference
-    -> candidate change, or None if this difference is unlisted."""
+    """The accepted-diffs entry in scope for *have* (`entry_in_scope`)
+    that exactly covers this case's reference -> candidate change, or
+    None if this difference is unlisted here."""
     for entry in accepted.get(case_id, ()):
-        if entry.old == old and entry.new == new:
+        if entry.old == old and entry.new == new and entry_in_scope(accepted, entry, have):
             return entry
     return None
 

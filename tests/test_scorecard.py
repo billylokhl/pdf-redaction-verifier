@@ -389,7 +389,7 @@ def test_accepted_diffs_round_trip(tmp_path):
 
     loaded = load_accepted_diffs(path)
     assert list(loaded) == ["leftover.example"]
-    assert find_accepted(loaded, "leftover.example", old, new) == entry
+    assert find_accepted(loaded, "leftover.example", old, new, have=NO_OCR) == entry
 
 
 def test_accepted_diffs_does_not_match_a_different_change(tmp_path):
@@ -403,8 +403,8 @@ def test_accepted_diffs_does_not_match_a_different_change(tmp_path):
     loaded = load_accepted_diffs(path)
 
     other_new = normalize(_report(1, findings=[{"rule": "SSN", "tier": "hard", "storage": "live"}]))
-    assert find_accepted(loaded, "leftover.example", old, other_new) is None
-    assert find_accepted(loaded, "some.other-case", old, new) is None
+    assert find_accepted(loaded, "leftover.example", old, other_new, have=NO_OCR) is None
+    assert find_accepted(loaded, "some.other-case", old, new, have=NO_OCR) is None
 
 
 def test_load_accepted_diffs_missing_file_is_empty(tmp_path):
@@ -498,6 +498,7 @@ def test_stale_accepted_diffs_flags_an_entry_no_diff_used_for_a_case_that_ran():
         accepted, [unrelated],
         ran_case_ids=frozenset({"other.case", "leftover.example"}),
         known_case_ids=frozenset({"other.case", "leftover.example"}),
+        have=NO_OCR,
     )
     assert stale == (entry,)
 
@@ -521,6 +522,7 @@ def test_stale_accepted_diffs_empty_when_entry_is_used():
         accepted, [used],
         ran_case_ids=frozenset({"leftover.example"}),
         known_case_ids=frozenset({"leftover.example"}),
+        have=NO_OCR,
     )
     assert stale == ()
 
@@ -543,6 +545,7 @@ def test_stale_accepted_diffs_not_flagged_when_case_exists_but_did_not_run():
         accepted, [],
         ran_case_ids=frozenset(),  # nothing ran this environment's differential
         known_case_ids=frozenset({"live.pixels-ocr-only"}),  # but the case still exists
+        have=NO_OCR,
     )
     assert stale == ()
 
@@ -555,9 +558,208 @@ def test_stale_accepted_diffs_flagged_when_case_no_longer_in_registry():
     entry = AcceptedDiff(case="removed.case", old=old, new=new, reason="a fix")
     accepted = {"removed.case": [entry]}
     stale = stale_accepted_diffs(
-        accepted, [], ran_case_ids=frozenset(), known_case_ids=frozenset(),
+        accepted, [], ran_case_ids=frozenset(), known_case_ids=frozenset(), have=NO_OCR,
     )
     assert stale == (entry,)
+
+
+# ── environment-scoped entries (`env`, #147) ─────────────────────────────
+
+# One case whose change normalises to different keys with and without
+# OCR: OCR adds its own JOINED_LINES warning to both sides (the shape of
+# the repeated-line-wraps cases in #147).
+def _joined(count, adjacency="JOINED_LINES"):
+    return [{"rule": "SSN", "kind": "review", "storage": "live", "adjacency": adjacency}] * count
+
+
+_LINUX_OLD = normalize(_report(2, warnings=_joined(2)))
+_LINUX_NEW = normalize(_report(2, warnings=_joined(2) + _joined(1, "JOINED_PAGES")))
+_OCR_OLD = normalize(_report(2, warnings=_joined(4)))
+_OCR_NEW = normalize(_report(2, warnings=_joined(4) + _joined(1, "JOINED_PAGES")))
+
+
+def _scoped(env, old=_LINUX_OLD, new=_LINUX_NEW, case="layout.wraps"):
+    return AcceptedDiff(case=case, old=old, new=new, reason=f"scoped {env}", env=env)
+
+
+def _load(tmp_path, entries):
+    path = tmp_path / "accepted_diffs.yaml"
+    dump_accepted_diffs(entries, path)
+    return load_accepted_diffs(path)
+
+
+def _stale(accepted, diffs, have, ran=("layout.wraps",)):
+    return stale_accepted_diffs(
+        accepted, diffs, ran_case_ids=frozenset(ran),
+        known_case_ids=frozenset(ran) | frozenset(accepted), have=have,
+    )
+
+
+def _used(entry):
+    run_old = _run(entry.case, _cli_result(_report(2)))
+    return CaseDiff(entry.case, run_old, run_old, accepted=entry)
+
+
+def test_env_round_trips_and_absent_env_stays_absent(tmp_path):
+    scoped = _scoped("ocr", _OCR_OLD, _OCR_NEW)
+    unscoped = _scoped(None)
+    loaded = _load(tmp_path, [scoped, unscoped])
+    assert sorted(loaded["layout.wraps"], key=lambda e: e.reason) == [unscoped, scoped]
+    assert "env" not in unscoped.to_jsonable()
+    assert scoped.to_jsonable()["env"] == "ocr"
+
+
+@pytest.mark.parametrize("value", ["macos", "OCR", "''", "null", "[ocr]", "true", "1", "all"])
+def test_load_accepted_diffs_refuses_an_unknown_env(tmp_path, value):
+    path = tmp_path / "accepted_diffs.yaml"
+    path.write_text(
+        "- case: layout.wraps\n"
+        "  old: {exit: 0, error: null, findings: [], warnings: []}\n"
+        "  new: {exit: 2, error: null, findings: [], "
+        "warnings: [[[LEFTOVER_IMAGE, Objects, null], 1]]}\n"
+        "  reason: scoped\n"
+        f"  env: {value}\n"
+    )
+    with pytest.raises(ValueError, match="`env` must be one of"):
+        load_accepted_diffs(path)
+
+
+def test_load_accepted_diffs_refuses_an_empty_env_field(tmp_path):
+    """`env:` with no value is YAML null, not "every environment": omit it."""
+    path = tmp_path / "accepted_diffs.yaml"
+    path.write_text(
+        "- case: layout.wraps\n"
+        "  old: {exit: 0, error: null, findings: [], warnings: []}\n"
+        "  new: {exit: 2, error: null, findings: [], "
+        "warnings: [[[LEFTOVER_IMAGE, Objects, null], 1]]}\n"
+        "  reason: scoped\n"
+        "  env:\n"
+    )
+    with pytest.raises(ValueError, match="`env` must be one of"):
+        load_accepted_diffs(path)
+
+
+def test_scoped_weaker_entry_still_needs_the_flag(tmp_path):
+    old = normalize(_report(1, findings=[{"rule": "SSN", "tier": "hard", "storage": "live"}]))
+    new = normalize(_report(2))
+    with pytest.raises(ValueError, match="weaker"):
+        _load(tmp_path, [AcceptedDiff(case="c", old=old, new=new, reason="r", env="ocr")])
+
+
+def test_a_scoped_entry_matches_only_in_its_environment(tmp_path):
+    loaded = _load(tmp_path, [_scoped("ocr", _OCR_OLD, _OCR_NEW)])
+    assert find_accepted(loaded, "layout.wraps", _OCR_OLD, _OCR_NEW, have=FULL_ENV) is not None
+    assert find_accepted(loaded, "layout.wraps", _OCR_OLD, _OCR_NEW, have=NO_OCR) is None
+    loaded = _load(tmp_path, [_scoped("no-ocr")])
+    assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=NO_OCR) is not None
+    assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=FULL_ENV) is None
+
+
+def test_an_unscoped_entry_matches_everywhere(tmp_path):
+    loaded = _load(tmp_path, [_scoped(None)])
+    for have in (NO_OCR, FULL_ENV):
+        assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=have) is not None
+
+
+def test_a_scoped_entry_replaces_the_unscoped_one_only_in_its_environment(tmp_path):
+    """The #147 transition: the unscoped entry recorded on Linux stays as
+    it is (the file is add-only); an appended `env: ocr` entry for the
+    same case takes its place with OCR. Without OCR the unscoped entry
+    still matches and is still checked for staleness."""
+    unscoped = _scoped(None)
+    ocr = _scoped("ocr", _OCR_OLD, _OCR_NEW)
+    loaded = _load(tmp_path, [unscoped, ocr])
+
+    # With OCR: only the OCR keys are accepted. The unscoped entry's keys
+    # are not, even if a run produced exactly them.
+    assert find_accepted(loaded, "layout.wraps", _OCR_OLD, _OCR_NEW, have=FULL_ENV) == ocr
+    assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=FULL_ENV) is None
+    assert _stale(loaded, [_used(ocr)], FULL_ENV) == ()
+
+    # Without OCR: the unscoped entry, as before; the OCR one is neither
+    # matched nor stale.
+    assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=NO_OCR) == unscoped
+    assert find_accepted(loaded, "layout.wraps", _OCR_OLD, _OCR_NEW, have=NO_OCR) is None
+    assert _stale(loaded, [_used(unscoped)], NO_OCR) == ()
+
+
+def test_an_unused_in_scope_entry_is_still_stale(tmp_path):
+    unscoped = _scoped(None)
+    ocr = _scoped("ocr", _OCR_OLD, _OCR_NEW)
+    loaded = _load(tmp_path, [unscoped, ocr])
+    # The case ran with OCR and produced nothing listed: the OCR entry is
+    # stale, the unscoped one (out of scope here) is not.
+    assert _stale(loaded, [], FULL_ENV) == (ocr,)
+    # Without OCR: the unscoped entry is stale, the OCR one is not.
+    assert _stale(loaded, [], NO_OCR) == (unscoped,)
+
+
+def test_an_entry_scoped_to_another_environment_does_not_shadow(tmp_path):
+    """A `no-ocr` entry does not take the unscoped entry's place with OCR."""
+    unscoped = _scoped(None, _OCR_OLD, _OCR_NEW)
+    no_ocr = _scoped("no-ocr")
+    loaded = _load(tmp_path, [unscoped, no_ocr])
+    assert find_accepted(loaded, "layout.wraps", _OCR_OLD, _OCR_NEW, have=FULL_ENV) == unscoped
+    assert _stale(loaded, [], FULL_ENV) == (unscoped,)
+    assert _stale(loaded, [], NO_OCR) == (no_ocr,)
+
+
+def test_a_scoped_entry_for_another_case_does_not_shadow(tmp_path):
+    unscoped = _scoped(None)
+    other = _scoped("no-ocr", case="layout.other")
+    loaded = _load(tmp_path, [unscoped, other])
+    assert find_accepted(loaded, "layout.wraps", _LINUX_OLD, _LINUX_NEW, have=NO_OCR) == unscoped
+
+
+def test_out_of_scope_entry_for_a_removed_case_is_still_stale(tmp_path):
+    loaded = _load(tmp_path, [_scoped("ocr", _OCR_OLD, _OCR_NEW, case="removed.case")])
+    stale = stale_accepted_diffs(
+        loaded, [], ran_case_ids=frozenset(), known_case_ids=frozenset(), have=NO_OCR,
+    )
+    assert [e.case for e in stale] == ["removed.case"]
+
+
+def test_load_refuses_an_unscoped_entry_shadowed_in_every_environment(tmp_path):
+    """Scoped entries for both environments leave the unscoped one in
+    scope nowhere: it could never match or be found stale."""
+    with pytest.raises(ValueError, match="in scope nowhere"):
+        _load(tmp_path, [_scoped(None), _scoped("ocr", _OCR_OLD, _OCR_NEW), _scoped("no-ocr")])
+
+
+def test_both_scoped_without_an_unscoped_entry_is_fine(tmp_path):
+    loaded = _load(tmp_path, [_scoped("ocr", _OCR_OLD, _OCR_NEW), _scoped("no-ocr")])
+    assert len(loaded["layout.wraps"]) == 2
+
+
+def test_committed_entries_are_in_scope_where_their_case_runs():
+    """An entry scoped to an environment its case can never run in
+    (`env: ocr` on a `requires: no-ocr` case), or an unscoped one replaced
+    in the only environment its case runs in, would never be matched or
+    checked for staleness anywhere."""
+    from caselib import REGISTRY, load
+
+    load()
+    accepted = load_accepted_diffs()
+    wrong = [
+        (e.case, e.env)
+        for entries in accepted.values()
+        for e in entries
+        if e.env is not None and e.case in REGISTRY
+        and (REGISTRY[e.case].requires & {"ocr", "no-ocr"}) - {e.env}
+    ]
+    assert wrong == []
+    # Likewise an unscoped entry whose case runs only in one environment
+    # (`requires: ocr`) and has an entry scoped to that environment: it is
+    # replaced there and in scope nowhere else the case can run.
+    dead = [
+        e.case
+        for entries in accepted.values()
+        for e in entries
+        if e.env is None and e.case in REGISTRY
+        and len(only := REGISTRY[e.case].requires & {"ocr", "no-ocr"}) == 1
+        and any(other.env in only for other in entries)
+    ]
+    assert dead == []
 
 
 # ── select_cases: perf fixtures excluded from the default selection ──────
@@ -1652,6 +1854,85 @@ def test_reference_runs_get_the_shim_and_candidate_runs_do_not(tmp_path, monkeyp
 
     assert seen == {"reference": [["--deterministic-id", "x.pdf"]], "candidate": [["x.pdf"]]}
 
+
+
+# ── per-case timeout (`scan_timeout`, #147) ──────────────────────────────
+
+
+def test_case_timeout_is_the_larger_of_the_runs_and_the_cases():
+    import types
+
+    from scorecard.differential import case_timeout
+
+    assert case_timeout(types.SimpleNamespace(scan_timeout=None), 60) == 60
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 60) == 240
+    # --timeout still raises every case's limit, and never lowers a case's own.
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 600) == 600
+    assert case_timeout(types.SimpleNamespace(scan_timeout=240), 10) == 240
+    assert case_timeout(types.SimpleNamespace(), 60) == 60
+
+
+def _slow_memo(monkeypatch, seconds):
+    """page.memo with its own scan_timeout, for the run_* tests below."""
+    import dataclasses
+
+    from caselib import REGISTRY, load
+
+    load()
+    monkeypatch.setitem(REGISTRY, "page.memo",
+                        dataclasses.replace(REGISTRY["page.memo"], scan_timeout=seconds))
+
+
+def test_run_differential_gives_both_sides_the_cases_own_timeout(tmp_path, monkeypatch):
+    import contextlib
+
+    import scorecard.differential as differential
+
+    _slow_memo(monkeypatch, 240.0)
+    reference_verify = tmp_path / "reference-verify.py"
+
+    @contextlib.contextmanager
+    def fake_worktree(ref, root=None):
+        yield reference_verify
+
+    seen: dict[str, list[float]] = {"reference": [], "candidate": []}
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        seen["reference" if verify_path == reference_verify else "candidate"].append(timeout)
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "worktree_for_ref", fake_worktree)
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_differential(["page.memo", "page.visible"], out_dir=tmp_path / "out",
+                                  timeout=60)
+    # page.memo gets its own 240 s; page.visible keeps the run's 60 s.
+    assert sorted(seen["reference"]) == [60, 240.0]
+    assert sorted(seen["candidate"]) == [60, 240.0]
+
+
+def test_run_candidate_gives_the_case_its_own_timeout(tmp_path, monkeypatch):
+    import scorecard.differential as differential
+
+    _slow_memo(monkeypatch, 240.0)
+    seen: list[tuple[str, float]] = []
+
+    def fake_run_cli(python_exe, verify_path, target, rules, workdir, case_id, *, timeout, env=None):
+        seen.append((case_id, timeout))
+        return CliResult(returncode=0, report=_report(0), elapsed=0.0, timed_out=False, stderr_tail="")
+
+    monkeypatch.setattr(differential, "run_cli", fake_run_cli)
+    differential.run_candidate(["page.memo", "page.visible"], out_dir=tmp_path / "out", timeout=60)
+    assert sorted(seen) == [("page.memo", 240.0), ("page.visible", 60)]
+
+
+def test_only_the_dense_sideways_scan_has_its_own_timeout():
+    """A per-case timeout exempts a slow scan from the 60 s gate, so the
+    cases that have one are listed here: adding one is a reviewed change."""
+    from caselib import REGISTRY, load
+
+    load()
+    own = {i: c.scan_timeout for i, c in REGISTRY.items() if c.scan_timeout is not None}
+    assert own == {"page.dense-sideways-scan": 300}
 
 # ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
 
