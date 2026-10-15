@@ -743,9 +743,15 @@ class Planner:
             return self.clean(f"{base} {self.rules.masked(masked)}", f"{base} ****")
         return base
 
+    def _soft_pages(self, layer: Any, name: str | None) -> tuple[int | None, ...]:
+        """The pages a page-less REVIEW_FUSED_PATTERN for rule *name* came
+        from: the scan's own pattern-only-when-fused truth."""
+        pages = self.sink["truth"].get(layer, {})
+        hits: tuple[int | None, ...] = tuple(
+            sorted(int(p) for p, t in pages.items() if name in t["pattern_soft"]))
+        return hits or (None,)
+
     def warnings(self) -> None:
-        soft = {layer: {int(p): t["pattern_soft"] for p, t in pages.items()}
-                for layer, pages in self.sink["truth"].items()}
         for w in self.report.get("warnings", []):
             code, storage, page = w.get("code", ""), w.get("storage"), w.get("page")
             self.plan.codes.append((code, page))
@@ -754,9 +760,7 @@ class Planner:
             if level == "review":
                 pages: list[int | None] = [page]
                 if code == "REVIEW_FUSED_PATTERN" and page is None:
-                    hits = [p for p, names in soft.get(w.get("layer"), {}).items()
-                            if name in names]
-                    pages = list(sorted(hits)) or [None]
+                    pages = [*self._soft_pages(w.get("layer"), name)]
                 for p in pages:
                     self.list("review", p, self.rules.label(name), w.get("layer") or "")
             elif level == "live":
@@ -772,11 +776,15 @@ class Planner:
         any --json sample (_shown_label)."""
         for n in self.report.get("notices", []):
             name = self.rules.resolve(n.get("rule") or "")
+            pages: list[int | None] = [n.get("page")]
             if n.get("tier") == "hard":
                 label = self._shown_label(name, n.get("sample") or "")
             else:
                 label = self.rules.label(name)
-            self.list("notices", n.get("page"), label, n.get("layer") or "")
+                if n.get("code") == "REVIEW_FUSED_PATTERN" and n.get("page") is None:
+                    pages = [*self._soft_pages(n.get("layer"), name)]
+            for p in pages:
+                self.list("notices", p, label, n.get("layer") or "")
 
     # ── the whole plan ────────────────────────────────────────────────
     def build(self) -> MapPlan:

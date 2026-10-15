@@ -1046,6 +1046,51 @@ class TestNotices:
         with pytest.raises(KeyError):
             plan_of(pdf, header)
 
+    def test_a_fused_review_notice_is_listed_on_its_page(self, tmp_path, monkeypatch) -> None:
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "Cover")
+        page = doc.new_page()
+        page.insert_text((100, 100), "Ref 234-56-")
+        page.insert_text((100, 114), "7891 end")
+        pdf = _save(doc, tmp_path / "fused.pdf")
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
+        fused = [n for n in run.report["notices"] if n["code"] == "REVIEW_FUSED_PATTERN"]
+        assert fused and fused[0]["page"] is None
+        assert (2, "built-in type rule #1", "Text") in sections(the_plan, "notices")
+        assert not the_plan.boxes and not the_plan.flags.P
+
+    def test_a_hidden_item_matching_a_value_and_a_class_boxes_the_value_only(
+            self, tmp_path, monkeypatch) -> None:
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Cover")
+        sq = page.add_rect_annot(fitz.Rect(100, 300, 300, 350))
+        sq.set_info(content=f"{NAME} {NOTICE_SSN}")
+        sq.update()
+        pdf = _save(doc, tmp_path / "mixed.pdf")
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
+        assert run.code == 1
+        assert the_plan.boxes and all(b.label == "value rule #1" for b in the_plan.boxes)
+        assert any(label.startswith("built-in type rule #1 ****")
+                   for _p, label, _n in sections(the_plan, "notices"))
+
+    @pytest.mark.skipif(not HAS_OCR, reason="needs OCR")
+    def test_an_ocr_notice_is_listed_not_found(self, tmp_path, monkeypatch) -> None:
+        doc = fitz.open()
+        page = doc.new_page()
+        pix = fitz.open()
+        img_page = pix.new_page(width=400, height=60)
+        img_page.insert_text((10, 40), f"SSN {NOTICE_SSN}", fontsize=24)
+        page.insert_image(fitz.Rect(72, 72, 472, 132),
+                          pixmap=img_page.get_pixmap(dpi=200))
+        pdf = _save(doc, tmp_path / "ocr.pdf")
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes",
+                               ocr=True)
+        ocr = [n for n in run.report["notices"] if n["layer"] == "OCR"]
+        assert ocr, run.report["notices"]
+        assert not sections(the_plan, "ocr") and not the_plan.boxes
+        assert (1, "built-in type rule #1 ****", "OCR") in sections(the_plan, "notices")
+
 
 # ── Tiers and truth (design §9 tests 6, 8) ────────────────────────────
 class TestTiers:
