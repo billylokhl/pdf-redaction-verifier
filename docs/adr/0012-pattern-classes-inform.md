@@ -23,8 +23,9 @@ relayed by the coordinator:
 
 That is **policy 1**: a built-in class match that matches no listed value
 no longer affects the exit code; it is still reported, as information
-("SSN-shaped value on page 3"). Exit 0 then means "none of your listed
-secrets remain". It **supersedes the demote-only bound** for the built-in
+("SSN-shaped value on page 3"). Exit 0 then means that none of the listed
+values, and none of the user's own `pattern` rules, was found in any layer
+the tool read, and that nothing stopped it from reading a layer. It **supersedes the demote-only bound** for the built-in
 classes and is a loosening that moves some cases to exit 0, so under
 REDESIGN §6/§7a it needs the per-case owner sign-off listed below,
 `weaker: true` entries in `eval/accepted_diffs.yaml`, and CHANGELOG lines
@@ -42,7 +43,10 @@ describing each layout.
      Adopted: yes. A user writes a regex for something they mean to
      find; it is a defined secret, not a guess the tool supplies. Only the
      four built-in classes become informational.
-   - **(b) A strict mode keeps today's behaviour.** Adopted: policy 1
+   - **(b) A strict mode keeps today's behaviour.** (Exit codes, tiers,
+     findings and warnings as today; the `--json` report is
+     `schema_version` 2 in both modes, with `notices` empty in strict
+     mode.) Adopted: policy 1
      is the default, and `--strict-classes` (and a rules-file key,
      `"strict": true` on a class rule) restores today's tiers exactly, for
      users who rely on the classes as a net for secrets they did not
@@ -71,9 +75,10 @@ describing each layout.
 ## Measurement
 
 **Corpus** (Phase 5 PR 1, #134: the per-file reports of its run at commit
-90669ef, recomputed under policy 1; rules were the four classes only, so
-under policy 1 each file's exit is set by coverage warnings alone; counts
-only):
+90669ef, recomputed under policy 1 by `eval/scorecard/pattern_policy1_corpus.py`;
+rules were the four classes only, so under policy 1 each file's exit is set
+by coverage warnings alone; counts only; eval/spikes/RESULTS.md, "Phase 5
+baseline"):
 
 | Text-bearing, 488 files | Exit 0 | Exit 1 | Exit 2 |
 | --- | --- | --- | --- |
@@ -85,8 +90,8 @@ warning, so they leave the hard tier for review, not for 0); 6 files
 2 → 0 (their only warning was a class review). All 2,072 measured files:
 exit 0 from 1,579 to 1,785, exit 1 from 337 to 0. This covers all four
 classes, `credit-card` (1.4% of text-bearing files today) and `email`
-(23.0%) included. With exact-value rules, the realistic setting, Lane B's
-U4 measures the review rate; policy 1 can only lower it.
+(23.0%) included. Policy 1 has no effect on U4 as defined (exact-value rules only); with
+class rules enabled, it can only lower the review rate.
 
 **Case library** (Phase 5 PR 2a, #138, `eval/scorecard/pattern_recall.py`):
 every case with a built-in class rule scanned, and each case's exit
@@ -101,9 +106,11 @@ reports.
 
 ## Cases that need the owner's sign-off
 
-Leak cases whose exit policy 1 would change (from #138's run). A case
-reaching 0 is a pinned loosening: the planted secret is caught only by a
-class rule.
+Leak cases that reach exit 0 under policy 1 (#138's run): by the exit
+they give today, or by their label (target) where a known gap's target was
+set by the class alone; the 11 known gaps exit 0 today and still do, only
+their target changes. A case reaching 0 is a pinned loosening: the planted
+secret is caught only by a class rule.
 
 Every one is an `ssn` case (the case library has no other class leak
 case). 35 leak cases reach exit 0: 24 by the exit they give today, and 11
@@ -114,7 +121,7 @@ known gaps whose target (the label) is set by the class alone.
 | exit 1 (9) | `page.visible-pattern-rule`, `layout.single-line-pattern-only`, `layout.rotated-pattern-only`, `layout.form-boxes-pattern-only`, `layout.overlapping-values-pattern-only`, `layout.overlapping-split-short-tail-pattern-only`, `document.trailer-key-pattern-rule`, `page.scan-image-sideways-90`, `page.scan-image-sideways-270` | an SSN on one line, rotated, in form digit boxes, overlapping other text, as a trailer key, or in a sideways scan, with the class rule as the only rule that catches it |
 | exit 2 (14) | `layout.split-lines-pattern-only`, `layout.split-three-lines-pattern-only`, `layout.split-pages-pattern-only`, `layout.split-pages-needs-later-lines-pattern-only`, `layout.split-three-pages-pattern-only`, `layout.split-over-blank-page-pattern-only`, `layout.two-page-breaks-pattern-only`, `layout.overlapping-split-pages-pattern-only`, `layout.repeated-line-wraps-pattern-only`, `layout.several-values-pattern-only`, `layout.table-rows-pattern-only`, `layout.table-rows-split-pages-pattern-only`, `layout.vertical-stack-pattern-only`, `document.trailer-id-digits-pattern-rule` | an SSN split across lines, pages or table rows, read in a vertical stack, or as digits in the trailer `/ID`, whose only warnings are class reviews |
 | known gap (1) | `page.dense-sideways-scan` (K43) | exit 2 today on macOS 27, 1 expected once K43 is fixed; 0 under policy 1 either way |
-| known gaps, target exit 2 (11) | `document.af-pattern-rule`, `document.js-stream-pattern-rule`, `document.piece-info-pattern-rule`, `page.hidden-sample-bytes-pattern-rule` (REVIEW_BINARY); `layout.form-boxes-split-pages-pattern-only`, `layout.rotated270-split-pages-pattern-only`, `layout.split-four-pages-pattern-only`, `layout.split-pages-needs-earlier-lines-pattern-only`, `layout.vertical-stack-split-pages-pattern-only`, `layout.undashed-ssn-wrapped`, `layout.rotated-split-pages-pattern-only` (REVIEW_FUSED_PATTERN) | exit 0 today (missed); their target, review from the class alone, becomes exit 0. In strict mode they keep their target and stay tracked as gaps |
+| known gaps, target exit 2 (11) | `document.af-pattern-rule`, `document.js-stream-pattern-rule`, `document.piece-info-pattern-rule`, `page.hidden-sample-bytes-pattern-rule` (REVIEW_BINARY); `layout.form-boxes-split-pages-pattern-only`, `layout.rotated270-split-pages-pattern-only`, `layout.split-four-pages-pattern-only`, `layout.split-pages-needs-earlier-lines-pattern-only`, `layout.vertical-stack-split-pages-pattern-only`, `layout.undashed-ssn-wrapped`, `layout.rotated-split-pages-pattern-only` (REVIEW_FUSED_PATTERN; needs `no-ocr`, so not scanned here: judged from its label) | exit 0 today (missed); their target, review from the class alone, becomes exit 0. In strict mode they keep their target and stay tracked as gaps |
 
 The 31 cases with a value rule beside the class rule cannot be judged
 from their labels (a label lists warning codes, not the rule that raised
@@ -146,6 +153,9 @@ for policy 1 then say "not a listed secret" rather than pinning a miss.
 - Coverage follow-up (owner, 2026-10-15): the implementation PR adds at
   least one `us-phone`, one `credit-card` and one `email` leak case, so
   strict mode has recall coverage for every class.
+- ADR 0003 and the Phase 4b row run pattern classes over raw image bytes
+  at review tier; in default mode that review becomes a notice too (strict
+  mode keeps it).
 - Geometry-based split matching (Phase 5's other item, now possible with
   #120's glyph geometry) is unaffected: it concerns listed values.
 

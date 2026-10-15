@@ -276,3 +276,25 @@ def test_policy1_on_an_error_report_never_certifies():
     assert policy1_exit(err, SSN, None) == 2
     err = _report([{"rule": "Target"}], exit_code=1, error={"code": "INTERNAL_ERROR"})
     assert policy1_exit(err, SSN, None) == 1
+
+
+# ── policy 1 on the corpus reports (pattern_policy1_corpus) ─────────────
+
+from scorecard.pattern_policy1_corpus import policy1_counts  # noqa: E402
+
+
+def test_policy1_counts_moves_by_stratum():
+    cls = {"rule": "ssn", "code": "REVIEW_FUSED_PATTERN"}
+    cov = {"rule": None, "code": "LAYER_CRASHED"}
+    files = [
+        ("text-bearing", _report([{"rule": "ssn"}])),                 # 1 -> 0
+        ("text-bearing", _report([{"rule": "email"}], [cov])),        # 1 -> 2
+        ("text-free", _report(warnings=[cls])),                       # 2 -> 0
+        ("text-free", _report()),                                     # 0 -> 0
+    ]
+    out = policy1_counts(files, None)
+    assert out["text-bearing"] == {"files": 2, "today": {"1": 2},
+                                   "policy1": {"0": 1, "2": 1},
+                                   "moves": {"1->0": 1, "1->2": 1}}
+    assert out["all"]["moves"] == {"1->0": 1, "1->2": 1, "2->0": 1}
+    assert out["unattributed_class_warnings"] == 0
