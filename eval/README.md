@@ -773,8 +773,10 @@ applies in every environment. Which one a run is in is
   entries for the same cases appended in #147 replace them with OCR.
 - A case whose entries are scoped to both environments cannot also have
   an unscoped one (it would be in scope nowhere, so never checked); the
-  file is refused. A test also refuses an entry scoped to an environment
-  its case can never run in (`env: ocr` on a `requires: no-ocr` case).
+  file is refused. A test on the committed file also refuses an entry
+  scoped to an environment its case can never run in (`env: ocr` on a
+  `requires: no-ocr` case), and an unscoped entry replaced in the only
+  environment its case runs in.
 
 Scoping only ever takes entries out of a run, never adds one, so it
 cannot accept a difference the file would have refused without it. The

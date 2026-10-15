@@ -731,9 +731,10 @@ def test_both_scoped_without_an_unscoped_entry_is_fine(tmp_path):
     assert len(loaded["layout.wraps"]) == 2
 
 
-def test_committed_scoped_entries_can_run_in_their_environment():
+def test_committed_entries_are_in_scope_where_their_case_runs():
     """An entry scoped to an environment its case can never run in
-    (`env: ocr` on a `requires: no-ocr` case) would never be matched or
+    (`env: ocr` on a `requires: no-ocr` case), or an unscoped one replaced
+    in the only environment its case runs in, would never be matched or
     checked for staleness anywhere."""
     from caselib import REGISTRY, load
 
@@ -747,6 +748,18 @@ def test_committed_scoped_entries_can_run_in_their_environment():
         and (REGISTRY[e.case].requires & {"ocr", "no-ocr"}) - {e.env}
     ]
     assert wrong == []
+    # Likewise an unscoped entry whose case runs only in one environment
+    # (`requires: ocr`) and has an entry scoped to that environment: it is
+    # replaced there and in scope nowhere else the case can run.
+    dead = [
+        e.case
+        for entries in accepted.values()
+        for e in entries
+        if e.env is None and e.case in REGISTRY
+        and len(only := REGISTRY[e.case].requires & {"ocr", "no-ocr"}) == 1
+        and any(other.env in only for other in entries)
+    ]
+    assert dead == []
 
 
 # ── select_cases: perf fixtures excluded from the default selection ──────
