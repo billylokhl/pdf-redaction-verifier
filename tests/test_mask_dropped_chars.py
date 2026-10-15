@@ -209,6 +209,9 @@ def test_value_read_down_a_column_is_not_shown(tmp_path) -> None:
     ("4111 1111 1111 7\n11", ("7234",), "****"),
     ("ACCT55571", ("7234",), "****"),
     ("ACCT55571", ("9026",), "****5571"),     # control: nothing shared
+    ("QQQQQQQQI", ("Z9\u0131",), "****"),     # dotless i written as its capital
+    ("QQQQQ\u1f08\u0399\nQQ", ("Z9\u1f80",), "****"),  # iota subscript's capital form
+    ("QQQQQQ\u03b9Q", ("Z9\u1fb3",), "****"),  # its casefold form
 ])
 def test_any_shared_character_hides_the_tail(sample, values, shown) -> None:
     assert mask(sample, _index(*values)) == shown
