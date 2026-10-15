@@ -43,11 +43,14 @@ from __future__ import annotations
 
 import argparse
 import functools
+import io
 import json
 import re
 import subprocess
 import sys
+import time
 from bisect import bisect_right
+from collections import deque
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -66,6 +69,7 @@ from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBoo
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
 from redaction_verifier.inventory.annotations import Annotation
+from redaction_verifier.inventory.labels import RevisionLabels, StructuralKind
 from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
 from redaction_verifier.inventory.trees import Trees, key_text, qpdf_key_text
 from redaction_verifier.inventory.xref import Chain, read_chain
@@ -460,6 +464,7 @@ class Check(Enum):
     NAME_TREE = "name_tree"            # the /EmbeddedFiles entries (MuPDF or libqpdf)
     ANNOTATION_LIST = "annotation_list"  # a revision's annotations, page by page (MuPDF)
     ANNOTATION = "annotation"          # an annotation synthesized or not, as MuPDF draws it
+    REACHABLE = "reachable"            # a revision's reachable objects (MuPDF or libqpdf)
     ORACLE_ERROR = "oracle_error"      # the comparison itself failed: nothing verified
 
 
@@ -481,6 +486,8 @@ class Agreement:
     qpdf_check_errors: int = 0     # revisions where qpdf --check printed ERROR (gated)
     values_compared: int = 0       # objects and trailers compared with both readers
     annotations_compared: int = 0  # annotations listed and classified against MuPDF (3a-7d)
+    reachable_compared: int = 0    # revisions whose reachable set both readers confirmed (3a-7e)
+    reachable_ms: int = 0          # milliseconds the reachable comparison took (#52 item 4)
 
     @property
     def agrees(self) -> bool:
@@ -502,7 +509,9 @@ class Agreement:
                 "members_compared": self.members_compared,
                 "qpdf_check_errors": self.qpdf_check_errors,
                 "values_compared": self.values_compared,
-                "annotations_compared": self.annotations_compared}
+                "annotations_compared": self.annotations_compared,
+                "reachable_compared": self.reachable_compared,
+                "reachable_ms": self.reachable_ms}
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> Agreement:
@@ -510,7 +519,8 @@ class Agreement:
                    Check(raw["check"]) if raw["check"] else None, raw["revision"], raw["obj"],
                    tuple(raw["templates"]), raw["encrypted"], raw["streams_compared"],
                    raw["members_compared"], raw["qpdf_check_errors"],
-                   raw["values_compared"], raw.get("annotations_compared", 0))
+                   raw["values_compared"], raw.get("annotations_compared", 0),
+                   raw.get("reachable_compared", 0), raw.get("reachable_ms", 0))
 
 
 class _Disagreement(Exception):
@@ -555,11 +565,15 @@ class _Stats:
     qpdf_errors: int = 0
     values: int = 0
     annotations: int = 0
+    reachable: int = 0
+    reachable_seconds: float = 0.0
 
     def fields(self) -> dict[str, Any]:
         return {"encrypted": self.encrypted, "streams_compared": self.streams,
                 "members_compared": self.members, "qpdf_check_errors": self.qpdf_errors,
-                "values_compared": self.values, "annotations_compared": self.annotations}
+                "values_compared": self.values, "annotations_compared": self.annotations,
+                "reachable_compared": self.reachable,
+                "reachable_ms": round(1000 * self.reachable_seconds)}
 
 
 def _compare(data: bytes, workdir: Path, inv: Inventory, stats: _Stats) -> None:
@@ -711,6 +725,8 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         _pages_agree(doc, path, inv.pages[revision], revision, encrypted, stats)
         _embedded_files_agree(doc, libqpdf, inv.trees[revision], revision, encrypted, stats)
         _annotations_agree(doc, blob, inv.annotations[revision], revision, stats)
+        _reachable_agree(blob, path, inv.labels[revision], revision,
+                         () if encrypted else undecoded, stats)
     _dead_bodies_agree(data, inv, listed)
     warnings = _mupdf_templates()
     if warnings:
@@ -886,6 +902,170 @@ def _annotations_agree(doc: pymupdf.Document, blob: bytes,
         return _Disagreement(check, revision, number, templates=(what,))
     gate_warnings()
     stats.annotations += compare_annotations(doc, blob, annotations, fail, gate_warnings)
+
+
+def _reachable_agree(blob: bytes, path: Path, labels: RevisionLabels | None, revision: int,
+                     undecoded: Collection[int], stats: _Stats) -> None:
+    """The revision's reachable objects (ADR 0011 item 5; coordinator
+    decision Q5, 2026-10-15): ours, exactly, against what each reader
+    keeps when it writes the revision with unused objects dropped -- MuPDF
+    garbage-collecting (`tobytes(garbage=1)`: numbers kept, the written
+    table's in-use entries) and libqpdf in QDF mode (each object's
+    `%% Original object ID` comment), every stream's data as it is. A
+    writer drops what it rewrites, though its reader reads it: a stream's
+    indirect /Length (both write it direct), the trailer's /Encrypt (both
+    write the revision unencrypted) and /ID (qpdf writes a new one, MuPDF a
+    new second element) and, in qpdf, a stream's /DecodeParms without
+    /Filter -- a key libqpdf reads as written (it is in the stream's
+    dictionary as libqpdf reads it, its reference resolved; the value
+    comparison checks it), which its writer drops because no filter uses
+    it. Those references are added back as each reader reads
+    them, and each such target must hold no reference of its own (an
+    integer /Length on an unflagged file): otherwise the reader's set is
+    not exact there and the comparison fails closed. The 3a-7e spike
+    (ADR 0011's notes) found the rest is every reference from the
+    trailer, /Parent included, and nothing else."""
+    if labels is None:  # no page list: flagged, never reached unflagged
+        raise _Disagreement(Check.REACHABLE, revision, templates=("no labels",))
+    started = time.perf_counter()
+    ours = labels.reachable
+    for name, theirs in (("mupdf", _mupdf_reachable(blob)),
+                         ("libqpdf", _libqpdf_reachable(path, undecoded, revision))):
+        if theirs is None:
+            raise _Disagreement(Check.REACHABLE, revision, templates=(name, "not exact"))
+        if theirs != ours:
+            raise _Disagreement(Check.REACHABLE, revision, min(theirs ^ ours), templates=(name,))
+    stats.reachable += 1
+    stats.reachable_seconds += time.perf_counter() - started
+
+
+_WRITTEN_TAIL = re.compile(rb"startxref\r?\n(\d+)\r?\n%%EOF\s*\Z")
+_WRITTEN_TABLE = re.compile(rb"xref\r?\n")
+_TABLE_SUBSECTION = re.compile(rb"(\d+) (\d+)\r?\n")
+_TABLE_ENTRY = re.compile(rb"\d{10} \d{5} ([nf])(?: \r| \n|\r\n)")
+
+
+def _in_use(written: bytes) -> set[int]:
+    """The in-use numbers of the one classic table MuPDF wrote: the one
+    its final startxref names (a stream's data may hold a table too, an
+    embedded PDF's), with no /Prev."""
+    tail = _WRITTEN_TAIL.search(written, max(0, len(written) - 64))
+    if tail is None:
+        raise ValueError("no startxref")
+    head = _WRITTEN_TABLE.match(written, int(tail.group(1)))
+    trailer = written.find(b"trailer", head.end()) if head is not None else -1
+    if head is None or trailer < 0 or b"/Prev" in written[trailer:tail.start()]:
+        raise ValueError("not one classic table")
+    found: set[int] = set()
+    at = head.end()
+    while (sub := _TABLE_SUBSECTION.match(written, at)) is not None:
+        first, count = int(sub.group(1)), int(sub.group(2))
+        at = sub.end()
+        for i in range(count):
+            entry = _TABLE_ENTRY.match(written, at)
+            if entry is None:
+                raise ValueError("malformed table")
+            if entry.group(1) == b"n" and first + i:
+                found.add(first + i)
+            at = entry.end()
+    return found
+
+
+def _refs_in(text: bytes) -> list[PdfRef]:
+    """Every reference in one value as a reader prints it."""
+    value = ObjectParser(text).parse_value_at(0, len(text)).value
+    found: list[PdfRef] = []
+    stack: list[PdfValue] = [value] if value is not None else []
+    while stack:
+        item = stack.pop()
+        if isinstance(item, PdfRef):
+            found.append(item)
+        elif isinstance(item, PdfDict):
+            stack.extend(v for _, v in item.entries)
+        elif isinstance(item, PdfArray):
+            stack.extend(item.items)
+    return found
+
+
+def _mupdf_reachable(blob: bytes) -> set[int] | None:
+    """MuPDF's reachable set (_reachable_agree), from a document of its
+    own: its writer rewrites /Length, /Encrypt and /ID in the document it
+    writes, so they are read first."""
+    with pymupdf.open(stream=blob, filetype="pdf") as doc:
+        rewritten: dict[int, list[PdfRef]] = {}  # holder (-1: the trailer) -> references
+        # /Encrypt: written unencrypted. /ID: MuPDF writes a new second
+        # element (a direct /ID [6 0 R 7 0 R] keeps 6, drops 7).
+        rewritten[-1] = []
+        for key in ("Encrypt", "ID"):
+            kind, value = doc.xref_get_key(-1, key)
+            if kind != "null":
+                rewritten[-1] += _refs_in(value.encode("latin-1"))
+        for number in range(1, doc.xref_length()):
+            if doc.xref_is_stream(number):
+                kind, value = doc.xref_get_key(number, "Length")
+                if kind == "xref":
+                    rewritten[number] = _refs_in(value.encode("latin-1"))
+        for ref in (r for refs in rewritten.values() for r in refs):
+            if _refs_in(doc.xref_object(ref.num, compressed=True).encode("latin-1")):
+                return None
+        kept = _in_use(doc.tobytes(garbage=1))
+    return kept | {r.num for holder, refs in rewritten.items()
+                   if holder == -1 or holder in kept for r in refs}
+
+
+def _pike_refs(*values: Any) -> list[tuple[int, int]]:
+    """Every reference in libqpdf values (their direct parts walked; a
+    value that is itself a reference is one)."""
+    found: list[tuple[int, int]] = []
+    stack = list(values)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, pikepdf.Object) and item.is_indirect:
+            found.append(item.objgen)
+        elif isinstance(item, pikepdf.Stream):
+            stack.extend(item.stream_dict.values())
+        elif isinstance(item, pikepdf.Dictionary):
+            stack.extend(item.values())
+        elif isinstance(item, pikepdf.Array):
+            stack.extend(item)
+    return found
+
+
+def _libqpdf_reachable(path: Path, undecoded: Collection[int], revision: int) -> set[int] | None:
+    """libqpdf's reachable set (_reachable_agree), from an instance of its
+    own (no page-attribute pushing, which makes new objects), its
+    warnings gated like the first's."""
+    libqpdf = _Libqpdf(path, undecoded)
+    try:
+        pdf = libqpdf.pdf
+        out = io.BytesIO()
+        pdf.save(out, qdf=True, object_stream_mode=pikepdf.ObjectStreamMode.disable,
+                 compress_streams=False, stream_decode_level=pikepdf.StreamDecodeLevel.none,
+                 fix_metadata_version=False, preserve_pdfa=False)
+        kept = {(int(n), int(g)) for n, g in re.findall(
+            rb"(?m)^%% Original object ID: (\d+) (\d+)$", out.getvalue())}
+        rewritten: list[tuple[int, int]] = []
+        # qpdf writes a new /ID; both write the revision unencrypted.
+        rewritten += _pike_refs(pdf.trailer.get("/Encrypt"), pdf.trailer.get("/ID"))
+        for objgen in sorted(kept):
+            held = pdf.get_object(objgen)
+            if not isinstance(held, pikepdf.Stream):
+                continue
+            stream = held.stream_dict
+            rewritten += _pike_refs(stream.get("/Length"))
+            if "/Filter" not in stream:
+                rewritten += _pike_refs(stream.get("/DecodeParms"))
+        for objgen in rewritten:
+            held = pdf.get_object(objgen)
+            inside = (held.stream_dict.values() if isinstance(held, pikepdf.Stream)
+                      else held.values() if isinstance(held, pikepdf.Dictionary)
+                      else held if isinstance(held, pikepdf.Array) else ())
+            if _pike_refs(*inside):
+                return None
+        _no_libqpdf_warning(libqpdf, revision)
+        return {number for number, _ in kept} | {number for number, _ in rewritten}
+    finally:
+        libqpdf.close()
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,
@@ -1093,6 +1273,24 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         {a.number for found in inv.annotations[1:] for a in (found or ())
          if a.synthesized and a.widget and a.number is not None} - widgets_now)
 
+    # Labels (3a-7e-1, ADR 0011 item 5): the current revision's STRUCTURAL
+    # streams by kind; hint streams whose linearization /L is stale (an
+    # updated file: coordinator decision Q8, counted apart); revisions
+    # without labels; and the reference graph's work (item 7).
+    current_labels = inv.labels[0] if inv.labels else None
+    by_kind: dict[StructuralKind, int] = {kind: 0 for kind in StructuralKind}
+    for records in (current_labels.structural.values() if current_labels else ()):
+        for label in {record.kind for record in records}:
+            by_kind[label] += 1
+    for label, count in by_kind.items():
+        out[f"structural_{label.value}"] = count
+    out["hint_stream_stale"] = int(by_kind[StructuralKind.HINT_STREAM] > 0
+                                   and length != len(data))
+    out["labels_missing"] = sum(1 for found in inv.labels if found is None)
+    out["reachable_current"] = len(current_labels.reachable) if current_labels else 0
+    out["graph_work"] = inv.graph_work
+    out |= drawing_measures(data, inv)
+
     # Dead bodies, and dead object streams (#46 item 4: not decoded).
     dead = [u for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY]
     out["dead_bodies"] = len(dead)
@@ -1101,6 +1299,197 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         and isinstance(value := parsed(u.ref.start), PdfDict)
         and isinstance(kind := value.get(b"Type"), PdfName) and kind.raw == b"ObjStm")
     return out
+
+
+def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
+    """3a-7e-2 (ADR 0011 item 5), integers only. The current revision:
+    its live streams, DRAWABLE and ORPHANED; per body across revisions:
+    streams, drawable, structural, both, orphaned; orphans for the verdict
+    that the current revision does not call orphaned (older bodies, dead
+    bodies) and the converse (labelled only in an older revision).
+    Orphans by class, informational: each orphaned stream live in the
+    current revision by the use kind of the path that first reaches it
+    from the trailer (graph.UseKind, the nearest listed key on it:
+    thumbnail, piece_info, appearance, properties, ...), else referenced
+    only by objects nothing reaches (``unreachable_source``) or by nothing
+    (``unreferenced``); an object stream home to no live entry
+    (``objstm``); the verdict's dead and older bodies. The /Metadata
+    streams orphaned on an annotation or an ICC profile (both fail closed
+    today; the /Metadata allowlist's cost, for 3a-7e-3). And
+    the closure gap: streams MuPDF lists on the current revision's pages
+    -- each page's contents, its images and their soft masks
+    (get_images(full=True), form XObjects' included), its form XObjects,
+    and pdf_annot_ap of each annotation we do not call synthesized --
+    that we do not label DRAWABLE (measured, never widened into the
+    lists: ADR 0011's Q2 note)."""
+    out: dict[str, int] = {}
+    current = inv.labels[0] if inv.labels else None
+    live = inv.bodies_by_number(0)
+    streams = {ref for ref in live.values() if ref.within is None and ref.start in inv.stream_data}
+    orphans = inv.orphaned(0)
+    out["streams_current"] = len(streams)
+    out["drawable_current"] = len(current.drawable) if current is not None else 0
+    out["orphaned_current"] = len(orphans)
+    bodies = inv.body_labels
+    out["bodies_streams"] = len(bodies)
+    out["bodies_drawable"] = sum(1 for b in bodies.values() if b.drawable)
+    out["bodies_structural"] = sum(1 for b in bodies.values() if b.structural)
+    out["bodies_drawable_structural"] = sum(1 for b in bodies.values()
+                                            if b.drawable and b.structural)
+    verdict = {unit for unit, b in bodies.items() if b.orphaned}
+    out["bodies_orphaned"] = len(verdict)
+    out["orphaned_older_only"] = len(verdict - orphans)
+    out["orphaned_current_labelled_older"] = len(orphans - verdict)
+    classes: dict[str, int] = {}
+
+    def count(name: str) -> None:
+        classes[name] = classes.get(name, 0) + 1
+    for unit in verdict - orphans:
+        count("dead_body" if unit.kind is UnitKind.DEAD_BODY else "older_body")
+    # From the trailer, breadth first over references resolving in the
+    # current revision: each object's use kind, the nearest listed one on
+    # the path that first reaches it (graph.use_kind; OTHER inherits its
+    # holder's, so a /PieceInfo dictionary's private streams are piece_info).
+    orphan_numbers = {unit.obj for unit in orphans}
+    kind: dict[int, str] = {}
+    metadata: dict[int, list[int]] = {}  # an orphan's reachable /Metadata holders
+    queue: deque[int] = deque()
+
+    def resolves(number: int, gen: int) -> bool:
+        entry = inv.entry(number, 0)
+        return number in live and (entry[2] if entry is not None and entry[0] == 1 else 0) == gen
+    for edge in (inv.graph.trailers[0] if inv.graph.trailers else ()):
+        if resolves(edge.num, edge.gen) and edge.num not in kind:
+            kind[edge.num] = edge.kind.value
+            queue.append(edge.num)
+    referenced: set[int] = set()
+    while queue:
+        number = queue.popleft()
+        for edge in inv.graph.edges.get(live[number], ()):
+            if not resolves(edge.num, edge.gen):
+                continue
+            if edge.num in orphan_numbers and edge.path and edge.path[-1] == b"Metadata":
+                metadata.setdefault(edge.num, []).append(number)
+            if edge.num not in kind:
+                use = edge.kind.value
+                kind[edge.num] = kind[number] if use == "other" else use
+                queue.append(edge.num)
+    for number, ref in live.items():  # references from objects nothing reaches
+        if number not in kind:
+            referenced.update(e.num for e in inv.graph.edges.get(ref, ()))
+    annotations = ({a.number for a in (inv.annotations[0] or ()) if a.number is not None}
+                   if inv.annotations else set())
+    drawable = current.drawable if current is not None else frozenset()
+    parser = ObjectParser(data)
+    ends = {u.ref.start: u.spans[0].end for u in inv.units
+            if u.ref.within is None and u.ref.kind is UnitKind.OBJECT}
+
+    def value_of(number: int) -> PdfValue | None:
+        ref = live.get(number)
+        if ref is None or ref.within is not None:
+            return None
+        obj = parser.parse_indirect_at(ref.start, ends.get(ref.start, len(data)))
+        return obj.value if obj is not None else None
+    meta = {"annotation": 0, "icc": 0, "other": 0}
+    for unit in orphans:
+        number = unit.obj if unit.obj is not None else -1
+        value = value_of(number)
+        if isinstance(value, PdfDict) and _name_of(value.get(b"Type")) == b"ObjStm":
+            count("objstm")
+        elif number in kind:
+            count(kind[number])
+        else:
+            count("unreachable_source" if number in referenced else "unreferenced")
+        for holder_number in metadata.get(number, [])[:1]:
+            holder = value_of(holder_number)
+            if holder_number in annotations or (isinstance(holder, PdfDict)
+                                                and _name_of(holder.get(b"Type")) == b"Annot"):
+                meta["annotation"] += 1
+            elif (live.get(holder_number) in drawable and isinstance(holder, PdfDict)
+                  and isinstance(holder.get(b"N"), PdfInt) and holder.get(b"Subtype") is None
+                  and holder.get(b"FunctionType") is None):
+                meta["icc"] += 1
+            else:
+                meta["other"] += 1
+    for name, n in classes.items():
+        out[f"orphan_class_{name}"] = n
+    for name, n in meta.items():
+        out[f"orphan_metadata_{name}"] = n
+    out |= _closure_gap(data, inv, drawable)
+    return out
+
+
+def _name_of(value: PdfValue | None) -> bytes | None:
+    return value.raw if isinstance(value, PdfName) else None
+
+
+def _closure_gap(data: bytes, inv: Inventory, drawable: frozenset[UnitRef]) -> dict[str, int]:
+    """Streams MuPDF lists on the current revision's pages that are not
+    DRAWABLE, by listing (see drawing_measures); not listed (no keys)
+    without a page list or labels, or when MuPDF reads another page count
+    or the file is encrypted."""
+    found: dict[str, set[int]] = {"contents": set(), "images": set(), "xobjects": set(),
+                                  "annotations": set()}
+    pages = inv.pages[0] if inv.pages else None
+    if pages is None or not inv.labels or inv.labels[0] is None:
+        return {}
+    stored = {(a.page, a.number) for a in (inv.annotations[0] or ())
+              if not a.synthesized and a.number is not None}
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        if mupdf_encrypted(doc) or doc.page_count != len(pages):
+            return {}
+        for index, page in enumerate(doc):
+            found["contents"] |= set(page.get_contents())
+            found["images"] |= {n for img in page.get_images(full=True) for n in img[:2] if n}
+            found["xobjects"] |= {xo[0] for xo in page.get_xobjects() if xo[0]}
+            for annot in _annots(page):
+                number = M.pdf_to_num(M.pdf_annot_obj(annot))
+                if (index, number) in stored:
+                    found["annotations"].add(_drawn_stream(M.pdf_annot_ap(annot)))
+    drawn = {unit.obj for unit in drawable}
+    listed: set[int] = set()
+    gap: set[int] = set()
+    out: dict[str, int] = {}
+    for name, held in found.items():
+        held.discard(0)
+        listed |= held
+        missing = set()
+        for n in held:
+            body = inv.body(n, 0)
+            if n not in drawn and body is not None and body.start in inv.stream_data:
+                missing.add(n)
+        out[f"closure_gap_{name}"] = len(missing)
+        gap |= missing
+    out["mupdf_listed"] = len(listed)
+    out["closure_gap"] = len(gap)
+    return out
+
+
+M = pymupdf.mupdf
+
+
+def _annots(page: pymupdf.Page) -> list[Any]:
+    """MuPDF's annotation list on a page: annotations, then widgets."""
+    raw = M.pdf_page_from_fz_page(page.this)
+    found = []
+    annot = M.pdf_first_annot(raw)
+    while annot.m_internal:
+        found.append(annot)
+        annot = M.pdf_next_annot(annot)
+    widget = M.pdf_first_widget(raw)
+    while widget.m_internal:
+        found.append(widget)
+        widget = M.pdf_next_widget(widget)
+    return found
+
+
+def _drawn_stream(obj: Any) -> int:
+    """The number of the stream MuPDF draws for *obj* (pdf_annot_ap's
+    answer): a reference to a stream, one reference away -- pdf_is_stream
+    follows no chain, and MuPDF then draws nothing (0)."""
+    if obj.m_internal and M.pdf_is_indirect(obj) and M.pdf_is_stream(obj):
+        return int(M.pdf_to_num(obj))
+    return 0
 
 
 def regions(inv: Inventory) -> dict[str, dict[str, int]]:

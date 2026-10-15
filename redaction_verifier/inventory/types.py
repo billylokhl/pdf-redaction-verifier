@@ -10,6 +10,7 @@ from typing import Final, TypeAlias
 from ..ledger import Flag, Span, Unit, UnitKind, UnitRef
 from .annotations import Annotations, Synthesized
 from .graph import Graph
+from .labels import ORPHAN, BodyLabels, RevisionLabels
 from .pages import Page
 from .trees import Trees
 
@@ -90,7 +91,16 @@ class Inventory:
     ``annotations``: each revision's annotations as MuPDF lists them, each
     classified synthesized or not (3a-7d), None where the page list is;
     ``synthesized``: each revision's SYNTHESIZED units (ADR 0011 item 5):
-    no bytes, UNEXAMINED, charged to the unit cap."""
+    no bytes, UNEXAMINED, charged to the unit cap; ``labels``: each
+    revision's reachable objects and STRUCTURAL streams (3a-7e, labels.py),
+    None where it has no page list or the budget ran out; a revision that
+    reads nothing new shares its predecessor's (by identity). Labels add
+    no flag (owner decision R3). ``graph_work``: the work the reference
+    graph's stages charged, from the edges to the labels (ADR 0011 item
+    7), for measurement only. ``body_labels``: every stream body's labels
+    across the revisions it lives in (3a-7e-2: DRAWABLE, STRUCTURAL kinds,
+    ORPHANED when neither), by body, never by object number; empty when
+    the budget ran out (``labels_of`` then reads ORPHAN)."""
 
     size: int
     tiling: Tiling
@@ -107,6 +117,9 @@ class Inventory:
     trees: tuple[Trees | None, ...]
     annotations: tuple[Annotations | None, ...]
     synthesized: tuple[tuple[Synthesized, ...], ...]
+    labels: tuple[RevisionLabels | None, ...]
+    graph_work: int
+    body_labels: dict[UnitRef, BodyLabels]
 
     def entry(self, number: int, revision: int = 0) -> tuple[int, int, int] | None:
         """Object *number*'s xref entry (kind, a, b) in *revision*."""
@@ -135,3 +148,27 @@ class Inventory:
         """Every object number with a body in *revision*, and that body."""
         found = {n: self.body(n, revision) for n in self.entries}
         return {n: ref for n, ref in found.items() if ref is not None}
+
+    def labels_of(self, unit: UnitRef) -> BodyLabels:
+        """A stream body's labels across revisions (ORPHAN when none, or
+        when the budget ran out before they were gathered)."""
+        return self.body_labels.get(unit, ORPHAN)
+
+    def orphaned(self, revision: int = 0) -> frozenset[UnitRef]:
+        """The streams live in *revision* that it gives no other label
+        (ADR 0011 item 5, ORPHANED, per revision): every live stream when
+        the revision has no labels. Derived on each call, not kept, in time
+        linear in the file's object numbers (``bodies_by_number``) -- outside
+        the work budget: a consumer reading every revision of a file with
+        many revisions pays O(R x entries) this way; ``body_labels`` (per
+        body, built once and charged) is the verdict's input instead."""
+        live = {ref for ref in self.bodies_by_number(revision).values()
+                if ref.within is None and ref.start in self.stream_data}
+        found = self.labels[revision] if revision < len(self.labels) else None
+        if found is None:
+            return frozenset(live)
+        live -= found.drawable
+        live -= found.object_streams
+        live.difference_update(found.by_key, found.xref_streams[:found.xref_count])
+        live.discard(found.hint)
+        return frozenset(live)

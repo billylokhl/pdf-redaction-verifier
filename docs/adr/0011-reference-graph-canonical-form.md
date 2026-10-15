@@ -532,6 +532,210 @@ Recorded with the implementation; item 5's rule is unchanged.
   own is 3b's, which holds unit statuses -- not 3a-7e's, which adds only
   labels.
 
+### Notes on items 5 and 8 (2026-10-15, 3a-7e-1; not an amendment)
+
+Recorded with the implementation of reachable and `STRUCTURAL`
+(`redaction_verifier/inventory/labels.py`); item 5's rule is unchanged.
+
+- **Reachable follows `/Parent`** (coordinator decision 2026-10-15; owner
+  informed). Item 4 calls `/Parent` a back edge, not a use, and item 5's
+  Reachable says "every object a modeled edge reaches". Reachable follows
+  every edge item 4 collects, `/Parent` included, whatever its use kind:
+  both readers do (a field reached only through a widget's `/Parent` is
+  kept by both writers), so Reachable is exactly the readers' reading.
+- **The gate compares it** (coordinator decision Q5, 2026-10-15): the
+  oracle's `Check.REACHABLE`, per revision of an unflagged file, ours
+  exactly against what each reader keeps when it writes the revision with
+  unused objects dropped -- MuPDF `tobytes(garbage=1)` (numbers kept; the
+  written table's in-use entries) and libqpdf in QDF mode (its `%%
+  Original object ID` comments; opened without pushing page attributes,
+  which makes new objects; stream data and metadata left as they are). The
+  3a-7e spike found both keep exactly every object a reference reaches
+  from the trailer -- `/Info` and keys no reader names included -- and
+  drop cross-reference and object streams, the linearization dictionary,
+  the hint stream, free entries and dead bodies; and that a writer drops
+  what it rewrites although its reader reads it: a stream's indirect
+  `/Length` (both write it direct), the trailer's `/Encrypt` (both write
+  the revision unencrypted), the trailer's `/ID` (qpdf writes a new one,
+  MuPDF a new second element; two corpus files hold it by reference), and
+  in qpdf a stream's `/DecodeParms` without `/Filter` -- which libqpdf
+  reads as written (it is in the stream's dictionary as libqpdf reads it,
+  its reference resolved, and the value comparison checks it), but its
+  writer drops, since no filter uses it. The oracle adds those references back as each
+  reader reads them; a target that holds references of its own makes the
+  reader's set inexact there, and the check fails closed rather than
+  allowing it. A reference to an object whose value is null (both writers
+  drop it) already disagrees on the object's value. Known gap, failing
+  closed: MuPDF's writer never writes an object stream, so an object
+  stream a reference reaches (the catalog naming one, say) is in our set
+  and not MuPDF's -- a disagreement on an unflagged file (no corpus or
+  case-library file has one). Measured: both
+  readers' sets equal ours on every unflagged revision of the corpus
+  (2,080) and the case library (516).
+- **An in-use `/ObjStm` home to no live compressed entry gets no label**
+  (coordinator decision Q4): it is not structural by the chain, so it is
+  orphaned once 3a-7e-2 labels orphans (the dead object streams the
+  corpus has are in flagged files).
+- **The hint stream of an updated linearized file whose `/L` is stale is
+  `STRUCTURAL`** as item 5 says (coordinator decision Q8): the pair is
+  canonical (owner decision 7); the measurement counts these files
+  separately. The hint stream is the one `/H`'s first offset names, and
+  only in a revision where nothing reachable references it (item 5's
+  "nothing references it": an `/H` naming a page's content stream labels
+  nothing); an overflow hint stream (`/H`'s second pair) gets no label,
+  failing closed.
+- **Labels' memory is bounded** (the review of #153). What a revision's
+  labels keep that is new -- a reachable set, by-key records, an
+  object-stream set, the revision's record; the cross-reference streams
+  are one list shared by every revision -- is charged to the work budget
+  at least its size in bytes, so labels keep at most one byte per unit of
+  work, at most the budget's 64 per byte of the file (DESIGN.md,
+  "Bounded resources"; measured 0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per byte of the file).
+- **Item 5's keys only on the holders it names** (the review of #153;
+  coordinator-requested, an interpretation of item 5). `/JS` only on an
+  action whose `/S` is `/JavaScript`; `/EF` only on a file specification
+  (`/Type /Filespec`, required with `/EF`); `/Metadata` only on a holder
+  whose `/Type` is one of `Catalog`, `Pages`, `Page`, `Template`, `Font`,
+  `FontDescriptor`, `EmbeddedFile`, `Filespec`, `StructTreeRoot`,
+  `StructElem`, `OCG`, `XObject`, or an image or form XObject (the
+  allowlist is kept as is: coordinator decision, round 2); and never on a
+  holder drawn by name -- a resource-category or `/CharProcs` dictionary,
+  or an appearance (`/AP`'s `/N`, `/D`, `/R`, the state dictionary `/AS`
+  names entries of, and each state), written at such a place or named at
+  one by any reachable reference (a Type 3 glyph, a shading or an
+  appearance state named `/JS` is drawn, not a script). Any other holder:
+  no label, failing closed.
+- **What a `STRUCTURAL` record holds.** Its kind, the reachable object
+  whose key reached it and that key (or the chain): the walk's conditions
+  only. The condition that the kind's decoder parses the whole stream is
+  checked where the decoder runs (3b's registry), so a record is a
+  candidate until then. `/EF` and the catalog's `/OutputIntents` (the
+  array and its items) may be references; `/Subtype` is read through one
+  reference, and anything still unread fails closed.
+
+### Notes on item 5 (2026-10-15, 3a-7e-2; not an amendment)
+
+Recorded with the implementation of `DRAWABLE`, `ORPHANED` and per-body
+labels (`redaction_verifier/inventory/drawable.py`, `labels.py`); item 5's
+rule is unchanged.
+
+- **A colour-space array's elements** (coordinator decision 2026-10-15;
+  owner informed; measured gaps go to notes, never silent widening).
+  Item 5's "every element of its array" names no role for an element.
+  Each is followed as a colour space; in a dictionary or stream reached
+  that way, only `/Functions` (each a function), `/Colorants` (each entry
+  a colour space) and `/Process` (its `/ColorSpace`) are followed. So an
+  ICC profile's `/Alternate` and `/Metadata`, and a function's other keys,
+  lead nowhere drawable and fail closed.
+  **Measured gap** (the review of #158; recorded, not widened): MuPDF
+  draws an ICC profile's `/Alternate` when the profile is broken
+  ("ignoring broken ICC profile"). A Separation's tint function there,
+  or an Indexed lookup there, is drawn by MuPDF -- its drawing changes
+  with the stream -- while we label it `ORPHANED`. That fails closed (an
+  orphan is `FLAGGED`), so it costs a verdict, never a miss.
+- **The drawn appearance** (coordinator decision Q3).
+  `Annotation.appearance` records the stream MuPDF draws for an
+  annotation it does not synthesize: a stream `/AP /N`, or the stream
+  that `/AS` names in an `/N` state dictionary. A stream counts only one
+  reference away: MuPDF's `pdf_is_stream` follows no chain, while
+  dictionaries and names (`/AP`, an `/N` dictionary, `/AS`) are read
+  through up to nine references (the review of #158). An `/N` naming an
+  object whose value is a reference to a stream is no stream: MuPDF
+  synthesizes that annotation (3a-7d called it stored, its unit missing;
+  fixed here). A state entry so given draws nothing ("content stream is
+  not a stream"): not synthesized, no appearance. The field is pinned
+  against `pdf_annot_ap` with `pdf_is_stream` on every 3a-7d
+  classification fixture and on chains at `/AS`, `/AP`, `/N` and a state
+  entry, a signed signature field's stored appearance included; the
+  classification of chains at `/N`, a state entry and `/AS`, with and
+  without `/NeedAppearances`, against MuPDF's drawing. A synthesized
+  annotation, and an `/AS` entry that is not a stream, have none. The
+  walk starts there, so it never re-derives MuPDF's `/AS` and reference
+  rules.
+- **Roles decided by a value**, as MuPDF reads them (each pinned by
+  MuPDF's drawing; names read through up to nine references, as MuPDF
+  resolves a name).
+  - An XObject is a form or an image by its `/Subtype`; on a `/Form`, a
+    `/Subtype2`, when present, replaces it (MuPDF's `Do` operator:
+    `/Subtype2 /Image` draws an image, `/Subtype2 /PS` nothing, "ignoring
+    XObject with subtype PS"; on an `/Image` it is ignored). It is either
+    only when it is a stream, since MuPDF draws no other. An XObject that
+    is neither is itself `DRAWABLE` (the upper bound) and follows
+    nothing.
+  - A font is Type3 as MuPDF's `pdf_load_font` decides: `/Subtype
+    /Type3`, or a `/Subtype` other than `Type0`, `Type1`, `MMType1` and
+    `TrueType` (or none) with `/CharProcs` ("unknown font format,
+    guessing type3"). Only a Type3 font follows `/CharProcs` and
+    `/Resources`. A Type0 font's descendant is a CID font, never Type3.
+    (The scopes' side, a guessed Type3 needing `/Resources`, is issue
+    #159.)
+  - A halftone is type 5 by its `/HalftoneType`.
+  - A value the walk cannot read gets the narrower reading, failing
+    closed: one past nine references, or a direct font or halftone inside
+    an array. That is an XObject that follows nothing, a font that is not
+    Type3, a halftone that is not type 5.
+- **Wider than MuPDF** (the review of #158; for 3b and 4a/4b: `DRAWABLE`
+  is item 5's upper bound, not "used"). MuPDF 1.28 never draws with, and
+  but for `/TR` never loads: a graphics state's `/TR`, `/TR2`, `/BG`,
+  `/UCR`, `/HT` (type 6 halftone streams included); a DeviceN
+  `/Colorants` and `/Process`; a shading pattern's `/ExtGState`;
+  `/JBIG2Globals` without `/JBIG2Decode`; a font descriptor's `/CIDSet`;
+  and the `/AcroForm /DR` fonts of a `/NeedAppearances` text widget (it
+  draws built-in Helvetica). The lists stay as item 5 gives them; a
+  decoder or a content run must not take `DRAWABLE` for drawn.
+- **How the lists are read.**
+  - A direct value is read in place.
+  - A function given as an array (a shading's `/Function`, `/TR`) is
+    each element; an image's `/DecodeParms` array is each element; a
+    graphics state's `/Font` array `[font size]` is its font.
+  - `/Group` is the page's own, never inherited, as MuPDF reads it.
+  - A page's inherited `/Resources` comes from the ancestor holding it.
+  - `/AcroForm /DR` joins a revision's closure when any annotation in that
+    revision is synthesized.
+  - Glyphs, content streams and font programs are drawn as they are:
+    their own keys are not followed.
+- **A stream both `STRUCTURAL` and `DRAWABLE`** keeps both labels, and is
+  drawable for 3b: every label's decoder runs and the worst status wins
+  (the plan's 3a-7e entry).
+- **Per body.** `Inventory.body_labels` holds each stream body's labels
+  across the revisions it lives in, by body, never by number. A body is
+  `ORPHANED` for the verdict when no revision it lives in gives it
+  another label. That includes a dead body, a body no live entry names,
+  and a body living only in revisions without labels (no page list).
+  Per revision, `ORPHANED` is derived (`Inventory.orphaned`), not stored.
+- **Found while implementing (measured on the 1,920 unflagged corpus
+  files; each fails closed, none widens a list).**
+  - The closure gap, as measured, is 0. MuPDF lists 5,875 streams on the
+    current revisions' pages: contents, images and their soft masks, form
+    XObjects, and drawn appearances. Every one is `DRAWABLE`. The case
+    library and the fuzz set have no gap either. The measure does not see
+    colour spaces, fonts, patterns or shadings (PyMuPDF lists none of
+    their streams), so it cannot show the ICC `/Alternate` gap above.
+  - Orphans in the current revisions: 294 files, 3,056 streams. Each is
+    classed by the use kind of the path that first reaches it from the
+    trailer:
+    - thumbnails: 194 files;
+    - `/PieceInfo` private data: 195;
+    - unreferenced, or referenced only by objects nothing reaches: 82
+      (the prototype's 82);
+    - an appearance not drawn (an `/AP` state, or a widget on no page):
+      24;
+    - object streams that are home to no live entry now: 24. Each was
+      structural in an older revision, so none is an orphan for the
+      verdict;
+    - `/Properties` entries holding forms or `/Contents`: 16.
+      Marked-content property lists, which item 5 excludes;
+    - `/AcroForm /DR` XObjects and fonts with no annotation synthesized:
+      4;
+    - an image's soft mask inside `/PieceInfo`: 1.
+  - For the verdict, per body across revisions: 242 files, 2,513 bodies.
+    In 52 of the 294 files every current orphan is labelled in an older
+    revision it lives in; over the corpus that is 544 bodies in 86 files
+    (item 5's "Across revisions"; decision D's stricter reading is 4b's).
+  - No `/Metadata` stream is orphaned on an annotation or an ICC profile
+    (corpus, case library and fuzz). This is a number for 3a-7e-3's
+    briefing.
+
 ## Owner decisions
 
 Decided 2026-10-04, every one as recommended.
