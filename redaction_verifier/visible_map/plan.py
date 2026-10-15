@@ -126,6 +126,29 @@ class MapPlan:
         return sorted({b.page for b in self.boxes})
 
 
+def code_scope(occurrences: list[tuple[str, int | None]]) -> list[str]:
+    """Each warning code once, with the pages its occurrences name ("CODE
+    p.3"), and "and document-wide" when any occurrence names no page, so
+    a code seen both on a page and for the whole document never reads as
+    limited to that page."""
+    pages: dict[str, set[int]] = {}
+    unpaged: set[str] = set()
+    for code, page in occurrences:
+        pages.setdefault(code, set())
+        if page is None:
+            unpaged.add(code)
+        else:
+            pages[code].add(page)
+    out = []
+    for code in sorted(pages):
+        if not pages[code]:
+            out.append(code)
+        else:
+            wide = " and document-wide" if code in unpaged else ""
+            out.append(f"{code} {page_ranges(sorted(pages[code]))}{wide}")
+    return out
+
+
 def ordinal(n: int) -> str:
     return f"{n}{'th' if 10 <= n % 100 <= 20 else _ORDINAL.get(n % 10, 'th')}"
 
@@ -797,16 +820,10 @@ class Planner:
                 f"{plan.cropped} page{'s have' if plan.cropped != 1 else ' has'} area outside "
                 "the crop; images there not checked")
         warns = self.report.get("warnings", [])
-        incomplete: dict[str, set[int]] = {}
-        for w in warns:
-            code = w.get("code", "")
-            if headline.code_level(code, w.get("storage")) in ("page", "document", "scope"):
-                pages = incomplete.setdefault(code, set())
-                if w.get("page") is not None:
-                    pages.add(w["page"])
-        for code in sorted(incomplete):
-            pages = incomplete[code]
-            plan.reasons.append(f"{code} {page_ranges(sorted(pages))}" if pages else code)
+        plan.reasons.extend(code_scope(
+            [(w.get("code", ""), w.get("page")) for w in warns
+             if headline.code_level(w.get("code", ""), w.get("storage"))
+             in ("page", "document", "scope")]))
         plan.listed = [Listed(*key) for key in dict.fromkeys(
             (i.section, i.page, i.label, i.note, i.detail) for i in plan.listed)]
         sections = {item.section for item in plan.listed}
