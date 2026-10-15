@@ -65,10 +65,13 @@ from redaction_verifier.inventory.flate import flate_decode
 from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBool, PdfDict,
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
+from redaction_verifier.inventory.annotations import Annotation
 from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
 from redaction_verifier.inventory.trees import Trees, key_text, qpdf_key_text
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
+
+from .annotations import compare_annotations
 
 # Per qpdf call. A huge but valid file must not become ORACLE_ERROR on a
 # short per-call limit: the oracle child sets this from its own budget
@@ -455,6 +458,8 @@ class Check(Enum):
     PAGE_LIST = "page_list"            # a revision's pages, in order (MuPDF or libqpdf)
     PAGE_ATTRIBUTE = "page_attribute"  # a page's inherited attribute (MuPDF or libqpdf)
     NAME_TREE = "name_tree"            # the /EmbeddedFiles entries (MuPDF or libqpdf)
+    ANNOTATION_LIST = "annotation_list"  # a revision's annotations, page by page (MuPDF)
+    ANNOTATION = "annotation"          # an annotation synthesized or not, as MuPDF draws it
     ORACLE_ERROR = "oracle_error"      # the comparison itself failed: nothing verified
 
 
@@ -475,6 +480,7 @@ class Agreement:
     members_compared: int = 0
     qpdf_check_errors: int = 0     # revisions where qpdf --check printed ERROR (gated)
     values_compared: int = 0       # objects and trailers compared with both readers
+    annotations_compared: int = 0  # annotations listed and classified against MuPDF (3a-7d)
 
     @property
     def agrees(self) -> bool:
@@ -495,7 +501,8 @@ class Agreement:
                 "encrypted": self.encrypted, "streams_compared": self.streams_compared,
                 "members_compared": self.members_compared,
                 "qpdf_check_errors": self.qpdf_check_errors,
-                "values_compared": self.values_compared}
+                "values_compared": self.values_compared,
+                "annotations_compared": self.annotations_compared}
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> Agreement:
@@ -503,7 +510,7 @@ class Agreement:
                    Check(raw["check"]) if raw["check"] else None, raw["revision"], raw["obj"],
                    tuple(raw["templates"]), raw["encrypted"], raw["streams_compared"],
                    raw["members_compared"], raw["qpdf_check_errors"],
-                   raw["values_compared"])
+                   raw["values_compared"], raw.get("annotations_compared", 0))
 
 
 class _Disagreement(Exception):
@@ -547,11 +554,12 @@ class _Stats:
     members: int = 0
     qpdf_errors: int = 0
     values: int = 0
+    annotations: int = 0
 
     def fields(self) -> dict[str, Any]:
         return {"encrypted": self.encrypted, "streams_compared": self.streams,
                 "members_compared": self.members, "qpdf_check_errors": self.qpdf_errors,
-                "values_compared": self.values}
+                "values_compared": self.values, "annotations_compared": self.annotations}
 
 
 def _compare(data: bytes, workdir: Path, inv: Inventory, stats: _Stats) -> None:
@@ -702,6 +710,7 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         stats.values += 1
         _pages_agree(doc, path, inv.pages[revision], revision, encrypted, stats)
         _embedded_files_agree(doc, libqpdf, inv.trees[revision], revision, encrypted, stats)
+        _annotations_agree(doc, blob, inv.annotations[revision], revision, stats)
     _dead_bodies_agree(data, inv, listed)
     warnings = _mupdf_templates()
     if warnings:
@@ -852,6 +861,30 @@ def _embedded_files_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, trees: Trees
             or qp != ours_qpdf):
         raise _Disagreement(Check.NAME_TREE, revision, templates=("EmbeddedFiles",))
     stats.values += len(ours)
+
+
+def _annotations_agree(doc: pymupdf.Document, blob: bytes,
+                       annotations: tuple[Annotation, ...] | None, revision: int,
+                       stats: _Stats) -> None:
+    """Each page's annotations as MuPDF lists them, and each one's
+    classification against MuPDF's drawing (ADR 0011 items 5 and 8,
+    owner decision 11; eval/scorecard/annotations.py). MuPDF's warnings
+    so far -- the file's own, its pages loaded and their appearances
+    synthesized -- are gated first; those it gives while loading and
+    drawing the gate's two copies are not the file's and are discarded."""
+    if annotations is None:  # the page list is flagged: never reached unflagged
+        raise _Disagreement(Check.ANNOTATION_LIST, revision, templates=("no annotations",))
+    warnings = _mupdf_templates()
+    if warnings:
+        raise _Disagreement(Check.MUPDF_WARNING, revision, templates=warnings)
+
+    def fail(what: str, number: int | None) -> Exception:
+        check = Check.ANNOTATION_LIST if what == "list" else Check.ANNOTATION
+        return _Disagreement(check, revision, number, templates=(what,))
+    try:
+        stats.annotations += compare_annotations(doc, blob, annotations, fail)
+    finally:
+        pymupdf.TOOLS.mupdf_warnings()  # the copies' warnings: discarded
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,
@@ -1038,6 +1071,17 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
             differ += 1
     out["ambiguous_equal"], out["ambiguous_differ"] = equal, differ
     out["ambiguous_unresolved"] = unresolved
+
+    # SYNTHESIZED units (3a-7d, ADR 0011 item 5): in the current revision,
+    # and those of older revisions whose body is not synthesized now.
+    current = inv.synthesized[0] if inv.synthesized else ()
+    now = {(u.body, u.index) for u in current}
+    out["synthesized_current"] = len(current)
+    out["synthesized_widgets_current"] = sum(
+        1 for a in (inv.annotations[0] or () if inv.annotations else ())
+        if a.synthesized and a.widget)
+    out["synthesized_older_only"] = len({(u.body, u.index) for units in inv.synthesized[1:]
+                                         for u in units} - now)
 
     # Dead bodies, and dead object streams (#46 item 4: not decoded).
     dead = [u for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY]
