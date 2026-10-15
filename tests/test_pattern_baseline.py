@@ -142,7 +142,11 @@ def test_aggregate_counts_files_per_class_layer_shape_and_union():
     assert ssn["hard_files_by_layer_and_shape"] == {"Objects": {"uuid": 1}, "Text": {"uuid": 1}}
     assert ssn["hard_pct_by_layer"] == {"Objects": 25.0, "Text": 25.0}
     assert tb["unions"]["ssn|us-phone"]["hard_files"] == 2
-    assert tb["unions"]["ssn|us-phone"]["hard_files_only_uuid_hex_date"] == 1
+    residual = tb["unions"]["ssn|us-phone"]["residual_hard_files"]
+    # uuid is demoted under every option; the formatted phone never is.
+    assert {k: v["files"] for k, v in residual.items()} == {
+        "demote-embedded-and-dates": 1, "also-number-lists": 1, "also-bare-digits": 1}
+    assert tb["classes"]["ssn"]["residual_hard_files"]["also-bare-digits"]["files"] == 0
     assert tb["unions"]["any built-in"]["hard_files"] == 3
     assert tb["hard_files_by_layer"] == {"Metadata": 1, "Objects": 1, "Text": 2}
     assert agg["all"]["measured"] == 5
@@ -262,3 +266,14 @@ def test_recorder_returns_the_hits_object_untouched_even_if_classifying_fails(mo
         recorder.uninstall()
     assert got == expected
     assert [shape for _, shape, _ in recorder.records] == ["classifier-error"]
+
+
+def test_residuals_keep_bare_digits_until_the_last_option_and_never_demote_unknown():
+    results = [
+        FileResult("text-bearing", True, 1, (HardFinding("ssn", "Text", "live", "bare-digits"),)),
+        FileResult("text-bearing", True, 1, (HardFinding("ssn", "Text", "live", "number-list"),)),
+        FileResult("text-bearing", True, 1, (HardFinding("ssn", "Text", "live", UNJOINED),)),
+    ]
+    residual = aggregate(results)["text-bearing"]["classes"]["ssn"]["residual_hard_files"]
+    assert {k: v["files"] for k, v in residual.items()} == {
+        "demote-embedded-and-dates": 3, "also-number-lists": 2, "also-bare-digits": 1}

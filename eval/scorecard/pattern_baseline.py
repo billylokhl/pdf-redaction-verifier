@@ -46,6 +46,14 @@ UNIONS: dict[str, tuple[str, ...]] = {
     "ssn|us-phone|credit-card": ("ssn", "us-phone", "credit-card"),
     "any built-in": CLASSES,
 }
+# What a context rule might leave hard: the files that would still have a
+# hard finding if every match of a shape outside the kept set were
+# demoted to review (ADR 0012's options, measured; nothing is demoted).
+RESIDUALS: dict[str, frozenset[str]] = {
+    "demote-embedded-and-dates": frozenset({"formatted", "number-list", "bare-digits"}),
+    "also-number-lists": frozenset({"formatted", "bare-digits"}),
+    "also-bare-digits": frozenset({"formatted"}),
+}
 UNJOINED = "unjoined"  # a hard finding with no recorder record: must stay 0
 SHAPE_NAMES: tuple[str, ...] = (*SHAPES, "classifier-error", UNJOINED)
 
@@ -107,6 +115,20 @@ def _pct(n: int, d: int) -> float | None:
     return round(100.0 * n / d, 1) if d else None
 
 
+def _residuals(measured: list[FileResult], members: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    """Per RESIDUALS option: files of *measured* that keep a hard finding of
+    a class in *members* whose shape is in the kept set (an unjoined or
+    classifier-error finding is always kept: unknown is never demoted)."""
+    n = len(measured)
+    out = {}
+    for option, kept in RESIDUALS.items():
+        keep = kept | {UNJOINED, "classifier-error"}
+        files = sum(1 for r in measured
+                    if any(h.rule in members and h.shape in keep for h in r.hard))
+        out[option] = {"files": files, "pct": _pct(files, n)}
+    return out
+
+
 def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
     """Counts for one stratum. Rates are over measured files (a crash or
     timeout is counted, never folded into a denominator)."""
@@ -135,6 +157,7 @@ def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
             for layer, shape in {(h.layer, h.shape) for h in mine}:
                 by_layer_shape.setdefault(layer, Counter())[shape] += 1
         review_files = files_where(lambda r: cls in r.review_rules)
+        residual = _residuals(measured, (cls,))
         per_class[cls] = {
             "hard_files": hard_files,
             "hard_pct": _pct(hard_files, n),
@@ -146,19 +169,15 @@ def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
                 layer: dict(sorted(c.items())) for layer, c in sorted(by_layer_shape.items())},
             "review_files": review_files,
             "review_pct": _pct(review_files, n),
+            "residual_hard_files": residual,
         }
     unions = {}
     for name, members in UNIONS.items():
         hard_files = files_where(lambda r: any(h.rule in members for h in r.hard))
-        only_dates_uuids = files_where(
-            lambda r: any(h.rule in members for h in r.hard)
-            and all(h.shape in ("uuid", "hex-id", "date-or-time")
-                    for h in r.hard if h.rule in members)
-        )
         unions[name] = {
             "hard_files": hard_files,
             "hard_pct": _pct(hard_files, n),
-            "hard_files_only_uuid_hex_date": only_dates_uuids,
+            "residual_hard_files": _residuals(measured, members),
         }
     by_layer_all: Counter[str] = Counter()
     for r in measured:
@@ -204,7 +223,9 @@ def render(agg: dict[str, Any]) -> str:
                 lines.append(f"    by shape (files): {c['hard_files_by_shape']}")
         for union, u in s["unions"].items():
             lines.append(f"  union {union:26} hard {u['hard_files']:5} ({u['hard_pct']}%); "
-                         f"only uuid/hex/date shapes: {u['hard_files_only_uuid_hex_date']}")
+                         "if demoted, still hard: " + ", ".join(
+                             f"{opt} {v['files']} ({v['pct']}%)"
+                             for opt, v in u["residual_hard_files"].items()))
         lines.append(f"  hard files by layer (any class): {s['hard_files_by_layer']}")
         lines.append(f"  unjoined findings: {s['unjoined_findings']}")
     return "\n".join(lines)

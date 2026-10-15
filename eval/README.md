@@ -615,23 +615,32 @@ value — so on this corpus, which holds no planted secret, every hard
 finding is a false hard (an `email` match is a true positive for "an
 address is here", ADR 0005, and is reported but kept out of the
 digit-class unions). The CLI is run through `scorecard/pattern_recorder.py`:
-`verify.py` itself, same arguments, exit status and report (a test checks
-this), with `match_patterns` — the one function every pattern match in
-the tool goes through — wrapped to note each hit's rule, masked sample
-and **shape** (`scorecard/match_shapes.py`): `uuid`, `hex-id`,
-`date-or-time` (a `YYYYMMDD` run, a PDF `D:` date, epoch seconds or
-milliseconds), `alnum-id`, `formatted` (has separators, like a real
-value), `bare-digits` or `email-address`. Each hard finding in the
-`--json` report is joined to its shape by (rule, masked sample); one with
-no record counts as `unjoined`, which should stay 0. The matched text is
-classified inside the CLI's own process and never written.
+`verify.py` itself, same arguments, exit status and report, with
+`match_patterns` — the one function every pattern match in the tool goes
+through — wrapped to note each hit's **shape** (`scorecard/match_shapes.py`):
+`uuid`, `hex-id`, `date-or-time` (an unbroken `YYYYMMDD` run, a PDF `D:`
+date, epoch seconds or milliseconds), `alnum-id`, `formatted` (separators
+grouping the digits as the class's real values are: `3-2-4`, `3-3-4`,
+fours), `number-list` (separators, grouped otherwise), `bare-digits` or
+`email-address`. The match is classified inside the CLI's own process; the
+record file holds only a hash of (rule, masked sample), the shape and a
+flag, never the matched text or the masked sample. Each hard finding in
+the `--json` report is joined to its shape through that hash; one with no
+record counts as `unjoined`, which should stay 0. A wrapper failure can
+lose a record, never change a hit: `tests/test_pattern_baseline.py` scans
+every case-library case that has a pattern rule with and without the
+recorder installed and requires an identical report.
 
 Output, to stdout and `--json`, is counts only, per stratum (all,
 text-bearing, text-free, text-unknown): per class, files with a hard
-finding, by layer and by shape, and files with a review warning for the
-class; the unions `ssn|us-phone`, `ssn|us-phone|credit-card` and
-`any built-in`, each with how many of its files have only
-`uuid`/`hex-id`/`date-or-time` shapes; exit codes; and unmeasured files
+finding (and their rate), by layer, by shape and by layer and shape, and
+files with a review warning for the class; the unions `ssn|us-phone`, `ssn|us-phone|credit-card` and
+`any built-in`; for each class and union, the files that would *still*
+be hard if the matches of some shapes were demoted to review
+(`residual_hard_files`: demoting the embedded shapes — `uuid`, `hex-id`,
+`alnum-id` — and `date-or-time`, then also `number-list`, then also
+`bare-digits`, so only `formatted` stays hard; an `unjoined` finding is
+never counted as demoted) — measured, nothing is demoted; exit codes; and unmeasured files
 (a crash or timeout, never folded into a rate's denominator). Scratch
 reports and rules go under `real_corpus/pattern-baseline-workdir`. It
 changes no verdict. Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
