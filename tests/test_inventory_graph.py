@@ -375,6 +375,8 @@ def test_the_graph_scales_in_wall_clock_too() -> None:
     # scan costs nanoseconds a step, so it shows only at large n: 4000 vs
     # 64000 measured 18.7x (16x the input), and 56x with `moved_set` a list.
     # 32x sits between, with ~1.7x room each way.
+    # Under coverage Python runs ~5x slower and C does not, diluting the
+    # signal: CI's uncovered 3.10 leg is the one that catches it (as on main).
     small, large = _best_time(_wide(4000)), _best_time(_wide(64000), runs=2)
     assert large < 32 * small, (small, large)
 
