@@ -601,3 +601,35 @@ such a key to the same object); the other 13 stay flagged. Case library
 cases newly flagged `RESOURCE_SCOPE`, annotation appearance streams that
 draw only paths and carry no `/Resources`. Fuzz (2,000, seed 0): 501
 agree, 1,499 flagged, 0 unflagged disagreements, unchanged.
+
+## Phase 3a-7d spike: which annotations MuPDF synthesizes -- eval/spikes/annotation_appearance.py
+
+Question (docs/phase3a-plan.md 3a-7d; owner decision P1 if no exact method exists): how can the
+gate tell, per annotation, whether MuPDF draws the stored /AP or an appearance it synthesizes?
+
+- No object-level signal works (MuPDF 1.28.2): `pdf_annot_ap` (before drawing, and after drawing
+  and `pdf_update_annot`) and `pdf_annot_needs_resynthesis` leave a synthesized annotation looking
+  like a stored one (`needs_resynthesis` is -1 only under /NeedAppearances).
+- A drawing comparison works, batched per file: copy A (every page's /Rotate removed, every
+  annotation's /F and /OC cleared) against copy B (copy A with every annotation that has /AP
+  replaced by a stand-in /Square with the same /Rect, /AP and /AS). Per annotation MuPDF's trace
+  (`fz_new_trace_device` + `pdf_run_annot`) and its 4x pixels drawn alone are compared:
+  NOTHING (no mark; any text element is a mark, a path clip alone is not), STORED (equal
+  trace and pixels), SYNTHESIZED. The copies pair by each annotation's page and /Annots
+  position, every page read.
+- On 35 fabricated fixtures covering ADR 0011 item 5's conditions -- /AP stream, state
+  dictionaries with direct, indirect, missing and non-stream /AS entries, /AP empty, /D only, /N
+  a number, direct annotations, a Text annotation on a rotated page, hidden, NoView and OC-off
+  annotations, FreeText with /Contents and /RC, text widgets with and without /AP, inherited
+  /FT and /V, /RV, checkbox, push button and combo box under /NeedAppearances, signed,
+  unsigned, inherited and /DocTimeStamp signatures -- MuPDF's reading agrees with the ADR in
+  every case (ours SYNTHESIZED ~ SYNTHESIZED or NOTHING; not synthesized ~ STORED or NOTHING).
+- Not exact: drawings equal in trace and in 4x pixels are read as the same, so content that
+  differs only below that resolution (an image's samples, a glyph program) is not told apart --
+  owner decision P1. ADR 0011 item 5 already flags a synthesized unit whose rich text could draw
+  an image.
+- Link and Popup are not listed by `pdf_first_annot`/`pdf_first_widget` (MuPDF draws neither);
+  lists compare as multisets by object number (by /Annots position for a direct annotation).
+  Also covered: a stored /AP holding only clip-mode text, and pages with a widget before a
+  square in /Annots. Cost: two document copies per file, linear -- roughly 0.03-0.2 s for 100
+  annotations and 0.5-0.8 s for 1,600, by machine.
