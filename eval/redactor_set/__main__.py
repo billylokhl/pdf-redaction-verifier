@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "subset":
             p.add_argument("--pick", action="append", required=True,
                            help="NAME=STEM:METHOD:CASE_ID (repeatable)")
+            p.add_argument("--run-date", required=True,
+                           help="the day the tool was run (YYYY-MM-DD, owner's local date)")
         if name == "adjudicate":
             p.add_argument("action", choices=("draft", "lock", "verify"))
             p.add_argument("--reason", default="")
@@ -73,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import subset
         picks = [subset.parse_pick(p) for p in args.pick]
         for path in subset.write(root, args.set, {n: (st, m) for n, st, m, _ in picks},
-                                 subset.REAL_DIR, {n: c for n, _, _, c in picks}):
+                                 subset.REAL_DIR, {n: c for n, _, _, c in picks},
+                                 args.run_date):
             print(path.name)
     elif args.cmd == "adjudicate":
         from .oracle_cli import run_adjudicate

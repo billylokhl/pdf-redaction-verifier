@@ -15,10 +15,8 @@ not cover is refused.
 
 from __future__ import annotations
 
-import datetime
 import hashlib
 import json
-import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -27,7 +25,7 @@ from . import adjudicate
 from .persona import BY_ID, PATTERNS, SECRETS
 
 SIZE_CAP = 100_000
-TOOL = {"description": "a PyMuPDF-based redaction tool", "version": "0.1.0"}
+TOOL = {"description": "a PyMuPDF-based redaction tool"}
 INFO_KEYS = ("/Producer", "/Creator", "/Title", "/Author", "/Subject", "/Keywords",
              "/CreationDate", "/ModDate", "/Trapped")
 FABRICATED = ("Every value in this document -- the household's names, SSNs, address, "
@@ -52,29 +50,56 @@ def rules() -> list[dict[str, str]]:
         {"name": "Card pattern", "pattern": PATTERNS[1]}]
 
 
+def info_like(obj: object) -> bool:
+    """An Info-like dictionary: no /Type, at least one entry, and every
+    value a string, name or date -- whatever its keys, so a dictionary of
+    custom keys only is caught too."""
+    import pikepdf
+
+    if not isinstance(obj, pikepdf.Dictionary) or isinstance(obj, pikepdf.Stream) or \
+            "/Type" in obj or not len(obj.keys()):
+        return False
+    return all(isinstance(v, (pikepdf.String, pikepdf.Name)) for v in obj.values())
+
+
+def xmp_values(data: bytes) -> list[tuple[str, str]]:
+    """Every element's text and every attribute (namespace declarations
+    apart) of an XMP packet, keyed by their local tag."""
+    import xml.etree.ElementTree as ET
+
+    text = data.decode("utf-8", "replace")
+    start, end = text.find("<x:xmpmeta"), text.rfind("</x:xmpmeta>")
+    if start < 0 or end < 0:
+        start, end = text.find("<rdf:RDF"), text.rfind("</rdf:RDF>")
+        end += len("</rdf:RDF>")
+    else:
+        end += len("</x:xmpmeta>")
+    out = []
+    for el in ET.fromstring(text[start:end]).iter():
+        tag = el.tag.split("}")[-1]
+        if el.text and el.text.strip():
+            out.append((f"xmp {tag}", el.text.strip()))
+        for key, value in el.attrib.items():
+            if value:
+                out.append((f"xmp @{key.split('}')[-1]}", value))
+    return out
+
+
 def info_fields(path: Path) -> list[dict[str, str]]:
-    """Every Info-like dictionary's keys (any object holding one of the
-    Info keys and no /Type, reachable or not -- a redactor that nulls the
-    trailer's /Info leaves the old one orphaned) and every XMP value."""
+    """Every Info-like dictionary's entries, reachable or not (a redactor
+    that nulls the trailer's /Info leaves the old one orphaned), and every
+    XMP value."""
     import pikepdf
 
     out: list[dict[str, str]] = []
     with pikepdf.open(path) as pdf:
         for obj in pdf.objects:
-            if isinstance(obj, pikepdf.Dictionary) and "/Type" not in obj and \
-                    set(obj.keys()) & set(INFO_KEYS):
+            if info_like(obj):
                 for key, value in obj.items():
                     out.append({"object": str(obj.objgen[0]), "key": key, "value": str(value)})
             elif isinstance(obj, pikepdf.Stream) and obj.get("/Type") == "/Metadata":
-                text = obj.read_bytes().decode("utf-8", "replace")
-                for tag, value in re.findall(r"<([\w:]+)[^>/]*>([^<]+)</\1>", text):
-                    if value.strip():
-                        out.append({"object": str(obj.objgen[0]), "key": f"xmp {tag}",
-                                    "value": value.strip()})
-                for key, value in re.findall(r'\s([\w]+:[\w]+)="([^"]*)"', text):
-                    if not key.startswith("xmlns") and value:
-                        out.append({"object": str(obj.objgen[0]), "key": f"xmp @{key}",
-                                    "value": value})
+                for key, value in xmp_values(obj.read_bytes()):
+                    out.append({"object": str(obj.objgen[0]), "key": key, "value": value})
     return out
 
 
@@ -110,15 +135,17 @@ def oracle_block(record: dict[str, Any], truth: dict[str, Any], lock_sha: str) -
 
 
 def write(root: Path, set_name: str, picks: dict[str, tuple[str, str]], real_dir: Path,
-          case_ids: dict[str, str]) -> list[Path]:
-    """Copy each pick's measured output to *real_dir* and write its sidecar."""
+          case_ids: dict[str, str], run_date: str) -> list[Path]:
+    """Copy each pick's measured output to *real_dir* and write its
+    sidecar; *run_date* is the day the tool was run (owner's local date)."""
     problems, lock_sha = adjudicate.verify(root, set_name)
     if problems or not lock_sha:
         raise SystemExit("the adjudication lock does not verify: " + "; ".join(problems))
     run = json.loads((root / "work" / set_name / "run.json").read_text())
     config = (root / "config" / "redact.yaml").read_text()
-    run_date = datetime.date.fromtimestamp(
-        (root / "work" / set_name / "run.json").stat().st_mtime).isoformat()
+    # What the run recorded, never a guess: "unrecorded" when REDACTOR_VERSION
+    # was not set for it.
+    version = str(run.get("redactor_version") or "unrecorded")
     written = []
     for name, (doc, method) in picks.items():
         record = json.loads((root / "adjudication" / set_name / method /
@@ -141,7 +168,7 @@ def write(root: Path, set_name: str, picks: dict[str, tuple[str, str]], real_dir
             "source_case_note": (f"The real-redactor set (eval/redactor_set): template "
                                  f"{record['doc']}, seed {truth['seed']}, producer "
                                  f"{truth['producer']}; the exact bytes measured."),
-            "tool": {**TOOL, "date": run_date, "settings": {
+            "tool": {**TOOL, "version": version, "date": run_date, "settings": {
                 "llm_detection": False, "invocation": "<pdf> --config <yaml>",
                 "config": config, "method": method,
                 "garbage": 0 if method == "m1" else 4, "deflate": method == "m2",

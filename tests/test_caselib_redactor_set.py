@@ -20,7 +20,9 @@ from caselib.cells import CELLS  # noqa: E402
 from caselib.families.redactors import PERSONA_RULES  # noqa: E402
 from redactor_set import oracle_raw, persona  # noqa: E402
 from redactor_set.adjudicate import EXIT_ORDER, worst_exit  # noqa: E402
+from redactor_set import subset  # noqa: E402
 from redactor_set.oracle import CLASSES  # noqa: E402
+from scorecard.redactor_set import PLACE_WARNINGS, listed_gap  # noqa: E402
 
 load()
 REAL = REPO_ROOT / "eval" / "caselib" / "real"
@@ -71,21 +73,44 @@ def test_case_label_follows_the_adjudication(stem):
     case = REGISTRY[data["case_id"]]
     oracle = data["oracle"]
     assert case.expected.exit == oracle["expected_exit"]
-    required = set()
+    required, warnings, layers = set(), set(), set()
     for inst in oracle["instances"]:
         if inst["class"] == "removed":
             continue
-        if inst["listed_gap"]:
-            assert inst["listed_gap"] in OWNER_LISTED_GAPS, inst
+        # The gap is recomputed by the measurement's own rule, never read
+        # from the sidecar alone.
+        gap = listed_gap(inst["loc"], inst["class"], persona.BY_ID[inst["secret"]].kind)
+        assert inst["listed_gap"] == gap, inst
+        if gap:
+            assert gap in OWNER_LISTED_GAPS
             continue
         if inst["override_reason"]:
             assert inst["case"] is None or inst["case"] in REGISTRY
         else:
             assert inst["case"] in REGISTRY, inst
             assert REGISTRY[inst["case"]].expected.exit == inst["expected_exit"], inst
-        if inst["expected_exit"] == 1 and CELLS[inst["cell"]].status == "read":
-            required.add((inst["secret"], STORAGE[inst["storage"]]))
+        storage = STORAGE[inst["storage"]]
+        status = CELLS[inst["cell"]].status
+        if inst["expected_exit"] == 1 and status == "read":
+            required.add((inst["secret"], storage))
+            if inst["encoding"] == "pixels":
+                layers.add((inst["secret"], "OCR"))
+        if status == "flagged" and inst["expected_exit"] == 2:
+            column = inst["cell"].split(".")[1]
+            warnings.add((PLACE_WARNINGS[column], storage))
     assert set(case.expected.findings) == required, (stem, case.expected.findings, required)
+    assert warnings <= set(case.expected.warnings), (stem, warnings)
+    assert layers <= set(case.expected.layers), (stem, layers)
+    if layers:
+        assert "ocr" in case.requires, stem
+
+
+def test_the_subset_and_the_measurement_share_the_listed_gap_rule():
+    for sec in persona.SECRETS:
+        for loc in ("T1", "T2", "T3b", "F1", "A4", "M1", "S1", "?"):
+            for cls in CLASSES:
+                assert subset.listed_gap(loc, cls, sec.id) == listed_gap(loc, cls, sec.kind), \
+                    (loc, cls, sec.id)
 
 
 @pytest.mark.parametrize("stem", sorted(SIDECARS))
@@ -119,6 +144,7 @@ def test_raw_channel_rederives_on_the_committed_bytes(stem):
             assert inst["written"] in found2, (stem, inst["secret"], inst["loc"])
         if inst["class"] == "removed" and inst["written"] not in recoverable:
             assert inst["written"] not in found, (stem, inst["secret"], inst["loc"])
+            assert inst["written"] not in found2, (stem, inst["secret"], inst["loc"])
 
 
 PRODUCER_STRINGS = (
@@ -134,40 +160,75 @@ PRODUCER_STRINGS = (
 )
 
 
-def _info_like(raw: bytes) -> list[tuple[str, str]]:
-    """Every Info key and value in any dictionary of the file, reachable
-    or not, by a raw scan of uncompressed objects (pikepdf reads object
-    streams)."""
+def _stored_text(raw: bytes) -> tuple[list[tuple[str, str]], list[str]]:
+    """Independently of subset.info_fields: every string entry of any
+    dictionary that is not a typed object, an annotation or a field (no
+    /Type, /Subtype, /FT or /S, and not the AcroForm dictionary's /DA
+    defaults), reachable or not; and every text run of
+    every XMP packet, by a plain scan between tags."""
+    import io
+
     import pikepdf
 
-    keys = {"/Producer", "/Creator", "/Title", "/Author", "/Subject", "/Keywords",
-            "/CreationDate", "/ModDate", "/Trapped"}
-    out = []
-    with pikepdf.open(__import__("io").BytesIO(raw)) as pdf:
+    entries, xmp = [], []
+    with pikepdf.open(io.BytesIO(raw)) as pdf:
         for obj in pdf.objects:
-            if isinstance(obj, pikepdf.Dictionary) and "/Type" not in obj and \
-                    set(obj.keys()) & keys:
-                out += [(str(k), str(v)) for k, v in obj.items()]
-    return out
+            if isinstance(obj, pikepdf.Stream):
+                if obj.get("/Type") == "/Metadata":
+                    text = obj.read_bytes().decode("utf-8", "replace")
+                    xmp += [t.strip() for t in re.findall(r">([^<]+)<", text) if t.strip()]
+                continue
+            if isinstance(obj, pikepdf.Dictionary) and not \
+                    {"/Type", "/Subtype", "/FT", "/S", "/Fields", "/DA"} & set(obj.keys()):
+                entries += [(str(k), str(v)) for k, v in obj.items()
+                            if isinstance(v, pikepdf.String)]
+    return entries, xmp
+
+
+# Words a metadata value may hold besides persona values (the templates'
+# titles, subjects and keywords); anything else -- a path, a login, a
+# host -- fails.
+_TEMPLATE_WORDS = {"tax", "summary", "ssn", "statement", "return", "form", "letter"}
+
+
+def _allowed_value(value: str) -> bool:
+    if any(r.fullmatch(value) for r in PRODUCER_STRINGS):
+        return True
+    rest = value
+    for v in sorted((s.value for s in persona.SECRETS), key=len, reverse=True):
+        rest = rest.replace(v, " ")
+    if rest == value or not re.fullmatch(r"[A-Za-z0-9 .\-]*", rest):
+        return False
+    return all(w.lower() in _TEMPLATE_WORDS for w in re.findall(r"[A-Za-z]+", rest))
+
+
+def test_the_value_allowlist_refuses_a_path_beside_a_persona_value():
+    assert _allowed_value("Jordan Q. Testperson - 2025 tax summary")
+    assert _allowed_value("SSN 666-51-4073")
+    assert not _allowed_value("/Users/someone/Jordan Q. Testperson.pdf")
+    assert not _allowed_value("Jordan Q. Testperson (someone@host.local)")
+    assert not _allowed_value("2025 tax summary")          # no persona value, no producer
 
 
 @pytest.mark.parametrize("stem", sorted(SIDECARS))
 def test_metadata_is_allowlisted(stem):
-    """Test 5: every Info key and value (live or orphaned) and every XMP
-    value is in the sidecar's info_fields, and each value is a persona
-    value (or holds one), or a producer string on the allowlist. A login
-    or real name would fail here; TestPrivacyScrub cannot see it."""
+    """Test 5: every Info-like entry (live or orphaned) and every XMP text
+    run, found independently in the bytes, is in the sidecar's
+    info_fields; and every value there is a producer string on the
+    allowlist, or persona values with only the templates' own words
+    beside them. A login or a path would fail here; TestPrivacyScrub
+    cannot see either."""
     data = SIDECARS[stem]
     raw = (REAL / data["file"]).read_bytes()
     listed = {(f["key"], f["value"]) for f in data["info_fields"]}
-    for key, value in _info_like(raw):
+    listed_values = {f["value"] for f in data["info_fields"]}
+    entries, xmp = _stored_text(raw)
+    for key, value in entries:
         assert (key, value) in listed, (stem, key)
-    values = {s.value for s in persona.SECRETS}
+    for value in xmp:
+        assert value in listed_values, (stem, value[:40])
     for field in data["info_fields"]:
-        v = field["value"]
-        persona_held = any(p in v for p in values)
-        producer = any(r.fullmatch(v) for r in PRODUCER_STRINGS)
-        assert persona_held or producer, (stem, field["key"], v)
+        assert _allowed_value(field["value"]), (stem, field["key"], field["value"])
 
 
 @pytest.mark.parametrize("stem", sorted(SIDECARS))
@@ -256,7 +317,9 @@ def test_the_subset_refuses_bytes_the_lock_does_not_cover(tmp_path, monkeypatch)
         {"sha256": "0" * 64}))
     monkeypatch.setattr(adjudicate, "verify", lambda r, s: ([], "f" * 64))
     with pytest.raises(SystemExit, match="not the bytes the lock covers"):
-        subset.write(root, "inputs", {"x": ("D01-s0", "m2")}, tmp_path, {"x": "page.x"})
+        subset.write(root, "inputs", {"x": ("D01-s0", "m2")}, tmp_path, {"x": "page.x"},
+                     "2026-10-14")
     monkeypatch.setattr(adjudicate, "verify", lambda r, s: (["changed since the lock"], None))
     with pytest.raises(SystemExit, match="does not verify"):
-        subset.write(root, "inputs", {"x": ("D01-s0", "m2")}, tmp_path, {"x": "page.x"})
+        subset.write(root, "inputs", {"x": ("D01-s0", "m2")}, tmp_path, {"x": "page.x"},
+                     "2026-10-14")

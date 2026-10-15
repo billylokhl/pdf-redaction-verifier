@@ -215,11 +215,11 @@ _set_case(
     features=("live.font",), expected=expect(0),
     story="A three-page checking statement run through the tool and re-saved with garbage "
           "collection: every value was in page text, and none is left.",
-    mistake="None -- a correctly redacted statement (U3: it must exit 0).")
+    mistake="None — a correctly redacted statement (U3: it must exit 0).")
 
 _set_case(
     "redactor-w2-gc.pdf", "page.redactor-w2-gc", "clean",
     features=("live.font",), expected=expect(0),
     story="A W-2 run through the tool and re-saved with garbage collection: every value "
           "was in page text, and none is left.",
-    mistake="None -- a correctly redacted form (U3: it must exit 0).")
+    mistake="None — a correctly redacted form (U3: it must exit 0).")

@@ -9,7 +9,7 @@
   "source_case_note": "The real-redactor set (eval/redactor_set): template D13, seed 0, producer reportlab; the exact bytes measured.",
   "tool": {
     "description": "a PyMuPDF-based redaction tool",
-    "version": "0.1.0",
+    "version": "unrecorded",
     "date": "2026-10-14",
     "settings": {
       "llm_detection": false,
