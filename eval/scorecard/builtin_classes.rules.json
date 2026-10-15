@@ -1,0 +1,6 @@
+[
+  {"name": "ssn", "class": "ssn"},
+  {"name": "credit-card", "class": "credit-card"},
+  {"name": "email", "class": "email"},
+  {"name": "us-phone", "class": "us-phone"}
+]
