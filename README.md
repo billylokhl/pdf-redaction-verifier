@@ -404,7 +404,11 @@ through several page-number-only pages is only ever manual review; and
 decompressed font tables can raise coincidental Binary warnings (see
 Binary); a document `/ID` written as hex text whose digits happen to
 form an SSN, card or phone number is manual review under a pattern
-rule. Prefer longer, more specific values.
+rule. Prefer longer, more specific values. The built-in classes raise
+hard findings on many clean files: on 488 real text-bearing PDFs with no
+secret in them, `ssn` or `us-phone` did on 28.3%, mostly digit runs
+inside hex or alphanumeric ids (Phase 5 of docs/REDESIGN.md addresses
+this; eval/spikes/RESULTS.md, "Phase 5 baseline").
 
 A rewrite that closes these gaps by accounting for every byte of the
 file, rather than searching the places this tool knows about, is planned

@@ -607,7 +607,10 @@ the gap is stated rather than implied away.
   user-supplied one is the user's responsibility.
 - **A pattern class is a heuristic, not a proof.** `us-phone` will match
   a 10-digit order number that satisfies NANP rules. Tune the rules file
-  to the document set.
+  to the document set. Measured on 488 real text-bearing PDFs with no
+  secret in them, `ssn` or `us-phone` raised a hard finding on 28.3%,
+  mostly digit runs inside hex or alphanumeric ids
+  (eval/spikes/RESULTS.md, "Phase 5 baseline").
 
 [docs/REDESIGN.md](docs/REDESIGN.md) is the plan to replace enumeration
 (searching the places this tool knows about) with an accounted ledger

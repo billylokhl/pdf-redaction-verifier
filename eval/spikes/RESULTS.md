@@ -633,3 +633,75 @@ gate tell, per annotation, whether MuPDF draws the stored /AP or an appearance i
   Also covered: a stored /AP holding only clip-mode text, and pages with a widget before a
   square in /Annots. Cost: two document copies per file, linear -- roughly 0.03-0.2 s for 100
   annotations and 0.5-0.8 s for 1,600, by machine.
+
+## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
+
+Measured 2026-10-14 (commit 90669ef), on the owner's local corpus: 2,073
+macOS system and application PDFs (eval/README.md, "Pattern-class
+false-hard baseline"). The rules file holds only the four built-in classes,
+so every hard finding is a false hard; `email` is reported but, per ADR
+0005, it is a true positive for "an address is here". Unlike ADR 0005's
+page-text scan, this covers every layer the CLI runs a class over. 1 file
+was unmeasured (a 300 s timeout, text-bearing); no finding was unjoined.
+Counts only.
+
+Files with at least one hard finding, text-bearing stratum (488 measured):
+
+| Class | Files | Text | OCR | Objects | Metadata | Hidden |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ssn` | 132 (27.0%) | 89 | 87 | 23 | 13 | -- |
+| `us-phone` | 14 (2.9%) | 3 | 8 | 8 | -- | -- |
+| `credit-card` | 7 (1.4%) | 1 | -- | 6 | -- | -- |
+| `email` | 112 (23.0%) | 111 | 111 | 91 | -- | 24 |
+| **`ssn` or `us-phone`** | **138 (28.3%)** | | | | | |
+
+All files (2,072 measured): `ssn` 7.8%, `credit-card` 3.7%, `us-phone`
+1.9%, `email` 5.5%; `ssn` or `us-phone` 8.7%. On text-free files the
+false hards come only from Metadata and Objects (credit-card's 58
+Metadata files: number lists 28, hex ids 26, UUIDs 4).
+
+**What the matches are** (text-bearing, files per shape; a file can have
+several):
+
+| Class | hex-id | alnum-id | uuid | bare-digits | number-list | formatted |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ssn` | 69 | 44 | 11 | 12 | -- | 3 |
+| `us-phone` | -- | -- | -- | 12 | -- | 2 |
+| `credit-card` | -- | 1 | -- | 2 | 4 | -- |
+
+No `date-or-time` match was found. For `ssn` and `us-phone` that shape can
+only come from a `D:` prefix, because the classes' digit guards keep a
+9- or 10-digit match out of a longer digit run, so this is not evidence
+that the corpus holds no dates. `formatted` (grouped as the class's real
+values are) is decided first, so a run that spells a real grouping inside
+a longer id counts as `formatted`; this errs toward keeping files hard.
+
+**What each demotion option would leave hard** (text-bearing `ssn` or
+`us-phone`; an estimate from every match of the class, not only the one
+reported, that errs toward keeping files hard -- eval/README.md):
+
+| Demoted to review | Still hard |
+| --- | --- |
+| nothing (today) | 138 (28.3%) |
+| matches inside a token (`uuid`, `hex-id`, `alnum-id`) and dates | 25 (5.1%) |
+| ... and number lists | 25 (5.1%) |
+| ... and bare digit runs | 5 (1.0%) |
+| the whole class | 0 |
+
+The 5 left are 3 files with a dashed SSN-shaped value (all in Objects)
+and 2 with a punctuated phone number (Text, OCR and Objects): matches that
+look exactly like the real thing.
+
+Reading:
+- 28.3% replaces ADR 0005's 23.1% lower bound.
+- A context rule that only demotes matches inside a token, or dates,
+  leaves 5.1%, far above the gate.
+- Phase 5's gate (< 1%) is not met by any option short of demoting what
+  looks exactly like a real SSN or phone number: 5/488 is 1.02%.
+- `credit-card` is not 0% under the full CLI.
+
+This measures false hards only. It does **not** measure what a demotion
+would cost in recall: a real SSN written next to a label with the space
+lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
+rest. That cost has to be measured on leak cases before any demotion
+ships (Phase 5, PR 2; ADR 0012).

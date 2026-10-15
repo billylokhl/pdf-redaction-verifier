@@ -51,7 +51,10 @@ card numbers, UUID digits as SSNs). Phase 1 measured 23.1% for the `ssn`/
 `us-phone` classes alone (the actual false hards -- a validated `email`
 match is a true positive, not a miscolored digit run, so it is excluded
 from this number) on the text-bearing stratum of a 2,031-file real corpus
-(484 text-bearing files) — still well above the cited range; see
+(484 text-bearing files) — still well above the cited range. Scanning
+every layer through the full CLI, Phase 5's baseline measured **28.3%**
+for `ssn` or `us-phone` on the text-bearing stratum (488 files,
+2026-10-14; eval/spikes/RESULTS.md, "Phase 5 baseline"); see
 [ADR 0005](adr/0005-pattern-class-default-tier.md) (accepted): built-in
 classes **stay hard** through the Move and until Phase 5 ships its own
 fix, since demoting them earlier would contradict
@@ -679,7 +682,7 @@ artifact.
 | **4b. Image decoder** | Normalisation, OCR, validated envelope. Image OCR stays `FLAGGED`-only until this phase measures a recall bound, and that bound must cover images under 8×32, enlarged (there is no size excusal); re-check the 35 Mpx / 10,000 px bounds against Apple Vision's real limits; pattern classes run over raw image bytes (every filter-chain stage, encoded and decoded) at review tier; the reviewed allowlist of harmless image-decoder warnings, each vouched for only by the image's own witness (decision C); unused images always `FLAGGED` (decision D, with the owner's definition of "used") ([ADR 0003](adr/0003-not-applicable-reasons.md), [ADR 0004](adr/0004-image-ocr-envelope.md)). **Open question for the owner before this phase** ([ADR 0004](adr/0004-image-ocr-envelope.md)): how drawn strips that are covered, drawn apart or clipped are discharged — for example, whether the recall bound must include banded images, or whether each content stream's images are also OCR'd composited as that stream draws them, without whatever is painted over them. | Leftover-image cells closed inside envelope; recall measured; K21, including the strips variant, exits `2`; the owner has answered the open question on drawn strips under a box, and the strips-under-a-box case exits `2` (or carries the answer as its label) |
 | **4c. Containers** | Recursive PDFs, zip/Office, encoded-run unwrapping; global budget. | Container cells closed |
 | **4d. Filters + residue** | Filter-chain stage, `RESIDUE` children. | K1, K2 closed |
-| **5. Matching precision** | Context rules for pattern classes, or a demotion to review -- per [ADR 0005](adr/0005-pattern-class-default-tier.md) (accepted) built-ins stay hard until this phase, which chooses between the two; geometry-based matching for values split by columns or page furniture. Since #68 the Text layer's review net already flags such values (two or three pieces of nearby lines, in any order, within five lines: exit 2, never a finding); this phase's geometry matching remains the fix for the hard tier. | False hard < 1% on text-bearing real files |
+| **5. Matching precision** | Context rules for pattern classes, or a demotion to review -- per [ADR 0005](adr/0005-pattern-class-default-tier.md) (accepted) built-ins stay hard until this phase, which chooses between the two; geometry-based matching for values split by columns or page furniture. Since #68 the Text layer's review net already flags such values (two or three pieces of nearby lines, in any order, within five lines: exit 2, never a finding); this phase's geometry matching remains the fix for the hard tier. Baseline (PR 1, measurement only, 2026-10-14): `ssn` or `us-phone` false hard 28.3% of text-bearing files under the full CLI; demoting matches inside tokens and dates would leave 5.1%, demoting bare digit runs too 1.0% (real-looking values); recall cost not yet measured (eval/spikes/RESULTS.md, "Phase 5 baseline"). | False hard < 1% on text-bearing real files |
 | **6. Retire** | Legacy path removed; strict mypy on the core; 100% branch coverage on `model` and `verdict`. | New path alone passes every gate |
 
 ADRs are required only for the Phase 1 questions and for any change to
