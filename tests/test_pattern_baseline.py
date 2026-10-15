@@ -368,17 +368,24 @@ def test_recorder_leaves_the_report_unchanged(case, tmp_path):
             assert record_key("s", f["rule"], f["sample"]) in keys, f
 
 
-def test_recorder_uninstall_restores_match_patterns():
+def test_recorder_uninstall_restores_match_patterns(tmp_path):
     import verify
     from redaction_verifier import matching
     from redaction_verifier.matching import patterns
 
-    before = (patterns.match_patterns, matching.match_patterns, verify.match_patterns)
+    before = (patterns.match_patterns, matching.match_patterns)
     recorder = Recorder()
     recorder.install()
     assert patterns.match_patterns is not before[0]
     recorder.uninstall()
-    assert (patterns.match_patterns, matching.match_patterns, verify.match_patterns) == before
+    assert (patterns.match_patterns, matching.match_patterns) == before
+    # verify.py's own binding (its call sites look the name up there) is
+    # restored too: a full scan after uninstall records nothing.
+    pdf = _pdf(tmp_path / "u.pdf", ["Call (212) 555-0147"])
+    code = verify.main(["--target", str(pdf), "--secrets", str(BUILTIN_RULES),
+                        "--json", str(tmp_path / "u.json")])
+    assert code == 1
+    assert not recorder.joins and not recorder.shapes
 
 
 def test_recorder_returns_the_hits_object_untouched_even_if_classifying_fails(monkeypatch):
