@@ -1,0 +1,316 @@
+{
+  "file": "redactor-info-orphan.pdf",
+  "sha256": "565243270f4635e0159e3e696a49244a717459736552d0360f16017829327508",
+  "size_bytes": 25941,
+  "size_cap_bytes": 100000,
+  "origin": "redactor",
+  "case_id": "leftover.redactor-info-orphan",
+  "source_case": null,
+  "source_case_note": "The real-redactor set (eval/redactor_set): template D16, seed 0, producer chrome+pikepdf; the exact bytes measured.",
+  "tool": {
+    "description": "a PyMuPDF-based redaction tool",
+    "version": "unrecorded",
+    "date": "2026-10-14",
+    "settings": {
+      "llm_detection": false,
+      "invocation": "<pdf> --config <yaml>",
+      "config": "# Fabricated values only (eval/redactor_set/persona.py).\nentity_types: []\nexact_values:\n  - \"Jordan Q. Testperson\"\n  - \"Avery R. Samplename\"\n  - \"666-51-4073\"\n  - \"666-38-2914\"\n  - \"1600 Fictional Ave\"\n  - \"731904628155\"\n  - \"997382611\"\n  - \"4111 1111 1111 1111\"\n  - \"00-4857261\"\n  - \"03/14/1971\"\n  - \"jordan.testperson@example.com\"\npatterns:\n  - '\\d{3}-\\d{2}-\\d{4}'\n  - '\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b'\nscrub_metadata: true\n",
+      "method": "m1",
+      "garbage": 0,
+      "deflate": false,
+      "gc_pymupdf": null,
+      "note": "m1: the tool as it is run day to day. m2: m1's output re-saved with garbage collection in the tool's own environment, which can differ in detail from a collecting save inside the tool."
+    }
+  },
+  "fabricated_data_statement": "Every value in this document -- the household's names, SSNs, address, account, routing and card numbers, EIN, date of birth and email -- is fabricated (eval/redactor_set/persona.py) and cannot belong to a real person.",
+  "redacted_values": [
+    {
+      "name": "NAME1",
+      "value": "Jordan Q. Testperson"
+    },
+    {
+      "name": "NAME2",
+      "value": "Avery R. Samplename"
+    },
+    {
+      "name": "SSN1",
+      "value": "666-51-4073"
+    },
+    {
+      "name": "SSN2",
+      "value": "666-38-2914"
+    },
+    {
+      "name": "ADDR",
+      "value": "1600 Fictional Ave"
+    },
+    {
+      "name": "ACCT",
+      "value": "731904628155"
+    },
+    {
+      "name": "ROUT",
+      "value": "997382611"
+    },
+    {
+      "name": "CARD",
+      "value": "4111 1111 1111 1111"
+    },
+    {
+      "name": "EIN",
+      "value": "00-4857261"
+    },
+    {
+      "name": "DOB",
+      "value": "03/14/1971"
+    },
+    {
+      "name": "EMAIL",
+      "value": "jordan.testperson@example.com"
+    },
+    {
+      "name": "SSN pattern",
+      "pattern": "\\d{3}-\\d{2}-\\d{4}"
+    },
+    {
+      "name": "Card pattern",
+      "pattern": "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"
+    }
+  ],
+  "metadata_fields_scrubbed": [],
+  "metadata_fields_scrubbed_note": "Nothing was scrubbed: these are the exact bytes measured. info_fields lists every value left.",
+  "info_fields": [
+    {
+      "object": "2",
+      "key": "/Author",
+      "value": "Jordan Q. Testperson"
+    },
+    {
+      "object": "2",
+      "key": "/Creator",
+      "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+    },
+    {
+      "object": "2",
+      "key": "/Keywords",
+      "value": "tax 2025 731904628155"
+    },
+    {
+      "object": "2",
+      "key": "/Producer",
+      "value": "Skia/PDF m154"
+    },
+    {
+      "object": "2",
+      "key": "/Subject",
+      "value": "SSN 666-51-4073"
+    },
+    {
+      "object": "2",
+      "key": "/TaxpayerSSN",
+      "value": "666-51-4073"
+    },
+    {
+      "object": "2",
+      "key": "/Title",
+      "value": "Jordan Q. Testperson - 2025 tax summary"
+    },
+    {
+      "object": "3",
+      "key": "xmp @xmptk",
+      "value": "pikepdf"
+    },
+    {
+      "object": "3",
+      "key": "xmp li",
+      "value": "Jordan Q. Testperson"
+    },
+    {
+      "object": "3",
+      "key": "xmp li",
+      "value": "Jordan Q. Testperson - 2025 tax summary"
+    },
+    {
+      "object": "3",
+      "key": "xmp @lang",
+      "value": "x-default"
+    },
+    {
+      "object": "3",
+      "key": "xmp Keywords",
+      "value": "tax 2025 731904628155"
+    }
+  ],
+  "oracle": {
+    "adjudicator": "agent (Opus), Lane B",
+    "adjudication_date": "2026-10-14",
+    "lock_sha256": "699690c19665dbc46479f2496245b4608bd54d920a56e8aef85bb4db2198cc1d",
+    "truth": "leak",
+    "expected_exit": 1,
+    "secrets": {
+      "ACCT": "recoverable-hidden",
+      "NAME1": "recoverable-hidden",
+      "SSN1": "recoverable-hidden"
+    },
+    "instances": [
+      {
+        "secret": "SSN1",
+        "loc": "T1",
+        "class": "recoverable-hidden",
+        "written": "666-51-4073",
+        "encoding": "page-text",
+        "fingerprints": [
+          "001900190019001000180014001000170013001a0016"
+        ],
+        "channels": [
+          "R1",
+          "R2"
+        ],
+        "r1_witness": true,
+        "cell": "orphaned.font",
+        "case": "leftover.deleted-page-embedded-font",
+        "storage": "orphaned",
+        "expected_exit": 2,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "NAME1",
+        "loc": "M1",
+        "class": "recoverable-hidden",
+        "written": "Jordan Q. Testperson",
+        "encoding": "string",
+        "fingerprints": [],
+        "channels": [
+          "R2"
+        ],
+        "r1_witness": false,
+        "cell": "orphaned.plain",
+        "case": "leftover.deleted-page",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "NAME1",
+        "loc": "M1",
+        "class": "recoverable-hidden",
+        "written": "Jordan Q. Testperson",
+        "encoding": "string",
+        "fingerprints": [],
+        "channels": [
+          "R2"
+        ],
+        "r1_witness": false,
+        "cell": "orphaned.plain",
+        "case": "leftover.deleted-page",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "SSN1",
+        "loc": "M1",
+        "class": "recoverable-hidden",
+        "written": "666-51-4073",
+        "encoding": "string",
+        "fingerprints": [],
+        "channels": [
+          "R2"
+        ],
+        "r1_witness": false,
+        "cell": "orphaned.plain",
+        "case": "leftover.deleted-page",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "ACCT",
+        "loc": "M1",
+        "class": "recoverable-hidden",
+        "written": "731904628155",
+        "encoding": "string",
+        "fingerprints": [],
+        "channels": [
+          "R2"
+        ],
+        "r1_witness": false,
+        "cell": "orphaned.plain",
+        "case": "leftover.deleted-page",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "SSN1",
+        "loc": "M2",
+        "class": "recoverable-hidden",
+        "written": "666-51-4073",
+        "encoding": "string",
+        "fingerprints": [],
+        "channels": [
+          "R2"
+        ],
+        "r1_witness": false,
+        "cell": "orphaned.plain",
+        "case": "leftover.deleted-page",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "NAME1",
+        "loc": "M3",
+        "class": "recoverable-hidden",
+        "written": "Jordan Q. Testperson",
+        "encoding": "xmp",
+        "fingerprints": [],
+        "channels": [
+          "R1",
+          "R2"
+        ],
+        "r1_witness": true,
+        "cell": "leftover-xmp.plain",
+        "case": "leftover.xmp",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      },
+      {
+        "secret": "ACCT",
+        "loc": "M3",
+        "class": "recoverable-hidden",
+        "written": "731904628155",
+        "encoding": "xmp",
+        "fingerprints": [],
+        "channels": [
+          "R1",
+          "R2"
+        ],
+        "r1_witness": true,
+        "cell": "leftover-xmp.plain",
+        "case": "leftover.xmp",
+        "storage": "orphaned",
+        "expected_exit": 1,
+        "override_reason": null,
+        "listed_gap": null
+      }
+    ]
+  },
+  "labels_summary": {
+    "truth": "leak",
+    "cells": [
+      "leftover-xmp.plain",
+      "orphaned.font",
+      "orphaned.plain"
+    ],
+    "expected_exit": 1
+  }
+}
