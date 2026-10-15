@@ -139,12 +139,42 @@ def test_a_sink_changes_no_verdict_on_the_case_library(case_id, tmp_path, monkey
     rules = write_rules(tmp_path, list(case.rules))
     off = run_main(monkeypatch, pdf, rules, ocr=HAS_OCR, sink=False)
     on = run_main(monkeypatch, pdf, rules, ocr=HAS_OCR)
-    assert (off.code, off.stdout, off.report) == (on.code, on.stdout, on.report)
+    assert (off.code, off.stdout, off.stderr, off.report) == (
+        on.code, on.stdout, on.stderr, on.report)
     if on.header is not None and not on.header["sink"]["failed"]:
         with fitz.open(pdf) as doc:
-            locked = doc.needs_pass
+            locked, pages = doc.needs_pass, doc.page_count
         if not locked:
+            # The sink was really handed the scan's truth.
+            assert bool(on.header["sink"]["scanned"].get("Text")) == bool(pages)
             assert plan_of(pdf, on.header).row in headline.ROWS
+
+
+class _RaisingSink(MapSink):
+    def take(self, kind: str, refs: list) -> None:
+        refs.clear()                    # tries to change what it was handed
+        raise RuntimeError("a broken sink")
+
+
+def test_a_raising_sink_changes_no_verdict(tmp_path, monkeypatch) -> None:
+    """A sink that raises (and mutates what it was handed) through the
+    real scan: the same exit code, stdout and --json report as no sink,
+    with and without --fail-fast; the sink is only marked failed."""
+    from . import visible_map_support as support
+
+    monkeypatch.setattr(support, "MapSink", _RaisingSink)
+    doc = fitz.open()
+    for _ in range(2):
+        page = doc.new_page()
+        page.insert_text((100, 100), f"SSN {SSN}")
+        page.add_text_annot((100, 300), f"note {SSN}")
+    pdf = _save(doc, tmp_path / "raising.pdf")
+    rules = write_rules(tmp_path, SSN_RULES)
+    for extra in ((), ("--fail-fast",)):
+        off = run_main(monkeypatch, pdf, rules, *extra, sink=False)
+        on = run_main(monkeypatch, pdf, rules, *extra)
+        assert (off.code, off.stdout, off.report) == (on.code, on.stdout, on.report)
+        assert on.header is not None and on.header["sink"]["failed"]
 
 
 def test_without_a_sink_nothing_is_offered(tmp_path, monkeypatch) -> None:
@@ -401,40 +431,52 @@ def _edge_pdf(path: Path, rotate: int, kind: str) -> Path:
 
 
 @pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+@pytest.mark.parametrize("rule", ["value", "pattern"])
 class TestAcrossTheEdge:
+    @staticmethod
+    def _rules(rule: str) -> tuple[list[dict[str, str]], str]:
+        if rule == "value":
+            return SSN_RULES, "value rule #1"
+        return [{"name": "any ssn", "pattern": r"\d{3}-\d{2}-\d{4}"}], "pattern rule #1"
+
     @pytest.mark.parametrize("kind", ["flat", "vertical"])
-    def test_a_value_running_past_the_edge_is_boxed_where_it_shows(
-            self, tmp_path, monkeypatch, rotate, kind) -> None:
+    def test_a_match_running_past_the_edge_is_boxed_where_it_shows(
+            self, tmp_path, monkeypatch, rotate, rule, kind) -> None:
         """Found only across the edge (reading 4 or 5): its visible part
         is a solid box on its ink, marked part of a value, and its
         off-page part is listed outside the crop."""
+        rules, label = self._rules(rule)
         pdf = _edge_pdf(tmp_path / f"{kind}{rotate}.pdf", rotate, kind)
-        run, the_plan = mapped(monkeypatch, tmp_path, pdf)
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, rules)
         assert run.code == 1
         (box,) = boxes(the_plan, plan.SOLID)
         assert box.part and "past the visible edge" in box.how
+        assert box.label.startswith(label)
         page = fitz.open(pdf)[0]
         ink = _ink(page)
         assert ink is not None
         assert _around(box.rect, 0.5).contains(ink), (box.rect, ink)
         assert _around(page.rect, 1.5).contains(box.rect), (box.rect, page.rect)
-        assert sections(the_plan, "outside") == [
-            (1, "value rule #1", "the part past the visible edge")]
+        assert [(p, n) for p, _, n in sections(the_plan, "outside")] == [
+            (1, "the part past the visible edge")]
         assert not sections(the_plan, "unpositioned")
 
-    def test_a_value_wholly_past_the_edge_is_only_listed(self, tmp_path, monkeypatch,
-                                                         rotate) -> None:
+    def test_a_match_wholly_past_the_edge_is_only_listed(self, tmp_path, monkeypatch,
+                                                         rotate, rule) -> None:
         """Wholly off the page, though reading 4 reads it on one stretch
         with visible text: listed outside the crop, never boxed."""
+        rules, label = self._rules(rule)
         pdf = _edge_pdf(tmp_path / f"slug{rotate}.pdf", rotate, "slug")
-        run, the_plan = mapped(monkeypatch, tmp_path, pdf)
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, rules)
         assert run.code == 1
         assert not boxes(the_plan, plan.SOLID)
-        assert sections(the_plan, "outside") == [(1, "value rule #1", "")]
+        listed = sections(the_plan, "outside")
+        assert [(p, n) for p, _, n in listed] == [(1, "")] and listed[0][1].startswith(label)
         assert not sections(the_plan, "unpositioned")
 
 
-def test_a_seam_half_running_past_the_edge(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+def test_a_seam_half_running_past_the_edge(tmp_path, monkeypatch, rotate) -> None:
     """A value whose first half ends page 1's last line, partly past the
     visible edge (read only in reading 4), and whose second half opens
     page 2: both visible parts boxed, the off-page part listed."""
@@ -443,9 +485,10 @@ def test_a_seam_half_running_past_the_edge(tmp_path, monkeypatch) -> None:
     x = EDGE - fitz.get_text_length("ID 123-", "helv", 14)
     first.insert_text((x, 700), "ID 123-45", fontname="helv", fontsize=14)
     first.set_cropbox(fitz.Rect(0, 0, EDGE, 792))
+    first.set_rotation(rotate)
     doc.new_page(width=612, height=792).insert_text((72, 72), "-6789 end", fontname="helv",
                                                     fontsize=14)
-    pdf = _save(doc, tmp_path / "seam.pdf")
+    pdf = _save(doc, tmp_path / f"seam{rotate}.pdf")
     run, the_plan = mapped(monkeypatch, tmp_path, pdf)
     assert run.code == 1
     solid = boxes(the_plan, plan.SOLID)
@@ -721,9 +764,27 @@ class TestClasses:
         doc.close()
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf)
         hows = {b.how for b in boxes(the_plan, plan.DASHED)}
-        assert {"when opened", "on hover"} <= hows
-        assert any(n == "embedded file" for _, _, n in sections(the_plan, "attachments"))
+        assert "on hover" in hows
+        # The attached files' bodies are review-tier matches in the scan
+        # (REVIEW_HIDDEN_TEXT): listed for review, never boxed or listed
+        # as certain.
+        assert "when opened" not in hows and not sections(the_plan, "attachments")
+        assert sections(the_plan, "review")
         assert any(p == 1 for p, _, _ in sections(the_plan, "unpositioned"))
+
+    def test_a_review_tier_hidden_match_is_never_boxed(self, tmp_path, monkeypatch) -> None:
+        """A value only in an annotation's attached file: the scan warns
+        (exit 2, no finding), so the map lists it for review and draws
+        nothing."""
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Cover page")
+        page.add_file_annot((300, 300), f"attached {SSN}\n".encode(), "a.txt")
+        pdf = _save(doc, tmp_path / "payload.pdf")
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf)
+        assert run.code == 2 and not run.report["findings"]
+        assert not the_plan.boxes
+        assert sections(the_plan, "review") and not sections(the_plan, "attachments")
 
     def test_switched_off_layer_text_and_live_content(self, tmp_path, monkeypatch) -> None:
         doc = fitz.open()
@@ -891,7 +952,8 @@ class TestTiers:
         pdf = _geometry_pdf(tmp_path / "truth.pdf", 90, "shifted", content="widget")
         run, the_plan = mapped(monkeypatch, tmp_path, pdf)
         truth = run.header["sink"]["truth"]["Text"]
-        hidden = {(e["page"], name) for e in run.header["sink"]["hidden"] for name in e["rules"]}
+        hidden = {(e["page"], name) for e in run.header["sink"]["hidden"] if e["hard"]
+                  for name in e["rules"]}
         for box in the_plan.boxes:
             if box.how == "selectable text":
                 assert truth[str(box.page)]["hard"]
@@ -909,6 +971,26 @@ class TestTiers:
         assert not the_plan.boxes
         assert sections(the_plan, "unpositioned") == [(1, "value rule #1", "Text layer")]
         assert the_plan.reasons == [] and the_plan.flags.I and the_plan.row == 2
+
+    def test_a_page_that_cannot_be_located_costs_only_its_findings(
+            self, tmp_path, monkeypatch) -> None:
+        doc = fitz.open()
+        for _ in range(2):
+            doc.new_page().insert_text((100, 100), f"SSN {SSN}")
+        pdf = _save(doc, tmp_path / "raise.pdf")
+        run, _ = mapped(monkeypatch, tmp_path, pdf)
+        real = locate.value_hits
+
+        def broken_on_page_one(pt, page_no, secret):
+            if page_no == 1:
+                raise RuntimeError("cannot locate")
+            return real(pt, page_no, secret)
+
+        monkeypatch.setattr(locate, "value_hits", broken_on_page_one)
+        the_plan = plan_of(pdf, run.header)
+        assert [b.page for b in boxes(the_plan, plan.SOLID)] == [2]
+        assert (1, "value rule #1", "Text layer, could not be located") in sections(
+            the_plan, "unpositioned")
 
     def test_fail_fast_keeps_the_stopping_pages_truth(self, tmp_path, monkeypatch) -> None:
         doc = fitz.open()

@@ -535,7 +535,8 @@ the map says about it (`plan.make_plan`, a `MapPlan` of boxes, lists,
 flags and one headline). Drawing the map, its self-check, and the
 command-line flag that runs it in a child process come in later changes;
 until then nothing on the command line reaches this code, and every scan
-passes no sink.
+passes no sink. A finding that cannot be located (a page the locator
+fails on) is listed "could not be positioned"; it never stops the plan.
 
 **Where it sits.** The scan hands the map its own truth and nothing
 else. `scan_page_layer` offers, per page and before its `--fail-fast`
@@ -565,7 +566,11 @@ its glyphs. The genuine readings overlap, so one occurrence (one set of
 glyphs) is placed once. A match found only across the visible edge
 (readings 4-6) is boxed over its visible glyphs, marked part of a value,
 and its off-page part is listed as outside the crop; a match wholly off
-the page is only listed. Every occurrence is
+the page is only listed. A pattern match's label carries the same masked
+sample as the human report (`mask()`'s tail), even on a box over only
+its visible part. A hidden item the scan only reviews (an attachment's
+body, an annotation's attached file: `REVIEW_HIDDEN_TEXT`) is never
+boxed or classified; its warning lists it for review. Every occurrence is
 accounted for on its own, so a copy that cannot be boxed is listed even
 when another copy on the page was. PyMuPDF reports glyphs (and takes text
 clips) in an unrotated frame whose origin is the top-left of the

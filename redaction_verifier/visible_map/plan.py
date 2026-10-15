@@ -370,12 +370,20 @@ class Planner:
             self.list("not_scanned", None, self.clean("Text layer"), page_ranges(missing))
         for page_no in sorted(truth):
             entry = truth[page_no]
-            for name in entry["hard"]:
-                self._place_text(page_no, name, value=True)
-            for name in entry["pattern_hard"]:
-                self._place_text(page_no, name, value=False)
-            for name in entry["seam"]:
-                self._place_seam(page_no, name)
+            # One page that cannot be located costs only its own findings,
+            # listed "could not be positioned".
+            jobs = [*((n, "value") for n in entry["hard"]),
+                    *((n, "pattern") for n in entry["pattern_hard"]),
+                    *((n, "seam") for n in entry["seam"])]
+            for name, tier in jobs:
+                try:
+                    if tier == "seam":
+                        self._place_seam(page_no, name)
+                    else:
+                        self._place_text(page_no, name, value=tier == "value")
+                except Exception:
+                    self.list("unpositioned", page_no, self.rules.label(name),
+                              "Text layer, could not be located")
         # What the --json report's Text findings are checked against: a
         # value found on one page by (rule, page), anything else by rule.
         self.located_text = {(n, p) for p, t in truth.items()
@@ -473,6 +481,12 @@ class Planner:
     # ── the Hidden layer ──────────────────────────────────────────────
     def hidden_layer(self) -> None:
         for entry in self.sink["hidden"]:
+            if not entry.get("hard", True):
+                # A review-tier match (an attachment body, an annotation's
+                # attached file): the scan only warns, so the map neither
+                # boxes nor classifies it; its REVIEW_HIDDEN_TEXT warning
+                # lists it under "Possible (review)".
+                continue
             for name in entry["rules"]:
                 self.located_hidden.add((entry["location"], name))
             try:
@@ -844,7 +858,6 @@ def make_plan(data: bytes | memoryview, target_sha256: str, header: dict[str, An
     the scan's own code, the target's name and the version. *rules* is
     Rules rebuilt from the header's rules_header, with the checker its
     labels go through."""
-    fitz.TOOLS.mupdf_display_errors(False)
     doc = fitz.open("pdf", data)
     if doc.needs_pass:
         raise ValueError("the target needs a password")
