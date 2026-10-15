@@ -136,7 +136,8 @@ class TestSelfCheck:
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
                                f'exact_values:\n  - "{SSN}"\npatterns:\n'
                                '  - "\\\\d{3}-\\\\d{2}-\\\\d{5}"\n')
-        assert any("****7890" in f["sample"] for f in run.report["findings"])
+        # The --json report hides it too (main's mask, #66).
+        assert not any("7890" in f["sample"] for f in run.report["findings"])
         _assert_absent(out, SSN, "7890", "789", "6789")
         assert "pattern #1 (patterns[0]) ****" in {b.label for b in the_plan.boxes}
 

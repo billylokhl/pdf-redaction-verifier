@@ -66,6 +66,7 @@ from redaction_verifier.inventory.objects import (ObjectParser, PdfArray, PdfBoo
                                                    PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
                                                    PdfString, PdfValue)
 from redaction_verifier.inventory.pages import INHERITED, Box, Page, f32, intersect
+from redaction_verifier.inventory.trees import Trees, key_text, qpdf_key_text
 from redaction_verifier.inventory.xref import Chain, read_chain
 from redaction_verifier.ledger import FlagReason, Unit, UnitKind, UnitRef
 
@@ -185,6 +186,16 @@ OFFSET_ZERO = re.compile(
     rb" \(object \d+ \d+\): object has offset 0 - a common error handled correctly by"
     rb" qpdf and most other applications")
 
+# An empty name or number tree root (neither /Names -- or /Nums -- nor
+# /Kids, or an empty array): both readers read no entries; qpdf --check
+# warns for the trees it walks (/EmbeddedFiles, /Dests, /PageLabels).
+# Accepted as empty, owner decision R5 (ADR 0011 item 4); the inventory
+# flags an empty node below the root, so on an unflagged file the line is
+# a root's. Anchored on the exact path, the whole line (3a-7c).
+EMPTY_TREE_ROOT = re.compile(
+    rb" \(Name/Number tree node(?: \(object \d+\))?\): name/number tree node has neither"
+    rb" non-empty /(?:Names|Nums) nor /Kids")
+
 # A page content stream's own syntax error in a token that starts at byte
 # 0: qpdf's QPDFExc constructor turns offset 0 into "no offset", so the
 # line reads "(content): ..." instead of NOT_STRUCTURE's "(content, offset
@@ -224,7 +235,7 @@ def structural(lines: Iterable[bytes], path: Path, *, linearized: bool = False,
             truncated = TRUNCATED_FLATE.fullmatch(rest)
             if truncated and int(truncated.group(1)) in undecoded:
                 continue
-            if OFFSET_ZERO.fullmatch(rest):
+            if OFFSET_ZERO.fullmatch(rest) or EMPTY_TREE_ROOT.fullmatch(rest):
                 continue
         found.append(line)
     return found
@@ -443,6 +454,7 @@ class Check(Enum):
     ENCRYPTION = "encryption"          # our trailer, MuPDF and qpdf differ on encryption
     PAGE_LIST = "page_list"            # a revision's pages, in order (MuPDF or libqpdf)
     PAGE_ATTRIBUTE = "page_attribute"  # a page's inherited attribute (MuPDF or libqpdf)
+    NAME_TREE = "name_tree"            # the /EmbeddedFiles entries (MuPDF or libqpdf)
     ORACLE_ERROR = "oracle_error"      # the comparison itself failed: nothing verified
 
 
@@ -689,6 +701,7 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
             raise _Disagreement(Check.TRAILER_VALUE, revision)
         stats.values += 1
         _pages_agree(doc, path, inv.pages[revision], revision, encrypted, stats)
+        _embedded_files_agree(doc, libqpdf, inv.trees[revision], revision, encrypted, stats)
     _dead_bodies_agree(data, inv, listed)
     warnings = _mupdf_templates()
     if warnings:
@@ -797,6 +810,48 @@ def _pages_agree(doc: pymupdf.Document, path: Path, pages: tuple[Page, ...] | No
             if not _effective_agree(view, resolved):
                 raise _Disagreement(Check.PAGE_ATTRIBUTE, revision, page.number,
                                     templates=("as shown",))
+
+
+def _embedded_files_agree(doc: pymupdf.Document, libqpdf: _Libqpdf, trees: Trees | None,
+                          revision: int, encrypted: bool, stats: _Stats) -> None:
+    """The /EmbeddedFiles name tree's entries (ADR 0011 item 8): ours, in
+    order, against MuPDF's pdf_load_name_tree (a dictionary: compared as
+    a set) and libqpdf's name-tree helper (in order) -- keys as text, as
+    each reads them (a trailing NUL: MuPDF cuts it, libqpdf keeps it),
+    values as written. An encrypted revision's keys are encrypted in our
+    reading and its non-empty trees flagged (P4): not compared."""
+    if trees is None:
+        raise _Disagreement(Check.NAME_TREE, revision, templates=("no trees",))
+    if encrypted:
+        return
+    entries = trees.get(b"EmbeddedFiles", ())
+    ours = [(key_text(e.key) if isinstance(e.key, bytes) else None,
+             value_form(e.value, e.text)) for e in entries]
+    # libqpdf keeps a key's trailing NUL, which MuPDF cuts (key_text).
+    ours_qpdf = [(qpdf_key_text(e.key) if isinstance(e.key, bytes) else None, value)
+                 for e, (_, value) in zip(entries, ours)]
+    mupdf = pymupdf.mupdf
+    pdf = pymupdf._as_pdf_document(doc)
+    loaded = mupdf.pdf_load_name_tree(pdf, mupdf.pdf_new_name("EmbeddedFiles"))
+    mu = []
+    for i in range(mupdf.pdf_dict_len(loaded)):
+        key = mupdf.pdf_to_name(mupdf.pdf_dict_get_key(loaded, i))
+        value = mupdf.pdf_sprint_obj(None, 0, mupdf.pdf_dict_get_val(loaded, i), 0, 0)[0]
+        mu.append((key, text_form(value.encode("latin-1"))))
+    names = libqpdf.pdf.Root.get("/Names")
+    tree = names.get("/EmbeddedFiles") if names is not None else None
+    qp = ([(key, libqpdf_form(value)) for key, value in pikepdf.NameTree(tree).items()]
+          if tree is not None else [])
+    _no_libqpdf_warning(libqpdf, revision)
+    # MuPDF's dictionary has no order: matched by key (keys are unique and
+    # in order on an unflagged tree), values within MuPDF's float32 reals.
+    by_key = dict(mu)
+    if (len(mu) != len(ours) or len(by_key) != len(mu)
+            or not all(key in by_key and same_as_mupdf(value, by_key[key])
+                       for key, value in ours)
+            or qp != ours_qpdf):
+        raise _Disagreement(Check.NAME_TREE, revision, templates=("EmbeddedFiles",))
+    stats.values += len(ours)
 
 
 def _drop_offset_zero(qmap: dict[int, tuple[str, int, int]], doc: pymupdf.Document,

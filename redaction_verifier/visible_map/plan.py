@@ -21,7 +21,8 @@ from typing import Any, Callable
 import pymupdf as fitz
 
 from redaction_verifier.matching import PatternRule, mask, normalize_string
-from redaction_verifier.model import Secret
+from redaction_verifier.matching.patterns import _tail_chars
+from redaction_verifier.model import MaskIndex, Secret
 from redaction_verifier.report.text import _sanitize_report_text, rule_label
 from redaction_verifier.rules import RuleLabel, RuleSet
 from redaction_verifier.visible_map import headline, locate
@@ -148,7 +149,13 @@ class Rules:
 
     def __init__(self, data: dict[str, Any], clean: Callable[..., str]) -> None:
         from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES
-        self.secrets = {name: Secret(name, norm) for name, norm in data["secrets"]}
+        # Each secret is [name, normalized, folded] (folded: fold_wide of
+        # the value as written, which the report's MaskIndex also holds).
+        self.secrets = {row[0]: Secret(row[0], row[1], row[2] if len(row) > 2 else "")
+                        for row in data["secrets"]}
+        # The same index the reports mask with (verify.main): one rule.
+        self.index = MaskIndex(f for s in self.secrets.values()
+                               for f in (s.normalized, s.folded) if f)
         self.patterns: dict[str, PatternRule] = {}
         for name, src, flags, cls in data["patterns"]:
             validator = BUILTIN_PATTERN_CLASSES[cls][1] if cls else None
@@ -189,7 +196,7 @@ class Rules:
         base = self._labels[name]
         entry = f"rule #{self._entry[name]}"
         if sample:
-            masked = "****" if hide else self.masked(mask(sample), sample)
+            masked = "****" if hide else self.masked(mask(sample, self.index))
             return self.clean(f"{base} {masked}", f"{base} ****", f"{entry} ****")
         return self.clean(base, entry)
 
@@ -198,8 +205,7 @@ class Rules:
         file name), cut to *cap* characters, or *neutral* when the cut
         form could show part of an exact value: any two consecutive
         normalized characters of it, as written or as drawn (latin),
-        occur together in one (the rule masked() applies to a sample's
-        tail), or a rule matches it (clean). The cut comes first, so the form checked is the form
+        occur together in one, or a rule matches it (clean). The cut comes first, so the form checked is the form
         drawn."""
         if len(text) > cap:
             text = text[:cap - 1] + "…"
@@ -212,21 +218,20 @@ class Rules:
                 return self.clean(neutral)
         return self.clean(text, neutral)
 
-    def masked(self, shown: str, matched: str = "") -> str:
-        """*shown* (mask()'s output), or a bare "****" when it could reveal
-        part of an exact value: the match contains one, or any two
-        consecutive revealed characters occur together in one (any longer
-        shared run contains such a pair). A pattern that matches a value,
-        or text that runs on past its start or end, would otherwise show
-        some of the value's characters. Used for the map only: the human
-        and --json reports keep mask() as it is."""
-        values = [s.normalized for s in self.secrets.values()]
-        if matched and any(v in normalize_string(matched) for v in values):
+    def masked(self, shown: str) -> str:
+        """*shown*, a sample mask() has already masked with the rules'
+        exact values (self.index, the reports' own rule: the map has no
+        masking of its own), as the map may draw it: a bare "****" when
+        the tail, as written or as drawn (latin escapes a character
+        outside Latin-1 as \\u{XXXX}, adding hex digits), holds any
+        character of an exact value. A --json sample is checked as
+        written too, so the map never relies on how the parent masked
+        it."""
+        if not shown.startswith("****") or len(shown) > 8:
             return "****"
-        tail = normalize_string(shown[4:])
-        if len(tail) == 1 and any(tail in v for v in values):
-            return "****"           # mask() of a short match shows one character
-        if any(tail[i:i + 2] in v for i in range(len(tail) - 1) for v in values):
+        tail = shown[4:]
+        if tail and any(not _tail_chars(form).isdisjoint(self.index.chars)
+                        for form in (tail, latin(tail))):
             return "****"
         return shown
 
@@ -868,7 +873,7 @@ def rules_header(rules: Any) -> dict[str, Any]:
             cls = matches[0]
         patterns.append([rule.name, rule.regex.pattern, rule.regex.flags, cls])
     return {
-        "secrets": [[s.name, s.normalized] for s in rules.secrets],
+        "secrets": [[s.name, s.normalized, s.folded] for s in rules.secrets],
         "patterns": patterns,
         "labels": [[name, label.kind, label.text] for name, label in rules.labels.items()],
     }
