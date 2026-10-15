@@ -3438,11 +3438,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--strict-classes",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="built-in classes (ssn, credit-card, email, us-phone) decide the "
-        "verdict like any rule (default for now); with --no-strict-classes "
-        "their matches are reported as notices that never change the exit "
-        "code (ADR 0012). A class rule with \"strict\": true always decides it",
+        default=False,
+        help="count the built-in classes' matches (ssn, credit-card, email, "
+        "us-phone; a redactor config's entity_types) toward the verdict like "
+        "any rule. By default they are reported as notices that never change "
+        "the exit code (ADR 0012). A class rule with \"strict\": true always counts",
     )
     parser.add_argument(
         "--json",
