@@ -6,7 +6,6 @@ is generated here; fabricated content only."""
 
 from __future__ import annotations
 
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,10 +15,16 @@ from scorecard.pdfgen import Writer
 
 from redaction_verifier.budget import Budget, Limits
 from redaction_verifier.inventory import build_inventory
+import redaction_verifier.inventory.pages as pages_module
 from redaction_verifier.inventory.pages import PageTreeRule
 from redaction_verifier.ledger import FlagReason
 
 from .conftest import requires_qpdf
+from .steps import charged_steps
+
+# Lines pages.py executes per unit of work it charges, at most (#94): its
+# charges are coarser than the graph's (about 24 lines a unit), but fixed.
+LINES_PER_UNIT = 30
 
 SSN = b"123-45-6789"
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
@@ -232,22 +237,22 @@ def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
     # Each update that touches the tree re-reads it: revisions x pages, by
     # design (ADR 0011 item 7). All of it is charged -- the work grows as
     # its product -- and the budget bounds it (flagged, never hanging).
-    small = _wide(100, 100)
-    large = _wide(800, 800)
+    # No hidden work: pages.py's lines executed per unit of work it charges
+    # stay under a fixed bound (a deterministic count, not wall clock: #94).
+    small = _wide(40, 40)
+    large = _wide(320, 320)
     work = []
     for data in (small, large):
-        budget = Budget(file_size=len(data))
-        started = time.process_time()
-        flags = build_inventory(data, budget=budget).flags
-        elapsed = time.process_time() - started
-        work.append((budget.work, elapsed))
-        assert budget.work <= Limits().work_limit(len(data))
-        reasons = {f.reason for f in flags}
+        charged, lines, inv = charged_steps(data, pages_module, "build_pages")
+        work.append(charged)
+        assert lines <= LINES_PER_UNIT * charged, (lines, charged)
+        reasons = {f.reason for f in inv.flags}
         assert reasons <= {FlagReason.BUDGET_EXHAUSTED}, reasons
-    (w_s, t_s), (w_l, t_l) = work
+    w_s, w_l = work
     # Superlinear by design (8x the input, revisions x pages: ~64x the walk).
-    assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(len(large))
-    assert t_l / w_l < 3 * max(t_s, 0.01) / w_s  # time per charged unit: no hidden work
+    # (Lines per unit differ between the sizes: the fixed PAGE_RECORD_WORK
+    # charges weigh more in the small file; the bound holds for both.)
+    assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(len(large)), (w_s, w_l)
 
 
 @requires_qpdf

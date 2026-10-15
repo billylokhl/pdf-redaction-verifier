@@ -14,12 +14,14 @@ from scorecard.inventory import compare
 from scorecard.pdfgen import Writer
 
 import redaction_verifier.inventory.build as build_module
+import redaction_verifier.inventory.graph as graph_module
 from redaction_verifier.budget import Budget, Counter, Limits
 from redaction_verifier.inventory import build_inventory
 from redaction_verifier.inventory.graph import ARRAY, UseKind, use_kind
 from redaction_verifier.ledger import Flag, FlagReason
 
 from .conftest import requires_qpdf
+from .steps import charged_steps
 
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
@@ -289,19 +291,16 @@ def test_flipping_a_shared_target_is_charged() -> None:
     # Every flip re-resolves every reference into it: changes x fan-in, by
     # design (docs/phase3a-plan.md 3a-7a). The budget bounds it -- within the
     # limit or flagged BUDGET_EXHAUSTED -- provided all of it is charged:
-    # its time per unit of work stays that of a linear shape (a ratio, so
-    # any machine and coverage's slowdown cancel; best of three runs).
-    data = _rewrites(800, 800, flip=True)
-    work, _, flags = _work(data)
+    # the graph's lines executed per unit of work it charges stay under
+    # LINES_PER_UNIT (a deterministic count, not wall clock: #94).
+    data = _rewrites(400, 400, flip=True)
+    work, lines, flags = _graph_steps(data)
     assert work <= Limits().work_limit(len(data))
-    linear = _rewrites(800, 800, flip=False)
-    base_work = _work(linear)[0]
-    per = min(_work(data)[1] for _ in range(3)) / work
-    base = min(_work(linear)[1] for _ in range(3)) / base_work
-    assert per < 3 * base, (per, base)
-    # Deterministic, whatever the machine: each of the 800 flips charges
-    # each of the 800 references into the target (uncharged work: ~0 here).
-    assert work - base_work >= 800 * 800, (work, base_work)
+    assert lines <= LINES_PER_UNIT * work, (lines, work)
+    base_work, _, _ = _graph_steps(_rewrites(400, 400, flip=False))
+    # Deterministic, whatever the machine: each of the 400 flips charges
+    # each of the 400 references into the target (uncharged work: ~0 here).
+    assert work - base_work >= 400 * 400, (work, base_work)
     assert FlagReason.REF_DANGLING in {f.reason for f in flags}
 
 
@@ -346,17 +345,28 @@ def _stale(bodies: int, flips: int) -> bytes:
     return bytes(w.out)
 
 
+def _graph_steps(data: bytes) -> tuple[int, int, tuple[Flag, ...]]:
+    """(work charged inside the graph, lines executed in graph.py, flags):
+    the line count sees every loop, charged or not, the same on every
+    machine (#94)."""
+    work, lines, inv = charged_steps(data, graph_module, "build_graph")
+    return work, lines, inv.flags
+
+
+# Lines graph.py executes per unit of work it charges, at most: every loop
+# charges per pass, so this holds on any input; an uncharged loop breaks it.
+LINES_PER_UNIT = 12
+
+
 @pytest.mark.parametrize("shape", [lambda n: _wide(n), lambda n: _stale(n, n // 4)],
                          ids=["wide", "stale"])
 def test_every_step_of_the_graph_is_charged(shape) -> None:  # type: ignore[no-untyped-def]
-    # Wall clock, not only work counts (ADR 0010): 8x the input costs
-    # about 8x the time, and the work charged keeps pace with it.
-    small, large = shape(4000), shape(32000)
-    work_s, _, flags_s = _work(small)
-    work_l, _, flags_l = _work(large)
-    # The best of three runs each: a loaded machine slows a run, never speeds one.
-    time_s = min(_work(small)[1] for _ in range(3))
-    time_l = min(_work(large)[1] for _ in range(3))
+    # Not only work counts (ADR 0010): 8x the input executes about 8x the
+    # graph's lines (an uncharged quadratic loop: ~64x), and the work
+    # charged keeps pace with it. Lines, not wall clock: deterministic.
+    work_s, lines_s, flags_s = _graph_steps(shape(500))
+    work_l, lines_l, flags_l = _graph_steps(shape(4000))
     assert FlagReason.BUDGET_EXHAUSTED not in {f.reason for f in flags_s + flags_l}
     assert work_l < 10 * work_s, (work_s, work_l)
-    assert time_l < 12 * max(time_s, 0.05), (time_s, time_l)  # quadratic: ~18x and up
+    assert lines_l < 10 * lines_s, (lines_s, lines_l)
+    assert lines_l <= LINES_PER_UNIT * work_l, (lines_l, work_l)
