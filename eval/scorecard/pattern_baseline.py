@@ -102,12 +102,15 @@ def reduce_result(stratum: str, result: CliResult, records: dict[str, Any],
     """Join each hard finding in the CLI's --json report to the recorder's
     shape for the same `record_key(salt, rule, masked sample)`. A finding
     with no record is counted as UNJOINED, never dropped. A crash, timeout
-    or CLI error (an unreadable or encrypted file) is unmeasured: it has no
-    findings to count, so it never pads a rate's denominator."""
+    or CLI error with no finding (an unreadable or encrypted file) is
+    unmeasured: it has nothing to count, so it never pads a rate's
+    denominator."""
     report = result.report
     if result.crashed or report is None:
         return FileResult(stratum, False, result.returncode, unmeasured_reason="crash")
-    if report.get("error"):
+    if report.get("error") and not report.get("findings"):
+        # An error with findings (INTERNAL_ERROR after a hard finding, exit
+        # 1) is measured: its findings are real false hards.
         return FileResult(stratum, False, report.get("exit_code"),
                           unmeasured_reason=str(report["error"].get("code")))
     joins: dict[str, set[str]] = {}

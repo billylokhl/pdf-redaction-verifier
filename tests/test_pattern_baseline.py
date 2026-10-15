@@ -149,6 +149,13 @@ def test_reduce_marks_a_crash_or_cli_error_unmeasured():
     assert (r.measured, r.unmeasured_reason) == (False, "PDF_PASSWORD")
 
 
+def test_reduce_keeps_an_error_report_that_has_findings_measured():
+    late_crash = _result([_finding("ssn")], exit_code=1,
+                         error={"code": "INTERNAL_ERROR", "message": "x"})
+    r = reduce_result("text-bearing", late_crash, {}, "s")
+    assert r.measured and [h.rule for h in r.hard] == ["ssn"]
+
+
 def _fr(*hard, shapes=None, stratum="text-bearing", exit_code=1):
     return FileResult(stratum, True, exit_code, tuple(hard),
                       match_shapes={k: frozenset(v) for k, v in (shapes or {}).items()})
