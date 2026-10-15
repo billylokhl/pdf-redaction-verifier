@@ -638,6 +638,31 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     max 322,346): no corpus file has a chained /AP stream, so SYNTHESIZED stays 130
     unflagged files and 373 units (139 files and 400 annotations over the whole
     corpus), the closure gap 0.
+    Done (3a-7e-3 PR): item 7's test and the cost briefing (eval/spikes/RESULTS.md, "Phase
+    3a-7e"; summary below), with no flags and no verdict change.
+    - build.py runs the graph, pages, trees, annotations and labels through one seam,
+      `_reference_graph`; tests/test_inventory_stage.py scales revisions and objects
+      together (n vs 8n): within the limit at n, flagged BUDGET_EXHAUSTED at 8n (about 64x
+      the work); 10.3-10.6 lines per charged unit, bound 15, no growth; a wall-clock
+      backstop at 2,000 vs 16,000 objects (clean 1.23-1.33x, bound 2x, a list mutant 4.6x).
+    - eval: `graph_sum`, the XMP image scan (eval only), per-body orphan classes, today's
+      page-thumbnail mark (#133), `labels_cost`, the REACHABLE share of the oracle.
+    - ADR 0011 wording: the Q3 note (an /N chain is synthesized only when /AS is absent or
+      names nothing in that stream's dictionary) and the Q2 note (MuPDF draws the
+      /Alternate whenever it cannot use the profile).
+    Briefing summary (1,920 unflagged corpus files; would exit 2 once labels gate):
+    orphans per body 242 files (current revision 294; the 52 between, drawn in an older
+    revision, are 4b's under decision D), with /Properties holding forms or /Contents its
+    own line at 16 files, failing closed; hint streams 400 (ADR 416); XMP images 516 (519);
+    JavaScript 86 (89); synthesized 130 (139 over the whole corpus); output intents 0; any
+    of them 707 (about 728), 860 of 2,073 corpus files (41.5%) with the inventory's 153.
+    Thumbnail orphans (194 files) are all on pages #133 already marks, and add no file of
+    their own. Item 7: largest graph work 322,346 units for a sum of 6,062 objects and
+    edges; R revisions each changing N objects and edges cost about 64 N R (DESIGN.md);
+    labels keep at most a byte per unit. Oracle p50 0.616 s, max 54.5 under a load average
+    of 25-35 (REACHABLE 1.9% of it). Gates: corpus 1,920 / 153 / 0; case library 440/27/0
+    (467); fuzz 501/1,499/0. Remaining: 3a-8, 3a-9, 3a-12, 3a-13, 3a-14 (5 PRs); 3b about
+    7-9 PRs with its plan.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page

@@ -495,8 +495,8 @@ def test_an_xobject_is_drawn_as_mupdf_reads_its_subtype(subtype: bytes,
 
 def _broken_icc(alternate: bytes, stream: tuple[bytes, bytes]) -> bytes:
     """A page filling with colour space [/ICCBased 4 0 R], profile 4
-    unreadable (MuPDF: "ignoring broken ICC profile", so it draws with the
-    /Alternate), whose /Alternate names stream 7."""
+    unreadable (MuPDF cannot use it -- "ignoring broken ICC profile" -- so
+    it draws with the /Alternate), whose /Alternate names stream 7."""
     return page(b"/ColorSpace << /C0 [/ICCBased 4 0 R] >>", streams={
         5: (b"", b"/C0 cs 1 scn 0 0 100 100 re f"),
         4: (b" /N 1 /Alternate " + alternate, b"icc"), 7: stream})
@@ -520,7 +520,8 @@ def test_known_gap_a_broken_icc_profiles_alternate_is_drawn_but_orphaned(
     # elements (Q2, coordinator decision 2026-10-15: measured gaps go to
     # notes, never silent widening). An ICC profile's /Alternate is not
     # followed, so a stream there is ORPHANED -- failing closed -- though
-    # MuPDF draws it when the profile is broken. Fails if the lists are
+    # MuPDF draws it whenever it cannot use the profile: one it cannot read
+    # (as here), or a profile type it rejects. Fails if the lists are
     # widened (update the note with them) or if MuPDF stops drawing it
     # (the note is then stale).
     data = _broken_icc(alternate, stream)

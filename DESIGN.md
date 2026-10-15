@@ -533,6 +533,20 @@ more image, n = 40 to 2,000): 0.30 to 0.86 bytes per unit of the labels'
 own work, at most 52.5 bytes per byte of the file; the per-body labels
 0.24 to 0.76 bytes per unit of their own work (tests pin the one-byte
 bound).
+The reference graph's stage walks again each revision that changes
+something it read, so its work is the sum, over those revisions, of the
+live objects and edges (ADR 0011 item 7): R revisions, each changing a
+reachable set of N objects and edges, cost about 64·N·R units (measured
+50 to 70 units per object or edge per revision walked again; a revision
+that reads nothing new shares its predecessor's results and costs
+almost nothing). The budget's 64 per byte therefore bounds R·N by about
+the file's size: a 1 MB file with 5,000 objects and 200 such saves
+reaches the limit and is flagged `BUDGET_EXHAUSTED`, failing closed,
+never certified. `tests/test_inventory_stage.py` scales revisions and
+objects together (n against 8n, about 64 times the work): within the
+limit, or flagged. On the corpus the stage charged at most 322,346 units
+(a sum of 6,062 objects and edges), at most 6.52 units of work per byte
+of the file in all.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)

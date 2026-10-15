@@ -681,6 +681,103 @@ older revision. Case library: 27 annotations compared. Oracle seconds on the fin
 workers): p50 0.32, max 17.0 (3a-7c's run: 0.63 and 20.6); the two copies cost only on
 revisions with annotations.
 
+## Phase 3a-7e: what the labels cost -- the owner's briefing before 3b
+
+Re-measured on the implementation (3a-7e-1 to 7e-3; `scorecard inventory run`, aggregate
+`pending_decisions.labels_cost`, 2026-10-15), against ADR 0011's "What it costs", which came
+from a prototype. Nothing here changes a verdict: labels add no flag (R3), and the ledger
+verdict is shadow-only until it is enforced. These are the files that would exit `2` once
+labels gate -- 3b's verdict maps orphans to `FLAGGED`, and each kind without a decoder stays
+unexamined until its decoder lands (4a for synthesized annotations).
+
+Denominators: 2,073 corpus files, 153 flagged by the inventory (7.38%), 1,920 unflagged. The
+ADR measured 1,939 unflagged files (134 flagged) before 3a-7's flags, so its counts are over
+19 more files.
+
+**Orphans, per body (ADR 0011 item 5's definition): 242 files (12.6%), 2,513 streams.**
+In the current revision's sense, 294 files (3,056 streams; the ADR's prototype measured 307).
+The 52 files between the two have orphans now that were drawn or structural in an older
+revision they live in: item 5 labels a body across all its revisions, and decision D's
+stricter "drawn by the current revision" is 4b's, by running content. By class, per body
+(files; a file can be in several):
+
+| Class | Files | Streams | Note |
+| --- | --- | --- | --- |
+| `/PieceInfo` private data | 195 | 847 | ADR: 203 |
+| Page thumbnails | 194 | 682 | ADR: 202. Every one is on a page today's CLI already marks (#133, `PAGE_THUMBNAIL`) |
+| Appearances not drawn (an `/AP` state, a widget on no page) | 24 | 24 | |
+| `/Properties` holding forms or `/Contents` | 16 | 77 | Fails closed as item 5 says (optional-content property lists draw nothing) |
+| Unreferenced | 10 | 858 | ADR: 82 in the current revision (78 now, and 36 reached only from unreachable objects); per body, most were labelled in an older revision |
+| Fields, a font program, an XObject, a soft mask under `/PieceInfo`, an older body, one reached only from an unreachable object | 1-3 each | 25 | |
+
+`/Metadata` orphaned on an annotation or an ICC profile: 0 (corpus, case library and fuzz),
+so the `/Metadata` holder allowlist costs nothing today.
+
+**Exit `2` once labels gate, by class** (unflagged files; each file once in the total):
+
+| Class | Files | ADR 0011 | Deviation |
+| --- | --- | --- | --- |
+| Orphan (R3), per body | 242 | 307 (current revision, prototype) | -65: the per-body definition (current revision: 294, -13) |
+| Linearization hint stream (R6, ADR 0003) | 400 | 416 | -16 (76 under a stale `/L`, counted apart: decision Q8) |
+| XMP packet holding an image (R7, decision D) | 516 | 519 | -3. 558 packets; no packet holds other binary; none undecoded |
+| JavaScript stream (no decoder yet) | 86 | 89 | -3 (159 streams) |
+| Synthesized annotation (until 4a) | 130 | 139 | -9: 139 is over the whole corpus, 9 of those files are flagged |
+| Output-intent profile | 0 | 0 | -- |
+| **Any of these** | **707 (36.8%)** | about 728 | -21 |
+
+707 files have at least one class; 144 have only an XMP image, 63 only a hint stream, 6 only an
+orphan. Orphans, hint streams and XMP images alone cover all 707, so decoding synthesized
+annotations (4a) and JavaScript does not lower the count. The thumbnail orphans add no file
+of their own: 8 files have only thumbnail orphans, and each also has another class. Whether
+these files already exit `2` in today's CLI for other reasons is 3a-12's measurement (ADR
+0007's overlap); only the thumbnails' overlap (#133) is measured here.
+
+| Scenario (whole corpus, 2,073 files) | Measured | ADR 0011 |
+| --- | --- | --- |
+| Inventory flags (3a-7) | 153 (7.38%) | 141 (6.80%) |
+| Every kind enforced | 860 (41.5%) | about 865 (42%) |
+| -- after 4a and a JavaScript decoder | 860 (41.5%) | about 865 (42%) |
+| -- hint streams not flagged (R6 (b), at best) | 797 (38.4%) | about 840 (40-41%) |
+| -- orphans and XMP images only | 728 (35.1%) | about 775 (37%) |
+| -- orphans alone | 395 (19.1%) | about 441 (21%) |
+
+No cost differs from the ADR's figure in a way that changes the picture: every class is within
+3% of its file count except orphans, which are lower under the per-body definition.
+
+**Item 7, the graph's cost.** The reference graph's whole stage (edges, page lists, name
+trees, annotations, labels) charged at most 322,346 units on a corpus file, whose sum of live
+objects and edges over its revisions is 6,062 (53 units each); p50 3,221, p99 58,966. The
+largest sum is 6,381 (p50 24, p99 997). Units per object or edge: p50 120, p99 224, max 243,
+falling to 18-71 on files whose sum is 500 or more -- small files pay the fixed charges for
+what the labels keep, at most a byte per unit. Work per byte of the file stays at most 6.52
+of the budget's 64. The bound, for the owner: **R revisions, each changing a reachable set of
+N objects and edges, cost about 64·N·R units** (measured 50-70 per object or edge per
+revision walked again on the item-7 test's shape); a 1 MB file with 5,000 objects and 200
+such saves reaches the limit and is flagged `BUDGET_EXHAUSTED`, failing closed. **Memory:**
+the labels keep at most one byte per unit of work, so at most 64 times the file's size plus
+about 1 MB (DESIGN.md, "Bounded resources").
+
+**The oracle's time** (corpus, 8 workers, on a heavily loaded machine: load average 25-35,
+build p50 0.108 s against 0.074 s in 3a-7e-2's run): p50 0.616 s, p90 0.897, p99 2.07, max 54.5
+(3a-7e-2: 0.237 and 14.5 unloaded). The `REACHABLE` check: p50 0.003 s, p99 0.12, max 2.3;
+its share of each file's oracle time p50 0.5%, p99 8.6%, max 22.7%, and 1.9% of the run. The
+cost measures add about 7 ms a file (83 sampled files, in-process). Re-measure on an idle
+machine before reading the absolute times.
+
+| Run | Agree | Flagged | Unflagged disagreements |
+| --- | --- | --- | --- |
+| Corpus (2,073) | 1,920 | 153 | 0 (unchanged) |
+| Case library (467) | 440 | 27 | 0 |
+| Fuzz (2,000, seed 0) | 501 | 1,499 | 0 |
+
+**What is left, at the agents' pace.** Phase 3a has five PRs left: 3a-8 and 3a-9 (encryption,
+Lane A2), 3a-12 and 3a-13 (the unit budget and orphan overlap; decision D's cost, Lane G), and
+3a-14 (close-out). 3b's row in REDESIGN names six deliverables -- obligations and parent
+anchors, the child protocol and completion sentinel, witnesses, the verdict function (with the
+orphan mapping and its test), shadow and enforced verdicts with worst-of shipping, `--explain`
+-- so about 7 to 9 PRs with its plan. Lane A merged five 3a-7 PRs on 2026-10-15, reviews
+included; the coordinator re-baselines from PRs per day.
+
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 
 Measured 2026-10-14 (commit 90669ef), on the owner's local corpus: 2,073
