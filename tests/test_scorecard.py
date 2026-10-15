@@ -945,6 +945,77 @@ def test_find_pdfs_counts_an_unreadable_directory(tmp_path):
     assert found.pdfs == () and found.unreadable_dirs == 1
 
 
+_POSIX_NON_ROOT = pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
+                                     reason="needs POSIX permissions and a non-root user")
+
+
+@_POSIX_NON_ROOT
+def test_corpus_build_counts_unreadable_files_without_naming_them(tmp_path, capsys):
+    """#109: a permission error used to abort the build, and its traceback
+    named the file. A .pdf that cannot be read (mode 000), or cannot even
+    be stat'ed (in a listable but unsearchable directory), is now left out
+    and counted, and the build goes on."""
+    import scorecard.cli as cli
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    (root / "private-locked-name.pdf").write_bytes(b"%PDF-1.7\n")
+    (root / "private-locked-name.pdf").chmod(0)
+    blind = root / "private-blind-dir"
+    blind.mkdir()
+    (blind / "private-blind-name.pdf").write_bytes(b"%PDF-1.7\n")
+    blind.chmod(0o444)  # listable, not searchable: is_file() raises EACCES
+    try:
+        args = cli.build_parser().parse_args(
+            ["corpus", "build", "--root", str(root), "--allow-outside",
+             "--manifest", str(tmp_path / "out" / "manifest.json")])
+        assert args.func(args) == 0
+    finally:
+        blind.chmod(0o700)
+        (root / "private-locked-name.pdf").chmod(0o600)
+    captured = capsys.readouterr()
+    assert "wrote 6 entries" in captured.out
+    assert "2 unreadable file(s)" in captured.out
+    for text in ("private-", str(root)):
+        assert text not in captured.out + captured.err
+    assert not list((tmp_path / "out").glob("*.partial"))
+
+
+@pytest.mark.parametrize("layout", ["empty", "no-pdf", "only-unreadable", "unlistable"])
+def test_corpus_build_never_replaces_a_manifest_with_an_empty_one(tmp_path, layout):
+    """#110: an empty, PDF-less or unusable root used to overwrite the
+    manifest with an empty one and exit 0. The build now refuses, without
+    echoing the path, and leaves the existing manifest exactly as it was."""
+    if layout in ("only-unreadable", "unlistable") and (
+            sys.platform == "win32" or os.geteuid() == 0):
+        pytest.skip("needs POSIX permissions and a non-root user")
+    from scorecard.corpus import build_manifest
+
+    root = tmp_path / "private-root"
+    root.mkdir()
+    if layout == "no-pdf":
+        (root / "notes.txt").write_text("not a PDF")
+    if layout == "only-unreadable":
+        (root / "a.pdf").write_bytes(b"%PDF-1.7\n")
+        (root / "a.pdf").chmod(0)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("previous manifest\n")
+    if layout == "unlistable":
+        root.chmod(0)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            build_manifest(root, manifest_path=manifest)
+    finally:
+        root.chmod(0o700)
+        if layout == "only-unreadable":
+            (root / "a.pdf").chmod(0o600)
+    assert "private-root" not in str(exc.value)
+    assert ("cannot be listed" if layout == "unlistable" else "empty manifest") in str(exc.value)
+    if layout == "only-unreadable":
+        assert "1 unreadable file(s)" in str(exc.value)
+    assert manifest.read_text() == "previous manifest\n"
+    assert not list(tmp_path.glob("*.partial"))
+
 def test_find_pdfs_refuses_a_root_that_is_not_a_directory(tmp_path):
     """A mistyped --root used to write an empty manifest; `corpus run` then
     refuses zero files, but only later. The build now refuses it, without

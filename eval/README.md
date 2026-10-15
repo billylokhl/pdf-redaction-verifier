@@ -507,9 +507,14 @@ in `.pdf` in any case (`.PDF`, `.Pdf`, ...); a symbolic link to a file
 counts as that file. It prints how many entries it left out, by kind and
 never by name: files without a `.pdf` extension, entries named `.pdf`
 that are not regular files (a broken link, say), symbolic links to
-directories (not followed, so a link cycle cannot loop the walk) and
-directories it could not list. A `--root` that is not an existing
-directory is refused rather than written as an empty manifest.
+directories (not followed, so a link cycle cannot loop the walk),
+directories it could not list, and `.pdf` files it could not read (a
+permission error: such a file cannot be hashed, so it is left out, and
+the error's message, which names the file, is never printed). A
+`--root` that is not an existing directory or cannot be listed is
+refused, and so is a root with no readable PDF: the build never
+replaces a manifest with an empty one, and leaves the existing one as it
+was. The manifest is written to a temporary file and renamed into place.
 
 A file MuPDF cannot read is recorded, not fatal: `corpus build` used to
 abort on the first password-protected or corrupt file, so the exemption
