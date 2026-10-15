@@ -8,12 +8,14 @@ never stored or printed, so a corpus run publishes counts per shape and
 nothing else.
 
 A shape is evidence about *why* a clean file's text matched a class, not
-a verdict: "formatted" is a match that already looks like the real thing
-(a dashed SSN, a punctuated phone number), the shape a context rule could
-not tell apart from a secret, while "uuid", "hex-id" and "date-or-time"
-are digit runs inside something else. The categories are checked in the
-order of `SHAPES`, so a dashed run inside a UUID is "uuid", not
-"formatted".
+a verdict. "formatted" is a match grouped exactly as the class's real
+values are (a dashed SSN, a punctuated phone number) -- the shape a
+context rule could not tell apart from a secret, so it is decided first,
+even when a letter touches the match ("SSN123-45-6789"). "uuid", "hex-id",
+"alnum-id" and "date-or-time" are digit runs inside something else. Where
+the evidence is thin the classifier errs toward the shapes no option
+demotes: a date needs context (a PDF "D:" prefix or a full timestamp), and
+a token stops at '-', so "ID-123456789" is "bare-digits", not "alnum-id".
 """
 
 from __future__ import annotations
@@ -21,18 +23,19 @@ from __future__ import annotations
 import hashlib
 import re
 
-# The environment variable naming the file pattern_recorder writes its
-# records to (here, so pattern_baseline need not import the recorder,
-# which patches the verifier on import).
+# The environment variables pattern_recorder reads (here, so
+# pattern_baseline need not import the recorder): the file it writes its
+# records to, and the per-run salt for their keys.
 OUT_ENV = "PATTERN_RECORDER_OUT"
+SALT_ENV = "PATTERN_RECORDER_SALT"
 
 SHAPES: tuple[str, ...] = (
     "email-address",  # the email class: a true positive for "an address is here" (ADR 0005)
+    "formatted",      # separators grouping the digits as the class's real values are
     "uuid",           # inside an 8-4-4-4-12 hex UUID
     "hex-id",         # inside a token whose letters are all hex digits (a hash, an object id)
-    "date-or-time",   # a YYYYMMDD run, a PDF date (D:...), or epoch seconds/milliseconds
+    "date-or-time",   # a PDF date (D:...), a YYYYMMDDhhmm... timestamp, epoch milliseconds
     "alnum-id",       # inside a token with other letters (a serial, a part number)
-    "formatted",      # separators grouping the digits as the class's real values are
     "number-list",    # separators, but grouped otherwise (a list of small numbers)
     "bare-digits",    # a plain digit run standing alone (a number, an id)
 )
@@ -40,21 +43,24 @@ SHAPES: tuple[str, ...] = (
 _UUID = re.compile(
     r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
 )
-_TOKEN_CHAR = re.compile(r"[0-9A-Za-z_-]")
+_TOKEN_CHAR = re.compile(r"[0-9A-Za-z_]")
 _HEX_LETTERS = frozenset("abcdefABCDEF")
-# Seconds and milliseconds since the epoch, 2000-01-01 to 2040-01-01.
-_EPOCH_SECONDS = (946_684_800, 2_208_988_800)
-_EPOCH_MILLIS = (_EPOCH_SECONDS[0] * 1000, _EPOCH_SECONDS[1] * 1000)
+# Milliseconds since the epoch, 2000-01-01 to 2040-01-01. Epoch *seconds*
+# are not read as a date: ten digits from 0946... to 2208... are also every
+# bare phone number in area codes 201-220.
+_EPOCH_MILLIS = (946_684_800_000, 2_208_988_800_000)
 
 
-def record_key(rule: str, masked_sample: str) -> str:
-    """The join key between a recorder record and a --json finding: a hash,
-    so the record file holds neither the match nor its masked sample."""
-    return hashlib.sha256(f"{rule}\0{masked_sample}".encode()).hexdigest()[:24]
+def record_key(salt: str, rule: str, masked_sample: str) -> str:
+    """The join key between a recorder record and a --json finding: a salted
+    hash, so the record file holds neither the match nor its masked sample,
+    and without the run's salt (never written) the masked sample's last
+    digits cannot be recovered from it by trying every value."""
+    return hashlib.sha256(f"{salt}\0{rule}\0{masked_sample}".encode()).hexdigest()[:32]
 
 
-# Digit-group lengths of each class's real written forms.
 def _canonical_groups(class_name: str, groups: list[int]) -> bool:
+    """Digit-group lengths of each class's real written forms."""
     if class_name == "ssn":
         return groups == [3, 2, 4]
     if class_name == "us-phone":
@@ -67,7 +73,7 @@ def _canonical_groups(class_name: str, groups: list[int]) -> bool:
 
 
 def _token_span(text: str, start: int, end: int) -> tuple[int, int]:
-    """Widen [start, end) over the letters, digits, '_' and '-' around it."""
+    """Widen [start, end) over the letters, digits and '_' touching it."""
     while start > 0 and _TOKEN_CHAR.match(text[start - 1]):
         start -= 1
     while end < len(text) and _TOKEN_CHAR.match(text[end]):
@@ -76,20 +82,18 @@ def _token_span(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _yyyymmdd(digits: str) -> bool:
-    if len(digits) != 8:
+    if len(digits) != 8 or not digits.isdigit():
         return False
     year, month, day = int(digits[:4]), int(digits[4:6]), int(digits[6:])
     return 1900 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31
 
 
-def _date_like(digits: str, text: str, token_start: int) -> bool:
-    if text[max(0, token_start - 2):token_start] == "D:":
+def _date_like(matched: str, token: str, text: str, token_start: int) -> bool:
+    if text[max(0, token_start - 2):token_start] == "D:" and _yyyymmdd(token[:8]):
         return True  # a PDF date string, D:YYYYMMDDHHmmSS
-    if _yyyymmdd(digits[:8]) or _yyyymmdd(digits[-8:]):
-        return True
-    if len(digits) == 10 and _EPOCH_SECONDS[0] <= int(digits) <= _EPOCH_SECONDS[1]:
-        return True
-    return len(digits) == 13 and _EPOCH_MILLIS[0] <= int(digits) <= _EPOCH_MILLIS[1]
+    if len(token) >= 12 and token.isdigit() and _yyyymmdd(token[:8]):
+        return True  # a YYYYMMDDhhmm[ss] timestamp the match sits inside
+    return len(matched) == 13 and _EPOCH_MILLIS[0] <= int(matched) <= _EPOCH_MILLIS[1]
 
 
 def classify(class_name: str, text: str, start: int, end: int) -> str:
@@ -98,22 +102,21 @@ def classify(class_name: str, text: str, start: int, end: int) -> str:
     the characters around the match are its context."""
     if class_name == "email":
         return "email-address"
+    matched = text[start:end]
+    formatted = not matched.isdigit()
+    if formatted and _canonical_groups(
+            class_name, [len(g) for g in re.findall(r"\d+", matched)]):
+        return "formatted"
     for m in _UUID.finditer(text, max(0, start - 36), min(len(text), end + 36)):
         if m.start() < end and start < m.end():
             return "uuid"
     token_start, token_end = _token_span(text, start, end)
-    letters = {c for c in text[token_start:token_end] if c.isalpha()}
+    token = text[token_start:token_end]
+    letters = {c for c in token if c.isalpha()}
     if letters and letters <= _HEX_LETTERS:
         return "hex-id"
-    matched = text[start:end]
-    # Only an unbroken digit run is read as a date: a dashed SSN or a
-    # punctuated phone number is "formatted" even when its digits happen to
-    # spell a date or an epoch time ("(212) 555-0147" is 2125550147 s).
-    if matched.isdigit() and _date_like(matched, text, token_start):
+    if not formatted and _date_like(matched, token, text, token_start):
         return "date-or-time"
     if letters:
         return "alnum-id"
-    if not matched.isdigit():
-        groups = [len(g) for g in re.findall(r"\d+", matched)]
-        return "formatted" if _canonical_groups(class_name, groups) else "number-list"
-    return "bare-digits"
+    return "number-list" if formatted else "bare-digits"

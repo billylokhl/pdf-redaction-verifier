@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -31,7 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import corpus as corpus_mod
-from .match_shapes import OUT_ENV, SHAPES, record_key
+from .match_shapes import OUT_ENV, SALT_ENV, record_key
 from .runner import DEFAULT_TIMEOUT, CliResult, current_python, run_cli
 
 HERE = Path(__file__).resolve().parent
@@ -48,14 +50,22 @@ UNIONS: dict[str, tuple[str, ...]] = {
 }
 # What a context rule might leave hard: the files that would still have a
 # hard finding if every match of a shape outside the kept set were
-# demoted to review (ADR 0012's options, measured; nothing is demoted).
+# demoted to review (ADR 0012's options, estimated; nothing is demoted).
+# See `_residuals` for how, and which way the estimate errs.
 RESIDUALS: dict[str, frozenset[str]] = {
     "demote-embedded-and-dates": frozenset({"formatted", "number-list", "bare-digits"}),
     "also-number-lists": frozenset({"formatted", "bare-digits"}),
     "also-bare-digits": frozenset({"formatted"}),
 }
 UNJOINED = "unjoined"  # a hard finding with no recorder record: must stay 0
-SHAPE_NAMES: tuple[str, ...] = (*SHAPES, "classifier-error", UNJOINED)
+UNKNOWN = frozenset({UNJOINED, "classifier-error"})  # never counted as demoted
+# When one key (rule, masked sample) carries several shapes -- the same
+# digits read on two layers, say -- a finding takes the shape kept longest
+# by RESIDUALS, so an ambiguity never counts a finding as demoted.
+KEEP_ORDER: tuple[str, ...] = (
+    "classifier-error", "email-address", "formatted", "number-list", "bare-digits",
+    "alnum-id", "date-or-time", "hex-id", "uuid",
+)
 
 
 @dataclass(frozen=True)
@@ -71,10 +81,14 @@ class FileResult:
     """One file's outcome, reduced to what the counts need."""
 
     stratum: str  # "text-bearing", "text-free" or "text-unknown"
-    measured: bool  # False: crashed, timed out, or no report
+    measured: bool  # False: see unmeasured_reason
     exit_code: int | None
     hard: tuple[HardFinding, ...] = ()
     review_rules: frozenset[str] = field(default_factory=frozenset)
+    # Per class, the shape of every validated match in a call that could
+    # yield a hard finding (pattern_recorder's `shapes`).
+    match_shapes: dict[str, frozenset[str]] = field(default_factory=dict)
+    unmeasured_reason: str | None = None  # "crash" (incl. timeout) or the CLI error code
 
 
 def _stratum(entry: corpus_mod.CorpusEntry) -> str:
@@ -83,32 +97,35 @@ def _stratum(entry: corpus_mod.CorpusEntry) -> str:
     return "text-bearing" if entry.text_bearing else "text-free"
 
 
-def reduce_result(stratum: str, result: CliResult, records: list[dict[str, Any]]) -> FileResult:
+def reduce_result(stratum: str, result: CliResult, records: dict[str, Any],
+                  salt: str = "") -> FileResult:
     """Join each hard finding in the CLI's --json report to the recorder's
-    shape for the same `record_key(rule, masked sample)`. A finding with no
-    record is counted as UNJOINED, never dropped."""
+    shape for the same `record_key(salt, rule, masked sample)`. A finding
+    with no record is counted as UNJOINED, never dropped. A crash, timeout
+    or CLI error (an unreadable or encrypted file) is unmeasured: it has no
+    findings to count, so it never pads a rate's denominator."""
     report = result.report
     if result.crashed or report is None:
-        return FileResult(stratum, False, result.returncode)
-    shapes: dict[str, Counter[str]] = {}
-    for rec in records:
-        shapes.setdefault(rec["key"], Counter())[rec["shape"]] += 1
+        return FileResult(stratum, False, result.returncode, unmeasured_reason="crash")
+    if report.get("error"):
+        return FileResult(stratum, False, report.get("exit_code"),
+                          unmeasured_reason=str(report["error"].get("code")))
+    joins: dict[str, set[str]] = {}
+    for rec in records.get("joins", []):
+        joins.setdefault(rec["key"], set()).add(rec["shape"])
     hard = []
     for f in report.get("findings", []):
         if f.get("tier") != "hard" or f.get("rule") not in CLASSES:
             continue
-        found = shapes.get(record_key(f["rule"], f.get("sample", "")))
-        # Several shapes for one masked sample: the most frequent, then the
-        # first in SHAPE_NAMES order, so the choice is deterministic.
-        shape = (
-            min(found, key=lambda s: (-found[s], SHAPE_NAMES.index(s)))
-            if found else UNJOINED
-        )
+        found = joins.get(record_key(salt, f["rule"], f.get("sample", "")))
+        shape = (min(found, key=lambda s: KEEP_ORDER.index(s) if s in KEEP_ORDER else -1)
+                 if found else UNJOINED)
         hard.append(HardFinding(f["rule"], f.get("layer") or "?", f.get("storage"), shape))
     review = frozenset(
         w["rule"] for w in report.get("warnings", []) if w.get("rule") in CLASSES
     )
-    return FileResult(stratum, True, report.get("exit_code"), tuple(hard), review)
+    shapes = {rule: frozenset(v) for rule, v in records.get("shapes", {}).items()}
+    return FileResult(stratum, True, report.get("exit_code"), tuple(hard), review, shapes)
 
 
 def _pct(n: int, d: int) -> float | None:
@@ -116,23 +133,40 @@ def _pct(n: int, d: int) -> float | None:
 
 
 def _residuals(measured: list[FileResult], members: tuple[str, ...]) -> dict[str, dict[str, Any]]:
-    """Per RESIDUALS option: files of *measured* that keep a hard finding of
-    a class in *members* whose shape is in the kept set (an unjoined or
-    classifier-error finding is always kept: unknown is never demoted; so is
-    an email address, which no option demotes, ADR 0005)."""
+    """Per RESIDUALS option: files of *measured* that would still have a
+    hard finding of a class in *members* if every match of a shape outside
+    the option's kept set were demoted to review.
+
+    A file counts if it has a hard finding of the class today and any
+    validated match of that class the recorder saw -- every match, not
+    only the first the tool reports, in every call that could yield a
+    hard finding -- has a kept shape, or a finding of it has no known
+    shape. An email address is always kept (no option demotes it, ADR
+    0005). The estimate errs toward *keeping* a file hard: a kept-shape
+    match seen only in a call whose result is a review warning (Metadata's
+    raw fallback, say) still counts. Its one blind spot runs the other
+    way: once every rule has hit, a layer's rolling scanner stops feeding
+    text to the matcher, so a later match there is never seen."""
     n = len(measured)
     out = {}
     for option, kept in RESIDUALS.items():
-        keep = kept | {UNJOINED, "classifier-error", "email-address"}
-        files = sum(1 for r in measured
-                    if any(h.rule in members and h.shape in keep for h in r.hard))
+        keep = kept | UNKNOWN | {"email-address"}
+
+        def still_hard(r: FileResult, cls: str) -> bool:
+            if not any(h.rule == cls for h in r.hard):
+                return False
+            if cls == "email" or any(h.rule == cls and h.shape in UNKNOWN for h in r.hard):
+                return True
+            return bool(r.match_shapes.get(cls, frozenset()) & keep)
+
+        files = sum(1 for r in measured if any(still_hard(r, c) for c in members))
         out[option] = {"files": files, "pct": _pct(files, n)}
     return out
 
 
 def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
-    """Counts for one stratum. Rates are over measured files (a crash or
-    timeout is counted, never folded into a denominator)."""
+    """Counts for one stratum. Rates are over measured files (a crash,
+    timeout or CLI error is counted, never folded into a denominator)."""
     results = list(results)
     measured = [r for r in results if r.measured]
     n = len(measured)
@@ -188,6 +222,8 @@ def aggregate_stratum(results: Iterable[FileResult]) -> dict[str, Any]:
         "files": len(results),
         "measured": n,
         "unmeasured": len(results) - n,
+        "unmeasured_by_reason": dict(sorted(Counter(
+            r.unmeasured_reason or "?" for r in results if not r.measured).items())),
         "exit_codes": {str(k): v for k, v in sorted(
             Counter(r.exit_code for r in measured).items(), key=lambda kv: str(kv[0]))},
         "classes": per_class,
@@ -211,8 +247,8 @@ def render(agg: dict[str, Any]) -> str:
         s = agg.get(name)
         if s is None:
             continue
-        lines.append(f"== {name}: {s['measured']} measured, {s['unmeasured']} unmeasured; "
-                     f"exit codes {s['exit_codes']}")
+        lines.append(f"== {name}: {s['measured']} measured, {s['unmeasured']} unmeasured "
+                     f"{s['unmeasured_by_reason']}; exit codes {s['exit_codes']}")
         for cls, c in s["classes"].items():
             lines.append(f"  {cls:12} hard {c['hard_files']:5} ({c['hard_pct']}%)  "
                          f"review {c['review_files']:5} ({c['review_pct']}%)")
@@ -233,17 +269,18 @@ def render(agg: dict[str, Any]) -> str:
 
 
 def scan_one(entry: corpus_mod.CorpusEntry, root: Path, rules: list[dict[str, str]],
-             workdir: Path, timeout: float) -> FileResult:
+             workdir: Path, timeout: float, salt: str) -> FileResult:
     case_id = entry.sha256[:16]
     sidecar = workdir / f"{case_id}.patterns.json"
     sidecar.unlink(missing_ok=True)  # never join a stale record
     result = run_cli(current_python(), RECORDER, root / entry.path, rules, workdir, case_id,
-                     timeout=timeout, env={**os.environ, OUT_ENV: str(sidecar)})
+                     timeout=timeout,
+                     env={**os.environ, OUT_ENV: str(sidecar), SALT_ENV: salt})
     try:
         records = json.loads(sidecar.read_text())
     except (OSError, json.JSONDecodeError):
-        records = []
-    return reduce_result(_stratum(entry), result, records)
+        records = {}
+    return reduce_result(_stratum(entry), result, records, salt)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -274,14 +311,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     rules = json.loads(args.secrets.read_text())
 
+    salt = secrets.token_hex(16)  # this run's only copy: never written
     done = 0
+    lock = threading.Lock()
 
     def job(entry: corpus_mod.CorpusEntry) -> FileResult:
         nonlocal done
-        r = scan_one(entry, args.root, rules, out, args.timeout)
-        done += 1
-        if done % 100 == 0 or done == len(usable):
-            print(f"pattern baseline: {done}/{len(usable)}", file=sys.stderr, flush=True)
+        r = scan_one(entry, args.root, rules, out, args.timeout, salt)
+        with lock:
+            done += 1
+            if done % 100 == 0 or done == len(usable):
+                print(f"pattern baseline: {done}/{len(usable)}", file=sys.stderr, flush=True)
         return r
 
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:

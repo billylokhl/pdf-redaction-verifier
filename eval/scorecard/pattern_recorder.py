@@ -7,13 +7,15 @@ Run exactly like `verify.py` (same arguments, same exit status, same
 `--json` report). Every pattern match in the tool, at every layer and
 tier, goes through `redaction_verifier.matching.patterns.match_patterns`
 (`PatternScanner` calls it too); `Recorder.install` wraps that function,
-which still returns its own result object untouched, and for each hit
-notes the match's shape from `scorecard.match_shapes` under a hash of
-(rule, masked sample) -- the masked sample is the string the `--json`
-report shows, so a finding can be joined to its record. When the verdict
-is decided, the records go to the file named by the PATTERN_RECORDER_OUT
-environment variable. Neither the matched text nor the masked sample is
-ever written.
+which still returns its own result object untouched. For each call that
+could yield a hard finding (no `collapse_separators`) it records the shape
+(`scorecard.match_shapes`) of every validated match, at its exact span,
+and, for each hit the call returns, a salted hash of (rule, masked sample)
+with that hit's shape -- the masked sample is what the `--json` report
+shows, so a finding can be joined to its shape. When the verdict is
+decided, the records go to the file named by PATTERN_RECORDER_OUT; the
+salt comes from PATTERN_RECORDER_SALT and is never written. Neither the
+matched text nor the masked sample is ever written.
 
 A record cannot change the verdict: the wrapper returns what the wrapped
 function returned (or raises what it raised), and every step of
@@ -28,21 +30,34 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 class Recorder:
     """Wraps match_patterns wherever the tool looks it up (the patterns
-    module, the matching package, verify's re-export) while installed."""
+    module, the matching package, verify's re-export) while installed.
 
-    def __init__(self) -> None:
-        # Insertion-ordered set of (key, shape, collapsed).
-        self.records: dict[tuple[str, str, bool], None] = {}
+    Only calls without `collapse_separators` are recorded: those are the
+    only calls a hard finding can come from (a collapsed call is the
+    manual-review tier). Two records per call:
+
+    - `joins`: for each hit the call returns, a salted key of (rule, masked
+      sample) and the shape of that exact match -- how a --json finding,
+      which shows only its masked sample, finds its shape;
+    - `shapes`: per rule, the shape of *every* validated match in the call's
+      text, including rules `already` hit and matches after the first. The
+      tool stops at a rule's first match per page; a demotion would not,
+      so this is what `pattern_baseline`'s residual estimate reads.
+    """
+
+    def __init__(self, salt: str = "") -> None:
+        self.salt = salt
+        self.joins: dict[tuple[str, str], None] = {}  # insertion-ordered set of (key, shape)
+        self.shapes: dict[str, set[str]] = {}
         self._saved: list[tuple[Any, Callable[..., Any]]] = []
 
     def install(self) -> None:
@@ -54,8 +69,8 @@ class Recorder:
 
         def recording(raw_text, patterns_, already=(), *, collapse_separators=False):
             hits = original(raw_text, patterns_, already, collapse_separators=collapse_separators)
-            if hits:
-                self._record(raw_text, hits, collapse_separators)
+            if not collapse_separators:
+                self._record(raw_text, patterns_, hits)
             return hits
 
         for module in (patterns, matching, verify):
@@ -67,40 +82,60 @@ class Recorder:
             module, function = self._saved.pop()
             module.match_patterns = function
 
-    def _record(self, raw_text: str, hits: dict[str, str], collapsed: bool) -> None:
+    def _record(self, raw_text: str, rules: Any, hits: dict[str, str]) -> None:
         try:
             from redaction_verifier.matching import patterns
             from scorecard.match_shapes import classify, record_key
 
-            try:
-                # The text match_patterns itself searched (see its body).
-                folded = patterns._fold_for_patterns(raw_text)
-                text: str | None = (
-                    re.sub(r"[-\s]{2,}", "-", folded) if collapsed else folded)
-            except Exception:
-                text = None
-            for name, sample in list(hits.items()):
-                try:
-                    if text is None:
-                        raise ValueError("text could not be folded")
-                    start = text.find(sample)
-                    if start < 0:
-                        raise ValueError("match not found in its own text")
-                    shape = classify(name, text, start, start + len(sample))
-                except Exception:
-                    shape = "classifier-error"
-                self.records[(record_key(name, patterns.mask(sample)), shape, collapsed)] = None
+            # The text match_patterns itself searched (see its body).
+            text = patterns._fold_for_patterns(raw_text)
+            for rule in rules:
+                first: tuple[str, str] | None = None
+                for start, end in _validated_matches(rule, text):
+                    try:
+                        shape = classify(rule.name, text, start, end)
+                    except Exception:
+                        shape = "classifier-error"
+                    self.shapes.setdefault(rule.name, set()).add(shape)
+                    if first is None:
+                        first = (text[start:end], shape)
+                if rule.name in hits:
+                    # match_patterns' hit is the first validated match of the
+                    # same loop; anything else would be a bug here, recorded
+                    # as such rather than guessed.
+                    sample = hits[rule.name]
+                    shape = first[1] if first and first[0] == sample else "classifier-error"
+                    self.joins[(record_key(self.salt, rule.name, patterns.mask(sample)), shape)] = None
         except Exception:
             pass  # a lost record shows up as an unjoined finding, never as a changed verdict
 
     def write(self, path: Path) -> None:
-        payload = [
-            {"key": key, "shape": shape, "collapsed": collapsed}
-            for key, shape, collapsed in self.records
-        ]
+        payload = {
+            "joins": [{"key": key, "shape": shape} for key, shape in self.joins],
+            "shapes": {rule: sorted(shapes) for rule, shapes in sorted(self.shapes.items())},
+        }
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload))
         os.replace(tmp, path)
+
+
+def _validated_matches(rule: Any, text: str) -> Iterator[tuple[int, int]]:
+    """Every match of *rule* in *text* that match_patterns would accept, in
+    order: its own search loop (a rejected candidate retries one character
+    on, a zero-width match is skipped), continued past each accepted one."""
+    pos = 0
+    while pos <= len(text):
+        m = rule.regex.search(text, pos)
+        if m is None:
+            return
+        if not m.group(0):
+            pos = m.end() + 1
+            continue
+        if rule.validator is None or rule.validator(m.group(0)):
+            yield m.start(), m.end()
+            pos = m.end()
+        else:
+            pos = m.start() + 1
 
 
 def _run() -> None:
@@ -109,9 +144,9 @@ def _run() -> None:
     sys.path[0] = str(REPO)
     sys.path.append(str(REPO / "eval"))
     import verify
-    from scorecard.match_shapes import OUT_ENV
+    from scorecard.match_shapes import OUT_ENV, SALT_ENV
 
-    recorder = Recorder()
+    recorder = Recorder(os.environ.get(SALT_ENV, ""))
     recorder.install()
     original_main = verify.main
 

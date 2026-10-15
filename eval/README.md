@@ -621,33 +621,51 @@ address is here", ADR 0005, and is reported but kept out of the
 digit-class unions). The CLI is run through `scorecard/pattern_recorder.py`:
 `verify.py` itself, same arguments, exit status and report, with
 `match_patterns` — the one function every pattern match in the tool goes
-through — wrapped to note each hit's **shape** (`scorecard/match_shapes.py`):
-`uuid`, `hex-id`, `date-or-time` (an unbroken `YYYYMMDD` run, a PDF `D:`
-date, epoch seconds or milliseconds), `alnum-id`, `formatted` (separators
-grouping the digits as the class's real values are: `3-2-4`, `3-3-4`,
-fours), `number-list` (separators, grouped otherwise), `bare-digits` or
-`email-address`. The match is classified inside the CLI's own process; the
-record file holds only a hash of (rule, masked sample), the shape and a
-flag, never the matched text or the masked sample. Each hard finding in
-the `--json` report is joined to its shape through that hash; one with no
-record counts as `unjoined`, which should stay 0. A wrapper failure can
-lose a record, never change a hit: `tests/test_pattern_baseline.py` scans
-every case-library case that has a pattern rule with and without the
-recorder installed and requires an identical report.
+through — wrapped. For every call that could yield a hard finding (no
+`collapse_separators`; a collapsed call is the review tier) the wrapper
+classifies **every** validated match at its exact span into a **shape**
+(`scorecard/match_shapes.py`), not only the first one the tool reports:
+`formatted` (separators grouping the digits as the class's real values
+are — `3-2-4`, `3-3-4`, fours — decided first, so "SSN123-45-6789" stays
+`formatted`), `uuid`, `hex-id`, `date-or-time` (only with context: a PDF
+`D:` date, a `YYYYMMDDhhmm` timestamp, epoch milliseconds — never epoch
+seconds, which are also every phone number in area codes 201–220),
+`alnum-id`, `number-list` (separators, grouped otherwise), `bare-digits`
+or `email-address`. Where the evidence is thin it errs toward the shapes
+no option below demotes. The record file holds only shapes and, per hit,
+a key salted with a per-run secret that is never written, so neither the
+matched text nor the masked sample can be recovered from it. Each hard
+finding in the `--json` report is joined to its hit's shape through that
+key (several shapes on one key: the one kept longest below); a finding
+with no record counts as `unjoined`, which should stay 0. A wrapper
+failure can lose a record, never change a hit: `tests/test_pattern_baseline.py`
+scans every case-library case that has a pattern rule with and without
+the recorder installed and requires an identical report, and checks the
+recorder's own CLI against `verify.py` on a file with findings, a clean
+file and one it cannot open.
 
 Output, to stdout and `--json`, is counts only, per stratum (all,
 text-bearing, text-free, text-unknown): per class, files with a hard
 finding (and their rate), by layer, by shape and by layer and shape, and
-files with a review warning for the class; the unions `ssn|us-phone`, `ssn|us-phone|credit-card` and
-`any built-in`; for each class and union, the files that would *still*
-be hard if the matches of some shapes were demoted to review
-(`residual_hard_files`: demoting the embedded shapes — `uuid`, `hex-id`,
-`alnum-id` — and `date-or-time`, then also `number-list`, then also
-`bare-digits`, so only `formatted` stays hard; an `unjoined` finding or
-an email address is never counted as demoted) — measured, nothing is demoted; exit codes; and unmeasured files
-(a crash or timeout, never folded into a rate's denominator). Scratch
-reports and rules go under `real_corpus/pattern-baseline-workdir`. It
-changes no verdict. Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
+files with a review warning for the class; the unions `ssn|us-phone`,
+`ssn|us-phone|credit-card` and `any built-in`; exit codes; and
+unmeasured files by reason (a crash, a timeout or a CLI error such as an
+encrypted file — never folded into a rate's denominator).
+
+For each class and union, `residual_hard_files` **estimates** the files
+that would still be hard if the matches of some shapes were demoted to
+review — demoting the embedded shapes (`uuid`, `hex-id`, `alnum-id`) and
+`date-or-time`; then also `number-list`; then also `bare-digits`, so only
+`formatted` stays hard. Nothing is demoted. A file counts if it has a hard
+finding of the class today and any match of that class the recorder saw
+has a kept shape (or a finding of it has no known shape; an email address
+is never demoted). The estimate errs toward keeping files hard — a
+kept-shape match seen only in a call whose result is a review warning
+still counts — with one blind spot the other way: once every rule has
+hit, a layer's rolling scanner stops feeding the matcher, so a later
+match there is never seen. Scratch reports, rules and record files go
+under `real_corpus/pattern-baseline-workdir`. It changes no verdict.
+Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
 
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
