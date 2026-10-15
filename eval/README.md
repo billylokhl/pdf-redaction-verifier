@@ -719,6 +719,17 @@ page), 12 workers turned four-page cases that take about 9 s alone into
 45–68 s, sent the VM into swap, timed eight cases out, and made a pass
 over the library take 11.4 minutes instead of 6.7.
 
+A case that is slow on purpose, but is not a `perf` file, carries its own
+limit, `scan_timeout` (seconds, `caselib/model.py`): the scorecard's
+`diff` and `metrics` give that case the larger of it and `--timeout`.
+Only `page.dense-sideways-scan` (K43) has one, 300 s, and a test lists
+the cases that do, so adding one is a reviewed change. A page full of
+vertical lines gets the most OCR work the turned and unstacked readings
+allow (#91): 78 Vision calls, 13 s alone on Apple silicon but 151 s on the
+weekly runner, where the reference takes 10 s. It timed out at 60 s
+there (#147). It stays a regular case rather than `perf`, so pytest,
+including `full-macos` on every PR, still judges it.
+
 **`eval/accepted_diffs.yaml`**: every intended per-case change between
 the reference and the candidate — case id, the reference's normalised
 key ("old"), the candidate's ("new"), a reason, the COVERAGE.md cell, and
