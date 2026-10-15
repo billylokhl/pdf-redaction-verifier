@@ -668,22 +668,36 @@ rule is unchanged.
   another label. That includes a dead body, a body no live entry names,
   and a body living only in revisions without labels (no page list).
   Per revision, `ORPHANED` is derived (`Inventory.orphaned`), not stored.
-- **Found while implementing (measured on the unflagged corpus; failing
-  closed, not widened).**
-  - The closure gap is 0. Of the 5,875 streams MuPDF lists on the current
-    revisions' pages (contents, images and their soft masks, form
-    XObjects, and drawn appearances), none is unlabelled.
-  - The orphans that something reachable references are classed by the
-    use kind of the path that first reaches them: thumbnails (194
-    files), `/PieceInfo` private data (195), annotation states or field
-    widgets on no page (`appearance`, 24), and `/Properties` entries
-    holding forms or `/Contents` (marked-content property lists, which
-    item 5 excludes: 16 files).
-  - The rest: `/AcroForm /DR` XObjects and fonts with no annotation
-    synthesized (4 files), and a form under `/Properties` (1).
-  - Unreferenced or reached only from unreachable objects: 86 files.
-  - `/Metadata` orphaned on an annotation or an ICC profile: 0 streams,
-    for 3a-7e-3's briefing.
+- **Found while implementing (measured on the 1,920 unflagged corpus
+  files; each fails closed, none widens a list).**
+  - The closure gap is 0. MuPDF lists 5,875 streams on the current
+    revisions' pages: contents, images and their soft masks, form
+    XObjects, and drawn appearances. Every one is `DRAWABLE`. The case
+    library and the fuzz set have no gap either.
+  - Orphans in the current revisions: 294 files, 3,056 streams. Each is
+    classed by the use kind of the path that first reaches it from the
+    trailer:
+    - thumbnails: 194 files;
+    - `/PieceInfo` private data: 195;
+    - unreferenced, or referenced only by objects nothing reaches: 82
+      (the prototype's 82);
+    - an appearance not drawn (an `/AP` state, or a widget on no page):
+      24;
+    - object streams that are home to no live entry now: 24. Each was
+      structural in an older revision, so none is an orphan for the
+      verdict;
+    - `/Properties` entries holding forms or `/Contents`: 16.
+      Marked-content property lists, which item 5 excludes;
+    - `/AcroForm /DR` XObjects and fonts with no annotation synthesized:
+      4;
+    - an image's soft mask inside `/PieceInfo`: 1.
+  - For the verdict, per body across revisions: 242 files, 2,513 bodies.
+    In 52 of the 294 files every current orphan is labelled in an older
+    revision it lives in; over the corpus that is 544 bodies in 86 files
+    (item 5's "Across revisions"; decision D's stricter reading is 4b's).
+  - No `/Metadata` stream is orphaned on an annotation or an ICC profile
+    (corpus, case library and fuzz). This is a number for 3a-7e-3's
+    briefing.
 
 ## Owner decisions
 

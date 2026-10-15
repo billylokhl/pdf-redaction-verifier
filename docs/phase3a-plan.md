@@ -579,6 +579,45 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     and DRAWABLE labels is treated as drawable -- a page's /Contents also named by the
     catalog's /Metadata is labelled XMP while it is drawn, and the worst status of every
     label's decoder must win (ADR 0011 item 5), never the XMP decoder alone.
+    Done (3a-7e-2 PR): DRAWABLE, ORPHANED and per-body labels, with no flags (R3) and no
+    new gate (Q5).
+    - `Annotation.appearance` (Q3): the stream MuPDF draws for an annotation it does not
+      synthesize, pinned against `pdf_annot_ap` on every 7d fixture.
+    - `drawable.py` walks the drawing closure from each page (its /Contents, its own or
+      inherited /Resources, its own /Group), each drawn appearance, and /AcroForm /DR when
+      an annotation is synthesized. The walk is a key-path automaton over the graph's
+      edges, following item 5's closed list per role; a key outside the lists leads
+      nowhere drawable.
+    - XObject, font and halftone roles are decided by /Subtype or /HalftoneType, through
+      one reference. A value the walk cannot read gets the narrower reading.
+    - Colour-space elements follow Q2 (an ADR 0011 note).
+    - `RevisionLabels.drawable` holds each revision's set; `Inventory.orphaned(r)`
+      derives ORPHANED per revision.
+    - `Inventory.body_labels` gives each stream body's labels across the revisions it
+      lives in (BodyLabels; a body with none is ORPHANED, a dead body included).
+    - The drawable set is kept, by identity, when the starts are the same, so is the
+      catalog's /AcroForm as written, and every changed body the walk read is no stream,
+      decided no role and holds the same references. A rewritten page is not walked
+      again. Each condition has a REUSE test that fails under its mutant. A corpus
+      cross-check against fresh walks: 0 differences.
+    - The closure gap against PyMuPDF's page listings is 0 in the corpus (5,875 streams
+      listed), the case library and fuzz. Orphan classes and the per-body numbers are in
+      the ADR 0011 note.
+    Measured on the final code:
+    - corpus 1,920 / 153 / 0, unchanged; case library 437/27/0 (464 cases); fuzz
+      501/1,499/0;
+    - current revisions: 15,681 live streams, 10,919 DRAWABLE, 3,056 ORPHANED (294 files);
+    - per body: 15,947 stream bodies, 11,508 drawable, 1,926 structural, 0 both, 2,513
+      orphaned (242 files);
+    - graph work per file p50 3,221, p99 58,990, max 323,018 (was 2,573, 47,960,
+      232,020);
+    - oracle p50 0.237 s, max 14.5 s, with the closure-gap listing in measure();
+    - lines per charged unit at most about 12, not growing from n to 8n (walk_only);
+    - retained memory 0.50-0.63 bytes per unit of the labels' own work, the per-body
+      labels 0.24-0.76.
+    Mutants: 43 tried, all caught but four charge mutants (a node's pop, a body lookup,
+    the decision index, the reuse comparison). Each stays under 15 lines per unit,
+    without growth, covered by another charge on the same loop.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page
