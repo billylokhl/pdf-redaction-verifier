@@ -235,6 +235,7 @@ try:
     from redaction_verifier.views import _vision_recognize_batch as _vision_recognize_batch
     from redaction_verifier.views import extract_ocr_text as extract_ocr_text
     from redaction_verifier.views import extract_visual_text as extract_visual_text
+    from redaction_verifier.views import ocr_page_too_large as ocr_page_too_large
 except BaseException as exc:  # pragma: no cover
     _fatal_import("redaction_verifier", exc)
 
@@ -339,8 +340,14 @@ def scan_page_layer(
     scatter_readings: Sequence[int] = (),
     scatter_window: int = 5,
     fail_fast: bool = False,
+    incomplete: Callable[[fitz.Page], str | None] | None = None,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
+
+    *incomplete*, when given, says why a page cannot be read whole (or
+    None): the page is still read and matched, and also gets a
+    PAGE_FAILED warning, so it never passes as clean (OCR: a page too
+    large for Vision, #128).
 
     The extractor returns several readings per page. The first
     *hard_variants* are genuine reading orders; any others are
@@ -407,15 +414,29 @@ def scan_page_layer(
     for page_index in range(doc.page_count):
         try:
             page = doc.load_page(page_index)
+            why: str | None = None
+            if incomplete is not None:
+                try:
+                    why = incomplete(page)
+                except Exception as exc:   # cannot tell: not fully read
+                    why = f"could not check the page ({exc})"
             variants = extractor(page)
         except Exception as exc:  # a corrupt page must not abort the scan
             report.warn(
                 "PAGE_FAILED",
                 layer,
                 f"{layer}: page {page_index + 1} failed ({exc})",
-                page=page_index + 1,
+                # What went unread is the page's own content: live (#128).
+                page=page_index + 1, storage="live",
             )
             continue
+        if why is not None:
+            report.warn(
+                "PAGE_FAILED",
+                layer,
+                f"{layer}: page {page_index + 1} not fully read ({why})",
+                page=page_index + 1, storage="live",
+            )
         page_no = page_index + 1
         norm_lines = [
             [ln for ln in map(normalize_string, text.split("\n")) if ln]
@@ -3541,6 +3562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             hard_variants=OCR_GENUINE_READINGS,
                             cross_page_reading=OCR_GENUINE_READINGS,
                             fail_fast=args.fail_fast,
+                            incomplete=ocr_page_too_large,
                         )
                     except Exception as exc:
                         report.warn(

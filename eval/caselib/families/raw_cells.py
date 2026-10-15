@@ -479,6 +479,9 @@ def _gap_page(path: Path, content: bytes, extra: bytes) -> None:
       "same layout at /Rotate 0.",
       expected=expect(2, warnings=(("REVIEW_CROSS_LINE", "live"),)),
       known_gap=KnownGap("match.letter-spaced-stack", expect(0)),
+      # /UserUnit 2 makes the page 1384 pt wide: too large for OCR to read
+      # whole, so OCR flags it (2, #128), masking the Text layer's gap.
+      requires=("no-ocr",),
       mistake="Nobody redacted it; the value is set letter-spaced in fine print.",
       recovery="Read the text through the font's Encoding /Differences, letter by letter.")
 def letter_spaced_stack(path: Path) -> None:
