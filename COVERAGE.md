@@ -22,7 +22,7 @@ error (every page on macOS 27 until the fix in the CHANGELOG), or on a
 page where Vision reports success without delivering both readings —
 the run never exits `0` (`2`, or `1` if another layer found a leak). If
 Vision delivers a reading without error but misses text, nothing flags
-it: the OCR cells' ✓ assumes Vision's reading.
+it: the OCR cells' ✓ assumes Vision's reading (¹² below).
 
 Each cell has a stable id, `<row id>.<column>` (columns `plain`, `font`,
 `pixels`, `container`), used by the case library in `eval/caselib` —
@@ -34,7 +34,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, or an EXIF/other thumbnail beyond the main decoded picture | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹² | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map, also written vertically or running across the page edge · ✗ if the font has no Unicode map | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
@@ -116,6 +116,18 @@ counts as `/ID`. Comments inside a trailer are skipped when reading its
 strings and read themselves as raw text, at manual review; a trailer the
 chain reaches but this tool cannot parse is a warning (exit `2`).
 
+¹² Vision can report success and return fewer lines than the page holds.
+On macOS 27, a scanned page of 40 lines of 8 pt text turned 90° comes
+back without eight of them (14–21), the SSN's line among them
+(`page.dense-sideways-scan`, [#67](https://github.com/billylokhl/pdf-redaction-verifier/issues/67)); with 20 or 30 lines it is read
+whole. A page with any line read vertically is now also read turned 90°
+and 270°, which found the SSN's line on 21 of 24 generated sideways
+pages (macOS 27), but only as manual review (exit `2`):
+turned, a one-character-per-line stack becomes a row Vision misreads as
+a number. A page whose dropped lines are horizontal, or where Vision
+reports no vertical line at all, can still pass as clean; nothing yet
+compares Vision's reading with the ink on the page ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
+
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
 case library; `docs/REDESIGN.md` §8).
@@ -154,13 +166,17 @@ matcher sees it whole. Each is ✗:
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
   PyMuPDF does not return.
-- A one-character-per-line stack in a scanned page (pixels only),
-  searched with a value rule: exit `0`
-  ([#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)).
+- A one-character-per-line stack in a scanned page (pixels only) that
+  Vision does not report as a line, searched with a value rule ([#81](https://github.com/billylokhl/pdf-redaction-verifier/issues/81)).
   With text on the page, the Text layer reads the stack (manual review).
-  In pixels only OCR can, and on macOS 27 it reads the stack as one
-  sideways line, usually misread, so the value usually does not match. What
-  macOS 26 returns was not measured.
+  In pixels only, OCR on macOS 27 reads a stack as one sideways line,
+  usually misread; OCR now unstacks such a line, laying its glyphs out
+  as one line and reading that, so the value is manual review
+  (`layout.scanned-vertical-stack`, [#61](https://github.com/billylokhl/pdf-redaction-verifier/issues/61)). In 25 of 48 generated stack
+  pages, though, Vision reported no vertical line, only some of the
+  single glyphs or nothing, and those stacks still pass as clean. On
+  macOS 26 (CI's runner) `layout.scanned-vertical-stack` itself still
+  passes as clean; what Vision returns there was not looked at.
 
 A value split around other text is read at the manual-review tier
 (`match.page-break-furniture`, `match.columns`): the Text layer's review

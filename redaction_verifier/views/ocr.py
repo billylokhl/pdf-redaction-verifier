@@ -65,6 +65,15 @@ MAX_UPRIGHT_REREADS = 64
 # a second, wider crop for a line the first did not confirm (Vision
 # sometimes misreads a crop's last glyph, and not at every margin).
 REREAD_PADS = (1.0, 3.0)
+# Unconfirmed vertical lines unstacked and read as one line
+# (_extra_readings), at most this many per page; past that, a line is
+# still in the raw readings.
+MAX_UNSTACKS = 16
+# An unstacked strip larger than this many pixels is not read: a column
+# of glyphs is small (nine 11 pt digits at 300 dpi: under 0.05 Mpx), and
+# MuPDF refuses an overly large image (a box holding a photo and many
+# thin rules, say).
+MAX_UNSTACK_PIXELS = 4_000_000
 
 try:
     import Vision
@@ -95,6 +104,14 @@ class Observation:
     top_left: tuple[float, float]
     top_right: tuple[float, float]
     bottom_left: tuple[float, float]
+
+
+# What a turned reading or an unstacked line (_extra_readings) may raise
+# without failing the page, dropping only that reading (the page still
+# reads at least as it did before them): Vision's own failure
+# (_vision_recognize_batch raises RuntimeError) and MuPDF's (its errors
+# subclass FzErrorBase, not RuntimeError). Anything else is a bug and fails the page (PAGE_FAILED).
+_READ_FAILURES: tuple[type[BaseException], ...] = (RuntimeError, fitz.mupdf.FzErrorBase)
 
 
 def _vision_recognize_batch(
@@ -278,11 +295,13 @@ def _confirm_vertical(
                 try:
                     reads = _upright_reads(image, fitz.IRect(*corners))
                 except RuntimeError:
-                    # A re-read that fails (Vision: _vision_recognize_batch
-                    # raises RuntimeError; MuPDF's errors subclass it too)
-                    # confirms nothing: its lines stay manual review, and the
-                    # page's other lines still count. Any other exception,
-                    # such as a bug, fails the page (PAGE_FAILED).
+                    # A re-read Vision fails on (_vision_recognize_batch
+                    # raises RuntimeError) confirms nothing: its lines stay
+                    # manual review, and the page's other lines still count.
+                    # Any other exception fails the page (PAGE_FAILED),
+                    # MuPDF's errors included: they subclass FzErrorBase, not
+                    # RuntimeError, and dropping them here instead could move
+                    # a page that fails today (exit 2) to clean (#99).
                     continue
                 for p, i in members:
                     text = normalize_string(passes[p][i].text)
@@ -291,6 +310,109 @@ def _confirm_vertical(
     finally:
         doc.close()
     return confirmed
+
+
+def _unstack(image: fitz.Page, box: fitz.IRect) -> fitz.Pixmap | None:
+    """The glyphs of a one-character-per-line column in *box* of the
+    rendered page *image*, one per run of inked pixel rows, laid out left
+    to right as one line; None when *box* holds fewer than three runs."""
+    pix = image.get_pixmap(clip=box, colorspace=fitz.csGRAY)
+    width, height, samples = pix.width, pix.height, pix.samples
+    if width == 0 or height == 0:
+        return None
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for y in range(height + 1):
+        inked = y < height and min(samples[y * width:(y + 1) * width]) < 128
+        if inked and start is None:
+            start = y
+        elif not inked and start is not None:
+            runs.append((start, y))
+            start = None
+    if len(runs) < 3:
+        return None
+    heights = sorted(bottom - top for top, bottom in runs)
+    tallest = heights[-1]
+    if tallest > 3 * heights[len(heights) // 2]:
+        return None     # one run far taller than the rest: not a column of glyphs
+    columns = [x for x in range(width) if min(samples[x::width]) < 128]
+    left, right = columns[0], columns[-1] + 1
+    gap, margin = max(2, tallest // 6), tallest // 2
+    if ((right - left + gap) * len(runs) + 2 * margin) * (tallest + 2 * margin) \
+            > MAX_UNSTACK_PIXELS:
+        return None
+    strip = fitz.Pixmap(fitz.csGRAY, fitz.IRect(
+        0, 0, (right - left) * len(runs) + gap * (len(runs) - 1) + 2 * margin,
+        tallest + 2 * margin), False)
+    strip.clear_with(255)
+    x = margin
+    for top, bottom in runs:
+        glyph = fitz.Pixmap(fitz.csGRAY, right - left, bottom - top, b"".join(
+            samples[y * width + left:y * width + right] for y in range(top, bottom)), False)
+        glyph.set_origin(x, margin + (tallest - (bottom - top)) // 2)
+        strip.copy(glyph, glyph.irect)
+        x += right - left + gap
+    return strip
+
+
+def _extra_readings(
+    png_bytes: bytes, width: int, height: int,
+    passes: tuple[list[Observation], list[Observation]],
+    confirmed: list[list[bool]],
+) -> list[str]:
+    """Two more reconstructed readings, one per pass (correction on, off),
+    for a page where Vision read any line vertically; empty otherwise.
+
+    - The page turned 90 and 270 degrees, its lines read horizontally
+      there. On macOS 27 Vision reads sideways text in a page image only
+      in part (a dense page of 40 sideways lines lost 14-21; at 200 or
+      400 dpi it read none) and turned upright reads it whole (#67). Turning also makes a
+      one-character-per-line stack a row of sideways glyphs, which
+      Vision misreads as a number (13 of 48 stack pages matched the SSN
+      pattern), so this reading is never hard.
+    - Each vertical line no upright re-read confirmed, unstacked: its
+      glyphs laid out as one line (_unstack) and read. A stack's misread
+      ('199140190') then reads as written (#61).
+    """
+    if not any(_is_vertical(o, width, height) for obs in passes for o in obs):
+        return ["", ""]
+    lines: tuple[list[str], list[str]] = ([], [])
+    doc = fitz.open()
+    try:
+        try:
+            image = doc.new_page(width=width, height=height)   # one point per pixel
+            image.insert_image(image.rect, stream=png_bytes)
+        except _READ_FAILURES:   # no page image: no extra readings, as before them
+            return ["", ""]
+        for degrees in (90, 270):
+            try:
+                pix = image.get_pixmap(matrix=fitz.Matrix(1, 1).prerotate(degrees),
+                                       colorspace=fitz.csGRAY)
+                turned = _vision_recognize_batch(pix.tobytes("png"))
+            except _READ_FAILURES:   # as for a re-read: nothing gained, nothing lost
+                continue
+            for read, observations in zip(lines, turned):
+                read.extend(o.text for o in observations
+                            if not _is_vertical(o, pix.width, pix.height))
+        boxes: dict[tuple[int, int, int, int], set[int]] = {}
+        for p, observations in enumerate(passes):
+            for i, observation in enumerate(observations):
+                if not confirmed[p][i]:
+                    box = _box(observation, width, height, REREAD_PADS[0])
+                    boxes.setdefault((box.x0, box.y0, box.x1, box.y1), set()).add(p)
+        for corners, members in list(boxes.items())[:MAX_UNSTACKS]:
+            try:
+                strip = _unstack(image, fitz.IRect(*corners))
+                if strip is None:
+                    continue
+                reads = _vision_recognize_batch(strip.tobytes("png"))
+            except _READ_FAILURES:
+                continue
+            for p in members:
+                lines[p].extend(o.text for o in reads[p])
+    finally:
+        doc.close()
+    return ["\n".join(read) for read in lines]
 
 
 def _reading(observations: list[Observation], lines_of_page: list[bool] | None) -> str:
@@ -317,12 +439,12 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
     Both recognition passes share one image handler so the PNG is decoded
     once (see _vision_recognize_batch).
 
-    Four readings, the first OCR_GENUINE_READINGS genuine: each pass with
+    Six readings, the first OCR_GENUINE_READINGS genuine: each pass with
     a vertical line no upright re-read confirms (_confirm_vertical) split
     one character per line, as the Text layer reads a stack, so nothing
-    in it is a hard finding; then each pass exactly as Vision returned
-    it, a reconstruction, so a value or pattern in such a line is still
-    manual review.
+    in it is a hard finding; then reconstructions, which only give manual
+    review: each pass exactly as Vision returned it, and each pass's
+    turned and unstacked reads (_extra_readings).
     """
     pix: fitz.Pixmap = page.get_pixmap(dpi=OCR_DPI, colorspace=fitz.csGRAY)
     width, height = pix.width, pix.height
@@ -331,4 +453,5 @@ def extract_ocr_text(page: fitz.Page) -> list[str]:
     passes = _vision_recognize_batch(png_bytes)
     confirmed = _confirm_vertical(png_bytes, width, height, passes)
     return [_reading(obs, ok) for obs, ok in zip(passes, confirmed)] + [
-        _reading(obs, None) for obs in passes]
+        _reading(obs, None) for obs in passes] + _extra_readings(
+        png_bytes, width, height, passes, confirmed)
