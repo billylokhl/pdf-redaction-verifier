@@ -171,6 +171,12 @@ class Case:
     perf: bool = False
     # OCR cases only: what an older macOS's Vision gives, where it differs.
     older_macos: OlderMacOS | None = None
+    # The scorecard's per-file timeout for this case, in seconds, when the
+    # case is slow on purpose (the most work a layer allows) but not a perf
+    # file: the scorecard uses the larger of this and its --timeout. Sized
+    # from the weekly macOS runner, where OCR runs on the CPU, and reviewed
+    # like a label. None: the run's --timeout (default 60 s).
+    scan_timeout: float | None = None
 
     @property
     def family(self) -> str:
@@ -215,6 +221,12 @@ class Case:
                                  "differs on an older macOS")
             if self.older_macos.today == self.expected:
                 raise ValueError(f"{self.id}: older_macos.today equal to expected: use None")
+        if self.scan_timeout is not None and (
+                isinstance(self.scan_timeout, bool)
+                or not isinstance(self.scan_timeout, (int, float))
+                or not 0 < self.scan_timeout < float("inf")):
+            raise ValueError(f"{self.id}: scan_timeout must be a positive number of "
+                             f"seconds, not {self.scan_timeout!r}")
         for entry in self.privacy_allowlist:
             if (not isinstance(entry, dict) or set(entry) != _PRIVACY_ENTRY_KEYS
                     or entry["kind"] not in PRIVACY_KINDS
@@ -248,6 +260,7 @@ def case(
     privacy_allowlist: tuple[dict[str, str], ...] = (),
     perf: bool = False,
     older_macos: OlderMacOS | None = None,
+    scan_timeout: float | None = None,
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     """Register a builder as a case. The builder writes the PDF to the
     path it is given and nothing else."""
@@ -263,6 +276,7 @@ def case(
             known_gap=known_gap, mistake=mistake, recovery=recovery, rules=rules,
             requires=frozenset(requires), grid=grid, params=params,
             privacy_allowlist=privacy_allowlist, perf=perf, older_macos=older_macos,
+            scan_timeout=scan_timeout,
         )
         return build
     return register

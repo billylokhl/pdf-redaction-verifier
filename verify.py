@@ -192,6 +192,7 @@ try:
     from redaction_verifier.matching import mask as mask
     from redaction_verifier.matching import match_patterns as match_patterns
     from redaction_verifier.matching import normalize_string as normalize_string
+    from redaction_verifier.matching.policy import informational_rules as informational_rules
     from redaction_verifier.model import ADJACENCY as ADJACENCY
     from redaction_verifier.model import LAYERS as LAYERS
     from redaction_verifier.model import STORAGE_CLASSES as STORAGE_CLASSES
@@ -594,7 +595,11 @@ def scan_page_layer(
         if sink is not None:
             _offer(sink, "page", layer, page_no, hard_here, seam_here, page_hard, page_soft,
                    page_warned, crossing_warned)
-        if fail_fast and (report.leaked or layer_hard):
+        # A hit of an informational class rule (ADR 0012) is a notice: it
+        # must not end the scan, or a listed value on a later page goes
+        # unread and the run certifies.
+        if fail_fast and (report.leaked
+                          or any(n not in report.informational for n in layer_hard)):
             break
 
     # Aggregate pattern results: one finding (or warning) per rule.
@@ -3463,6 +3468,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "every layer for a complete forensic report)",
     )
     parser.add_argument(
+        "--strict-classes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="built-in classes (ssn, credit-card, email, us-phone) decide the "
+        "verdict like any rule (default for now); with --no-strict-classes "
+        "their matches are reported as notices that never change the exit "
+        "code (ADR 0012). A class rule with \"strict\": true always decides it",
+    )
+    parser.add_argument(
         "--json",
         type=Path,
         metavar="FILE",
@@ -3484,6 +3498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     json_path: Path | None = args.json
 
     def finish(code: int, error: tuple[str, str] | None = None) -> int:
+        report.settle_notices()
         if error:
             print(f"[ERROR] {error[1]}", file=sys.stderr)
         if json_path is not None:
@@ -3574,6 +3589,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return finish(2, ("RULES_INVALID", str(exc)))
         secrets, patterns = rules.secrets, rules.patterns
         report.exact_index = MaskIndex(f for s in secrets for f in (s.normalized, s.folded) if f)
+        # ADR 0012: which rules' matches are notices rather than verdict. A
+        # malformed "strict" on a class rule matters only when classes are
+        # informational; strict mode reads rules exactly as before.
+        if not args.strict_classes and rules.strict_invalid:
+            return finish(2, ("RULES_INVALID",
+                              "'strict' must be true or false on class rule(s) "
+                              f"{', '.join(repr(n) for n in sorted(rules.strict_invalid))}"))
+        report.informational = informational_rules(
+            {name: label.kind for name, label in rules.labels.items()},
+            strict=args.strict_classes, strict_rules=rules.strict_rules,
+        )
 
         matcher = SecretMatcher(secrets)
 
@@ -3717,6 +3743,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
 
             # 2 = clean-so-far, but not certifiable as a real PASS.
+            report.settle_notices()
             code = 1 if report.leaked else 2 if report.degraded else 0
             # Render first, print last: a renderer crash happens before any
             # JSON report exists (crash() then writes its own), and the

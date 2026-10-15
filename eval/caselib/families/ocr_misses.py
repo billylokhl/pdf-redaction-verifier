@@ -137,6 +137,12 @@ def _dense_sideways_page(page: fitz.Page) -> None:
                        expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),))),
     # macOS 26 (CI): Vision reads the SSN's line, a hard finding (exit 1).
     older_macos=OlderMacOS(27, None),
+    # The most OCR work the readings allow: #70's upright re-reads plus
+    # #91's turned and unstacked readings, 78 Vision calls, about 8 s (5.5 s
+    # of it Vision) on Apple silicon and 151 s on the weekly macOS 26 runner (OCR on the
+    # CPU, three scans at once; #147), against the scorecard's 60 s
+    # default. About twice that.
+    scan_timeout=300,
     rules=({"name": "Any SSN", "class": "ssn"},),
     requires=("ocr",),
     mistake="Scanning a page of a report sideways and sharing the image without a text "
