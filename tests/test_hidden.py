@@ -409,7 +409,7 @@ class TestPageThumbnails:
         doc = _thumbnail_doc()
 
         def boom(self, xref, key):
-            raise RuntimeError("unreadable /Users/someone/secret.pdf")
+            raise RuntimeError("unreadable /home/example/secret.pdf")
 
         monkeypatch.setattr(fitz.Document, "xref_get_key", boom)
         (w,) = _hidden_warnings(doc)
