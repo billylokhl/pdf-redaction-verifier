@@ -494,7 +494,19 @@ page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
 the #67 page about 0.3 s more than before, of about 5 s). The worst
 case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
 16 unstacked.
-Vision calls themselves have no deadline (as before the re-reads).
+Each Vision call has a deadline of its own (`VISION_CALL_TIMEOUT_S`,
+120 s; #115): `performRequests` has no timeout, and a stalled Vision
+once held a test run for about 25 minutes with no CPU in use. The call
+runs on a worker thread joined with that deadline; past it, its
+requests are cancelled, the thread is left behind (a thread blocked in
+Vision cannot be stopped from Python; it is a daemon, so it never holds
+up the exit) and the page is `PAGE_FAILED`, a re-read or extra reading
+included: a timeout is not one of the read failures those drop. While a
+timed-out call has still not returned, every later call fails at once
+without calling Vision, so a stuck Vision costs one deadline per run,
+not one per call or page. A page whose calls each return in time can
+still take up to its 147 calls' worth of deadlines; that is slow, not
+unbounded.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
@@ -589,9 +601,18 @@ the gap is stated rather than implied away.
   thumbnail, a second decoded picture the tool never looks at; pattern
   rules on non-attachment embedded files, on scripts stored as streams on
   actions, and on an image's own raw sample or codec bytes (a known value
-  there is still found, via the Binary layer's raw byte sweep); and the
-  matching limits — page-break splits with something between the halves,
-  multi-column wraps, dash-less pattern wraps, extreme coordinates.
+  there is still found, via the Binary layer's raw byte sweep, when the
+  image is drawn) and on an editor's private data; text after a stream's
+  compression end marker; leftover plain text labelled as a font or an
+  image, leftover outlines, leftover images just under the size gate,
+  leftover one-character strings, and a removed attachment taken for page
+  content; font-coded text off the page without a `/ToUnicode` map or
+  drawn from the same point as other text; a zip in a non-attachment
+  embedded file; and the matching limits — page-break splits with
+  something between the halves, pattern-rule page-break splits in
+  layouts no reading joins, multi-column wraps, dash-less pattern wraps,
+  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
+  a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`

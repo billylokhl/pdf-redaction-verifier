@@ -50,7 +50,9 @@ def _run_group(cmd: list[str], cwd: Path, timeout: float) -> tuple[int | str, st
                 os.killpg(proc.pid, sig)
                 out, err = proc.communicate(timeout=10)
                 break
-            except ProcessLookupError:
+            # The group is gone -- or, on macOS, only unreaped members are
+            # left in it, which os.killpg reports as EPERM.
+            except (ProcessLookupError, PermissionError):
                 try:
                     out, err = proc.communicate(timeout=10)
                 except subprocess.TimeoutExpired:   # a grandchild holds the pipes
