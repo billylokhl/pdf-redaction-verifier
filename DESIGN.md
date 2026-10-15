@@ -586,7 +586,7 @@ the gap is stated rather than implied away.
   embedded file; and the matching limits — page-break splits with
   something between the halves, pattern-rule page-break splits in
   layouts no reading joins, multi-column wraps, dash-less pattern wraps,
-  extreme coordinates. README's Known gaps lists each with its K-number;
+  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
   a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),

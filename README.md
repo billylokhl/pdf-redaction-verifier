@@ -379,8 +379,8 @@ secret can still be **not detected** (exit `0`). In short:
   image (K3, K4); leftover text converted to outlines (K5); a leftover
   image just under the 8×32 size gate, whether it is a picture still
   readable when enlarged, one picture cut into strips (K21), or raw
-  sample bytes holding the value literally (found only when the image
-  is drawn); leftover font-coded text shown one character per string
+  sample bytes holding the value literally (a known value there is
+  found only when the image is drawn); leftover font-coded text shown one character per string
   (K10); and a removed attachment whose text holds three words that are
   also content operators, so it is taken for page content (K11).
   <!-- gap-cells: live.plain.after-stream-end orphaned.plain.after-stream-end orphaned.plain.mislabelled orphaned.pixels.outlines orphaned.pixels.small orphaned.font.single-glyph-strings orphaned-attachment.plain.operator-words -->
@@ -411,9 +411,9 @@ secret can still be **not detected** (exit `0`). In short:
   and nothing compares its reading with the ink on the page. OCR now
   also reads such a page turned, which finds the value, but only as
   manual review (exit `2`), not a finding (K43; on macOS 26 Vision reads
-  the line and the page exits `1`). A page whose dropped lines are all
-  horizontal, or that has no vertical line at all, still passes as clean
-  ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
+  the line and the page exits `1`). A page whose dropped lines are
+  horizontal, or where Vision reports no vertical line, can still pass as
+  clean ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
   <!-- gap-cells: live.pixels.ocr-dropped-line -->
 - **Split values:** a value split around other text into more than three
   pieces, or with its pieces more than five lines apart (a page-break
@@ -442,8 +442,9 @@ read them.
 Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the
 next page's first line), and so can a print slug just past the page's
-edge beside the page number, joined with the next page's first line; a value assembled down a vertical column or
-through several page-number-only pages is only ever manual review; and
+edge beside the page number, joined with the next page's first line; a
+value assembled down a vertical column or through several
+page-number-only pages is only ever manual review; and
 decompressed font tables, or an image's raw bytes, can raise
 coincidental Binary warnings (see Binary); a document `/ID` written as
 hex text whose digits happen to form an SSN, card or phone number is
