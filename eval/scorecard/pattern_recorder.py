@@ -32,7 +32,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -52,13 +52,21 @@ class Recorder:
       text, including rules `already` hit and matches after the first. The
       tool stops at a rule's first match per page; a demotion would not,
       so this is what `pattern_baseline`'s residual estimate reads.
+
+    The key masks a sample exactly as the report does: with the scan's
+    exact values (`ScanReport.exact_index`, so a sample touching one shows
+    only '****') and, in the OCR layer, fully. To know both it also wraps
+    verify's ScanReport (a subclass that remembers the scan's report) and
+    scan_page_layer (which names the layer it scans).
     """
 
     def __init__(self, salt: str = "") -> None:
         self.salt = salt
         self.joins: dict[tuple[str, str], None] = {}  # insertion-ordered set of (key, shape)
         self.shapes: dict[str, set[str]] = {}
-        self._saved: list[tuple[Any, Callable[..., Any]]] = []
+        self._saved: list[tuple[Any, str, Any]] = []
+        self._report: Any = None  # the scan's ScanReport, for its exact_index
+        self._layer: str | None = None  # the layer scan_page_layer is scanning
 
     def install(self) -> None:
         import verify
@@ -74,13 +82,43 @@ class Recorder:
             return hits
 
         for module in (patterns, matching, verify):
-            self._saved.append((module, module.match_patterns))
-            module.match_patterns = recording  # type: ignore[attr-defined]
+            self._patch(module, "match_patterns", recording)
+
+        recorder = self
+        report_type = verify.ScanReport
+
+        class CapturedReport(report_type):  # type: ignore[misc, valid-type]
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                recorder._report = self
+
+        self._patch(verify, "ScanReport", CapturedReport)
+        scan_page_layer = verify.scan_page_layer
+
+        def scanning_layer(*args: Any, **kwargs: Any) -> Any:
+            previous, self._layer = self._layer, kwargs.get("layer")
+            try:
+                return scan_page_layer(*args, **kwargs)
+            finally:
+                self._layer = previous
+
+        self._patch(verify, "scan_page_layer", scanning_layer)
+
+    def _patch(self, module: Any, name: str, value: Any) -> None:
+        self._saved.append((module, name, getattr(module, name)))
+        setattr(module, name, value)
 
     def uninstall(self) -> None:
         while self._saved:
-            module, function = self._saved.pop()
-            module.match_patterns = function
+            module, name, original = self._saved.pop()
+            setattr(module, name, original)
+
+    def _masked(self, sample: str) -> str:
+        """The sample as the report shows it (verify's own mask call)."""
+        from redaction_verifier.matching import patterns
+
+        exact = getattr(self._report, "exact_index", ())
+        return patterns.mask(sample, exact, full=self._layer == "OCR")
 
     def _record(self, raw_text: str, rules: Any, hits: dict[str, str]) -> None:
         try:
@@ -106,7 +144,7 @@ class Recorder:
                     # as such rather than guessed.
                     sample = hits[rule.name]
                     shape = first[1] if first and first[0] == sample else "classifier-error"
-                    self.joins[(record_key(self.salt, rule.name, patterns.mask(sample)), shape)] = None
+                    self.joins[(record_key(self.salt, rule.name, self._masked(sample)), shape)] = None
         except Exception:
             pass  # a lost record shows up as an unjoined finding, never as a changed verdict
 

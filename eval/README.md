@@ -930,7 +930,9 @@ or `email-address`. A rule is classified as the built-in class whose
 regex it is, whatever its name (the case library's "Any SSN" is `ssn`);
 a custom pattern fits no class-specific shape. Where the evidence is thin
 it errs toward the shapes no option below demotes. The record file holds only shapes and, per hit,
-a key salted with a per-run secret that is never written, so neither the
+a key salted with a per-run secret that is never written (the sample in
+it masked exactly as the report masks it: with the scan's exact values,
+and fully in the OCR layer), so neither the
 matched text nor the masked sample can be recovered from it. Each hard
 finding in the `--json` report is joined to its hit's shape through that
 key (several shapes on one key: the one kept longest below); a finding
