@@ -38,7 +38,9 @@ dependencies = [
 # qpdf CLI -- the gate refuses otherwise -- so CI installs the qpdf release
 # that matches each pin. Python 3.10 needs an older pikepdf (10.14 dropped
 # 3.10). Test and eval only until 3a-8 makes it a runtime dependency.
+# pytest-timeout fails a hung test run (see [tool.pytest.ini_options]).
 test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.5",
+        "pytest-timeout==2.4.0",
         "pikepdf==10.16.0; python_version >= '3.11'",          # libqpdf 12.4.2
         "pikepdf==10.13.0.post1; python_version < '3.11'"]     # libqpdf 12.3.2 (3.10)
 
@@ -82,6 +84,16 @@ required-environments = [
 testpaths = ["tests"]
 # eval/ holds the case library (import caselib), which the tests judge.
 pythonpath = [".", "eval"]
+# pytest-timeout: a test still running after this long fails the run
+# instead of hanging it (#115: a stalled Apple Vision call once held a
+# local run for about 25 minutes, and which test it was went unrecorded).
+# The thread method, because a hang inside native code (Vision, MuPDF)
+# never returns to Python for the signal method to interrupt: it dumps
+# every thread's stack, naming the test, and exits the run. Many modules
+# run OCR in-process (verify.main), so it covers the whole suite. The
+# slowest single test takes well under this, on a loaded machine too.
+timeout = 900
+timeout_method = "thread"
 
 [tool.coverage.run]
 # The CLI tests run verify.py as a subprocess; pytest-cov 7 no longer

@@ -4,11 +4,12 @@ Moved verbatim from verify.py as Phase 2, step 2 ("Move") of
 docs/REDESIGN.md §6 ("Views are the existing page readings and OCR, moved
 [not wrapped] in Phase 2"). Behaviour is byte-identical to the code this
 replaced; verify.py re-exports every name here so existing imports,
-`verify.X` references and the CLI keep working unchanged. Three changes
+`verify.X` references and the CLI keep working unchanged. Four changes
 since the move. In _vision_recognize_batch: the image handler's options
-are a native NSDictionary, not a Python {} (macOS 27 compatibility), and
-a reading counts only once its completion handler ran to the end, with
-nothing allowed to escape a handler. And a line Vision reads vertically
+are a native NSDictionary, not a Python {} (macOS 27 compatibility), a
+reading counts only once its completion handler ran to the end, with
+nothing allowed to escape a handler, and Vision is waited on for at most
+VISION_CALL_TIMEOUT_S per call (_perform_requests; #115). And a line Vision reads vertically
 is hard-finding eligible only when an upright re-read confirms it, since
 Vision on macOS 27 returns a stack of upright characters as one line
 read sideways (see _confirm_vertical).
@@ -36,9 +37,11 @@ and this module's own value never drift apart.
 
 from __future__ import annotations
 
+import contextlib
 import math
+import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager
 
 import pymupdf as fitz
 
@@ -75,6 +78,31 @@ MAX_UNSTACKS = 16
 # thin rules, say).
 MAX_UNSTACK_PIXELS = 4_000_000
 
+# How long one Vision call (_vision_recognize_batch: both passes on one
+# image) may take before its page fails (PAGE_FAILED, never a pass).
+# performRequests has no timeout of its own, and a stalled Vision once
+# blocked a test run for about 25 minutes with no CPU in use (#115). A
+# 300 dpi page takes Vision well under ten seconds; a slanted page's
+# minute is spread over up to 147 calls (DESIGN, "Bounded resources").
+VISION_CALL_TIMEOUT_S: float = 120.0
+
+# Vision calls that timed out and whose thread has not returned yet. While
+# one is still running, a new call fails at once instead of waiting out
+# its own deadline on a Vision that is likely still stuck, so a stalled
+# Vision costs one deadline per run, not one per call.
+_stalled: list[threading.Thread] = []
+_stalled_lock = threading.Lock()
+
+
+class VisionTimeout(Exception):
+    """A Vision call did not return within VISION_CALL_TIMEOUT_S, or one
+    that earlier did not is still running. Deliberately not a
+    RuntimeError, so it is not one of _READ_FAILURES: a re-read, turned
+    or unstacked read that times out fails the page instead of being
+    dropped, and the page's later Vision calls are not each left to wait
+    out their own deadline."""
+
+
 try:
     import Vision
     from Foundation import NSData, NSDictionary
@@ -91,6 +119,62 @@ except Exception:  # pragma: no cover
     # NOT caught by this clause (Exception, not BaseException) and
     # propagates instead — see the module docstring.
     _OCR_IMPORTS_OK = False
+
+try:
+    # PyObjC's autorelease pool: the Vision call runs on its own thread,
+    # which has no pool of its own to drain per call.
+    from objc import autorelease_pool as _autorelease_pool
+except Exception:  # pragma: no cover - no PyObjC: nothing to drain
+    _autorelease_pool = contextlib.nullcontext
+_pool: Callable[[], ContextManager[Any]] = _autorelease_pool
+
+
+def _refuse_while_stalled() -> None:
+    """Raise VisionTimeout while a Vision call that timed out has still
+    not returned: Vision is most likely still stuck."""
+    with _stalled_lock:
+        _stalled[:] = [t for t in _stalled if t.is_alive()]
+        if _stalled:
+            raise VisionTimeout(
+                "Apple Vision: an earlier call has not returned since it timed "
+                f"out after {VISION_CALL_TIMEOUT_S:g} s; not waiting on Vision again")
+
+
+def _perform_requests(image_handler: Any, requests: list[Any]) -> tuple[Any, Any]:
+    """image_handler.performRequests_error_(requests, None), but waited
+    on for at most VISION_CALL_TIMEOUT_S: on a worker thread, joined with
+    that deadline. Raises VisionTimeout when it has not returned by then.
+
+    A thread blocked inside Vision cannot be stopped from Python. The
+    requests are cancelled (VNRequest.cancel) and the thread is left as a
+    daemon, so it never holds up the process's exit; anything it delivers
+    late lands in its own call's discarded results.
+    """
+    outcome: dict[str, Any] = {}
+
+    def perform() -> None:
+        try:
+            with _pool():
+                outcome["value"] = image_handler.performRequests_error_(requests, None)
+        except BaseException as exc:  # re-raised on the caller's thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=perform, name="vision-perform", daemon=True)
+    thread.start()
+    thread.join(VISION_CALL_TIMEOUT_S)
+    if thread.is_alive():
+        for request in requests:
+            try:
+                request.cancel()
+            except BaseException:
+                pass    # best effort: the deadline holds either way
+        with _stalled_lock:
+            _stalled.append(thread)
+        raise VisionTimeout(
+            f"Apple Vision did not return within {VISION_CALL_TIMEOUT_S:g} s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 @dataclass(frozen=True)
@@ -122,9 +206,14 @@ def _vision_recognize_batch(
     Both requests share a single VNImageRequestHandler so the image is
     decoded once instead of twice.  Raises on any Vision-level failure,
     and unless both completion handlers ran to the end: a reading is
-    only returned once Vision has demonstrably delivered it. Returns each
-    pass's observations in Vision's order.
+    only returned once Vision has demonstrably delivered it. Raises
+    VisionTimeout when Vision does not return within
+    VISION_CALL_TIMEOUT_S (_perform_requests), and at once, without
+    calling Vision, while an earlier call that did not has still not
+    returned. Returns each pass's
+    observations in Vision's order.
     """
+    _refuse_while_stalled()
     ns_data = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
     results: dict[bool, list[Observation]] = {True: [], False: []}
     errors: dict[bool, list[str]] = {True: [], False: []}
@@ -192,9 +281,7 @@ def _vision_recognize_batch(
     image_handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
         ns_data, NSDictionary.dictionary()
     )
-    success, perform_error = image_handler.performRequests_error_(
-        [request_on, request_off], None
-    )
+    success, perform_error = _perform_requests(image_handler, [request_on, request_off])
     if not success:
         raise RuntimeError(f"Apple Vision request failed: {perform_error}")
     for correction in (True, False):
