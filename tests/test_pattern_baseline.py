@@ -290,8 +290,13 @@ def test_recorder_cli_matches_verify_on_a_finding(tmp_path):
 
 
 def test_recorder_cli_matches_verify_on_a_clean_file(tmp_path):
+    from caselib.run import available
+    from scorecard.differential import normalization_have
+    from scorecard.keys import effective_exit
+
     recorded, sidecar = _both(tmp_path, _pdf(tmp_path / "c.pdf", ["Nothing to see here."]))
-    assert recorded.returncode == 0
+    # 0 once this machine's missing tools are set aside (no OCR on Linux CI: 2).
+    assert effective_exit(recorded.report, normalization_have(available())) == 0
     assert json.loads(sidecar.read_text()) == {"joins": [], "shapes": {}}
 
 
