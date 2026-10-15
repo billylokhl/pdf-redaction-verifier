@@ -7,7 +7,8 @@
                                                      REDACTOR_CMD, REDACTOR_PYTHON)
   oracle   [--root R] --set S [--methods m0,m1,m2]   the oracle -> R/oracle/S/<m>/
                                                      (m0: the unredacted inputs,
-                                                     calibration only)
+                                                     calibration only; renders
+                                                     and crops kept per file)
   adjudicate draft|lock|verify [--root R] --set S    adjudication records
                                                      -> R/adjudication/S/<m>/
 """

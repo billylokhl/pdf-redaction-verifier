@@ -53,6 +53,10 @@ class Body:
     raw: bytes
     decoded: bytes | None    # None when no known decoder applies
     kind: str = "other"
+    # "" (presumably the object's current body), "superseded" (a later
+    # body has the same object number: an incremental update replaced it)
+    # or "unindexed" (after the file's final %%EOF).
+    storage: str = ""
 
 
 @dataclass
@@ -61,7 +65,9 @@ class Hit:
     kind: str                # KINDS member
     obj: int | None
     offset: int              # body start (or raw offset for kind "raw")
-    how: str                 # "ascii", "literal", "hex", "utf16", "codes", "partial:<piece>"
+    how: str                 # "ascii", "literal", "hex", "utf16", "codes", "string",
+                             # "partial:<piece>"
+    storage: str = ""        # the body's (Body.storage); "unindexed" past %%EOF
 
 
 @dataclass
@@ -159,29 +165,43 @@ def classify(dictionary: bytes, decoded: bytes | None) -> str:
 
 
 def bodies(raw: bytes) -> list[Body]:
-    """Every stream body in *raw*, in file order."""
+    """Every stream body in *raw*, in file order. A body's dictionary is
+    read back to its own ``N G obj`` header, never past the previous
+    object's ``endobj`` or ``endstream``."""
     found: list[Body] = []
+    last_eof = raw.rfind(b"%%EOF")
     for m in _STREAM.finditer(raw):
         start = m.end()
+        window_start = max(0, m.start() - 65536)
+        window = raw[window_start:m.start()]
+        cut = max(window.rfind(b"endobj"), window.rfind(b"endstream"))
+        if cut >= 0:
+            window_start += cut + 1
+            window = raw[window_start:m.start()]
         # Only a `stream` keyword right after a dictionary's `>>` opens one.
-        before = raw[max(0, m.start() - 4096):m.start()].rstrip()
-        if not before.endswith(b">>"):
+        if not window.rstrip().endswith(b">>"):
             continue
         end_m = _ENDSTREAM.search(raw, start)
         if not end_m:
             continue
         head = None
-        obj = None
-        for h in _OBJ_HEAD.finditer(raw, max(0, m.start() - 4096), m.start()):
+        for h in _OBJ_HEAD.finditer(window):
             head = h
-        if head is not None:
-            obj = int(head.group(1))
-            dictionary = raw[head.end():m.start()]
-        else:
-            dictionary = before[-4096:]
+        obj = int(head.group(1)) if head is not None else None
+        dictionary = window[head.end():] if head is not None else window
         body = raw[start:end_m.start()]
         decoded = decode(dictionary, body)
-        found.append(Body(obj, start, dictionary, body, decoded, classify(dictionary, decoded)))
+        storage = "unindexed" if last_eof >= 0 and start > last_eof else ""
+        found.append(Body(obj, start, dictionary, body, decoded, classify(dictionary, decoded),
+                          storage))
+    # A later body with the same object number replaced the earlier one.
+    latest: dict[int, int] = {}
+    for i, b in enumerate(found):
+        if b.obj is not None and b.storage != "unindexed":
+            latest[b.obj] = i
+    for i, b in enumerate(found):
+        if b.obj is not None and b.storage == "" and latest.get(b.obj) != i:
+            b.storage = "superseded"
     return found
 
 
@@ -207,13 +227,13 @@ def _literal(data: bytes, i: int) -> tuple[bytes, int]:
             elif nxt in (b"\r", b"\n"):
                 i += 2 if data[i + 1:i + 3] == b"\r\n" else 1
                 i += 1 if nxt == b"\n" or data[i:i + 1] != b"\n" else 0
-            elif nxt.isdigit():
+            elif nxt and nxt in b"01234567":
                 m = re.match(rb"[0-7]{1,3}", data[i + 1:i + 4])
-                assert m
-                out.append(int(m.group(0), 8) & 0xFF)
-                i += 1 + len(m.group(0))
+                digits = m.group(0) if m else nxt
+                out.append(int(digits, 8) & 0xFF)
+                i += 1 + len(digits)
             else:
-                i += 1
+                i += 1          # any other escaped character stands for itself
             continue
         if c == b"(":
             depth += 1
@@ -349,21 +369,35 @@ def _text_residue(data: bytes, form: str) -> str | None:
     return residue(text, form)
 
 
-def _decode_block(block: bytes, form: str, code: bytes) -> str:
+def _decode_blocks(block: bytes, form: str, code: bytes) -> list[str]:
     """*block*'s characters as far as *form*'s own fingerprint maps them
-    (the codes of the characters the value is written with); any other
-    code reads as ' ', so it ends a word or a token. Some producers place
-    words apart instead of drawing a space: then the fingerprint covers
-    the value without its spaces."""
-    width = 2 if len(code) % 2 == 0 and all(b == 0 for b in code[0::2]) else 1
-    chars = list(form)
-    if len(code) != width * len(chars):
-        chars = [c for c in form if c != " "]
-    if len(code) != width * len(chars):
-        return ""
-    table = {code[i * width:(i + 1) * width]: ch for i, ch in enumerate(chars)}
-    return "".join(table.get(block[i:i + width], " ")
-                   for i in range(0, len(block) - width + 1, width))
+    (the codes of the characters the value is written with), read with a
+    one-byte and with a two-byte code width; any other code reads as ' ',
+    so it ends a word or a token. Some producers place words apart instead
+    of drawing a space: then the fingerprint covers the value without its
+    spaces."""
+    out = []
+    for width in (1, 2):
+        for chars in (list(form), [c for c in form if c != " "]):
+            if len(code) != width * len(chars):
+                continue
+            table = {code[i * width:(i + 1) * width]: ch for i, ch in enumerate(chars)}
+            if len(table) < len(set(chars)):
+                continue            # two characters share a code: not this width
+            out.append("".join(table.get(block[i:i + width], " ")
+                               for i in range(0, len(block) - width + 1, width)))
+    return out
+
+
+# Machine-written dates (a PDF date string; XMP date elements) hold digit
+# runs that match a secret by chance -- at 12:34 an SSN's 1234 -- so they
+# are never searched for partial residue.
+_PDF_DATE = re.compile(rb"^D:\d{4,14}")
+_XMP_DATES = re.compile(rb"\d{4}-\d\d-\d\dT[\d:.]+(?:Z|[+-]\d\d:\d\d)?|uuid:[0-9a-fA-F-]+")
+
+
+def _without_dates(data: bytes) -> bytes:
+    return b"" if _PDF_DATE.match(data) else _XMP_DATES.sub(b" ", data)
 
 
 def scan(raw: bytes, forms: dict[str, list[str]], *, partial: bool = True) -> Report:
@@ -371,69 +405,98 @@ def scan(raw: bytes, forms: dict[str, list[str]], *, partial: bool = True) -> Re
 
     *forms* maps each written form to its fingerprints (hex). Returns
     every whole hit, and -- when *partial* -- every partial-residue hit
-    in a string token or a joined text block that holds no whole one.
+    in a string token, an XMP or attachment body or a joined text block,
+    for a form with no whole hit anywhere. Machine-written dates are
+    never searched for partial residue.
     """
     found = bodies(raw)
     report = Report(len(found), sum(1 for b in found if b.decoded is None))
+    last_eof = raw.rfind(b"%%EOF")
     # Raw bytes outside stream bodies: dictionaries, strings, trailers,
     # anything after %%EOF.
     outside = bytearray(raw)
     for b in found:
         outside[b.start:b.start + len(b.raw)] = b" " * len(b.raw)
     outside_b = bytes(outside)
+    # Tokenised once, for every form.
+    outside_tokens = _tokens_with_offsets(outside_b)
+    body_tokens = {id(b): string_tokens(b.decoded) for b in found
+                   if b.decoded is not None and b.kind in ("string", "other")}
+    body_blocks = {id(b): text_blocks(b.decoded) for b in found
+                   if b.decoded is not None and b.kind == "content"}
+
+    def raw_storage(offset: int) -> str:
+        return "unindexed" if last_eof >= 0 and offset > last_eof else ""
+
     for form, prints in forms.items():
-        whole_somewhere: set[tuple[str, int | None]] = set()
         for how, needle in text_forms(form):
             for m in re.finditer(re.escape(needle), outside_b):
-                report.hits.append(Hit(form, "raw", None, m.start(), how))
+                report.hits.append(Hit(form, "raw", None, m.start(), how,
+                                       raw_storage(m.start())))
             for b in found:
                 if b.decoded is not None and needle in b.decoded:
-                    report.hits.append(Hit(form, b.kind, b.obj, b.start, how))
-                    whole_somewhere.add((b.kind, b.obj))
+                    report.hits.append(Hit(form, b.kind, b.obj, b.start, how, b.storage))
         # Decoded string tokens (escaped literals, hex strings, UTF-16 in
         # either): a match there that the byte search above missed.
         plain = [n for how, n in text_forms(form) if how in ("ascii", "utf16")]
-        for token in string_tokens(outside_b):
+        for offset, token in outside_tokens:
             if any(n in token for n in plain):
-                report.hits.append(Hit(form, "raw", None, -1, "string"))
+                report.hits.append(Hit(form, "raw", None, offset, "string", raw_storage(offset)))
         for b in found:
-            if b.decoded is not None and b.kind in ("string", "other"):
-                for token in string_tokens(b.decoded):
-                    if any(n in token for n in plain):
-                        report.hits.append(Hit(form, b.kind, b.obj, b.start, "string"))
-                        break
+            if any(any(n in t for n in plain) for t in body_tokens.get(id(b), [])):
+                report.hits.append(Hit(form, b.kind, b.obj, b.start, "string", b.storage))
         codes = [bytes.fromhex(p) for p in prints]
         for b in found:
-            if b.decoded is None or b.kind != "content":
-                continue
-            for block in text_blocks(b.decoded):
-                if any(c and c in block for c in codes):
-                    report.hits.append(Hit(form, "content", b.obj, b.start, "codes"))
-                    break
+            if any(c and c in block for c in codes for block in body_blocks.get(id(b), [])):
+                report.hits.append(Hit(form, "content", b.obj, b.start, "codes", b.storage))
         if not partial or any(h.form == form for h in report.hits):
             continue
         # Partial residue, where text lives only, and only when no whole
         # occurrence was found anywhere.
-        for token in string_tokens(outside_b):
-            piece = _text_residue(token, form)
+        for offset, token in outside_tokens:
+            piece = _text_residue(_without_dates(token), form)
             if piece:
-                report.hits.append(Hit(form, "raw", None, -1, f"partial:{piece}"))
+                report.hits.append(Hit(form, "raw", None, offset, f"partial:{piece}",
+                                       raw_storage(offset)))
         for b in found:
             if b.decoded is None or b.kind in NOT_RECOVERABLE_ALONE:
                 continue
-            texts = (text_blocks(b.decoded) if b.kind == "content"
-                     else string_tokens(b.decoded) if b.kind in ("string", "other")
+            texts = (body_blocks.get(id(b), []) if b.kind == "content"
+                     else body_tokens.get(id(b), []) if b.kind in ("string", "other")
                      else [b.decoded] if b.kind in ("xmp", "embedded") else [])
             for t in texts:
-                piece = _text_residue(t, form)
+                piece = _text_residue(_without_dates(t), form)
                 if piece:
-                    report.hits.append(Hit(form, b.kind, b.obj, b.start, f"partial:{piece}"))
-            if b.kind == "content":
-                for block in text_blocks(b.decoded):
-                    for c in codes:
-                        piece = residue(_decode_block(block, form, c), form)
-                        if piece:
-                            report.hits.append(Hit(form, "content", b.obj, b.start,
-                                                   f"partial:{piece}"))
-                            break
+                    report.hits.append(Hit(form, b.kind, b.obj, b.start, f"partial:{piece}",
+                                           b.storage))
+                    break
+            for block in body_blocks.get(id(b), []):
+                piece = next((p for c in codes for t in _decode_blocks(block, form, c)
+                              if (p := residue(t, form))), None)
+                if piece:
+                    report.hits.append(Hit(form, "content", b.obj, b.start, f"partial:{piece}",
+                                           b.storage))
+                    break
     return report
+
+
+def _tokens_with_offsets(data: bytes) -> list[tuple[int, bytes]]:
+    """(offset, decoded string) for every string token in *data*."""
+    out = []
+    i, n = 0, len(data)
+    while i < n:
+        m = _TOKEN.search(data, i)
+        if not m:
+            break
+        if m.group(0) == b"(":
+            s, i = _literal(data, m.end())
+            out.append((m.start(), s))
+            continue
+        if m.group(1) is not None:
+            h = re.sub(rb"\s", b"", m.group(1))
+            try:
+                out.append((m.start(), binascii.unhexlify(h + (b"0" if len(h) % 2 else b""))))
+            except binascii.Error:
+                pass
+        i = m.end()
+    return out

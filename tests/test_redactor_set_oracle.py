@@ -146,15 +146,23 @@ class TestMatching:
     def test_classes_by_precedence(self) -> None:
         inst = Instance("SSN1", "123-45-6789", "T1", "page-text", 0, [0, 0, 1, 1])
         E = oracle.Evidence
-        assert oracle.classify_instance(inst, [E("R1", "x", "whole"), E("V", "y", "whole")],
-                                        near=False)[0] == "recoverable-visible"
-        assert oracle.classify_instance(inst, [E("R2", "x", "whole", "orphaned")],
-                                        near=False)[0] == "recoverable-hidden"
-        assert oracle.classify_instance(inst, [E("R1", "f", "whole", counts=False)],
-                                        near=False)[0] == "removed"
-        assert oracle.classify_instance(inst, [E("V", "x", "partial:6789")],
-                                        near=True) == ("partial", True)
+        f = "123-45-6789"
+        assert oracle.classify(inst, [E("R1", "x", "whole", form=f),
+                                      E("V", "y", "whole", form=f)]) == "recoverable-visible"
+        assert oracle.classify(inst, [E("R2", "x", "whole", "orphaned", form=f)]) \
+            == "recoverable-hidden"
+        assert oracle.classify(inst, [E("R1", "f", "whole", counts=False, form=f)]) == "removed"
+        assert oracle.classify(inst, [E("V", "x", "partial:6789", form=f)]) == "partial"
         assert oracle.worst(["removed", "partial", "recoverable-hidden"]) == "recoverable-hidden"
+
+    def test_one_surviving_part_of_a_split_value_is_partial(self) -> None:
+        inst = Instance("NAME2", "Avery R. Samplename", "T3c", "page-text", 0, None,
+                        parts=["Avery R.", "Samplename"])
+        E = oracle.Evidence
+        assert oracle.classify(inst, [E("R1", "x", "whole", form="Samplename")]) == "partial"
+        assert oracle.classify(inst, [E("R1", "x", "whole", form="Samplename"),
+                                      E("R1", "y", "whole", form="Avery R.")]) \
+            == "recoverable-hidden"
 
 
 # ── The expected-verdict table against the case library ────────────────
@@ -180,54 +188,269 @@ class TestExpectations:
         assert adjudicate.worst_exit([0, 2]) == 2 and adjudicate.worst_exit([2, 1, 0]) == 1
 
 
+# ── Attribution, R2 and the regressions the review found (no OCR) ─────
+
+def _annotated_leak(tmp_path: Path) -> Path:
+    """The page's SSN removed and boxed, but the value copied into an
+    annotation's /Contents and the Info /Subject."""
+    pdf = pikepdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.obj.Contents = pdf.make_stream(b"0 g 72 690 190 24 re f")
+    annot = pdf.make_indirect(pikepdf.Dictionary(
+        Type=pikepdf.Name.Annot, Subtype=pikepdf.Name.Text,
+        Rect=pikepdf.Array([500, 700, 520, 720]), Contents=pikepdf.String("SSN 123-45-6789")))
+    page.obj.Annots = pikepdf.Array([annot])
+    pdf.docinfo["/Subject"] = "123-45-6789"
+    path = tmp_path / "ann.pdf"
+    pdf.save(path)
+    return path
+
+
+def _attribute(path: Path, truth: DocTruth, tmp_path: Path) -> list[oracle.InstanceResult]:
+    ch = oracle.gather(path, truth, tmp_path, with_v=False)
+    return oracle.attribute(truth, ch, tmp_path)
+
+
+T1_SSN = Instance("SSN1", "123-45-6789", "T1", "page-text", 0, [72, 70, 260, 96],
+                  fingerprints=[b"123-45-6789".hex()])
+
+
+class TestAttribution:
+    def test_evidence_no_instance_can_claim_is_kept_unattributed(self, tmp_path) -> None:
+        rows = _attribute(_annotated_leak(tmp_path), DocTruth("X", 0, "t", 1, "t", [T1_SSN]),
+                          tmp_path)
+        (planted,) = [r for r in rows if r.index == 0]
+        assert planted.cls == "removed"
+        extra = [r for r in rows if r.index < 0]
+        assert len(extra) == 1 and extra[0].secret == "SSN1" and extra[0].uncertain
+        assert extra[0].cls == "recoverable-hidden"
+        roles = {e.role for e in extra[0].evidence}
+        assert {"annot", "info"} <= roles
+
+    def test_a_text_layer_over_a_scan_is_not_lost(self, tmp_path) -> None:
+        pdf = pikepdf.new()
+        page = pdf.add_blank_page(page_size=(612, 792))
+        font = pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                  BaseFont=pikepdf.Name.Helvetica,
+                                  Encoding=pikepdf.Name.WinAnsiEncoding)
+        page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font))
+        page.obj.Contents = pdf.make_stream(b"BT 3 Tr /F1 12 Tf 72 700 Td (SSN 123-45-6789) Tj ET")
+        pdf.save(tmp_path / "s.pdf")
+        pix = Instance("SSN1", "123-45-6789", "S1", "pixels", 0, [72, 80, 200, 96])
+        rows = _attribute(tmp_path / "s.pdf", DocTruth("X", 0, "t", 1, "t", [pix]), tmp_path)
+        assert oracle.worst([r.cls for r in rows]) == "recoverable-hidden"
+        assert any(r.index < 0 for r in rows)
+
+    def test_a_string_instance_never_takes_page_content(self, tmp_path) -> None:
+        pdf = pikepdf.new()
+        page = pdf.add_blank_page()
+        page.obj.Contents = pdf.make_stream(b"BT /F1 9 Tf (731904628155) Tj ET")
+        pdf.save(tmp_path / "c.pdf")
+        a1 = Instance("ACCT", "731904628155", "A1", "string", 0, [0, 0, 1, 1])
+        rows = _attribute(tmp_path / "c.pdf", DocTruth("X", 0, "t", 1, "t", [a1]), tmp_path)
+        assert rows[0].cls == "removed" and rows[0].evidence == []
+        assert [r.cls for r in rows if r.index < 0] == ["recoverable-hidden"]
+
+    def test_r2_storage_live_and_orphaned(self, tmp_path) -> None:
+        import pymupdf
+
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((72, 100), "SSN 123-45-6789", fontsize=12)
+        for r in page.search_for("123-45-6789"):
+            page.add_redact_annot(r, fill=(0, 0, 0))
+        page.apply_redactions()
+        doc.save(tmp_path / "o.pdf", garbage=0)        # the old stream stays, orphaned
+        hits, _ = oracle.r2_scan(tmp_path / "o.pdf", {"123-45-6789": [_helv_hex("123-45-6789")]})
+        assert {h.storage for h in hits} == {"orphaned"}
+        assert {h.role for h in hits} == {"content"}
+
+    def test_dates_are_never_partial_residue(self, tmp_path) -> None:
+        dob = Instance("DOB", "03/14/1971", "T1", "page-text", 0, [0, 0, 1, 1])
+        pdf = pikepdf.new()
+        pdf.add_blank_page()
+        pdf.docinfo["/ModDate"] = "D:20261014141900Z"         # 14:19 -> "1419"
+        pdf.save(tmp_path / "d.pdf")
+        rows = _attribute(tmp_path / "d.pdf", DocTruth("X", 0, "t", 1, "t", [dob]), tmp_path)
+        assert all(r.cls == "removed" for r in rows)
+
+
+def _helv_hex(text: str) -> str:
+    return text.encode("latin-1").hex()
+
+
+class TestRawRobustness:
+    def test_an_escaped_8_or_9_is_itself(self) -> None:
+        assert oracle_raw.string_tokens(b"(a\\8b\\9)") == [b"a8b9"]
+        assert oracle_raw.string_tokens(b"(\\101\\7)") == [b"A\x07"]
+
+    def test_random_binary_never_crashes(self) -> None:
+        import random
+
+        rng = random.Random(0)
+        for _ in range(300):
+            blob = bytes(rng.randrange(256) for _ in range(3000))
+            oracle_raw.string_tokens(blob)
+            oracle_raw.text_blocks(blob)
+
+    def test_superseded_and_unindexed_bodies(self) -> None:
+        body = b"BT (123-45-6789) Tj ET"
+        raw = (b"%PDF-1.7\n4 0 obj << /Length 22 >> stream\n" + body + b"\nendstream endobj\n"
+               b"%%EOF\n4 0 obj << /Length 2 >> stream\nq \nendstream endobj\n%%EOF\n"
+               b"9 0 obj << /Length 22 >> stream\n" + body + b"\nendstream endobj\n")
+        storages = sorted(h.storage for h in oracle_raw.scan(raw, {"123-45-6789": []}).hits
+                          if h.kind == "content")
+        assert storages == ["superseded", "unindexed"]
+
+    def test_a_dictionary_is_never_borrowed_from_the_previous_object(self) -> None:
+        raw = (b"%PDF-1.7\n1 0 obj << /Subtype /Image /Length 3 >> stream\nabc\nendstream "
+               b"endobj\n<< /Length 22 >> stream\nBT (123-45-6789) Tj ET\nendstream\n%%EOF\n")
+        (_, text) = oracle_raw.bodies(raw)
+        assert text.kind == "content"
+
+
 # ── Adjudication records and the lock ──────────────────────────────────
 
-def _record(**over: object) -> dict:
-    rec = {"output": "work/x.pdf", "sha256": "0" * 64, "doc": "D01-s0", "method": "m2",
-           "oracle_sha256": "1" * 64, "adjudicator": "agent", "date": "2026-10-14",
-           "notes": "", "secrets": {}, "truth": "clean",
-           "instances": [{"index": 0, "secret": "SSN1", "loc": "T1", "class": "recoverable-hidden",
-                          "uncertain": False, "evidence": [], "override": None,
-                          "expected_exit": 2}]}
-    rec.update(over)
-    return rec
+def _root_with_record(tmp_path: Path, cls: str = "recoverable-hidden") -> Path:
+    """A local root holding one output, its truth, an oracle result and a
+    drafted record (adjudicator filled in)."""
+    root = tmp_path / "root"
+    (root / "inputs").mkdir(parents=True)
+    (root / "work").mkdir()
+    out = root / "work" / "D01-s0.pdf"
+    out.write_bytes(b"%PDF-1.7 fabricated\n")
+    truth = DocTruth("D01", 0, "chrome", 1, "t", [T1_SSN])
+    (root / "inputs" / "D01-s0.truth.json").write_text(truth.to_json())
+    ev = [oracle.Evidence("R2", "object 9 content", "whole", "orphaned", role="content",
+                          form="123-45-6789")] if cls != "removed" else []
+    result = oracle.FileResult("work/D01-s0.pdf", oracle_raw_sha(out), "D01", "m1",
+                               [oracle.InstanceResult(0, "SSN1", "T1", cls, ev)],
+                               {"SSN1": cls}, "leak" if cls != "removed" else "clean")
+    odir = root / "oracle" / "inputs" / "m1"
+    odir.mkdir(parents=True)
+    (odir / "D01-s0.json").write_text(oracle.dumps(result))
+    rec = adjudicate.draft(result, json.loads(truth.to_json())["instances"],
+                           oracle_raw_sha(odir / "D01-s0.json"), "chrome", "D01-s0")
+    rec["adjudicator"] = "agent"
+    adir = root / "adjudication" / "inputs" / "m1"
+    adir.mkdir(parents=True)
+    (adir / "D01-s0.json").write_text(json.dumps(rec))
+    return root
+
+
+def oracle_raw_sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class TestAdjudication:
-    def test_finalize_derives_truth_and_exit(self) -> None:
-        final = adjudicate.finalize_record(_record())
-        assert final["truth"] == "leak" and final["expected_exit"] == 2
-        assert final["secrets"] == {"SSN1": "recoverable-hidden"}
+    def test_draft_maps_cell_and_exit_by_storage(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        rec = json.loads((root / "adjudication/inputs/m1/D01-s0.json").read_text())
+        (row,) = rec["instances"]
+        assert (row["where"], row["cell"], row["expected_exit"]) == (
+            "orphaned", "orphaned.font", 2)
 
-    def test_unfinished_records_are_refused(self) -> None:
+    def test_where_and_expectation(self) -> None:
+        def row(*ev: tuple[str, str, str]) -> dict:
+            return {"evidence": [{"channel": c, "how": h, "storage": s, "counts": True}
+                                 for c, h, s in ev]}
+        assert adjudicate.where(row(("R1", "whole", "")), "page-text") == "unknown"
+        assert adjudicate.where(row(("R1", "whole", "superseded")), "page-text") == "superseded"
+        assert adjudicate.where(row(("R2", "whole", "orphaned"), ("R2", "whole", "live")),
+                                "string") == "live"
+        assert adjudicate.where(row(("R2", "whole", "orphaned")), "pixels") == "pixels-orphaned"
+        assert adjudicate.where(row(("V", "whole", "live")), "pixels") == "pixels-live"
+        assert adjudicate.expectation("T1", "live", "quartz+pikepdf").cell == "live.plain"
+        assert adjudicate.expectation("T1", "live", "chrome").cell == "live.font"
+        assert adjudicate.expectation("T1", "unknown", "chrome") is None
+
+    def test_finalize_derives_truth_and_exit(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        rec = json.loads((root / "adjudication/inputs/m1/D01-s0.json").read_text())
+        final = adjudicate.finalize_record(rec)
+        assert final["truth"] == "leak" and final["expected_exit"] == 2
+
+    def test_unfinished_records_are_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        rec = json.loads((root / "adjudication/inputs/m1/D01-s0.json").read_text())
         with pytest.raises(ValueError, match="no adjudicator"):
-            adjudicate.finalize_record(_record(adjudicator=None))
-        rec = _record()
+            adjudicate.finalize_record({**rec, "adjudicator": None})
         rec["instances"][0]["uncertain"] = True
         with pytest.raises(ValueError, match="unresolved"):
             adjudicate.finalize_record(rec)
         rec["instances"][0]["override"] = {"class": "removed"}
         with pytest.raises(ValueError, match="needs a reason"):
             adjudicate.finalize_record(rec)
+        rec["instances"][0]["override"] = {"class": "gone", "reason": "x"}
+        with pytest.raises(ValueError, match="unknown class"):
+            adjudicate.finalize_record(rec)
         rec["instances"][0]["override"] = {"class": "removed", "reason": "crop is a box"}
         assert adjudicate.finalize_record(rec)["truth"] == "clean"
 
-    def test_lock_and_verify(self, tmp_path) -> None:
-        (tmp_path / "m2").mkdir()
-        rec_path = tmp_path / "m2" / "D01-s0.json"
-        rec_path.write_text(json.dumps(_record()))
-        adjudicate.lock(tmp_path)
-        assert adjudicate.verify(tmp_path) == []
+    def test_an_unattributed_row_needs_a_cell_and_exit(self) -> None:
+        rec = {"adjudicator": "agent", "instances": [
+            {"index": -1, "secret": "SSN1", "loc": "?", "class": "recoverable-hidden",
+             "uncertain": True, "unattributed": True, "override": None, "confirmed": "seen"}]}
+        with pytest.raises(ValueError, match="no expected exit"):
+            adjudicate.finalize_record(rec)
+        rec["instances"][0]["override"] = {"reason": "annotation /Contents",
+                                           "cell": "annot-fields.plain", "expected_exit": 1}
+        assert adjudicate.finalize_record(rec)["expected_exit"] == 1
+
+    def test_lock_verify_and_relock(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        path, digest = adjudicate.lock(root, "inputs")
+        assert len(digest) == 64
+        assert adjudicate.verify(root, "inputs")[0] == []
+        rec_path = root / "adjudication/inputs/m1/D01-s0.json"
         data = json.loads(rec_path.read_text())
-        data["instances"][0]["expected_exit"] = 1
+        data["notes"] = "second look"
         rec_path.write_text(json.dumps(data))
-        assert adjudicate.verify(tmp_path) == ["changed since the lock: m2/D01-s0.json"]
+        assert adjudicate.verify(root, "inputs")[0] == ["changed since the lock: m1/D01-s0.json"]
         with pytest.raises(ValueError, match="give a reason"):
-            adjudicate.lock(tmp_path)
-        adjudicate.lock(tmp_path, reason="cell corrected after review")
-        assert adjudicate.verify(tmp_path) == []
-        lock = json.loads((tmp_path / "adjudication.lock.json").read_text())
-        assert lock["relocks"][0]["reason"] == "cell corrected after review"
+            adjudicate.lock(root, "inputs")
+        adjudicate.lock(root, "inputs", reason="note added")
+        assert json.loads(path.read_text())["relocks"][0]["reason"] == "note added"
+
+    def test_a_hand_edited_class_is_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        rec_path = root / "adjudication/inputs/m1/D01-s0.json"
+        data = json.loads(rec_path.read_text())
+        data["instances"][0]["class"] = "removed"            # no override
+        rec_path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="edited by hand"):
+            adjudicate.lock(root, "inputs")
+
+    def test_a_deleted_record_needs_a_reason(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        adjudicate.lock(root, "inputs")
+        (root / "adjudication/inputs/m1/D01-s0.json").unlink()
+        with pytest.raises(ValueError, match="changed or removed"):
+            adjudicate.lock(root, "inputs")
+
+    def test_a_changed_output_is_refused(self, tmp_path) -> None:
+        root = _root_with_record(tmp_path)
+        (root / "work/D01-s0.pdf").write_bytes(b"%PDF-1.7 something else\n")
+        with pytest.raises(ValueError, match="output file changed"):
+            adjudicate.lock(root, "inputs")
+
+
+class TestCalibration:
+    def test_m0_fails_when_an_instance_is_not_found_whole(self, tmp_path, monkeypatch) -> None:
+        from redactor_set import oracle_cli
+
+        root = tmp_path
+        (root / "inputs").mkdir()
+        (root / "inputs" / "D01-s0.pdf").write_bytes(b"%PDF-1.7\n")
+        truth = DocTruth("D01", 0, "chrome", 1, "t", [T1_SSN])
+        (root / "inputs" / "D01-s0.truth.json").write_text(truth.to_json())
+        for cls, code in (("partial", 1), ("recoverable-visible", 0)):
+            monkeypatch.setattr(oracle, "run", lambda *a, cls=cls, **k: oracle.FileResult(
+                "inputs/D01-s0.pdf", "0", "D01", "m0",
+                [oracle.InstanceResult(0, "SSN1", "T1", cls)], {"SSN1": cls}, "leak"))
+            assert oracle_cli.run_oracle(root, "inputs", ["m0"], []) == code
 
 
 # ── End to end (needs poppler and tesseract) ───────────────────────────
@@ -237,7 +460,7 @@ class TestAdjudication:
 class TestEndToEnd:
     def _orphaned(self, tmp_path: Path) -> Path:
         """A page whose drawn SSN was redacted and saved without garbage
-        collection (PyMuPDF, as a redaction tool does): the original
+        collection (PyMuPDF, as some redaction tools do): the original
         content stream stays in the file, referenced by nothing."""
         import pymupdf
 
