@@ -632,6 +632,12 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     widened; what the closure-gap measure cannot see stated; a "wider than MuPDF" note
     for 3b and 4a/4b. (B5) The big-dictionary shape. (B6) Reuse across a revision
     without a page list tested.
+    Re-measured on the round-1 code: corpus 1,920 / 153 / 0; case library 440/27/0 (467
+    cases, main's additions included); fuzz 501/1,499/0. Every per-file measure of
+    every corpus, case-library and fuzz file is unchanged but graph work (p99 58,966,
+    max 322,346): no corpus file has a chained /AP stream, so SYNTHESIZED stays 130
+    unflagged files and 373 units (139 files and 400 annotations over the whole
+    corpus), the closure gap 0.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page
