@@ -1087,7 +1087,19 @@ What each part of the output means:
   agreeing with either reading; not exact below 4x. MuPDF's warnings while
   it loads and draws those two copies are the gate's own and are
   discarded; the file's own -- its pages loaded, its appearances
-  synthesized -- are gated as before), `oracle_error`, `tiling`),
+  synthesized -- are gated as before), `reachable` (since 3a-7e-1,
+  coordinator decision Q5: each revision's reachable objects, ours
+  exactly against what MuPDF keeps writing it with `tobytes(garbage=1)`
+  and libqpdf keeps writing it in QDF mode, read from its `%% Original
+  object ID` comments; the references a writer rewrites though its
+  reader reads them -- a stream's indirect `/Length`, the trailer's
+  `/Encrypt` and `/ID`, in qpdf a stream's `/DecodeParms` without
+  `/Filter` (libqpdf reads it as written; its writer drops it, no filter
+  using it) -- are
+  added back as each reader reads them, and one whose target holds
+  references of its own fails closed, `templates` naming the reader and
+  "not exact"; ADR 0011's notes of 2026-10-15, 3a-7e-1),
+  `oracle_error`, `tiling`),
   `crashes`, `timeouts`, `unverified`, `inconsistent`. A file that needs
   a user password cannot be certified, so it is **flagged**, not a
   disagreement and not exempt (owner decision, 2026-10-12, #48 item 3):
@@ -1120,7 +1132,9 @@ What each part of the output means:
 - `regions`: files, regions and bytes left UNINDEXED or CONTESTED in the
   file's own tiling (object streams' decoded tilings are not included).
 - `timing`: percentiles of the build child's wall clock (interpreter
-  start included), the oracle's, and the work units charged per byte.
+  start included), the oracle's, and the work units charged per byte;
+  since 3a-7e-1 also `reachable_seconds`, the `reachable` check's share
+  of the oracle's time on agreeing files (#52 item 4).
 - `pending_decisions`: counts for the owner's open decisions --
   incremental updates to linearized files (#44 item 1: a linearized file
   with more than one revision; `/L` off the file's length is reported
@@ -1133,7 +1147,13 @@ What each part of the output means:
   docs/phase3a-plan.md): updated linearized files are canonical (unless
   their `/L` names the updated file's whole length), odd
   comment lines are flagged `COMMENT_LINE`, the rest stay flagged; the
-  counts are still reported, to watch them.
+  counts are still reported, to watch them. `labels` (since 3a-7e-1,
+  ADR 0011 item 5; costs for the owner, R6 and R7): over the unflagged
+  files' current revisions, files and streams with each `STRUCTURAL`
+  kind, files whose hint stream sits under a stale `/L` (an updated
+  linearized file: coordinator decision Q8), files with a revision
+  without labels, and percentiles of `graph_work`, the work the
+  reference graph's stages charged (ADR 0011 item 7).
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform
@@ -1148,6 +1168,8 @@ What each part of the output means:
   inventory flags any that does not resolve (`REF_DANGLING`,
   `REF_GENERATION`), so none reaches the comparison. `annotations` (since
   3a-7d): annotations listed and classified against MuPDF, per revision.
+  `reachable_revisions` (since 3a-7e-1): revisions whose reachable set
+  both readers confirmed.
   Any libqpdf warning while reading is a disagreement unless allowlisted.
 
 The written allowlist of qpdf messages (`eval/scorecard/inventory.py`),

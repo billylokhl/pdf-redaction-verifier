@@ -339,6 +339,26 @@ def _pending(results: Sequence[FileResult]) -> dict[str, Any]:
             "files_with_dead_bodies": files("dead_bodies"),
             "dead_bodies": total("dead_bodies"),
         },
+        "labels": _labels([r for r in measured if r.verdict == AGREE]),
+    }
+
+
+def _labels(agree: Sequence[FileResult]) -> dict[str, Any]:
+    """3a-7e-1 (ADR 0011 item 5), over the unflagged files' current
+    revisions: files and streams with each STRUCTURAL kind, hint streams
+    under a stale /L (coordinator decision Q8), and the reference graph's
+    work (item 7)."""
+    kinds = sorted({key for r in agree for key in r.measures if key.startswith("structural_")})
+    work = [r.measures.get("graph_work", 0) for r in agree]
+    return {
+        "files": len(agree),
+        "structural_files": {key[len("structural_"):]: sum(
+            1 for r in agree if r.measures.get(key, 0) > 0) for key in kinds},
+        "structural_streams": {key[len("structural_"):]: sum(
+            r.measures.get(key, 0) for r in agree) for key in kinds},
+        "hint_stream_stale_files": sum(1 for r in agree if r.measures.get("hint_stream_stale")),
+        "files_missing_labels": sum(1 for r in agree if r.measures.get("labels_missing")),
+        "graph_work": _percentiles(work, 0),
     }
 
 
@@ -399,6 +419,8 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
                                          for r in agree if r.agreement),
             "values": sum(r.agreement.values_compared for r in agree if r.agreement),
             "annotations": sum(r.agreement.annotations_compared for r in agree if r.agreement),
+            "reachable_revisions": sum(r.agreement.reachable_compared
+                                       for r in agree if r.agreement),
         },
         "oracle": {
             "crashes": sum(1 for o in oracle_runs if o.outcome == "crash"),
@@ -410,6 +432,9 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
         "timing": {
             "build_seconds": _percentiles(r.build.elapsed for r in built),
             "oracle_seconds": _percentiles(o.elapsed for o in oracle_runs if o.outcome == "ok"),
+            # The REACHABLE check's share of the oracle's time (3a-7e-1).
+            "reachable_seconds": _percentiles(r.agreement.reachable_ms / 1000
+                                              for r in agree if r.agreement),
             "work_per_byte": _percentiles(work, 2),
         },
         "pending_decisions": _pending(results),
@@ -484,6 +509,7 @@ def render(agg: dict[str, Any]) -> str:
     timing = agg["timing"]
     lines.append(f"  build seconds {timing['build_seconds']}")
     lines.append(f"  oracle seconds {timing['oracle_seconds']}")
+    lines.append(f"  reachable check seconds {timing.get('reachable_seconds', {})}")
     lines.append(f"  work per byte {timing['work_per_byte']}")
     for name, values in agg["pending_decisions"].items():
         lines.append(f"  {name}: {values}")
