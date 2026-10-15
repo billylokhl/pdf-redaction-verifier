@@ -657,7 +657,8 @@ given a band below it for the list; a list that does not fit continues
 on overflow pages). The target's name is shown only when no two
 consecutive characters of it, as written or as drawn, occur together in
 an exact value, in either folding (ASCII-normalized, or keeping letters
-and digits of any script, so a value's Cyrillic or CJK letters count),
+and digits of any script, so a value's Cyrillic or CJK letters count)
+and when it holds no `****` (which the self-check would read as a tail),
 cut so its drawn form fits 60
 characters before it is checked (otherwise "target": the sha256
 identifies the file). Its only font is Helvetica, never embedded,

@@ -183,7 +183,8 @@ whose escape holds a character of an exact value (文 is `\u{6587}`) shows
 only `****` too. A pattern match drawn on any glyph of an exact value
 shows no tail at all. The target's file name is shown only when no
 two consecutive characters of it, as written or as drawn, occur
-together in an exact value (letters of any script count); otherwise the
+together in an exact value (letters of any script count) and it holds
+no `****`; otherwise the
 map says "target", and the sha256 identifies the file. A
 rules file entry from this tool's own JSON format is shown by number
 (`value rule #3`, explained as "3rd value entry, rules-file entry 5"),
