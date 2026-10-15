@@ -18,6 +18,12 @@ dist/
 # that never leaves this machine (docs/REDESIGN.md §5, Phase 0c).
 /eval/scorecard/real_corpus/
 
+# The real-redactor set's local stratum (eval/redactor_set): generated
+# inputs, the redaction tool's outputs, oracle evidence and adjudication.
+# All fabricated, but local by design: large, partly non-deterministic, and
+# the same layout will one day hold real documents (eval/README.md).
+/eval/scorecard/redactor_set_local/
+
 # The scorecard's local reference-result cache (--cache-dir), the same
 # default path CI's actions/cache step restores into.
 /eval/scorecard/.reference-cache/
