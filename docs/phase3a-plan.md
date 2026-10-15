@@ -529,22 +529,30 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     linearization dictionary's first /H offset (`Chain.linearization`; stale /L included,
     Q8), and by key from reachable objects /Metadata, /EF entries, /JS and the catalog's
     /OutputIntents profiles, the target a stream without /Subtype /Image or /Form, /BBox or
-    /Width. No flags (R3); a revision that reads nothing new shares its labels by identity,
-    one without a page list resets the reuse; every step charged, labels made again charged
-    per retained element; `Inventory.graph_work` (Q6). Gate (Q5): Check.REACHABLE, per
+    /Width. No flags (R3); a revision that reads nothing new shares its labels by identity --
+    as does one that only rewrites reachable objects with the same references (number,
+    generation, key path; none read for a by-key record, none an object stream home), the
+    catalog rewrite most updates make (found by the full suite: walking every such revision
+    again was revisions x objects on the trees tests' shapes), and one walked again to the
+    same labels; one without a page list resets the reuse; every step charged, labels made
+    again charged per retained element (RECORD_WORK 32); `Inventory.graph_work` (Q6). Gate (Q5): Check.REACHABLE, per
     revision, ours exactly against MuPDF's `tobytes(garbage=1)` and libqpdf's QDF write;
     the spike found both keep exactly every object a reference reaches from the trailer, and
     that each writer drops references it rewrites though its reader reads them (a stream's
     /Length, the trailer's /Encrypt, and in qpdf the trailer's /ID and /DecodeParms without
     /Filter): added back as each reader reads them, failing closed where such a target holds
-    references. Measured on the final code: corpus 1,920 agree / 153 flagged / 0 unflagged
+    references (found by the gate runs: a trailer /ID by reference in 2 corpus files; an
+    uncompressed PDF attachment whose own table MuPDF's written file then holds, in the case
+    library). Measured on the final code: corpus 1,920 agree / 153 flagged / 0 unflagged
     disagreements, unchanged (2,080 revisions' reachable sets compared); case library
-    435/27/0 (462 cases); fuzz 501/1,499/0. The check adds p50 0.003 s, p99 0.078 s, max
-    1.6 s to the oracle (corpus p50 0.54 s, on a loaded machine). STRUCTURAL in the
+    435/27/0 (462 cases, 516 revisions); fuzz 501/1,499/0 (1,259 revisions). The check adds
+    p50 0.003 s, p90 0.009 s, p99 0.046 s, max 0.96 s per file to the corpus oracle (oracle
+    p50 0.329 s, p90 0.457, p99 0.946, max 20.0, against 3a-7d's 0.319, 0.422, 0.802,
+    17.0). STRUCTURAL in the
     unflagged files' current revisions: hint streams 400 files (76 under a stale /L), XMP 712
     files, JavaScript 86 files (159 streams), cross-reference streams 55 files (150), object
     streams 55 files (284), embedded files 1, output intents 0. Graph work per file p50 634,
-    p99 28,774, max 131,430 units. Linearity: lines per charged unit about 11-12, at most 15
+    p99 26,503, max 132,589 units. Linearity: lines per charged unit about 11-12, at most 15
     and not growing from n to 8n; the reviewer-style mutants on the charges are caught or
     covered by another charge of the same loop.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
