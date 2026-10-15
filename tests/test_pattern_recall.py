@@ -209,3 +209,61 @@ def test_scan_case_joins_every_class_finding(case_id, other_hard, tmp_path):
     assert o.unattributed == 0
     assert moves(o, OPTIONS["C"], upper=False) is not other_hard
     assert o.policy1_exit == (1 if other_hard else 0)
+
+
+# ── policy 1 on case labels ──────────────────────────────────────────────
+
+from caselib.model import expect  # noqa: E402
+from scorecard.pattern_recall import label_changes, policy1_label  # noqa: E402
+
+SSN = frozenset({"Any SSN"})
+
+
+def test_label_with_only_class_findings_goes_to_0_or_2():
+    assert policy1_label(expect(1, (("Any SSN", "live"),)), SSN, True) == 0
+    assert policy1_label(expect(1, (("Any SSN", "live"),), (("LAYER_CRASHED", None),)),
+                         SSN, True) == 2
+
+
+def test_label_with_a_value_finding_stays_1():
+    assert policy1_label(expect(1, (("Any SSN", "live"), ("Target", "live"))), SSN, False) == 1
+
+
+def test_label_review_warning_is_the_class_only_in_class_only_cases():
+    review_only = expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),))
+    assert policy1_label(review_only, SSN, class_only=True) == 0
+    assert policy1_label(review_only, SSN, class_only=False) is None
+
+
+def test_label_exit_2_with_no_listed_warning_is_undetermined():
+    assert policy1_label(expect(2), SSN, class_only=True) is None
+
+
+def test_label_changes_cover_known_gaps_and_settle_mixed_cases_by_scan():
+    class _Gap:
+        today = expect(0)
+
+    class _Case:
+        def __init__(self, truth, rules, expected, known_gap=None):
+            self.truth, self.rules, self.expected = truth, rules, expected
+            self.known_gap, self.older_macos = known_gap, None
+
+    cls = {"name": "Any SSN", "class": "ssn"}
+    val = {"name": "Target", "value": "x"}
+    review = expect(2, warnings=(("REVIEW_FUSED_PATTERN", "live"),))
+    registry = {
+        "gap.class-only": _Case("leak", (cls,), review, _Gap()),
+        "mixed.settled": _Case("leak", (cls, val), review),
+        "mixed.unscanned": _Case("leak", (cls, val), review),
+    }
+    scanned = {"mixed.settled": _o(("ssn", {"uuid"}), cid="mixed.settled", exit_today=2, p1=2)}
+    out = label_changes(registry, scanned)
+    assert out["changed"] == ["gap.class-only [leak] expected: 2 -> 0"]
+    assert out["undetermined"] == ["mixed.unscanned [leak] expected: 2 -> ?"]
+
+
+def test_policy1_on_an_error_report_never_certifies():
+    err = _report([{"rule": "Any SSN"}], exit_code=1, error={"code": "INTERNAL_ERROR"})
+    assert policy1_exit(err, SSN, None) == 2
+    err = _report([{"rule": "Target"}], exit_code=1, error={"code": "INTERNAL_ERROR"})
+    assert policy1_exit(err, SSN, None) == 1

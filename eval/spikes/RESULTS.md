@@ -754,3 +754,24 @@ no longer affects the exit code). 24 leak cases reach exit 0, all `ssn`:
 
 Two clean cases change: `document.generated-id-digits` (2 → 0; expected
 0) and `page.digit-column` (2 → 0; expected 2, the clean side of #74).
+
+**Policy 1 on the case labels** (every case with a class rule, scanned or
+not). A label's exit also changes where the label's target was set by the
+class alone: 11 more `ssn` leak cases, all known gaps that exit 0 today and
+are expected at exit 2 only from a class review warning, are expected at
+exit 0 under policy 1. Four are REVIEW_BINARY targets (`document.af-pattern-rule`,
+`document.js-stream-pattern-rule`, `document.piece-info-pattern-rule`,
+`page.hidden-sample-bytes-pattern-rule`). Seven are REVIEW_FUSED_PATTERN
+targets (`layout.form-boxes-split-pages-pattern-only`,
+`layout.rotated270-split-pages-pattern-only`, `layout.split-four-pages-pattern-only`,
+`layout.split-pages-needs-earlier-lines-pattern-only`,
+`layout.vertical-stack-split-pages-pattern-only`, `layout.undashed-ssn-wrapped`,
+and `layout.rotated-split-pages-pattern-only`, which needs `no-ocr` and is
+judged from its label only). In all, 35 leak cases reach exit 0 under
+policy 1; the owner signed off all 35 (ADR 0012). The 31 cases with a
+value rule beside the class rule cannot be judged from their labels (a
+label lists warning codes, not their rule); this scan's reports settle
+them, and none changes.
+
+These lists describe macOS 27 with every tool installed: OCR differs by
+macOS version (K43) and a case needing a missing tool is not scanned.

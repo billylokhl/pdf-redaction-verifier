@@ -101,17 +101,76 @@ def policy1_exit(report: Mapping[str, Any], class_names: frozenset[str],
     """The exit code under the owner's policy 1 (ADR 0012): a built-in class
     match affects nothing, so its findings and its review warnings (those
     whose `rule` is a class rule) are dropped, and the exit is recomputed
-    by the tool's own formula. An error report keeps its exit. *have*
-    drops environmental warnings as `keys.effective_exit` does."""
+    by the tool's own formula. An error report exits 1 if a non-class
+    finding remains, else 2 (it never certifies). *have* drops
+    environmental warnings as `keys.effective_exit` does; compare it with
+    `keys.effective_exit(report, have)`, never with the raw exit."""
     from .keys import is_environmental
 
-    if report.get("error"):
-        return int(report["exit_code"])
     findings = [f for f in report["findings"] if f.get("rule") not in class_names]
+    if report.get("error"):
+        # The run failed after these findings; it never certifies.
+        return 1 if findings else 2
     warnings = [w for w in report["warnings"]
                 if w.get("rule") not in class_names
                 and not (have is not None and is_environmental(w, have))]
     return 1 if findings else 2 if warnings else 0
+
+
+def policy1_label(label: Any, class_names: frozenset[str], class_only: bool) -> int | None:
+    """A case label's exit under policy 1, or None when the label cannot
+    say. A label lists findings by rule but warnings only by code, so a
+    review warning (the kind matching raises) is the class's when the
+    case's rules are all built-in classes, and undetermined otherwise; a
+    coverage warning is never a class's and keeps the label at 2."""
+    from redaction_verifier.model import WARNING_CODES
+
+    if any(r not in class_names for r, _ in label.findings):
+        return 1
+    review = [c for c, _ in label.warnings if WARNING_CODES.get(c) == "review"]
+    other = [c for c, _ in label.warnings if WARNING_CODES.get(c) != "review"]
+    if other:
+        return 2
+    if label.exit == 0:
+        return 0
+    if not class_only:
+        return None  # a value or custom rule may have raised the review
+    if label.exit == 2 and not review:
+        return None  # exit 2 with no warning listed: the label cannot say why
+    return 0
+
+
+def label_changes(registry: Mapping[str, Any],
+                  scanned: Mapping[str, CaseOutcome] | None = None) -> dict[str, list[str]]:
+    """Every case label (expected, known_gap.today, older_macos.today) of
+    every case with a built-in class rule -- built here or not -- that
+    policy 1 changes, or cannot judge. A label the codes alone cannot
+    judge is settled by this machine's scan when the case's exit today is
+    the label's (its report carries each warning's rule)."""
+    scanned = scanned or {}
+    changed: list[str] = []
+    unknown: list[str] = []
+    for cid, case in sorted(registry.items()):
+        class_names = frozenset(r["name"] for r in case.rules if r.get("class") in CLASSES)
+        if not class_names:
+            continue
+        class_only = len(class_names) == len(case.rules)
+        labels = [("expected", case.expected)]
+        if case.known_gap is not None:
+            labels.append(("known_gap.today", case.known_gap.today))
+        if case.older_macos is not None and case.older_macos.today is not None:
+            labels.append(("older_macos.today", case.older_macos.today))
+        for which, label in labels:
+            new = policy1_label(label, class_names, class_only)
+            o = scanned.get(cid)
+            if new is None and o is not None and o.exit_today == label.exit:
+                new = o.policy1_exit
+                which += " (settled by this scan)"
+            if new is None:
+                unknown.append(f"{cid} [{case.truth}] {which}: {label.exit} -> ?")
+            elif new != label.exit:
+                changed.append(f"{cid} [{case.truth}] {which}: {label.exit} -> {new}")
+    return {"changed": changed, "undetermined": unknown}
 
 
 def unattributed_class_warnings(report: Mapping[str, Any], class_names: frozenset[str]) -> int:
@@ -234,18 +293,24 @@ def _scan_case(case: Any, workdir: Path, have: frozenset[str] | None = None) -> 
     for name, v in recorder.shapes.items():
         if name in class_of:
             shapes[class_of[name]] = shapes.get(class_of[name], frozenset()) | frozenset(v)
+    from .keys import effective_exit
+
     names = frozenset(class_of)
-    return CaseOutcome(case.id, case.expected.exit, s.exit_code, tuple(findings), shapes,
+    # The same environment filter on both sides of policy 1's comparison.
+    today = effective_exit(s.report, have) if have is not None else s.exit_code
+    return CaseOutcome(case.id, case.expected.exit, today, tuple(findings), shapes,
                        other_hard, frozenset(class_of.values()), case.truth,
                        policy1_exit(s.report, names, have),
                        unattributed_class_warnings(s.report, names))
 
 
-def select_cases(registry: Mapping[str, Any], have: frozenset[str]) -> list[Any]:
+def select_cases(registry: Mapping[str, Any], have: frozenset[str], *,
+                 any_requires: bool = False) -> list[Any]:
     """Cases (leak and clean) with a built-in class rule that this machine
-    can build. The A/B/C options are judged on the leak cases only."""
+    can build (*any_requires*: whatever they require). The A/B/C options
+    are judged on the leak cases only."""
     return [c for _, c in sorted(registry.items())
-            if not (c.requires - have) and not c.perf
+            if (any_requires or not (c.requires - have)) and not c.perf
             and any(r.get("class") in CLASSES for r in c.rules)]
 
 
@@ -260,6 +325,15 @@ def render(agg: Mapping[str, Any]) -> str:
         f"unknown finding shape: {agg['unknown_shape_cases'] or 'none'}; "
         f"ambiguous: {agg['ambiguous_shape_cases'] or 'none'}",
     ]
+    if "not_scanned_here" in agg:
+        lines.append(f"not scanned here (missing requirements): "
+                     f"{agg['not_scanned_here'] or 'none'}")
+    if "policy1_labels" in agg:
+        lab = agg["policy1_labels"]
+        lines.append(f"policy 1 on the case labels (every case with a class rule, scanned "
+                     f"or not): {len(lab['changed'])} label(s) change, "
+                     f"{len(lab['undetermined'])} undetermined")
+        lines.extend(f"    {x}" for x in lab["changed"] + lab["undetermined"])
     p1 = agg["policy1"]
     lines.append(f"policy 1 (class matches informational): {len(p1['leak_to_0'])} leak "
                  f"case(s) to exit 0 (each needs the owner's sign-off), "
@@ -292,15 +366,23 @@ def main(argv: list[str] | None = None) -> int:
     load()
     have = available()
     cases = select_cases(REGISTRY, have)
+    skipped = sorted(c.id for c in select_cases(REGISTRY, have, any_requires=True)
+                     if c not in cases)
     with tempfile.TemporaryDirectory(prefix="pattern-recall-") as tmp:
         outcomes = [_scan_case(case, Path(tmp), normalization_have(have)) for case in cases]
     agg = evaluate(outcomes)
+    agg["not_scanned_here"] = skipped
+    agg["policy1_labels"] = label_changes(REGISTRY, {o.case_id: o for o in outcomes})
     print(render(agg))
     if args.json:
         args.json.write_text(json.dumps(agg, indent=2, sort_keys=True) + "\n")
     if agg["policy1"]["unattributed_class_warnings"]:
         print("ERROR: a warning names a class rule but has no rule field; policy 1's "
               "exits cannot be trusted.", file=sys.stderr)
+        return 1
+    if agg["policy1_labels"]["undetermined"]:
+        print("ERROR: some case labels cannot be judged under policy 1 (see above).",
+              file=sys.stderr)
         return 1
     if agg["unknown_shape_cases"]:
         print("ERROR: a class finding has no known shape (see above); the bounds cannot "

@@ -983,11 +983,16 @@ bound as if the cases' value rules were absent. For the owner's policy 1
 (a class match no longer affects the exit code) it recomputes every case's
 exit from its report without the class findings and class review warnings
 and lists every case whose exit changes; a leak case reaching 0 needs the
-owner's sign-off. It also prints the cases measured per class (a class with
+owner's sign-off. It applies policy 1 to every case label too (expected,
+known gap, older macOS; scanned or not): a label lists warning codes, not
+their rule, so a review warning is the class's only when the case's rules
+are all classes, and a label it cannot judge is settled by this scan's
+report or reported as undetermined. It also prints the cases measured per class (a class with
 none has no measured recall), how many exit-1 cases a value rule holds, the
 cases expected at exit 1 that exit otherwise today (not judged), and any
 finding of unknown or ambiguous shape. It exits 1 if a finding's shape is
-unknown, or a warning names a class rule without carrying it in `rule`.
+unknown, a warning names a class rule without carrying it in `rule`, or a
+label stays undetermined.
 Case ids are fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
 
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
