@@ -453,7 +453,10 @@ def _chained_appearance() -> bytes:
 
 
 APPEARANCES = [(name, data) for name, data, _ in ANNOTATION_CASES] + [
-    ("as-entry-through-references", _chained_appearance())]
+    ("as-entry-through-references", _chained_appearance()),
+    # An /AS entry naming a dictionary, not a stream: nothing drawn.
+    ("as-entry-a-dictionary", _annotated(b"<< %s /AS /On /AP << /N << /On 9 0 R >> >> >>" % SQ,
+                                         objects={9: b"<< /Foo 1 >>"}))]
 
 
 @pytest.mark.parametrize("data", [d for _, d in APPEARANCES], ids=[n for n, _ in APPEARANCES])
@@ -472,6 +475,35 @@ def test_the_appearance_is_the_stream_mupdf_draws(data: bytes) -> None:
             body = inv.body(mupdf, 0) if mupdf is not None else None
             stream = body is not None and body.start in inv.stream_data
             assert annotation.appearance == (mupdf if stream else None), (annotation, mupdf)
+
+
+def test_structural_streams_are_not_orphaned() -> None:
+    # Cross-reference and object streams, an XMP packet: STRUCTURAL, so
+    # neither ORPHANED in the revision nor for the verdict.
+    from .test_inventory_labels import _object_streams
+    w = Writer()
+    w.out = bytearray(_object_streams())
+    prev = int(bytes(w.out).rsplit(b"startxref", 1)[1].split()[0])
+    at = {1: w.obj(1, CAT % b" /Metadata 7 0 R"), 7: w.stream(7, b"", XMP)}
+    w.epilogue(w.table({n: (1, a, 0) for n, a in at.items()},
+                       b"/Size 12 /Root 1 0 R /Prev %d" % prev))
+    inv = _inventory(bytes(w.out))
+    assert inv.flags == ()
+    assert {u.obj for u in inv.orphaned(0)} == set()
+    assert {u.obj for u in inv.orphaned(1)} == set()
+    kinds = {u.obj: b.structural for u, b in inv.body_labels.items()}
+    assert kinds == {7: (StructuralKind.XMP,), 10: (StructuralKind.OBJECT_STREAM,),
+                     11: (StructuralKind.XREF_STREAM,)}
+
+
+def test_a_revision_walked_again_to_the_same_drawable_set_shares_it() -> None:
+    # The page gains a thumbnail: walked again (its references changed),
+    # to the same DRAWABLE set -- kept once, by identity.
+    data = page(b"/XObject << /Im 4 0 R >>", streams={4: IMAGE_, 6: IMAGE_},
+                updates=({3: PAGE_RES % (b"/XObject << /Im 4 0 R >>", b" /Thumb 6 0 R")},))
+    inv = _inventory(data)
+    assert inv.flags == () and _labels(inv, 0) is not _labels(inv, 1)
+    assert _labels(inv, 0).drawable is _labels(inv, 1).drawable
 
 
 def test_a_chained_appearance_is_drawable() -> None:
@@ -815,10 +847,24 @@ def test_shared_revisions_walk_the_drawing_once() -> None:
     assert all(found is inv.labels[0] for found in inv.labels)
 
 
-def test_revisions_that_draw_again_are_charged_and_bounded(walk_only: None) -> None:
+def _pages_shared(n: int) -> bytes:
+    """n pages, and n updates rewriting nothing they read: each revision
+    still lists its starts (the page list, revisions x pages, charged)."""
+    data = _pages(n)
+    for i in range(n):
+        data = _update(data, {6: b"(%d)" % i}, 20 + n)
+    return data
+
+
+@pytest.mark.parametrize("make_file", [_redrawn, _pages_shared], ids=["redrawn", "pages-shared"])
+def test_revisions_that_draw_again_are_charged_and_bounded(make_file: object,
+                                                           walk_only: None) -> None:
+    # Every revision walks again, or lists its starts again: revisions x
+    # objects, by design (ADR 0011 item 7) -- all of it charged, the work
+    # growing as the product, and the budget bounding it.
     work = []
     for n in (40, 320):
-        data = _redrawn(n)
+        data = make_file(n)  # type: ignore[operator]
         charged, lines, inv = charged_steps(data, "build_labels")
         reasons = {f.reason for f in inv.flags}
         assert reasons <= {FlagReason.BUDGET_EXHAUSTED}, reasons

@@ -50,6 +50,7 @@ import subprocess
 import sys
 import time
 from bisect import bisect_right
+from collections import deque
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -1307,13 +1308,14 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
     that the current revision does not call orphaned (older bodies, dead
     bodies) and the converse (labelled only in an older revision).
     Orphans by class, informational: each orphaned stream live in the
-    current revision by what references it there -- nothing
-    (``unreferenced``), only unreachable objects (``unreachable_source``),
-    else each use kind of a reachable reference (graph.UseKind: thumbnail,
-    piece_info, appearance, metadata, ...); an object stream home to no
-    live entry (``objstm``); the verdict's dead and older bodies. The
-    /Metadata streams orphaned on an annotation or an ICC profile (both
-    fail closed today; the /Metadata allowlist's cost, for 3a-7e-3). And
+    current revision by the use kind of the path that first reaches it
+    from the trailer (graph.UseKind, the nearest listed key on it:
+    thumbnail, piece_info, appearance, properties, ...), else referenced
+    only by objects nothing reaches (``unreachable_source``) or by nothing
+    (``unreferenced``); an object stream home to no live entry
+    (``objstm``); the verdict's dead and older bodies. The /Metadata
+    streams orphaned on an annotation or an ICC profile (both fail closed
+    today; the /Metadata allowlist's cost, for 3a-7e-3). And
     the closure gap: streams MuPDF lists on the current revision's pages
     -- each page's contents, its images and their soft masks
     (get_images(full=True), form XObjects' included), its form XObjects,
@@ -1344,17 +1346,37 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
         classes[name] = classes.get(name, 0) + 1
     for unit in verdict - orphans:
         count("dead_body" if unit.kind is UnitKind.DEAD_BODY else "older_body")
-    # Each live body's references into a live number of the same generation.
-    inbound: dict[int, list[tuple[int, tuple[bytes, ...], str]]] = {}
-    for number, ref in live.items():
-        for edge in inv.graph.edges.get(ref, ()):
-            entry = inv.entry(edge.num, 0)
-            generation = entry[2] if entry is not None and entry[0] == 1 else 0
-            if edge.num in live and generation == edge.gen:
-                inbound.setdefault(edge.num, []).append((number, edge.path, edge.kind.value))
+    # From the trailer, breadth first over references resolving in the
+    # current revision: each object's use kind, the nearest listed one on
+    # the path that first reaches it (graph.use_kind; OTHER inherits its
+    # holder's, so a /PieceInfo dictionary's private streams are piece_info).
+    orphan_numbers = {unit.obj for unit in orphans}
+    kind: dict[int, str] = {}
+    metadata: dict[int, list[int]] = {}  # an orphan's reachable /Metadata holders
+    queue: deque[int] = deque()
+
+    def resolves(number: int, gen: int) -> bool:
+        entry = inv.entry(number, 0)
+        return number in live and (entry[2] if entry is not None and entry[0] == 1 else 0) == gen
     for edge in (inv.graph.trailers[0] if inv.graph.trailers else ()):
-        inbound.setdefault(edge.num, []).append((-1, edge.path, edge.kind.value))
-    reachable = current.reachable if current is not None else frozenset()
+        if resolves(edge.num, edge.gen) and edge.num not in kind:
+            kind[edge.num] = edge.kind.value
+            queue.append(edge.num)
+    referenced: set[int] = set()
+    while queue:
+        number = queue.popleft()
+        for edge in inv.graph.edges.get(live[number], ()):
+            if not resolves(edge.num, edge.gen):
+                continue
+            if edge.num in orphan_numbers and edge.path and edge.path[-1] == b"Metadata":
+                metadata.setdefault(edge.num, []).append(number)
+            if edge.num not in kind:
+                use = edge.kind.value
+                kind[edge.num] = kind[number] if use == "other" else use
+                queue.append(edge.num)
+    for number, ref in live.items():  # references from objects nothing reaches
+        if number not in kind:
+            referenced.update(e.num for e in inv.graph.edges.get(ref, ()))
     annotations = ({a.number for a in (inv.annotations[0] or ()) if a.number is not None}
                    if inv.annotations else set())
     drawable = current.drawable if current is not None else frozenset()
@@ -1374,31 +1396,21 @@ def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
         value = value_of(number)
         if isinstance(value, PdfDict) and _name_of(value.get(b"Type")) == b"ObjStm":
             count("objstm")
-            continue
-        sources = inbound.get(number, [])
-        if not sources:
-            count("unreferenced")
-            continue
-        held = [(n, path, kind) for n, path, kind in sources if n == -1 or n in reachable]
-        if not held:
-            count("unreachable_source")
-            continue
-        for kind in sorted({kind for _, _, kind in held}):
-            count(kind)
-        for n, path, _ in held:
-            if not path or path[-1] != b"Metadata":
-                continue
-            holder = value_of(n)
-            if n in annotations or (isinstance(holder, PdfDict)
-                                    and _name_of(holder.get(b"Type")) == b"Annot"):
+        elif number in kind:
+            count(kind[number])
+        else:
+            count("unreachable_source" if number in referenced else "unreferenced")
+        for holder_number in metadata.get(number, [])[:1]:
+            holder = value_of(holder_number)
+            if holder_number in annotations or (isinstance(holder, PdfDict)
+                                                and _name_of(holder.get(b"Type")) == b"Annot"):
                 meta["annotation"] += 1
-            elif (live.get(n) in drawable and isinstance(holder, PdfDict)
+            elif (live.get(holder_number) in drawable and isinstance(holder, PdfDict)
                   and isinstance(holder.get(b"N"), PdfInt) and holder.get(b"Subtype") is None
                   and holder.get(b"FunctionType") is None):
                 meta["icc"] += 1
             else:
                 meta["other"] += 1
-            break
     for name, n in classes.items():
         out[f"orphan_class_{name}"] = n
     for name, n in meta.items():
