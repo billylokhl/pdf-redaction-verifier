@@ -364,8 +364,8 @@ secret can still be **not detected** (exit `0`). In short:
   (K38), when they are not drawn next to each other, or when they are
   never drawn.
   <!-- gap-cells: live.pixels.under-box off-page.pixels thumbnail.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
-- **Content no page shows:** font-coded text (K15) or outlines and
-  images (K6) in a switched-off optional-content layer, a hidden
+- **Content no page shows:** font-coded text (K15), outlines (K6) or
+  images in a switched-off optional-content layer, a hidden
   annotation's appearance (K16, K17), or a page resource that is never
   drawn (K18, K19; plain text there *is* read).
   <!-- gap-cells: oc-off.font oc-off.pixels annot-appearance.font annot-appearance.pixels unused-resource.font unused-resource.pixels -->
@@ -373,15 +373,16 @@ secret can still be **not detected** (exit `0`). In short:
   font-coded text K31, pixels K32, a container K33), in comments, or in
   an object whose table entry is marked free.
   <!-- gap-cells: unindexed.plain unindexed.font unindexed.pixels unindexed.container -->
-- **Leftover streams nothing reads or flags:** text after a stream's
-  compression end marker, in a live page (K1) or a leftover stream
-  (K2); leftover plain text labelled as a font program or a 1×1 image
-  (K3, K4); leftover text converted to outlines (K5); a leftover image,
-  or one picture cut into strips, just under the 8×32 size gate yet
-  still readable when enlarged (K21); leftover font-coded text shown one
-  character per string (K10); and a removed attachment whose text holds
-  three words that are also content operators, so it is taken for page
-  content (K11).
+- **Streams and leftovers nothing reads or flags:** text after a
+  stream's compression end marker, in a live page (K1) or a leftover
+  stream (K2); leftover plain text labelled as a font program or a 1×1
+  image (K3, K4); leftover text converted to outlines (K5); a leftover
+  image just under the 8×32 size gate, whether it is a picture still
+  readable when enlarged, one picture cut into strips (K21), or raw
+  sample bytes holding the value literally (found only when the image
+  is drawn); leftover font-coded text shown one character per string
+  (K10); and a removed attachment whose text holds three words that are
+  also content operators, so it is taken for page content (K11).
   <!-- gap-cells: live.plain.after-stream-end orphaned.plain.after-stream-end orphaned.plain.mislabelled orphaned.pixels.outlines orphaned.pixels.small orphaned.font.single-glyph-strings orphaned-attachment.plain.operator-words -->
 - **Leftover text in a font that maps ordinary-looking codes to other
   glyphs** (K20), **containers encoded as text** (a base64 email part, an
@@ -393,12 +394,13 @@ secret can still be **not detected** (exit `0`). In short:
   same starting point as other text, so the two interleave glyph by
   glyph (K36).
   <!-- gap-cells: off-page.font.no-unicode live.font.overprinted -->
-- **Pattern rules** on embedded files other than attachments, on scripts
-  stored as streams on links, fields or pages, and on an image's own raw
-  sample or codec bytes (known values are still found there, as manual
-  review — a known value hidden in an image's raw samples, or in a JPEG
-  comment segment, is a Binary-layer manual-review warning today, but the
-  same secret found only by a pattern rule is not; K26, K29, K30).
+- **Pattern rules** on embedded files other than attachments (K26), on
+  scripts stored as streams on links, fields or pages (K29), on an
+  editor's private data, `/PieceInfo` (K30), and on a drawn image's own
+  raw sample or codec bytes (known values are still found there, as
+  manual review — a known value hidden in a drawn image's raw samples, or
+  in a JPEG comment segment, is a Binary-layer manual-review warning
+  today, but the same secret found only by a pattern rule is not).
   <!-- gap-cells: embedded-other.plain.pattern-rules javascript.plain.pattern-rules-in-streams private-data.plain.pattern-rules live.pixels.hidden-samples.pattern-rules -->
 - **Image data beyond the main picture:** a JPEG's own EXIF (or other)
   thumbnail can hold a second, fully decodable image the tool never
@@ -409,7 +411,9 @@ secret can still be **not detected** (exit `0`). In short:
   and nothing compares its reading with the ink on the page. OCR now
   also reads such a page turned, which finds the value, but only as
   manual review (exit `2`), not a finding (K43; on macOS 26 Vision reads
-  the line and the page exits `1`).
+  the line and the page exits `1`). A page whose dropped lines are all
+  horizontal, or that has no vertical line at all, still passes as clean
+  ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
   <!-- gap-cells: live.pixels.ocr-dropped-line -->
 - **Split values:** a value split around other text into more than three
   pieces, or with its pieces more than five lines apart (a page-break
@@ -422,18 +426,23 @@ secret can still be **not detected** (exit `0`). In short:
   page-break split whose halves are written in different directions (one
   horizontal, one vertical);
   dash-less pattern numbers wrapped at a line or page break; a value
-  split across a page break, or over several pages, that only a pattern
-  rule looks for; text at extreme coordinates (K35).
+  that only a pattern rule looks for, split at a page break where the
+  split needs more than the last line before the break, runs over four
+  pages, is rotated, sits in form boxes or is written one digit per line
+  (a plain page-break split under a pattern rule is manual review, exit
+  `2`); text at extreme coordinates (K35).
   <!-- gap-cells: match.letter-spaced-stack match.tight-fine-print match.mixed-direction-split match.undashed-wrap match.pattern-split match.extreme-coordinates -->
 
-Other leftover images, leftover text in non-plain font codes, and
-attachments that are not text are **flagged** (exit `2`) rather than read: a clean
+Other leftover images, other leftover text in non-plain font codes,
+and attachments that are not text are **flagged** (exit `2`) rather than
+read: a clean
 document containing them cannot certify as `0` until the tool learns to
 read them.
 
 Known false positives: a short value such as a 5-digit ZIP can be
 assembled as a hard finding at a page seam (a page number followed by the
-next page's first line); a value assembled down a vertical column or
+next page's first line), and so can a print slug just past the page's
+edge beside the page number, joined with the next page's first line; a value assembled down a vertical column or
 through several page-number-only pages is only ever manual review; and
 decompressed font tables, or an image's raw bytes, can raise
 coincidental Binary warnings (see Binary); a document `/ID` written as

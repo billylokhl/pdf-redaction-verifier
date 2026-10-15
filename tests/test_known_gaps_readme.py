@@ -60,12 +60,44 @@ def test_every_gap_bullet_carries_one_comment() -> None:
             f"bullet without exactly one gap-cells comment: {bullet[:80]!r}")
 
 
-def test_k_tags_name_open_rows_of_the_k_table() -> None:
+# K-table rows that say "**fixed**" for part of the gap while the rest is
+# still open, so README may still tag them. A row is added here only with
+# the residue it still describes.
+PARTLY_FIXED = {
+    "34": "fixed at the manual-review tier; the hard tier is still open",
+    "42": "fixed on macOS 27 only; CI's macOS 26 still exits 0",
+}
+
+
+def _k_rows() -> dict[str, str]:
     redesign = (REPO_ROOT / "docs" / "REDESIGN.md").read_text(encoding="utf-8")
-    rows = dict(re.findall(r"^\| K(\d+) \| (.*)$", redesign, flags=re.MULTILINE))
+    return dict(re.findall(r"^\| K(\d+) \| (.*)$", redesign, flags=re.MULTILINE))
+
+
+def _is_fixed(number: str, row: str) -> bool:
+    """A row marks its gap fixed when it says **fixed** in bold, in any
+    case and anywhere in the row (K8, K9 and K40 all write it differently)."""
+    return number not in PARTLY_FIXED and re.search(r"\*\*fixed", row, re.IGNORECASE) is not None
+
+
+def test_the_fixed_row_check_recognises_every_way_the_table_writes_it() -> None:
+    rows = _k_rows()
+    for number in ("8", "9", "40", "41"):
+        assert _is_fixed(number, rows[number]), f"K{number} should read as fixed"
+    for number in ("12", "39", "43", *PARTLY_FIXED):
+        assert not _is_fixed(number, rows[number]), f"K{number} should read as open"
+
+
+def test_k_tags_name_open_rows_of_the_k_table() -> None:
+    rows = _k_rows()
     tags = set(re.findall(r"\bK(\d+)\b", COMMENT.sub("", _section())))
     assert tags, "README's Known gaps section names no K-number"
     unknown = sorted((t for t in tags if t not in rows), key=int)
-    fixed = sorted((t for t in tags if t in rows and rows[t].startswith("**Fixed**")), key=int)
+    fixed = sorted((t for t in tags if t in rows and _is_fixed(t, rows[t])), key=int)
     assert not unknown, f"K-numbers with no row in docs/REDESIGN.md's K-table: {unknown}"
     assert not fixed, f"K-numbers the K-table marks fixed: {fixed}"
+
+
+def test_the_section_uses_only_dash_bullets() -> None:
+    """The bullet check splits on "- "; another marker would slip past it."""
+    assert not re.search(r"^\s*[*+] ", _section(), flags=re.MULTILINE)
