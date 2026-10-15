@@ -284,8 +284,9 @@ def _write_atomically(path: Path, text: str) -> None:
     is created exclusively (never clobbering or following anything already
     there) with mode 0600, or the existing file's mode; it is removed if
     anything fails. A write-protected manifest, or one in a directory that
-    cannot be written, is refused without a path. A symbolic link at *path* is written through, as a
-    plain write would (`ensure_local_only` checked where it resolves)."""
+    cannot be written, is refused without a path (the cause by its errno
+    name only). A symbolic link at *path* is written through, as a plain
+    write would (`ensure_local_only` checked where it resolves)."""
     target = Path(os.path.realpath(path))
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -299,8 +300,9 @@ def _write_atomically(path: Path, text: str) -> None:
             raise SystemExit("refusing to write: --manifest is write-protected")
         fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.",
                                    suffix=".partial")
-    except OSError:
-        raise SystemExit("refusing to write: --manifest's directory is not writable") from None
+    except OSError as error:  # the cause by name only: the message would name the path
+        cause = errno.errorcode.get(error.errno or 0, type(error).__name__)
+        raise SystemExit(f"refusing to write --manifest ({cause})") from None
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(text)

@@ -1123,6 +1123,7 @@ def test_manifest_write_refuses_a_protected_manifest_or_directory(tmp_path, prot
     finally:
         locked.chmod(0o600 if protect == "manifest" else 0o700)
     assert "private-out" not in str(exc.value)
+    assert ("write-protected" if protect == "manifest" else "(EACCES)") in str(exc.value)
     assert manifest.read_text() == "previous manifest\n"
     assert [p.name for p in out.iterdir()] == ["manifest.json"]
 
