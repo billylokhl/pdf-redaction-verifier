@@ -398,6 +398,18 @@ BY_KEY: list[tuple[str, bytes, dict[int | None, set[K]]]] = [
     ("xmp", make(catalog=b" /Metadata 4 0 R",
                  streams={4: (b" /Type /Metadata /Subtype /XML", XMP)}), {4: {K.XMP}}),
     ("xmp-on-a-page", make(page=b" /Metadata 4 0 R", streams={4: (b"", XMP)}), {4: {K.XMP}}),
+    # The holder's /Type by reference (read through one reference).
+    ("xmp-holder-type-by-reference", make(catalog=b" /Extra 9 0 R",
+                                          objects={9: b"<< /Type 10 0 R /Metadata 4 0 R >>",
+                                                   10: b"/Page"},
+                                          streams={4: (b"", XMP)}), {4: {K.XMP}}),
+    # An image XObject holder: no allowlisted /Type, its /Subtype /Image.
+    ("xmp-on-an-image", make(objects={3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]"
+                                         b" /Resources << /XObject << /Im1 9 0 R >> >> >>"},
+                             streams={9: (b" /Subtype /Image /Width 1 /Height 1 /ColorSpace"
+                                          b" /DeviceGray /BitsPerComponent 8 /Metadata 4 0 R",
+                                          b"\x00"),
+                                      4: (b"", XMP)}), {4: {K.XMP}}),
     # Unreachable source: its /Metadata leads to nothing structural.
     ("xmp-under-an-unreachable-object", make(objects={5: b"<< /Metadata 4 0 R >>"},
                                              streams={4: (b"", XMP)}), {}),
@@ -814,8 +826,9 @@ def test_labels_retain_at_most_a_byte_per_unit_of_work(make_file: object) -> Non
     # revision -- is charged at least its size (DESIGN.md, "Bounded
     # resources"): at most one byte per unit, so at most the budget's 64
     # per byte of the file however many revisions (the review of #153
-    # measured 316x the file under a per-element charge). Measured: 0.4 to
-    # 0.97 bytes per unit.
+    # measured 316x the file under a per-element charge). Measured (n = 40
+    # to 2,000): 0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per
+    # byte of the file.
     data = make_file()  # type: ignore[operator]
     charged, _, inv = charged_steps(data, "build_labels")
     assert inv.flags == ()
@@ -843,6 +856,16 @@ SHADING = (b" /ShadingType 4 /ColorSpace /DeviceGray /BitsPerCoordinate 8 /BitsP
            b" /BitsPerFlag 8 /Decode [0 200 0 200 0 1]")
 TRIANGLE = bytes([0, 0, 0, 0, 0, 200, 0, 255, 0, 0, 200, 128])
 TEXT = (b"", b"BT /F1 12 Tf 20 20 Td (AB) Tj ET")
+def _appearance(ap: bytes, objects: dict[int, bytes], state: bytes = b"Metadata") -> bytes:
+    """A stamp annotation (9) whose /AS names *state*, with *ap*; stream 7
+    an appearance (a form without /BBox: MuPDF draws nothing, so the gate
+    agrees either way -- the fixture pins the rule, not a drawing)."""
+    return make(objects={3: PAGE % b" /Annots [9 0 R]",
+                         9: b"<< /Type /Annot /Subtype /Stamp /F 4 /Rect [0 0 200 200] /AS /%s %s >>"
+                            % (state, ap)} | objects,
+                streams={7: (b" /Resources << >>", b"0 0 0 rg 0 0 200 200 re f")})
+
+
 # Every file draws or holds its streams under one of item 5's key names, on
 # a holder item 5 does not name: none is structural (the reviewer's p1).
 MISNAMED: list[tuple[str, bytes]] = [
@@ -896,6 +919,24 @@ MISNAMED: list[tuple[str, bytes]] = [
         objects={9: b"[6 0 R]", 6: b"<< /S /GTS_PDFA1 /DestOutputProfile 8 0 R >>",
                  3: DRAWN % b"/ExtGState 9 0 R"},
         streams={5: (b"", b"0 0 m"), 8: PROFILE})),
+    # Appearance states are drawn by name (/AS): a state dictionary is no
+    # holder, given by reference, written directly, or in an /AP given by
+    # reference (the review of #153, round 2: p5, p6).
+    ("appearance-state-by-reference", _appearance(
+        b"/AP << /N 10 0 R >>", {10: b"<< /Type /Page /Metadata 7 0 R >>"})),
+    ("appearance-state-direct", _appearance(
+        b"/AP << /N << /Type /Page /Metadata 7 0 R >> >>", {})),
+    ("appearance-state-as-an-action", _appearance(
+        b"/AP << /N 10 0 R >>", {10: b"<< /S /JavaScript /JS 7 0 R >>"}, b"JS")),
+    ("appearance-dictionary-by-reference", _appearance(
+        b"/AP 11 0 R", {11: b"<< /N 10 0 R >>", 10: b"<< /Type /Page /Metadata 7 0 R >>"})),
+    # An appearance stream itself (at a state) is no holder either.
+    ("appearance-stream-holding-metadata", _appearance(
+        b"/AP << /N << /Metadata 10 0 R >> >>",
+        {10: b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << >>"
+             b" /Metadata 7 0 R /Length 0 >>\nstream\n\nendstream"})),
+    ("appearance-dictionary-by-reference-state-direct", _appearance(
+        b"/AP 11 0 R", {11: b"<< /D << /Type /Page /Metadata 7 0 R >> >>"})),
     # A real file specification whose /EF dictionary is also a page's
     # /Shading dictionary: its entry /F is drawn as a shading.
     ("ef-dictionary-drawn-by-name", make(
@@ -1011,6 +1052,13 @@ REUSE: list[tuple[str, bytes, list[tuple[list[int], dict[int | None, set[K]]]]]]
      [([1, 2, 3, 4, 6, 10], {10: {OS}, 11: {XS}}), ([1, 2, 3, 4, 10], {10: {OS}, 11: {XS}})]),
     ("member-made-plain", _objstm_base("plain"),
      [([1, 2, 3, 4], {11: {XS}}), ([1, 2, 3, 4], {10: {OS}, 11: {XS}})]),
+    # A holder's /Type held by reference, rewritten to a type item 5 does
+    # not allow: the reference's target was read for the record (review of
+    # #153, round 2: name-keyed-dropped).
+    ("holder-type-by-reference", make(
+        catalog=b" /Extra 9 0 R", objects={9: b"<< /Type 10 0 R /Metadata 7 0 R >>", 10: b"/Page"},
+        streams={7: (b"", b"<x/>")}, updates=({10: b"/Annot"},)),
+     [([1, 2, 3, 7, 9, 10], {}), ([1, 2, 3, 7, 9, 10], {7: {K.XMP}})]),
 ]
 
 

@@ -29,10 +29,11 @@ its STRUCTURAL streams; DRAWABLE and ORPHANED follow (3a-7e-2).
     - /JS (JAVASCRIPT) on an action whose /S is /JavaScript;
     - /DestOutputProfile in an item of the catalog's /OutputIntents
       (OUTPUT_INTENT; the array and its items direct or by reference);
-    and never on a holder that is itself a resource-category or
-    /CharProcs dictionary -- written under one of those keys, or a body
-    some reachable reference names under one -- whose entries are drawn
-    by name. /Type, /Subtype and /S are read through one reference. The
+    and never on a holder that is itself drawn by name -- a
+    resource-category or /CharProcs dictionary, or an appearance (/AP's
+    /N, /D or /R, a state dictionary /AS names entries of, and each state),
+    written at such a place or a body some reachable reference names at
+    one, an /AP given by reference included. /Type, /Subtype and /S are read through one reference. The
     target is a stream whose dictionary carries no /Subtype /Image or
     /Form (resolved), no /BBox and no /Width. When in doubt, no label:
     an unlabelled stream fails closed (ORPHANED, 3a-7e-2).
@@ -131,7 +132,13 @@ class RevisionLabels:
     @property
     def structural(self) -> dict[UnitRef, tuple[Structural, ...]]:
         """Every structural stream's records, the chain's first: made on
-        each call (not kept), in time linear in the records."""
+        each call (not kept, so it retains nothing the budget did not
+        charge), in time linear in the records -- the cross-reference
+        streams included, O(xref_count). A consumer reading every revision
+        of a file with many cross-reference-stream updates pays O(R^2)
+        outside the budget this way: read ``xref_streams[:xref_count]``,
+        ``object_streams``, ``hint`` and ``by_key`` directly instead
+        (3a-7e-2 will)."""
         found: dict[UnitRef, tuple[Structural, ...]] = {}
         for unit in self.xref_streams[:self.xref_count]:
             found[unit] = (_XREF,)
@@ -171,6 +178,20 @@ _IMAGE_OR_FORM: Final = (b"Image", b"Form")
 _DRAWN_BY_NAME: Final = frozenset({
     b"XObject", b"Font", b"Pattern", b"Shading", b"ExtGState", b"ColorSpace", b"Properties",
     b"CharProcs"})
+_APPEARANCES: Final = frozenset({b"N", b"D", b"R"})
+
+
+def _drawn(path: tuple[bytes, ...]) -> bool:
+    """Is what a reference at *path* names drawn by name? A resource
+    category's or /CharProcs' entry (the dictionary itself, named at the
+    key), or an appearance: /AP's /N, /D or /R (a stream, or a state
+    dictionary whose entries /AS names) and each state in it."""
+    return bool(path) and (
+        path[-1] in _DRAWN_BY_NAME
+        or (len(path) > 1 and path[-2] == b"AP" and path[-1] in _APPEARANCES)
+        or (len(path) > 2 and path[-3] == b"AP" and path[-2] in _APPEARANCES))
+
+
 # The holders /Metadata is read on (item 5: "an XMP packet under /Metadata"):
 # by /Type, or an image or form XObject by /Subtype. Any other holder: no
 # label (fail closed).
@@ -180,8 +201,8 @@ METADATA_TYPES: Final = frozenset({
 _KEYS: Final = frozenset({b"Metadata", b"JS", b"EF"})
 
 # A by-key candidate: (kind, source, key, target number, target generation,
-# whether its holder is the source's top level).
-_Candidate = tuple[StructuralKind, int, bytes, int, int, bool]
+# whether its holder is the source's top level, the holder's key path in it).
+_Candidate = tuple[StructuralKind, int, bytes, int, int, bool, tuple[bytes, ...]]
 # A context body: (number, gen, context, whether its holder is the source's
 # top level, source).
 _Context = tuple[int, int, int, bool, int]
@@ -411,6 +432,8 @@ class _Walk:
         candidates: list[_Candidate] = []
         contexts: list[_Context] = []
         named: set[int] = set()  # bodies a reference names under a drawn-by-name key
+        appearances: set[int] = set()  # bodies a reference names as /AP
+        units: dict[int, UnitRef] = {}  # each reachable number's body
         stack = [(e.num, e.gen) for e in reversed(trailer)]
         while stack:
             if not self.charge():
@@ -424,6 +447,7 @@ class _Walk:
             if body is None:
                 continue
             reachable.add(number)
+            units[number] = body[0]
             found = self.edges.get(body[0])
             # Each edge is looked at twice: for item 5's keys, then followed.
             if found is None or not self.charge(2 * len(found) + 1):
@@ -438,15 +462,25 @@ class _Walk:
                 contexts += made[1]
             for edge in found:
                 path = edge.path
-                if path and path[-1] in _DRAWN_BY_NAME:
+                # (A pattern's /Shading key lands here too: its target is
+                # drawn, so failing closed costs nothing.)
+                if _drawn(path):
                     named.add(edge.num)
+                if path and path[-1] == b"AP":
+                    appearances.add(edge.num)
                 if number == catalog and path and path[0] == b"OutputIntents":
                     _intents(number, edge, path[1:], candidates, contexts)
                 if edge.num not in reachable:
                     stack.append((edge.num, edge.gen))
+        # An /AP dictionary given by reference: its /N, /D, /R and states.
+        for number in sorted(appearances & reachable):
+            found = self.edges.get(units[number], ())
+            if not self.charge(len(found) + 1):
+                return None
+            named.update(e.num for e in found if _drawn((b"AP", *e.path)))
         if not self.contexts(contexts, candidates, named):
             return None
-        return reachable, self.records(candidates, named)
+        return reachable, self.records(candidates, named, appearances)
 
     def holders(self, body: Body) -> _Holders | None:
         """Each reference's holding dictionary in *body*'s value (by the
@@ -487,23 +521,24 @@ class _Walk:
             # /EF << /F ... >>: the file specification holds the /EF dictionary.
             spec = holders[1].get(id(holder))
             top = len(path) == 2
-            if (spec is not None and (top or path[-3] not in _DRAWN_BY_NAME)
+            if (spec is not None and not _drawn(path[:-2])
                     and self.name(spec.get(b"Type")) == b"Filespec"):
                 candidates.append((StructuralKind.EMBEDDED_FILE, number, b"EF",
-                                   edge.num, edge.gen, top))
+                                   edge.num, edge.gen, top, path[:-2]))
             return
         top = len(path) == 1
-        if not top and path[-2] in _DRAWN_BY_NAME:
+        if _drawn(path[:-1]):
             return
         if last == b"Metadata":
             kind = self.name(holder.get(b"Type"))
             subtype = self.name(holder.get(b"Subtype"))
             if kind in METADATA_TYPES or subtype in _IMAGE_OR_FORM:
-                candidates.append((StructuralKind.XMP, number, last, edge.num, edge.gen, top))
+                candidates.append((StructuralKind.XMP, number, last, edge.num, edge.gen, top,
+                                   path[:-1]))
         elif last == b"JS":
             if self.name(holder.get(b"S")) == b"JavaScript":
                 candidates.append((StructuralKind.JAVASCRIPT, number, last, edge.num,
-                                   edge.gen, top))
+                                   edge.gen, top, path[:-1]))
         elif last == b"EF":
             if self.name(holder.get(b"Type")) == b"Filespec":
                 contexts.append((edge.num, edge.gen, _EF, top, number))
@@ -540,21 +575,24 @@ class _Walk:
             for edge in found:
                 if context == _EF and len(edge.path) == 1:
                     candidates.append((StructuralKind.EMBEDDED_FILE, number, b"EF",
-                                       edge.num, edge.gen, True))
+                                       edge.num, edge.gen, True, ()))
                 elif context == _INTENTS:
                     _intents(number, edge, edge.path, candidates, contexts)
                 elif context == _INTENT and edge.path == (b"DestOutputProfile",):
                     candidates.append((StructuralKind.OUTPUT_INTENT, number,
-                                       b"DestOutputProfile", edge.num, edge.gen, True))
+                                       b"DestOutputProfile", edge.num, edge.gen, True, ()))
         return True
 
-    def records(self, candidates: list[_Candidate], named: set[int]) -> ByKey:
-        """Each candidate whose holder is no dictionary drawn by name and
-        whose target is a stream with no image or form keys. The caller
-        checks ``spent``."""
+    def records(self, candidates: list[_Candidate], named: set[int],
+                appearances: set[int]) -> ByKey:
+        """Each candidate whose holder is no dictionary drawn by name --
+        named under such a key, or written in an /AP dictionary given by
+        reference at a place drawn by name -- and whose target is a stream
+        with no image or form keys. The caller checks ``spent``."""
         records: dict[UnitRef, dict[Structural, None]] = {}
-        for kind, source, key, number, gen, top in candidates:
-            if top and source in named:
+        for kind, source, key, number, gen, top, where in candidates:
+            if (top and source in named) or (
+                    source in appearances and _drawn((b"AP", *where))):
                 continue
             self.keyed.add(number)
             body = self.body(number, gen)
@@ -597,7 +635,7 @@ def _intents(number: int, edge: Edge, rest: tuple[bytes, ...], candidates: list[
     """An edge at *rest* inside the catalog's /OutputIntents array."""
     if rest == (ARRAY, b"DestOutputProfile"):
         candidates.append((StructuralKind.OUTPUT_INTENT, number, b"DestOutputProfile",
-                           edge.num, edge.gen, False))
+                           edge.num, edge.gen, False, (b"OutputIntents", ARRAY)))
     elif rest == (ARRAY,):
         contexts.append((edge.num, edge.gen, _INTENT, False, number))
     elif rest == ():

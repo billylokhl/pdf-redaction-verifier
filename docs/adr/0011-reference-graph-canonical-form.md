@@ -590,19 +590,21 @@ Recorded with the implementation of reachable and `STRUCTURAL`
   are one list shared by every revision -- is charged to the work budget
   at least its size in bytes, so labels keep at most one byte per unit of
   work, at most the budget's 64 per byte of the file (DESIGN.md,
-  "Bounded resources"; measured 0.4 to 0.9 bytes per unit, at most 53 per
-  byte of the file).
+  "Bounded resources"; measured 0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per byte of the file).
 - **Item 5's keys only on the holders it names** (the review of #153;
   coordinator-requested, an interpretation of item 5). `/JS` only on an
   action whose `/S` is `/JavaScript`; `/EF` only on a file specification
   (`/Type /Filespec`, required with `/EF`); `/Metadata` only on a holder
   whose `/Type` is one of `Catalog`, `Pages`, `Page`, `Template`, `Font`,
   `FontDescriptor`, `EmbeddedFile`, `Filespec`, `StructTreeRoot`,
-  `StructElem`, `OCG`, `XObject`, or an image or form XObject; and never
-  on a resource-category or `/CharProcs` dictionary, written under one
-  of those keys or named under one by any reachable reference, whose
-  entries are drawn by name (a Type 3 glyph or a shading named `/JS` is
-  drawn, not a script). Any other holder: no label, failing closed.
+  `StructElem`, `OCG`, `XObject`, or an image or form XObject (the
+  allowlist is kept as is: coordinator decision, round 2); and never on a
+  holder drawn by name -- a resource-category or `/CharProcs` dictionary,
+  or an appearance (`/AP`'s `/N`, `/D`, `/R`, the state dictionary `/AS`
+  names entries of, and each state), written at such a place or named at
+  one by any reachable reference (a Type 3 glyph, a shading or an
+  appearance state named `/JS` is drawn, not a script). Any other holder:
+  no label, failing closed.
 - **What a `STRUCTURAL` record holds.** Its kind, the reachable object
   whose key reached it and that key (or the chain): the walk's conditions
   only. The condition that the kind's decoder parses the whole stream is

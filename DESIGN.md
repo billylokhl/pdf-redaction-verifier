@@ -527,9 +527,8 @@ a new revision record -- so the labels retain at most one byte per unit
 of work: at most 64 times the file's size plus about 1 MB, however many
 revisions rewrite it. Measured on many-revision shapes (each revision
 reaching a new object, adding an object stream, adding structural
-records, or only adding a cross-reference stream): 0.4 to 0.97 bytes per
-unit, at most 53 bytes per byte of the file (a test pins the one-byte
-bound).
+records, or only adding a cross-reference stream, n = 40 to 2,000):
+0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per byte of the file (a test pins the one-byte bound).
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
