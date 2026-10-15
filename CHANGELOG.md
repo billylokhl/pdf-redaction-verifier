@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Real-redactor set measurement: page thumbnails** (`eval/scorecard/redactor_set.py`). After #133 made page thumbnails a flagged (⚑) cell, `scorecard redactor-set run` counts a thumbnail instance as caught when the verifier's `PAGE_THUMBNAIL` warning names its exact page and review (exit 2) is expected (coordinator decision, 2026-10-15, extending the owner's ⚑ rule); another page, or none, is a miss. Verdict changes: none.
 - `--json` report output format for machine-readable scan results
 - `--version` flag to display tool version
 - Tokenization of leftover content streams (compact inline images, long/compactly written text)

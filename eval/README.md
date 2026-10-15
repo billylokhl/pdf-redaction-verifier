@@ -401,7 +401,11 @@ PYTHONPATH=eval:. python -m redactor_set subset --set inputs --pick NAME=STEM:ME
     when its code fits the cell's column (`LEFTOVER_UNDECODABLE_TEXT`
     for font, `LEFTOVER_IMAGE` for pixels, `LEFTOVER_CONTAINER`), the
     instance expects exit `2`, and the instance's object, from the
-    oracle's evidence, is in the warning's object list. Two blind spots,
+    oracle's evidence, is in the warning's object list. A ⚑ cell whose
+    warning names a page instead (coordinator decision, 2026-10-15,
+    extending the owner's rule): `thumbnail.pixels` is caught only by
+    `PAGE_THUMBNAIL`, with exit `2` expected, naming the instance's exact
+    page -- another page, or none, is a miss. Two blind spots,
     both on the safe side (a miss, never a false catch): the verifier
     lists at most eight objects and then "(+N more)", and
     `LEFTOVER_CONTAINER` lists payloads, not objects, so a container
