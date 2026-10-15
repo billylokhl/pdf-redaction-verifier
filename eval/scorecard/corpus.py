@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -124,8 +125,9 @@ def classify(pdf_path: Path) -> tuple[bool | None, bool, str, str]:
     text-bearing adds an unscanned file to the false-hard denominator of
     the stratum the redesign's targets are measured on, and counting it as
     text-free does the same there. A "text-unreadable" file is scanned by
-    the CLI, so its verdict is real but has no known stratum: `corpus run`
-    refuses it (`probe_mismatches`). Its producer family is "unknown", since its
+    the CLI, so its verdict is real but has no known text stratum: it is
+    its own counted group, `probe:text-unreadable`, reported on every run
+    (owner decision, 2026-10-12). Its producer family is "unknown", since its
     metadata was not read. multi_revision is still measured, from the raw
     bytes, which need no parser."""
     import pymupdf as fitz
@@ -151,14 +153,67 @@ def classify(pdf_path: Path) -> tuple[bool | None, bool, str, str]:
     return text_bearing, multi_revision, producer_family(raw_producer), "ok"
 
 
-def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST) -> list[CorpusEntry]:
-    """Scan *root* for `*.pdf` files, hash and classify each, and write the
-    manifest. Re-running replaces it entirely, so a file removed from
-    *root* is dropped and a changed file's hash and strata are refreshed.
-    A file the probe cannot read is recorded with its text layer unknown
-    (see `classify`), never skipped and never fatal."""
+@dataclass(frozen=True)
+class CorpusFiles:
+    """What a walk of the corpus root found: the PDFs to record, and counts
+    — never names — of everything it left out, so nothing is left out
+    silently."""
+
+    pdfs: tuple[Path, ...]
+    other_files: int = 0  # files without a .pdf extension (any case)
+    not_regular: int = 0  # *.pdf entries that are not files: broken links, sockets, ...
+    linked_dirs: int = 0  # symbolic links to directories: not followed
+    unreadable_dirs: int = 0  # directories the walk could not list
+
+    def skipped(self) -> dict[str, int]:
+        return {
+            "file(s) without a .pdf extension": self.other_files,
+            "entr(y/ies) named .pdf but not a regular file": self.not_regular,
+            "symlinked dir(s) not followed": self.linked_dirs,
+            "unreadable dir(s)": self.unreadable_dirs,
+        }
+
+
+def find_pdfs(root: Path) -> CorpusFiles:
+    """Every regular file under *root* whose name ends in `.pdf` in any
+    case (`.PDF`, `.Pdf`, ...), sorted, plus counts of what was skipped.
+    A symbolic link to a file counts as that file; a link to a directory
+    is not followed (a link cycle could otherwise loop), but is counted."""
+    if not root.is_dir():
+        # The caller supplied the path, but it is still never echoed.
+        raise SystemExit("refusing to build: --root is not an existing directory")
+    pdfs: list[Path] = []
+    other = not_regular = linked = unreadable = 0
+
+    def on_error(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable += 1
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
+        linked += sum(os.path.islink(os.path.join(dirpath, d)) for d in dirnames)
+        for name in filenames:
+            path = Path(dirpath) / name
+            if not name.lower().endswith(".pdf"):
+                other += 1
+            elif path.is_file():
+                pdfs.append(path)
+            else:
+                not_regular += 1
+    return CorpusFiles(tuple(sorted(pdfs)), other, not_regular, linked, unreadable)
+
+
+def build_manifest(root: Path, *, manifest_path: Path = DEFAULT_MANIFEST,
+                   files: CorpusFiles | None = None) -> list[CorpusEntry]:
+    """Hash and classify every PDF `find_pdfs` finds under *root* (or the
+    already-walked *files*), and write the manifest. Re-running replaces
+    it entirely, so a file removed from *root* is dropped and a changed
+    file's hash and strata are refreshed. A file the probe cannot read is
+    recorded with its text layer unknown (see `classify`), never skipped
+    and never fatal."""
+    if files is None:
+        files = find_pdfs(root)
     entries: list[CorpusEntry] = []
-    for path in sorted(root.rglob("*.pdf")):
+    for path in files.pdfs:
         data = path.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
         text_bearing, multi_revision, family, probe = classify(path)
@@ -278,12 +333,13 @@ PROBE_ERROR_CODES = {"password": "PDF_PASSWORD", "unreadable": "PDF_UNREADABLE"}
 def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]:
     """(SHA-256 prefix, probe, CLI error code) for every scanned file whose
     stratum the build probe cannot vouch for. `stratify` places a file by
-    its build-time probe, so a file the probe could not read but the CLI
+    its build-time probe, so a file the probe could not open but the CLI
     scanned (after a PyMuPDF upgrade, say) would have its verdict, hard
     findings included, left out of every measured stratum; and a file the
-    probe read but the CLI could not open would pad a measured stratum's
-    false-hard denominator. A "text-unreadable" file is always listed: the
-    CLI scans it, but its text stratum is unknown. A crash, a timeout or a
+    probe opened but the CLI could not would pad a measured stratum's
+    false-hard denominator. A "text-unreadable" file opened, so only a CLI
+    that could not open it contradicts the probe; otherwise it is its own
+    counted group (owner decision, 2026-10-12). A crash, a timeout or a
     run-level error code (INTERNAL_ERROR, ...) is left to the run's own
     unmeasured check, which already fails it."""
     found = []
@@ -294,10 +350,8 @@ def probe_mismatches(runs: list[CorpusRun]) -> list[tuple[str, str, str | None]]
         if code is not None and code not in PROBE_ERROR_CODES.values():
             continue  # a run-level error: the run's unmeasured check lists it
         probe = run.entry.probe
-        if probe == "text-unreadable" or (
-            code != PROBE_ERROR_CODES[probe] if probe in PROBE_ERROR_CODES
-            else code in PROBE_ERROR_CODES.values()
-        ):
+        expected = PROBE_ERROR_CODES.get(probe)
+        if code != expected:
             found.append((run.entry.sha256[:16], probe, code))
     return found
 
@@ -310,11 +364,14 @@ def stratify(runs: list[CorpusRun], have: frozenset[str] | None = None) -> dict[
     "text-unknown" and its own `probe:password`, `probe:unreadable` or
     `probe:text-unreadable` stratum, never in a measured one — which is
     safe only when the CLI agreed with the probe: check `probe_mismatches`.
+    `probe:text-unreadable` is always present, even empty, so its count is
+    reported on every run.
     *have* drops environmental warnings (e.g. no OCR on this machine) the
     same way the differential does, so a run on a partial environment
     does not inflate the review rate — pass `caselib.run.available()` for that;
     omit it to use the exit code exactly as reported."""
-    strata: dict[str, list[CorpusRun]] = {"all": list(runs)}
+    # Always present, even empty: the owner asked for this count every run.
+    strata: dict[str, list[CorpusRun]] = {"all": list(runs), "probe:text-unreadable": []}
     for run in runs:
         if run.entry.probe != "ok":
             # Unread: nothing measured its text layer or producer, and its

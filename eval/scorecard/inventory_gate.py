@@ -54,6 +54,11 @@ TIMEOUT = "timeout"          # build_inventory's child ran past its timeout: GAT
 UNVERIFIED = "unverified"    # unflagged, but the oracle crashed or timed out: GATE
 INCONSISTENT = "inconsistent"  # the two children's flags differ: GATE
 GATING = (DISAGREE, CRASH, TIMEOUT, UNVERIFIED, INCONSISTENT)
+# The flag reason a file gets when a reader needs a password to open it
+# (owner decision, 2026-10-12, #48 item 3): it cannot be certified, so it is
+# FLAGGED, neither a disagreement nor exempt. Not one of the inventory's own
+# FlagReasons, so it never collides with them in the aggregate.
+NEEDS_PASSWORD = "needs_password"
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,10 @@ def judge(job: Job, size: int, build: ChildRun, oracle: ChildRun) -> FileResult:
         verdict = INCONSISTENT  # the same inventory, built twice, must flag alike
     elif not tiles or (agreement is not None and agreement.check is Check.TILING):
         verdict = DISAGREE
+    elif (not reasons and agreement is not None and agreement.disagrees
+          and agreement.check is Check.NEEDS_PASSWORD):
+        verdict = FLAGGED       # cannot certify: flagged, never an agreement
+        reasons = (NEEDS_PASSWORD,)
     elif reasons:
         verdict = FLAGGED       # whatever the oracle did: the file is flagged
     elif agreement is None:
