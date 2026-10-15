@@ -36,7 +36,7 @@ Phase 3d's integration use it. It gives one primitive, ``run``:
   that also closes them is neither stopped nor detected;
 - optionally, on macOS, an **OS sandbox** (``sandbox-exec``): no network,
   no direct file writes outside the private directory, no ``fork`` and no
-  ``exec`` but the interpreter's, no Mach lookups (so no writes by proxy
+  ``exec`` but the interpreter's own (``interpreters``), no Mach lookups (so no writes by proxy
   through system services). ``os_sandbox=True`` where that is unavailable
   raises: a requested limit is never silently dropped.
 
@@ -142,6 +142,23 @@ def _sandbox_profile(private_dir: Path, interpreters: Sequence[Path]) -> str:
         + "".join(f'(allow process-exec (literal "{p}"))\n' for p in interpreters)
         + "(deny mach-lookup)\n"
     )
+
+
+def interpreters() -> list[Path]:
+    """Every binary the child's interpreter may exec while starting: the
+    environment's python and its resolved target, the base executable, and
+    -- in a macOS framework build (python.org's, and CI's setup-python) --
+    the Python.app binary its ``python`` re-execs into. The OS sandbox
+    allows exactly these and nothing else."""
+    candidates = [Path(sys.executable), Path(getattr(sys, "_base_executable", sys.executable)),
+                  Path(sys.base_prefix) / "Resources" / "Python.app" / "Contents" / "MacOS"
+                  / "Python"]
+    found: list[Path] = []
+    for path in candidates:
+        for form in (path, path.resolve()):
+            if form.exists() and form not in found:
+                found.append(form)
+    return found
 
 
 def footprint_bytes(pid: int) -> int | None:
@@ -335,12 +352,13 @@ def run(child_code: str, input_path: Path, args: Sequence[str] = (),
         source.write_text(limits_preamble(limits) + child_code)
         # The interpreter as invoked, not resolved: a virtual environment's
         # python is a link whose packages come from its pyvenv.cfg, so the
-        # resolved binary would not see them. The profile allows both.
+        # resolved binary would not see them. The profile allows it, its
+        # target and whatever a framework build re-execs into.
         interpreter = Path(sys.executable)
         with open(input_path, "rb") as handle:
             argv = [str(interpreter), "-I", str(source), str(handle.fileno()), *args]
             if limits.os_sandbox:
-                profile = _sandbox_profile(private, (interpreter, interpreter.resolve()))
+                profile = _sandbox_profile(private, interpreters())
                 argv = ["sandbox-exec", "-p", profile, *argv]
             started = time.monotonic()
             proc = subprocess.Popen(

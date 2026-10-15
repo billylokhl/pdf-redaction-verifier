@@ -8,6 +8,7 @@ import os
 import signal
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -290,3 +291,14 @@ def test_a_reader_that_fails_is_never_ok(pdf, monkeypatch):
     monkeypatch.setattr(sb, "_read_head", broken)
     r = sb.run("print('ok')", pdf, limits=FAST)
     assert r.killed == "reader-failed" and not r.ok
+
+
+def test_a_framework_builds_relaunch_binary_is_an_allowed_interpreter(tmp_path, monkeypatch):
+    # python.org's (and CI's) macOS builds re-exec python into
+    # Resources/Python.app; the sandbox must allow it, or the child cannot start.
+    app = tmp_path / "Resources" / "Python.app" / "Contents" / "MacOS" / "Python"
+    app.parent.mkdir(parents=True)
+    app.write_bytes(b"")
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path))
+    allowed = sb.interpreters()
+    assert app in allowed and Path(sys.executable) in allowed
