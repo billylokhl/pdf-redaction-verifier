@@ -163,24 +163,49 @@ still there: invisible on screen, but selectable and copyable.
   per form box still reads back as `123-45-6789`. A wide gap inside a line
   is treated as a column break, so neighbouring table cells never merge
   into a false number. Text placed outside the visible page area (the
-  crop or media box) is read too, as its own reading — invisible to a
-  viewer, but still in the file — and kept apart from the visible text so
-  it cannot come between the halves of a value split across a page break.
-- **Readings:** three *genuine* readings — horizontally written text read
-  left to right, and text written vertically (rotated) read along its own
-  direction both ways — plus two *reconstructed* readings of every glyph
-  in vertical columns. The reconstructions are the only reading of a value
-  written one character per line, but a column of an ordinary page also
-  stacks unrelated lines (a numbered list's numbers), so they only ever
-  give manual-review warnings.
+  crop box ∩ the media box) is read too, as its own reading — invisible
+  to a viewer, but still in the file — and kept apart from the visible
+  text so it cannot come between the halves of a value split across a
+  page break. It is also read together with the visible text, across the
+  visible edge, so a value that starts on the page and runs off it, or
+  that is written vertically off the page, is read whole.
+- **Readings:** seven *genuine* readings — the visible text, written
+  horizontally (read left to right) or vertically (rotated, read along its
+  own direction both ways); the off-page text; and the same three
+  directions across the visible edge, visible and off-page text together —
+  plus three *reconstructed* readings: every visible glyph in vertical
+  columns, both ways, and all the horizontal text, visible or not. The
+  columns are the only reading of a value written
+  one character per line, but a column of an ordinary page also stacks
+  unrelated lines (a numbered list's numbers), so reconstructions only
+  ever give manual-review warnings.
 - **Across pages:** each page break is checked on its own. A value running
   from the last line of one page onto the first line of the next, in a
-  genuine reading, is hard. Any other match crossing the break — needing
-  other lines, or across a blank or unreadable page — is a manual-review
-  warning at the page it crosses into.
+  genuine reading of the visible text (a visible line read on across the
+  visible edge included) or of the off-page text, is hard. Any other
+  match crossing the break — needing other lines, across a blank or
+  unreadable page, or from text wholly off the page (a slug below the
+  page, or beside visible text across a column break) onto the next
+  page's first line, or onto text wholly off the next page, above its
+  top edge — is a manual-review warning at the page it crosses into. A
+  value wrapped from a page's last visible line onto a line wholly below
+  the page is a manual-review warning too. The limit: a slug only a word space from visible text on its
+  baseline ('Page 7' then 'Job 123-45' just past the edge) reads as one
+  line with it, exactly like a value running past the edge, so if it and
+  the next page's first line together form a value, that is a (false)
+  finding.
 - **Tier:** a known value is hard on one line of a genuine reading, or at
   a page seam as above. A pattern is hard only on one line of a genuine
-  reading. Everything that needs text joined is manual-review.
+  reading, the readings across the visible edge included. On a line read
+  across the edge, a wide gap (a column break) keeps a visible line and
+  an off-page slug on its baseline apart: the slug is left to the
+  off-page reading. A value the two form across that gap is a
+  manual-review warning (the owner's decision, 2026-10-11): never a
+  finding, never silent, and by design also raised on a clean page whose
+  page number or footer and a slug past the edge happen to form a value.
+  A narrower gap does not keep them apart: the two read as one line,
+  like a value running past the edge. Everything that needs text joined
+  is manual-review.
 
 ### 2. Objects — everything the file stores
 
@@ -354,11 +379,18 @@ secret can still be **not detected** (exit `0`). In short:
 - **Image data beyond the main picture:** a JPEG's own EXIF (or other)
   thumbnail can hold a second, fully decodable image the tool never
   looks at — only the main picture is ever drawn or OCR'd.
-- **Split values:** a page-break split with a header, footer or page
-  number between its halves, or where a page's last line is not its
-  reading-order last line; a value wrapped inside one column of a
-  multi-column page; dash-less pattern numbers wrapped at a line or page
-  break; text at extreme coordinates.
+- **Split values:** a value split around other text into more than three
+  pieces, or with its pieces more than five lines apart (a page-break
+  split with a header, footer or page number between its halves, a value
+  wrapped inside one column of a multi-column page, or halves in reverse
+  order are manual review, exit `2`); a letter-spaced value in fine print
+  that the page's reading breaks into one-character lines around other
+  text; a value wrapped over two fine-print lines closer together than
+  the line tolerance, which merges them into one interleaved line; a
+  page-break split whose halves are written in different directions (one
+  horizontal, one vertical);
+  dash-less pattern numbers wrapped at a line or page break; text at
+  extreme coordinates.
 
 Leftover images, leftover text in non-plain font codes, and attachments
 that are not text are **flagged** (exit `2`) rather than read: a clean
@@ -578,7 +610,7 @@ and what the file stores.
 | **Form-field value** | Data typed into a fillable form. |
 | **Fused** | Separate pieces of text joined together (e.g. two table cells), which can accidentally form a digit sequence. |
 | **Garbage-collected rewrite** | Saving a PDF so unreferenced (orphaned) objects are dropped. The fix for leftover-content leaks. |
-| **Genuine reading** | Page text read in the direction it was written (horizontal, rotated, or an OCR pass); its matches can be hard findings. |
+| **Genuine reading** | Page text read in the direction it was written (horizontal, rotated, or an OCR pass) — on the page, off it, or across the visible edge; its matches can be hard findings. |
 | **Guard** | A check in the code that prevents a known bug. |
 | **Hard finding** | A match strong enough to count as a confirmed leak (exit `1`) — see each layer's *Tier* for the exact rule. |
 | **Incremental update** | Edits appended to the end of a file; earlier revisions stay inside it, and no layer reads them (see Known gaps). |

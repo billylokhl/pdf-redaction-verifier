@@ -65,7 +65,8 @@ def _cells() -> dict[str, Cell]:
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),
         "off-page.font.no-unicode": Cell(gap, "font-coded text outside the page, no Unicode map"),
-        "off-page.font.straddling": Cell(gap, "font-coded text running across the page edge"),
+        "off-page.font.straddling": Cell(read, "font-coded text running across the page edge"),
+        "off-page.font.vertical": Cell(read, "font-coded text written vertically outside the page"),
         "off-page.pixels": Cell(gap, "pixels outside the page"),
         # oc-off — switched-off optional content
         "oc-off.plain": Cell(read, "plain strings in a switched-off layer"),
@@ -132,9 +133,20 @@ def _cells() -> dict[str, Cell]:
         "unindexed.container": Cell(gap, "containers outside any indexed object"),
         # matching limits
         "match.page-break": Cell(read, "a value split across a page break, halves adjacent"),
-        "match.page-break-furniture": Cell(gap, "a page-break split with a header/footer between"),
+        "match.page-break-furniture": Cell(
+            read, "a page-break split with a header/footer between", tier="review"),
+        "match.page-break-off-page-half": Cell(
+            read, "a page-break split one of whose halves lies wholly off the page",
+            tier="review"),
         "match.line-wrap": Cell(read, "a value wrapped across lines", tier="review"),
-        "match.columns": Cell(gap, "a value wrapped inside one column of a multi-column page"),
+        "match.letter-spaced-stack": Cell(
+            gap, "a letter-spaced value read as one-character lines around other text"),
+        "match.mixed-direction-split": Cell(
+            gap, "a page-break split whose halves are written in different directions"),
+        "match.tight-fine-print": Cell(
+            gap, "a value wrapped over two fine-print lines closer than the line tolerance"),
+        "match.columns": Cell(
+            read, "a value wrapped inside one column of a multi-column page", tier="review"),
         "match.undashed-wrap": Cell(gap, "a pattern number without dashes, wrapped"),
         "match.pattern-split": Cell(
             gap, "a pattern-rule value split at a page break in form boxes, a stack, rotated "
@@ -143,6 +155,9 @@ def _cells() -> dict[str, Cell]:
         # false alarms on clean documents
         "false-alarm.binary-value-collision": Cell(
             "false-alarm", "a value's digits occurring by chance in binary data"),
+        "false-alarm.slug-beside-visible-line": Cell(
+            "false-alarm", "an off-page slug a word space from visible text on its baseline, "
+                           "read as one line onto the next page's first line"),
         "false-alarm.generated-id-digits": Cell(
             "false-alarm", "a digit run in a /ID written as hex text (manual review)"),
     }
