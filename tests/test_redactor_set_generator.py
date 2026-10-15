@@ -237,7 +237,37 @@ class TestPreflight:
         with pytest.raises(gen.PreflightError, match="login name"):
             gen.preflight(tmp_path / "hdr.pdf", _truth())
 
+    @pytest.mark.parametrize("value", [
+        pikepdf.String("FabUser".encode("utf-16-be")),     # UTF-16 (no BOM)
+        pikepdf.String(b"\xfe\xff" + "FabUser".encode("utf-16-be")),
+        pikepdf.String("Fab(User)"),                        # escaped literal
+    ])
+    def test_refuses_a_needle_in_an_encoded_string(self, tmp_path, monkeypatch, value) -> None:
+        monkeypatch.setattr(gen, "private_needles", lambda: ["fabuser", "fab(user)"])
+        pdf = pikepdf.new()
+        pdf.add_blank_page()
+        pdf.docinfo["/Author"] = value
+        pdf.save(tmp_path / "s.pdf")
+        with pytest.raises(gen.PreflightError, match="login name"):
+            gen.preflight(tmp_path / "s.pdf", _truth())
+
+    def test_refuses_a_needle_in_a_hex_or_octal_string_as_written(self, tmp_path,
+                                                                 monkeypatch) -> None:
+        monkeypatch.setattr(gen, "private_needles", lambda: ["fabuser"])
+        for i, written in enumerate((b"<46616255736572>", b"(\\106ab\\125ser)")):
+            path = tmp_path / f"w{i}.pdf"
+            pdf = pikepdf.new()
+            pdf.add_blank_page()
+            pdf.docinfo["/Author"] = "PLACEHOLDER"
+            pdf.save(path, compress_streams=False, object_stream_mode=pikepdf.ObjectStreamMode.disable)
+            path.write_bytes(path.read_bytes().replace(b"(PLACEHOLDER)", written))
+            assert b"fabuser" not in path.read_bytes().lower()
+            with pytest.raises(gen.PreflightError, match="login name"):
+                gen.preflight(path, _truth())
+
     def test_needles_cover_file_urls_and_this_account(self) -> None:
+        if len(getpass.getuser()) < 3:
+            pytest.skip("login name too short to search for")
         needles = gen.private_needles()
         assert "file://" in needles and getpass.getuser().lower() in needles
         assert all(n == n.lower() and len(n) >= 3 for n in needles)
@@ -340,6 +370,43 @@ class TestFinalize:
             finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", other=[ok, ghost]))
 
 
+    def _blank(self, path: Path) -> None:
+        self._page_with(path, "Nothing here")
+
+    def test_undeclared_xmp_attachment_and_stream_are_refused(self, tmp_path) -> None:
+        from redactor_set.build import Built, PlantError, finalize
+        cases = []
+        self._blank(tmp_path / "x.pdf")
+        with pikepdf.open(tmp_path / "x.pdf", allow_overwriting_input=True) as pdf:
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as m:
+                m["dc:creator"] = ["Jordan Q. Testperson"]
+            pdf.save(tmp_path / "x.pdf")
+        cases.append(("x.pdf", "xmp store"))
+        self._blank(tmp_path / "a.pdf")
+        with pikepdf.open(tmp_path / "a.pdf", allow_overwriting_input=True) as pdf:
+            pdf.attachments["d.csv"] = pikepdf.AttachedFileSpec(pdf, b"ssn,123-45-6789\n")
+            pdf.save(tmp_path / "a.pdf")
+        cases.append(("a.pdf", "embedded store"))
+        self._blank(tmp_path / "o.pdf")
+        with pikepdf.open(tmp_path / "o.pdf", allow_overwriting_input=True) as pdf:
+            pdf.Root.Junk = pdf.make_stream(b"acct 731904628155")
+            pdf.save(tmp_path / "o.pdf")
+        cases.append(("o.pdf", "other store"))
+        for name, match in cases:
+            with pytest.raises(PlantError, match=match):
+                finalize("X", 0, Built(tmp_path / name, "test", "t", clean_control=True))
+
+    def test_residue_in_a_string_store_is_refused(self, tmp_path) -> None:
+        from redactor_set.build import Built, PlantError, finalize
+        self._blank(tmp_path / "r.pdf")
+        with pikepdf.open(tmp_path / "r.pdf", allow_overwriting_input=True) as pdf:
+            pdf.docinfo["/Author"] = "Testperson"
+            pdf.docinfo["/CreationDate"] = "D:20260314000000Z"      # dates are exempt
+            pdf.save(tmp_path / "r.pdf")
+        with pytest.raises(PlantError, match="Author holds 'Testperson'"):
+            finalize("X", 0, Built(tmp_path / "r.pdf", "test", "t", clean_control=True))
+
+
 class TestFiller:
     def test_money_and_dates_never_hold_secret_residue(self) -> None:
         import random
@@ -396,6 +463,36 @@ class TestRunner:
         assert entry["exit"] == 0
         assert (tmp_path / entry["m1"]).exists() and (tmp_path / entry["m2"]).exists()
         assert json.loads((tmp_path / "work" / "probes" / "run.json").read_text())["gc_pymupdf"]
+
+    def _setup(self, tmp_path, monkeypatch, tool_source: str) -> Path:
+        tool = tmp_path / "tool.py"
+        tool.write_text(tool_source)
+        (tmp_path / "probes").mkdir()
+        pdf = pikepdf.new()
+        pdf.add_blank_page()
+        pdf.save(tmp_path / "probes" / "T1.pdf")
+        monkeypatch.setenv("REDACTOR_CMD", f"{sys.executable} -I {tool}")
+        monkeypatch.setenv("REDACTOR_PYTHON", sys.executable)
+        return gen.write_config(tmp_path)
+
+    def test_a_timeout_is_recorded_and_the_tool_ended(self, tmp_path, monkeypatch) -> None:
+        config = self._setup(tmp_path, monkeypatch,
+                             "import time\nprint('started', flush=True)\ntime.sleep(60)\n")
+        record = run_set(tmp_path, "probes", config, timeout=1.0)
+        entry = record["documents"]["T1"]                      # type: ignore[index]
+        assert entry["exit"] == "timeout" and entry["m1"] is None and entry["m2"] is None
+        assert "started" in (tmp_path / "work/probes/m1/T1/stdout.txt").read_text()
+
+    def test_stale_outputs_are_removed_before_a_run(self, tmp_path, monkeypatch) -> None:
+        config = self._setup(tmp_path, monkeypatch, "raise SystemExit(1)\n")
+        for m in ("m1", "m2"):
+            stale = tmp_path / "work" / "probes" / m / "T1.pdf"
+            stale.parent.mkdir(parents=True, exist_ok=True)
+            stale.write_bytes(b"%PDF-1.4 stale")
+        record = run_set(tmp_path, "probes", config)
+        assert record["documents"]["T1"]["exit"] == 1          # type: ignore[index]
+        assert not (tmp_path / "work/probes/m1/T1.pdf").exists()
+        assert not (tmp_path / "work/probes/m2/T1.pdf").exists()
 
     def test_needs_the_command_from_the_environment(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("REDACTOR_CMD", raising=False)

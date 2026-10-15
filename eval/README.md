@@ -209,18 +209,21 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   stored as text anywhere else (a string object, XMP, an attachment, an
   annotation or field appearance, any other decodable stream) is
   accounted for by a declared instance of that kind, and every declared
-  one is really stored; and page text outside declared values holds no
-  piece of a secret four or more characters long (a run of a number's
-  digits, or a whole word of a name or address), which an oracle could
-  not tell from a redaction that left part of a value behind (partial
-  residue counts as a leak). Filler amounts and dates are redrawn until
+  one is really stored; and neither page text nor a string, XMP or
+  attachment store holds, outside a declared value, a piece of a secret
+  four or more characters long — a run of a number's digits, or a whole
+  word (four or more letters) of a name or address; machine-written
+  dates and identifiers are exempt — which an oracle could not tell from
+  a redaction that left part of a value behind (partial residue counts
+  as a leak). Filler amounts and dates are redrawn until
   they hold none. Pixels (scans, images, thumbnails) are declared, not
   checked; an OCR text layer's own readings are recorded as instances.
 - **Preflight** (`generate.py`): a document is refused if it carries,
   in any case, this machine's login name, the user's full name or any
   part of it, the home path, the hostname, or a `file://` URL — in its
-  objects, its decoded streams, or its extracted page text (text drawn
-  in glyph codes, such as a browser's header, is readable only there) —
+  raw objects, its decoded streams, its decoded string objects (hex,
+  escaped or UTF-16), or its extracted page text (text drawn in glyph
+  codes, such as a browser's header, is readable only there) —
   or a secret's bytes inside a font program or image samples, or a
   trailer `/ID` whose hex, as written, the config's patterns match.
 - **Probes** (`probes.py`): one location per document, to see what the
@@ -230,7 +233,7 @@ REDACTOR_CMD=... REDACTOR_PYTHON=... \
   method 1's output with garbage collection (`garbage=4, deflate=True`)
   in the tool's own Python, `$REDACTOR_PYTHON`. The tool is named
   nowhere in the repo, only by these environment variables. A run that
-  times out is recorded as such, and an earlier run's outputs are
+  times out is recorded as such (its whole process group ended), and an earlier run's outputs are
   removed first, so they can never stand in for a failed one
   (`work/<set>/run.json`).
 

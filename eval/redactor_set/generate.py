@@ -20,7 +20,7 @@ from pathlib import Path
 import pikepdf
 
 from . import locate, persona, producers
-from .build import Built, finalize
+from .build import Built, finalize, text_stores
 from .truth import DocTruth
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,9 +84,9 @@ def private_needles() -> list[str]:
 def _text_blobs(pdf: pikepdf.Pdf, raw: bytes, path: Path) -> list[bytes]:
     """Lower-cased: the raw file's objects, every decoded stream except font
     programs and images (binary, where a short needle matches by chance;
-    a secret there is check (2)'s concern), and each page's extracted
-    text -- drawn text in glyph codes (Chrome's header and footer) is
-    readable only there."""
+    a secret there is check (2)'s concern), each page's extracted text --
+    drawn text in glyph codes (Chrome's header and footer) is readable
+    only there -- and every string object's decoded text."""
     font_or_image = set()
     for obj in pdf.objects:
         if isinstance(obj, pikepdf.Dictionary) and obj.get("/Type") == "/FontDescriptor":
@@ -106,12 +106,18 @@ def _text_blobs(pdf: pikepdf.Pdf, raw: bytes, path: Path) -> list[bytes]:
             pass
     for lines in locate.page_lines(path):
         blobs.append("\n".join(line.text for line in lines).lower().encode("utf-8"))
+    # Every string object, decoded whatever its form (hex, escaped,
+    # UTF-16): the raw bytes hold such a string only encoded.
+    for store in text_stores(pdf):
+        if store.kind == "string":
+            blobs.append(store.text.lower().encode("utf-8"))
     return blobs
 
 
 def preflight(path: Path, truth: DocTruth) -> None:
     """Refuse an input that (1) carries anything private_needles() names,
-    in any case, raw, decoded or as extracted page text, (2) holds a
+    in any case: in its raw objects, decoded streams, decoded string
+    objects or extracted page text, (2) holds a
     secret's bytes inside a font program or image samples (a coincidence
     the oracle would report as a leak), or (3) has a trailer /ID whose
     hex text, as the file writes it, a config pattern matches (as a
@@ -131,7 +137,10 @@ def preflight(path: Path, truth: DocTruth) -> None:
             for s in secrets:
                 if len(s) >= 6 and s in data:
                     raise PreflightError(f"{truth.doc}: a secret's bytes occur in a {kind} stream")
-        ids = [m.group(1).decode() for m in re.finditer(rb"<([0-9A-Fa-f\s]+)>", _trailer_ids(raw))]
+        written = _trailer_ids(raw)
+        ids = [m.group(1).decode() for m in re.finditer(rb"<([0-9A-Fa-f\s]+)>", written)]
+        # An /ID written as a literal string is read as its own text too.
+        ids += [m.group(1).decode("latin-1") for m in re.finditer(rb"\(([^()]*)\)", written)]
         parsed = pdf.trailer.get("/ID")
         if isinstance(parsed, pikepdf.Array):
             ids += [bytes(part).hex() for part in parsed]
