@@ -706,3 +706,25 @@ would cost in recall: a real SSN written next to a label with the space
 lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
 rest. That cost has to be measured on leak cases before any demotion
 ships (Phase 5, PR 2; ADR 0012).
+
+## Phase 5 recall: what each demotion option costs -- eval/scorecard/pattern_recall.py
+
+Measured 2026-10-15 on the case library (fabricated): 109 leak cases with
+a built-in class rule, 52 of them exit 1 today. Each of ADR 0012's options
+applied to the shapes the recorder saw; the lower and upper bounds agree
+for every option.
+
+| Option (ADR 0012) | Leak cases moved from exit 1 to exit 2 |
+| --- | --- |
+| A: demote matches inside a token or a dated run | 0 |
+| B: A, plus bare digit runs and number lists | 1: `layout.form-boxes-pattern-only` |
+| C: demote the class | 9 |
+| B for `ssn`/`us-phone`, A for `credit-card` | 1 (the same) |
+| C for `ssn`, B for the others | 9 |
+
+`layout.form-boxes-pattern-only` is an SSN typed one digit per form box;
+the Text layer reads it as a bare `123456789`, so B demotes it. The 9
+under C are every pattern-only leak: `page.visible-pattern-rule`, the five
+`pattern-only` rows of `page_text_labels.py`, `document.trailer-key-pattern-rule`
+and the two sideways scans. The case library holds no SSN written against
+a label with the space lost ("SSN123456789"), which A would also demote.

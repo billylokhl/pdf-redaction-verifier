@@ -964,6 +964,26 @@ match there is never seen. Scratch reports, rules and record files go
 under `real_corpus/pattern-baseline-workdir`. It changes no verdict.
 Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
 
+**Recall cost** (`scorecard.pattern_recall`, Phase 5 PR 2a): the other
+side of the same choice. Every case-library leak case with a built-in
+class rule is scanned in-process with the recorder installed, and each of
+ADR 0012's options (per class, a set of shapes kept hard) is applied to
+what it saw:
+
+```bash
+PYTHONPATH=eval:. python -m scorecard.pattern_recall [--json OUT]
+```
+
+A demotion turns a hard finding into a review warning and never removes
+one, so an option can only move a case from exit 1 to exit 2. It prints,
+per option, the cases it moves, as two bounds: `moved_at_least` (every
+class finding is demoted by its own match's shape, and no other match of
+the class in a hard-capable call has a kept shape) and `moved_at_most`
+(judged by the findings' own matches alone; the tool reports a rule's
+first match per page, a demotion would go on looking). A value rule's
+hard finding keeps a case at exit 1 under every option. Case ids are
+fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
+
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 
 ADR 0010's gate for the inventory (`redaction_verifier.inventory`, in
