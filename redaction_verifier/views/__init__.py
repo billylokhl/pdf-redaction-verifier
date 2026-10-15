@@ -2,7 +2,8 @@
 
 Split into modules per docs/REDESIGN.md §4 ("views/ page readings,
 rendered-page OCR"): text.py (the layout-aware visual text extractor:
-_reconstruct, _join_cluster, extract_visual_text and the line-clustering
+_reconstruct, _join_cluster, extract_visual_text, visual_text_glyphs (the same
+readings naming their glyphs, for the visible map) and the line-clustering
 constants), ocr.py (the Apple Vision OCR bridge: _vision_recognize_batch,
 extract_ocr_text, OCR_DPI, OCR_GENUINE_READINGS and the _OCR_IMPORTS_OK
 availability flag).
@@ -39,12 +40,15 @@ from redaction_verifier.views.text import (
     TEXT_SEAM_READINGS,
     TEXT_SCATTER_READINGS,
     TEXT_TAILS_INTO_NEXT_PAGE,
+    GlyphReadings,
     _join_cluster,
     _reconstruct,
     extract_visual_text,
+    visual_text_glyphs,
 )
 
 __all__ = [
+    "GlyphReadings",
     "MAX_LINE_TOLERANCE_PT",
     "MIN_LINE_TOLERANCE_PT",
     "OCR_DPI",
@@ -59,4 +63,5 @@ __all__ = [
     "_vision_recognize_batch",
     "extract_ocr_text",
     "extract_visual_text",
+    "visual_text_glyphs",
 ]
