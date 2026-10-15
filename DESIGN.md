@@ -696,12 +696,13 @@ line included — runs inside one `suppress(BaseException)`, and while it
 runs SIGINT and SIGTERM do not raise at all: their handlers only stop the
 child and the map, and the previous handlers are put back only at the
 very end of `main()`'s `finally`, so a burst that outlasts the map
-cannot land in the cleanup after it either; on the command line the
-signals are blocked from there (and, without the flag, once `main()`
-returns) until `os._exit`, so none can land in the last flush (a suppress's own `__exit__` is Python code a burst of Ctrl-C
+cannot land in the cleanup after it either (a suppress's own `__exit__` is Python code a burst of Ctrl-C
 could land in; before this a burst could turn a confirmed leak's 1 into
 the crash code, and SIGTERM ended the run at -15 after its verdict was
-decided). `main()`'s `finally` kills a child anything left running, under
+decided). Once `main()` has returned, the command line's entry point
+(`run_cli`) is unchanged: a signal that lands in its last flush can still
+end the process by signal after the verdict, with or without the flag,
+as on main (#130, outside the map's scope). `main()`'s `finally` kills a child anything left running, under
 the same suppression. Map status goes to stderr only — with fd 2 closed
 it is dropped, never printed to stdout; a failure after OUT already holds
 the map is reported as written. The `--json` path refusals, which end a run before the map's own
