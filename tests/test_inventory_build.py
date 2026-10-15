@@ -431,8 +431,10 @@ def test_mutated_files_are_flagged_or_agree_with_the_readers(
 
 
 # ── Member values and bounds (PR #45 review) ──────────────────────────────
+# Member 6 is the page's annotation (/Annots [6 0 R]), so a dictionary
+# there carries a /Subtype: one without it makes MuPDF warn (#106, below).
 _MEMBER_VALUES = [b"null", b"true", b"false", b"3 0 R", b"123", b"-4", b"1.5", b"/Foo",
-                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 >>", b"[1 2]"]
+                  b"/Footrue", b"(x)", b"<41>", b"<< /K 1 /Subtype /Link >>", b"[1 2]"]
 
 
 def _members_at(values: list[bytes], seps: list[bytes], head_sep: bytes,
@@ -491,6 +493,16 @@ def test_members_at_any_bound_are_flagged_or_agree_with_the_readers(
     offsets anywhere, mid-token included: flagged, or read as the readers
     read them."""
     inventory_agrees(_members_at(values, seps, head_sep, shifts, first_shift), tmp_path)
+
+
+@requires_qpdf
+@pytest.mark.xfail(strict=True, reason="#106: an annotation without /Subtype is not flagged, "
+                   "and MuPDF warns on it (3a-7d's annotation gate)")
+def test_an_annotation_without_a_subtype_is_flagged_or_agrees(tmp_path: Path) -> None:
+    # The #106 counterexample: MuPDF cannot create its appearance and warns
+    # (a MUPDF_WARNING disagreement, failing closed: never certified).
+    # Passes once it is flagged or the readers agree (strict: then remove the mark).
+    inventory_agrees(_members_at([b"<< /K 1 >>", b"true"], [b"", b""], b"", [0, 0], 0), tmp_path)
 
 
 # ── Allowlisted leniency: comment lines after the header and %%EOF ────────
