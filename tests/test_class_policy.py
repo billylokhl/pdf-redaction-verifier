@@ -217,8 +217,15 @@ def test_a_scope_warning_beside_notices_still_gives_exit_2(tmp_path):
 
 
 def test_redactor_entity_types_are_informational_under_no_strict(tmp_path):
+    from caselib.run import available
+    from scorecard.differential import normalization_have
+    from scorecard.keys import effective_exit
+
     proc, data = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n", "--no-strict-classes")
-    assert proc.returncode == 0
+    assert proc.returncode == data["exit_code"]
+    # 0 once this machine's missing tools are set aside (no OCR on Linux CI: 2).
+    assert effective_exit(data, normalization_have(available())) == 0
+    assert data["findings"] == []
     assert {n["rule"] for n in data["notices"]} == {"entity_types:ssn"}
     proc, _ = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n")
     assert proc.returncode == 1  # strict (default): as before
