@@ -113,7 +113,8 @@ def _cmd_corpus_build(args: argparse.Namespace) -> int:
     files = corpus_mod.find_pdfs(args.root)
     entries = corpus_mod.build_manifest(args.root, manifest_path=manifest, files=files)
     print(f"wrote {len(entries)} entries to {manifest}")
-    skipped = {what: n for what, n in files.skipped().items() if n}
+    unread_files = len(files.pdfs) - len(entries)  # files build_manifest could not read
+    skipped = {what: n for what, n in files.skipped(unread_files).items() if n}
     if skipped:  # counts only, never which entries
         print("skipped: " + ", ".join(f"{n} {what}" for what, n in skipped.items()))
     # Counts only, never which files (corpus.classify, corpus.stratify).
