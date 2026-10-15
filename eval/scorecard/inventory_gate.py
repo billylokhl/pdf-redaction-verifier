@@ -398,6 +398,7 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
             "object_stream_members": sum(r.agreement.members_compared
                                          for r in agree if r.agreement),
             "values": sum(r.agreement.values_compared for r in agree if r.agreement),
+            "annotations": sum(r.agreement.annotations_compared for r in agree if r.agreement),
         },
         "oracle": {
             "crashes": sum(1 for o in oracle_runs if o.outcome == "crash"),

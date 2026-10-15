@@ -1,6 +1,6 @@
 # 0011. The reference graph: canonical form
 
-Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below) and 2026-10-12 (item 4's text rule, measured in 3a-7c)
+Status: accepted (owner approval, 2026-10-04: R1-R7 all as recommended); amended 2026-10-11 (items 4, 5 and 8 and the flag reasons; Amendment below), 2026-10-12 (item 4's text rule, measured in 3a-7c) and 2026-10-14 (item 8's annotation gate, P1)
 
 ## Context
 
@@ -365,7 +365,7 @@ every file the graph leaves unflagged:
   and duplicates never arise);
 - each annotation's synthesized-or-drawn classification against
   MuPDF's own (whether the appearance it draws is the stored one), so a
-  misread trigger fails the gate instead of passing review;
+  misread trigger fails the gate instead of passing review (by drawing: amended 2026-10-14, below);
 - the allowlist shrinks: `PAGE_TREE_SEMANTICS`, the retyped-catalog
   exemption and (R1) `OBJECT_ZERO_REFERENCE` go, so
   any qpdf page-tree message on an unflagged file is a disagreement; for
@@ -472,6 +472,65 @@ compares C strings), libqpdf does not. Measured after: 13 files
 case-library cases whose annotation appearance streams draw only paths
 and carry no `/Resources` are flagged, and the rule is revisited with
 real redactor output (plan §5, Lane B) before it is enforced.
+
+### Amendment (2026-10-14, 3a-7d): owner decision 11
+
+**Item 8, the annotation gate's method (P1 = (a)).** MuPDF 1.28 has no
+object-level signal that tells a synthesized appearance from the stored
+one (`pdf_annot_ap`, before or after drawing, and
+`pdf_annot_needs_resynthesis` name the stored one; the 3a-7d spike,
+`eval/spikes/annotation_appearance.py`). The gate therefore compares
+drawings: per revision, a copy with every page's `/Rotate` removed and
+every annotation's `/F` and `/OC` cleared, against the same copy with
+every annotation that has `/AP` replaced by a stand-in `/Square` with the
+same `/Rect`, `/AP` and `/AS`, which MuPDF draws from `/AP`. Each
+annotation is drawn alone in both, by MuPDF's trace device and as pixels
+at 4x, and read as NOTHING (no mark), STORED (trace and pixels equal) or
+SYNTHESIZED; ours synthesized matches SYNTHESIZED or NOTHING, ours not
+synthesized STORED or NOTHING, and MuPDF's annotation list (annotations
+and widgets) is compared with ours page by page as a multiset keyed by
+object number -- by `/Annots` position for an annotation written
+directly. Not exact: two drawings equal in trace and in 4x pixels read as
+the same, so content that differs only below that resolution -- an
+image's samples, a glyph program -- is not told apart. Item 5 already
+flags a synthesized unit whose rich text could draw an image.
+
+### Notes on item 5 (2026-10-15, 3a-7d; not an amendment)
+
+Recorded with the implementation; item 5's rule is unchanged.
+
+- **MuPDF-precise readings.** Item 5's conditions are read as MuPDF 1.28
+  reads them, each pinned by a test against MuPDF's own drawing
+  (`tests/test_inventory_annotations.py`):
+  - `/FT` is read as written: a reference to `/Sig` is no signature
+    field. `/V` and its `/Type` are resolved.
+  - References are followed up to nine in a row; past that MuPDF warns
+    and reads null.
+  - A direct null is an absent key.
+  - `/NeedAppearances` counts only as the boolean `true` (`1` does not),
+    resolved.
+  - `/NeedAppearances`, the signature test and the `/Parent` climb apply
+    to `/Subtype /Widget` (resolved) only.
+- **A flag reason, `APPEARANCE_UNSUPPORTED`** (coordinator decision,
+  2026-10-15; owner informed). An annotation item 5 calls synthesized
+  but MuPDF cannot synthesize is flagged:
+  - a `/Subtype` outside the 18 MuPDF builds an appearance for -- absent,
+    not a name, `/Movie`, `/Screen`, `/3D` and the like (issue #106);
+  - a widget whose inherited `/FT` is missing, an unknown name, or a
+    reference to `/Btn` (MuPDF reads `/Tx`, `/Ch` and `/Sig` through a
+    reference, `/Btn` only written as a name).
+
+  MuPDF warns "cannot create appearance stream" and draws the stored
+  appearance instead -- under `/NeedAppearances`, STORED where item 5
+  says synthesized -- or nothing. Corpus cost: 0 files.
+- **`FIELD_TREE`** flags a `/Parent` cycle only (owner decision P5).
+- **The `SYNTHESIZED` unit is a record, not a `UnitKind`.** It is a
+  `Synthesized` record in `Inventory.synthesized`, per revision, rather
+  than the `UnitKind` member the Consequences below name. This is
+  intended for 3a: `UnitKind` members are byte-tiling kinds, and these
+  units claim no bytes. Whether the ledger gives them a kind of their
+  own is 3b's, which holds unit statuses -- not 3a-7e's, which adds only
+  labels.
 
 ## Owner decisions
 
