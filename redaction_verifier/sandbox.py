@@ -89,7 +89,8 @@ class Limits:
 @dataclass(frozen=True)
 class Result:
     returncode: int | None       # None: killed by the parent (see ``killed``)
-    killed: str | None           # "wall-clock", "memory", "stray" (left its group), else None
+    killed: str | None           # "wall-clock", "memory", "stray" (left its group),
+                                 # "reader-failed" (output may be incomplete), else None
     stdout: bytes
     stdout_truncated: bool
     stderr_tail: str
@@ -231,12 +232,13 @@ def _alive(pid: int) -> bool:
 
 def _chunks(fd: int, stop: threading.Event) -> Iterator[bytes]:
     """*fd*'s data as it arrives, until its end or *stop*. It waits with
-    select, never blocked in read, so a stop is seen even while an escaped
-    process holds the pipe, and the fd is never read after the caller
-    closes it."""
+    poll (no descriptor-number limit, unlike select), never blocked in
+    read, so a stop is seen even while an escaped process holds the pipe,
+    and the fd is never read after the caller closes it."""
+    poller = select.poll()
+    poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
     while not stop.is_set():
-        ready, _, _ = select.select([fd], [], [], 0.1)
-        if not ready:
+        if not poller.poll(100):
             continue
         try:
             chunk = os.read(fd, 65536)
@@ -245,6 +247,17 @@ def _chunks(fd: int, stop: threading.Event) -> Iterator[bytes]:
         if not chunk:
             return
         yield chunk
+
+
+def _reader(target: Callable[..., None], failed: list[str]) -> Callable[..., None]:
+    """*target*, recording any exception in *failed*: a reader that dies
+    must never leave lost output looking complete."""
+    def run(*args: Any) -> None:
+        try:
+            target(*args)
+        except Exception as exc:              # noqa: BLE001 -- recorded, then reported
+            failed.append(type(exc).__name__)
+    return run
 
 
 def _read_head(fd: int, cap: int, sink: list[bytes], over: list[bool],
@@ -340,11 +353,12 @@ def run(child_code: str, input_path: Path, args: Sequence[str] = (),
         err: list[bytes] = []
         err_over: list[bool] = []
         stop = threading.Event()
+        failed: list[str] = []
         readers = [
-            threading.Thread(target=_read_head, daemon=True,
+            threading.Thread(target=_reader(_read_head, failed), daemon=True,
                              args=(proc.stdout.fileno(), limits.output_bytes, out, out_over,
                                    stop)),
-            threading.Thread(target=_read_tail, daemon=True,
+            threading.Thread(target=_reader(_read_tail, failed), daemon=True,
                              args=(proc.stderr.fileno(), STDERR_BYTES, err, err_over, stop))]
         for t in readers:
             t.start()
@@ -377,6 +391,8 @@ def run(child_code: str, input_path: Path, args: Sequence[str] = (),
                 t.join()
         proc.stdout.close()
         proc.stderr.close()
+        if failed:
+            killed = killed or "reader-failed"     # output may be incomplete: never ok
         elapsed = time.monotonic() - started
         returncode = None if killed in ("wall-clock", "memory") else proc.returncode
         stdout, stderr = b"".join(out), b"".join(err)

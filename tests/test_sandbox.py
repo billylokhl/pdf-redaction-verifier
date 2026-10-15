@@ -269,3 +269,24 @@ def _alive(pid: int) -> bool:
     out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
                          text=True).stdout.strip()
     return bool(out) and not out.startswith("Z")
+
+
+def test_many_open_descriptors_in_the_parent_do_not_lose_output(pdf, tmp_path):
+    # select() cannot watch a descriptor numbered 1024 or more; the readers
+    # poll instead, so output still arrives with the parent holding many.
+    held = [os.open(os.devnull, os.O_RDONLY) for _ in range(1100)]
+    try:
+        r = sb.run("print('ok')", pdf, limits=FAST)
+    finally:
+        for fd in held:
+            os.close(fd)
+    assert r.ok and r.stdout == b"ok\n"
+
+
+def test_a_reader_that_fails_is_never_ok(pdf, monkeypatch):
+    def broken(*_args):
+        raise RuntimeError("reader broke")
+
+    monkeypatch.setattr(sb, "_read_head", broken)
+    r = sb.run("print('ok')", pdf, limits=FAST)
+    assert r.killed == "reader-failed" and not r.ok
