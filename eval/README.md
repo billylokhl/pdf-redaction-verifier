@@ -263,8 +263,9 @@ PYTHONPATH=eval:. python -m redactor_set adjudicate lock --set inputs    # then:
   body in the raw bytes decoded (Flate, ASCIIHex, ASCII85) and searched
   for the written text (ASCII, escaped and hex strings, UTF-16, and
   UTF-16 as a hex string) and, in content streams, for the instance's
-  fingerprints or its UTF-16 in each text block's joined operands; a body is marked superseded when a later body has its
-  object number and unindexed after the final `%%EOF`; a hit in a font
+  fingerprints or its UTF-16 in each text block's joined operands; a
+  body is marked superseded when a later body has its object number and
+  unindexed after the final `%%EOF`; a hit in a font
   program or image never counts alone. **R2** (pikepdf): every object,
   live (reachable from the trailer) or orphaned, each string with the
   role of the dictionary holding it (Info, annotation, field, outline,

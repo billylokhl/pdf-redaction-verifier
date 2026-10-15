@@ -275,7 +275,11 @@ def _against_oracle(record: dict[str, Any], root: Path, set_name: str, name: str
     if not oracle_path.exists() or _sha(oracle_path) != record["oracle_sha256"]:
         problems.append(f"{name}: its oracle result changed or is missing: re-draft")
         return problems
-    truth = json.loads((root / set_name / f"{record['stem']}.truth.json").read_text())
+    truth_path = root / set_name / f"{record['stem']}.truth.json"
+    if not truth_path.exists():
+        problems.append(f"{name}: its truth manifest is missing")
+        return problems
+    truth = json.loads(truth_path.read_text())
     fresh = draft(FileResult.from_dict(json.loads(oracle_path.read_text())),
                   truth["instances"], record["oracle_sha256"], truth["producer"],
                   record["stem"])
@@ -306,8 +310,11 @@ def expected_records(root: Path, set_name: str,
     problems: list[str] = []
     for stem, entry in sorted(run["documents"].items()):
         if seeds is not None:
-            truth = json.loads((root / set_name / f"{stem}.truth.json").read_text())
-            if truth.get("seed") not in seeds:
+            truth_path = root / set_name / f"{stem}.truth.json"
+            if not truth_path.exists():
+                problems.append(f"{stem}: no truth manifest, so its seed is unknown")
+                continue
+            if json.loads(truth_path.read_text()).get("seed") not in seeds:
                 continue
         for method in ("m1", "m2"):
             want.add(f"{method}/{stem}.json")
@@ -344,8 +351,7 @@ def lock(root: Path, set_name: str, *, reason: str = "",
     lock_path = adj_dir / "adjudication.lock.json"
     old = json.loads(lock_path.read_text()) if lock_path.exists() else {"records": {},
                                                                         "relocks": []}
-    if seeds is None:
-        seeds = old.get("seeds")
+    seeds = sorted(set(seeds)) if seeds is not None else old.get("seeds")
     records: dict[str, str] = {}
     problems: list[str] = []
     finals: dict[Path, dict[str, Any]] = {}
