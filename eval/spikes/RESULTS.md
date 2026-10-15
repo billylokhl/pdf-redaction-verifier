@@ -575,6 +575,33 @@ flagged for other reasons, so the decision flags no new file. Case
 library (396 agree, 4 flagged) and fuzz (740 agree, 2,260 flagged) are
 unchanged, 0 unflagged disagreements in both.
 
+
+**Re-run with 3a-7c's resource scopes and name trees (commit 4a51f65,
+clean tree; owner's machine, 2026-10-12: macOS 27, qpdf 12.4.1, PyMuPDF/MuPDF
+1.28.2): the gate passed.** The runs for 3a-7a and 3a-7b are recorded in
+docs/phase3a-plan.md (1,932 agree, 141 flagged).
+
+| Quantity | Value |
+| --- | --- |
+| Gate | **PASS**: 0 unflagged disagreements, 0 crashes, 0 timeouts, 0 unverified, 0 inconsistent |
+| Unflagged, agree | 1,920 (from 1,932) |
+| Flagged (rate) | 153 (7.38%, from 6.80%) |
+| `NAME_TREE` / `RESOURCE_SCOPE` (files) | 13 (12 with no other reason) / 0 |
+| Compared | 21,902 streams, 5,942 object-stream members, 104,709 values |
+| Build / oracle seconds p50 / p99 / max | 0.15 / 0.53 / 12.5; 0.63 / 2.37 / 20.6 |
+| Work units per byte p50 / max | 2.32 / 4.84 (limit 64) |
+
+Before the owner's decision 10 the same code flagged `NAME_TREE` on 85
+files (1,848 agree, 225 flagged, 10.85%): 72 with plain-encoded keys
+ending in one NUL byte, 10 whose keys sort by bytes but not as text (9
+mixing UTF-16 and plain-encoded keys), 3 with bytes 0x7F-0xA0. Re-run after review round 1 (commit 50e937b: 0xAD and U+0000 in a UTF-16 key flag, keys in order under each reader's reading): unchanged -- the class with 0xAD included is still 3 files, no key holds 0xAD or a UTF-16 U+0000. Re-run after review round 2 (commit 488248e: U+001B in a UTF-16 key flags, the trailing NUL only after printable ASCII, /Limits comparisons charged): unchanged again -- all 72 trailing-NUL files are printable ASCII. Re-run after review round 3 (commit 3ad3217: BOM-less keys MuPDF may read as UTF-8 flag; catalog rewrites reuse the trees; main merged): corpus unchanged (1,920 / 153, 7.38%); case library 426 agree, 27 flagged, 0 unflagged disagreements (453 cases after main's additions; `RESOURCE_SCOPE` still 20); fuzz unchanged. The NUL
+class is now allowed (a reader-agreement test shows both readers resolve
+such a key to the same object); the other 13 stay flagged. Case library
+(413 cases): 387 agree, 26 flagged, 0 unflagged disagreements -- 20
+cases newly flagged `RESOURCE_SCOPE`, annotation appearance streams that
+draw only paths and carry no `/Resources`. Fuzz (2,000, seed 0): 501
+agree, 1,499 flagged, 0 unflagged disagreements, unchanged.
+
 ## Phase 3a-7d spike: which annotations MuPDF synthesizes -- eval/spikes/annotation_appearance.py
 
 Question (docs/phase3a-plan.md 3a-7d; owner decision P1 if no exact method exists): how can the
