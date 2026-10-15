@@ -196,7 +196,7 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
   cover it. Needs Chrome (`CHROME` to override its path), poppler,
   tesseract and macOS.
 - **Secrets** (`persona.py`): one fabricated household, every value
-  unissuable (SSN area 666 or the repo's 123-45-6789, EIN prefix 00, an
+  unissuable (SSN area 666, neither SSN sequential, EIN prefix 00, an
   unassigned routing prefix, the card networks' test number,
   example.com), no two sharing a run of six digits. One fabricated config
   with a real config's structure (exact values, patterns, entity types;
@@ -340,39 +340,65 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     lock: silent misses (a leak that exits `0`), downgrades (expected
     `1`, got `2`), false hard;
   - per instance (U2): every row the adjudication left recoverable,
-    partial residue included, must be named by a hard finding carrying
-    one of its rules (its secret's `exact_values[i]`, or a pattern that
-    matches the string as written) in a storage class it can sit in
+    partial residue included, must be found by the verifier. Its report
+    has one entry per (layer, rule, location), so one occurrence can
+    give several (the Text and OCR layers on one page; an exact rule and
+    a pattern both matching). Entries are therefore grouped into
+    **occurrences**: a place (storage, and the page, else the object)
+    and, there, the secret whose exact rule fired, else "a pattern
+    match". A pattern entry where another secret's exact rule fired
+    belongs to that secret, never to a different secret the pattern
+    happens to fit. An occurrence names an instance when one of the
+    instance's rules fired (its secret's `exact_values[i]`, or a pattern
+    matching the string as written), in a storage class it can sit in
     (`live`; `orphaned` or `unreferenced` for an orphaned object;
-    `superseded`) and, for page content, on its page. Where the
-    expected exit is `2`, a warning with the rule and storage will do;
-    where it is `1`, a warning alone is a **downgrade**. A file that
-    exits non-zero for another secret does not excuse an instance. In a
-    ⚑ cell (found but unreadable: `orphaned.font`, `orphaned.pixels`,
-    ...) the verifier reports the place, by design with no rule, so a
-    warning without a rule in the instance's storage covers it; that is
-    counted as its own outcome, **flagged**, and covers every instance
-    stored there. One
-    report entry cannot vouch for two instances: a one-to-one matching
-    of instances to the entries naming them decides, and an instance it
-    cannot cover is **ambiguous**, not a hit. Instances in a known-gap
-    cell are counted apart, by cell; they still need the owner's
-    acceptance;
+    `superseded`) and, for drawn text and pixels, on its page. Each
+    occurrence vouches for at most one instance (the largest one-to-one
+    matching decides); an instance with candidates the matching cannot
+    cover is **ambiguous**, not a hit. A hard finding is a **hit**; a
+    warning alone is a hit where review (exit `2`) is expected and a
+    **downgrade** where a finding is. A file that exits non-zero for
+    another secret does not excuse an instance.
+  - **flagged** (owner decision, 2026-10-15): in a ⚑ cell (found but
+    unreadable) the verifier reports a place, by design with no rule.
+    Its place warning counts as caught, reported apart from hits, only
+    when its code fits the cell's column (`LEFTOVER_UNDECODABLE_TEXT`
+    for font, `LEFTOVER_IMAGE` for pixels, `LEFTOVER_CONTAINER`), the
+    instance expects exit `2`, and the instance's object, from the
+    oracle's evidence, is in the warning's object list.
+  - **listed gaps** (owner decision, 2026-10-15): a missed name written
+    in another form than the configured one (word order, case) and a
+    missed piece of a name (a whole word of it, in an email address,
+    say) are listed gaps, counted apart and not blocking U2; the README
+    tells users to configure every written form of a name. Other
+    misses, and known-gap cells (counted by cell), still need the
+    owner's acceptance.
+  - split values: the verifier keeps a value split across lines,
+    columns or a page break at review (exit `2`); where the owner's
+    residue rule makes the visible piece a leak (exit `1` expected),
+    that is a downgrade, reported, not gated, and the case library
+    keeps its labels (owner decision, 2026-10-15).
   - U3: of the `m2` outputs whose truth is clean, the clean control
     apart, the share that exits `0`, with the warning codes behind every
     exit `2`.
 
-  Each run appends the lock's sha256 to `results/lock-history.json`; a
-  lock that differs from the last one measured (relabelled after the
-  verifier ran) needs `--lock-change-reason`, which the history keeps.
-  Only counts, with the lock's sha256, reach stdout and `--json`;
-  per-file rows go to `results/<date>.json` in the local root. It exits
-  `1` when any output gets no verdict (a crash, a timeout, an error
-  report) or was scanned without OCR, and `0` otherwise: misses are what
-  it measures. `--seed` restricts it to one seed's documents. The
-  owner's first run is 20 templates at seed 0 (owner decision,
-  2026-10-12): a second seed generated locally is out of scope, and its
-  drafts are kept outside `adjudication/`, unlocked and unmeasured.
+  Only counts, with the lock's sha256 and the seeds measured, reach
+  stdout and `--json`; per-file rows go to `results/<date>.json` in the
+  local root. A run in which any output gets no verdict (a crash, a
+  timeout, an error report) or was scanned without OCR exits `1`, writes
+  no `--json`, counts those outputs' instances as unmeasured, and is not
+  recorded; a complete run appends the lock's sha256 to
+  `results/lock-history.json`, and a lock that differs from the last one
+  measured (relabelled after the verifier ran) needs
+  `--lock-change-reason`, which the history keeps. `--seed` restricts it
+  to one seed's documents. The owner's first run is 20 templates at seed
+  0 (owner decision, 2026-10-12): a second seed generated locally is out
+  of scope, and its drafts are kept outside `adjudication/`, unlocked
+  and unmeasured. The persona's first SSN was the repo's sequential
+  123-45-6789 until 2026-10-15: it matched a form's "Line 1" ... "Line 9"
+  labels read across lines and a font's bytes, sending correctly
+  redacted outputs to review for reasons no real SSN would, so the set
+  was regenerated with 666-51-4073 (owner decision).
 
 Nothing in `redactor_set/` imports the verifier or PyMuPDF
 (`tests/test_redactor_set_generator.py` and

@@ -35,19 +35,18 @@ class TestPersona:
         assert persona.shared_digit_runs() == []
 
     def test_the_shared_run_check_is_live(self, monkeypatch) -> None:
-        # Guard against a vacuous check: the old account number overlaps
-        # the undashed fabricated SSN, the collision this persona avoids.
-        monkeypatch.setitem(persona.VARIANTS, "000123456789", "ACCT")
-        monkeypatch.setitem(persona.VARIANTS, "123456789", "SSN1")
+        # Guard against a vacuous check: a form sharing six of SSN1's
+        # digits must be caught.
+        monkeypatch.setitem(persona.VARIANTS, "000665140", "ACCT")
         assert persona.shared_digit_runs()
 
     def test_values_cannot_be_real(self) -> None:
         """Format checks only: each value uses a range that is never
-        issued (or the repo's own fabricated SSN, or a published test
-        number), so no real person or account can be named."""
+        issued (or a published test number), so no real person or account
+        can be named."""
         v = {s.id: s.value for s in persona.SECRETS}
-        assert v["SSN1"] == "123-45-6789"
-        assert v["SSN2"].startswith("666-")                     # area 666 is never issued
+        for ssn in (v["SSN1"], v["SSN2"]):
+            assert ssn.startswith("666-")                       # area 666 is never issued
         assert v["EIN"].startswith("00-")                       # EIN prefix 00 is never issued
         rout = [int(c) for c in v["ROUT"]]
         assert v["ROUT"].startswith("99")                       # unassigned Fed prefix
@@ -63,8 +62,14 @@ class TestPersona:
         for form, sid in persona.VARIANTS.items():
             assert sid in persona.BY_ID and form not in values
 
-    def test_undashed_ssn1_is_never_a_written_form(self) -> None:
-        assert "123456789" not in persona.written_forms()
+    def test_no_ssn_is_sequential(self) -> None:
+        # Owner decision 2026-10-15: a sequential SSN matches line labels
+        # 1..9 read across lines, which no real SSN would.
+        for sid in ("SSN1", "SSN2"):
+            digits = persona.BY_ID[sid].value.replace("-", "")
+            steps = {int(b) - int(a) for a, b in zip(digits, digits[1:])}
+            assert steps not in ({1}, {-1}, {0})
+            assert "1234" not in digits and "6789" not in digits
 
 
 class TestConfig:

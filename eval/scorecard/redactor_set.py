@@ -59,10 +59,33 @@ STORAGES: dict[str, frozenset[str]] = {
 # Instance outcomes, best first.
 HIT = "hit"                      # a finding (or, where review is expected, a warning) names it
 DOWNGRADED = "downgraded"        # expected a finding; only a warning names it
-AMBIGUOUS = "ambiguous"          # named, but by a (rule, storage) another instance shares
-FLAGGED = "flagged"              # a ⚑ cell: a warning without a rule covers its storage
+AMBIGUOUS = "ambiguous"          # named only by occurrences other instances took
+FLAGGED = "flagged"              # caught by a ⚑ cell's place warning (owner, 2026-10-15)
+LISTED_GAP = "listed-gap"        # a miss of a kind the owner accepted as a listed gap
 MISS = "miss"                    # nothing names it with its rule and storage
-OUTCOMES = (HIT, FLAGGED, DOWNGRADED, AMBIGUOUS, MISS)
+OUTCOMES = (HIT, FLAGGED, DOWNGRADED, AMBIGUOUS, LISTED_GAP, MISS)
+UNMEASURED = "unmeasured"        # its output got no verdict (the run is invalid)
+
+# Misses the owner accepted explicitly as listed gaps (2026-10-15), with
+# README guidance to configure every written form of a name: they are
+# counted and listed, and do not block U2. A miss of any other kind does.
+LISTED_GAPS: dict[str, str] = {
+    "name-variant": "a name written in a form other than the configured one (word order, "
+                    "case): the verifier matches the configured value",
+    "name-fragment": "a piece of a name (a whole word of it, in an email address, say): the "
+                     "verifier matches whole values",
+}
+
+
+def listed_gap(loc: str, cls: str, kind: str) -> str | None:
+    """Which owner-accepted listed gap a missed instance is, if any."""
+    if kind != "person name":
+        return None
+    if cls == "partial":
+        return "name-fragment"
+    if loc == "T2":
+        return "name-variant"
+    return None
 
 
 def storage_of(row: Mapping[str, Any]) -> str:
@@ -79,6 +102,8 @@ def storage_of(row: Mapping[str, Any]) -> str:
         return "orphaned"
     if head in ("superseded", "unindexed"):
         return head
+    if head in ("live", "metadata", "annot-fields", "attachment", "match", "thumbnail"):
+        return "live"
     return "unknown"
 
 
@@ -116,51 +141,129 @@ class InstanceScore:
     provisional: bool
     outcome: str = MISS
     named_by: list[str] = field(default_factory=list)
+    gap: str | None = None
 
 
-def _entry_id(e: Mapping[str, Any]) -> str:
-    return (f"{e.get('layer')}:{e.get('rule')}@{e.get('storage')}"
-            f"/p{e.get('page')}/o{e.get('object')}/{e.get('location') or e.get('code')}")
+# ── Occurrences ─────────────────────────────────────────────────────────
+# The verifier's report has one entry per (layer, rule, location): one
+# occurrence of a value can give several (the Text and OCR layers on the
+# same page; an exact rule and a pattern that both match it). So entries
+# are grouped into occurrence units -- a place (storage plus page, else
+# object, else location) and, at that place, a secret named by its exact
+# rule, else "a pattern match" -- and each unit vouches for at most one
+# planted instance. A pattern entry at a place where some secret's exact
+# rule also fired belongs to that secret's occurrence, never to another
+# secret's instance the pattern happens to fit.
+
+def _place(e: Mapping[str, Any]) -> str:
+    storage = e.get("storage")
+    if e.get("page") is not None:
+        return f"{storage}|p{e['page']}"
+    if e.get("object") is not None:
+        return f"{storage}|o{e['object']}"
+    return f"{storage}|{e.get('layer')}:{e.get('location') or e.get('code')}"
 
 
-def _names(e: Mapping[str, Any], rules: frozenset[str], storages: frozenset[str] | None,
-           page: int | None) -> bool:
-    """Whether report entry *e* names an instance with these rules, in one
-    of these storages and, when both say, on its page (the report counts
-    pages from 1, the truth manifest from 0)."""
-    if e.get("rule") not in rules:
+@dataclass
+class Unit:
+    place: str
+    storage: str
+    page: int | None             # 1-based, as the report counts
+    key: str                     # a secret id, or "pattern"
+    rules: frozenset[str]        # the rules that fired for it here
+    finding: bool                # a hard finding (else warnings only)
+
+
+def occurrence_units(report: Mapping[str, Any], exact: list[str],
+                     values: Mapping[str, str]) -> list[Unit]:
+    secret_of = {f"exact_values[{i}]": sid for i, v in enumerate(exact)
+                 for sid, val in values.items() if val == v}
+    entries = [(e, True) for e in report.get("findings", []) if e.get("tier") == "hard"]
+    entries += [(e, False) for e in report.get("warnings", [])]
+    by_place: dict[str, list[tuple[Mapping[str, Any], bool]]] = {}
+    for e, hard in entries:
+        if e.get("rule") is not None:
+            by_place.setdefault(_place(e), []).append((e, hard))
+    units = []
+    for place, group in sorted(by_place.items()):
+        e0 = group[0][0]
+        secrets = sorted({secret_of[str(e["rule"])] for e, _ in group
+                          if str(e["rule"]) in secret_of})
+        pattern_rules = frozenset(str(e["rule"]) for e, _ in group
+                                  if str(e["rule"]).startswith("patterns["))
+        for key in secrets or ["pattern"]:
+            own = [(e, h) for e, h in group
+                   if (key != "pattern" and secret_of.get(str(e["rule"])) == key)
+                   or str(e["rule"]) in pattern_rules]
+            units.append(Unit(place, str(e0.get("storage")), e0.get("page"), key,
+                              frozenset(str(e["rule"]) for e, _ in own),
+                              any(h for _, h in own)))
+    return units
+
+
+def _candidate(u: Unit, secret: str, rules: frozenset[str],
+               storages: frozenset[str] | None, page: int | None) -> bool:
+    if storages is not None and u.storage not in storages:
         return False
-    if storages is not None and e.get("storage") not in storages:
+    if page is not None and u.page != page + 1:
         return False
-    return page is None or e.get("page") is None or e.get("page") == page + 1
+    if u.key == "pattern":
+        return bool(u.rules & rules)
+    return u.key == secret and bool(u.rules & rules)
 
 
-def _flagged_cell(cell: str | None) -> bool:
-    """A ⚑ cell (COVERAGE.md): content the verifier finds but cannot read,
-    so it reports the place (exit 2) and no rule can name the value."""
-    from caselib.cells import CELLS
+# ── ⚑ cells ─────────────────────────────────────────────────────────────
+# In a ⚑ cell (found but unreadable) the verifier reports a place by
+# design -- "N orphaned objects it cannot decode: objects 6, 9" -- with no
+# rule. Such a warning is recorded as FLAGGED only when its code is the
+# one for the cell's column, the instance expects exit 2 there, and the
+# instance's object (from the oracle's evidence) is in the warning's
+# object list. Owner decision 2026-10-15: under exactly these conditions a
+# flagged instance counts as caught for U2 (not a miss), reported apart
+# from hits.
+PLACE_WARNINGS = {"font": "LEFTOVER_UNDECODABLE_TEXT", "pixels": "LEFTOVER_IMAGE",
+                  "container": "LEFTOVER_CONTAINER"}
+_OBJ_IN_EVIDENCE = re.compile(r"\bobj(?:ect)? (\d+)")
+_OBJS_IN_MESSAGE = re.compile(r"\bobjects? ((?:\d+(?:, )?)+)")
 
-    return cell is not None and cell in CELLS and CELLS[cell].status == "flagged"
+
+def _flagged_column(cell: str | None) -> str | None:
+    from caselib.cells import CELLS, parts
+
+    if cell is None or cell not in CELLS or CELLS[cell].status != "flagged":
+        return None
+    return parts(cell)[1]
 
 
-def _covers(e: Mapping[str, Any], storages: frozenset[str] | None, page: int | None) -> bool:
-    """Whether a warning that names no rule covers this storage (and page)."""
-    if e.get("rule") is not None:
+def instance_objects(row: Mapping[str, Any]) -> set[int]:
+    return {int(m.group(1)) for e in row.get("evidence", []) if e.get("counts", True)
+            for m in _OBJ_IN_EVIDENCE.finditer(str(e.get("where", "")))}
+
+
+def _place_warning(w: Mapping[str, Any], code: str, storages: frozenset[str] | None,
+                   objects: set[int]) -> bool:
+    if w.get("code") != code or w.get("rule") is not None:
         return False
-    if storages is None or e.get("storage") not in storages:
+    if storages is None or w.get("storage") not in storages:
         return False
-    return page is None or e.get("page") is None or e.get("page") == page + 1
+    if not objects:
+        return False                 # the owner's condition: the instance's object is listed
+    listed = {int(n) for m in _OBJS_IN_MESSAGE.finditer(str(w.get("message", "")))
+              for n in m.group(1).split(", ") if n}
+    return bool(listed & objects)
 
 
 def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
                     report: Mapping[str, Any], exact: list[str],
-                    patterns: list[str], values: Mapping[str, str]) -> list[InstanceScore]:
+                    patterns: list[str], values: Mapping[str, str],
+                    kinds: Mapping[str, str] | None = None) -> list[InstanceScore]:
     """Score every recoverable row of a locked, finalised adjudication
     record against the verifier's JSON report. *values* maps a secret id
-    to its configured value."""
-    findings = [f for f in report.get("findings", []) if f.get("tier") == "hard"]
+    to its configured value, *kinds* to what it is (for LISTED_GAPS)."""
+    units = occurrence_units(report, exact, values)
     warnings = list(report.get("warnings", []))
     scores: list[InstanceScore] = []
+    cands: list[list[int]] = []
     places: list[list[str]] = []
     for row in record["instances"]:
         override = row.get("override") or {}
@@ -173,54 +276,61 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
         rules = rules_for(values[row["secret"]], written, exact, patterns)
         storage = storage_of(row)
         storages = STORAGES.get(storage)  # None: unknown, any storage names it
-        page = base.get("page") if base and storage in ("live", "pixels-live") else None
+        # Drawn content must be found on its own page.
+        page = (base.get("page") if base and base.get("encoding") in ("page-text", "pixels")
+                and storage in ("live", "pixels-live") else None)
         score = InstanceScore(
             secret=row["secret"], loc=row["loc"], cls=cls,
             cell=override.get("cell", row.get("cell")), storage=storage,
             expected_exit=int(override.get("expected_exit", row.get("expected_exit"))),
             known_gap=bool(row.get("known_gap")), provisional=bool(row.get("provisional")))
-        by_finding = sorted({_entry_id(e) for e in findings if _names(e, rules, storages, page)})
-        by_warning = sorted({_entry_id(e) for e in warnings if _names(e, rules, storages, page)})
-        if by_finding or (score.expected_exit == 2 and by_warning):
-            score.outcome, score.named_by = HIT, by_finding or by_warning
-        elif by_warning:
-            score.outcome, score.named_by = DOWNGRADED, by_warning
-        # The verifier's report for a ⚑ cell is about a place, not a
-        # value: one "undecodable text (or unread images) in these objects"
-        # warning covers every instance stored there, so it is not
-        # one-to-one matched.
-        place = (sorted({_entry_id(e) for e in warnings if _covers(e, storages, page)})
-                 if _flagged_cell(score.cell) else [])
-        if score.outcome == MISS and place:
-            score.outcome, score.named_by = FLAGGED, place
+        mine = [k for k, u in enumerate(units)
+                if _candidate(u, row["secret"], rules, storages, page)]
+        # Prefer an occurrence a hard finding reports.
+        mine.sort(key=lambda k: (not units[k].finding, k))
+        column = _flagged_column(score.cell)
+        place = []
+        if column in PLACE_WARNINGS and score.expected_exit == 2:
+            objects = instance_objects(row)
+            place = sorted({str(w.get("message", ""))[:80] for w in warnings
+                            if _place_warning(w, PLACE_WARNINGS[str(column)], storages,
+                                              objects)})
         scores.append(score)
+        cands.append(mine)
         places.append(place)
-    # One report entry cannot vouch for two instances: a named instance
-    # counts only if a one-to-one matching of named instances to the
-    # entries naming them covers it (largest matching, by augmenting
-    # paths). Those it cannot cover are ambiguous, not hits.
-    owner: dict[str, int] = {}
 
-    def augment(i: int, seen: set[str]) -> bool:
-        for entry in sorted(scores[i].named_by):
-            if entry in seen:
+    # One occurrence vouches for at most one instance: the largest
+    # one-to-one matching (augmenting paths) decides; an instance with
+    # candidates it cannot cover is ambiguous, not a hit.
+    owner: dict[int, int] = {}
+
+    def augment(i: int, seen: set[int]) -> bool:
+        for k in cands[i]:
+            if k in seen:
                 continue
-            seen.add(entry)
-            if entry not in owner or augment(owner[entry], seen):
-                owner[entry] = i
+            seen.add(k)
+            if k not in owner or augment(owner[k], seen):
+                owner[k] = i
                 return True
         return False
 
-    named = [i for i, sc in enumerate(scores) if sc.outcome not in (MISS, FLAGGED)]
-    matched = {i for i in named if augment(i, set())}
-    for i in named:
-        if i not in matched:
-            # Not provable by a value finding; a ⚑ cell's place warning
-            # still covers it.
-            if places[i]:
-                scores[i].outcome, scores[i].named_by = FLAGGED, places[i]
-            else:
-                scores[i].outcome = AMBIGUOUS
+    for i in range(len(scores)):
+        if cands[i]:
+            augment(i, set())
+    matched = {i: k for k, i in owner.items()}
+    for i, sc in enumerate(scores):
+        if i in matched:
+            u = units[matched[i]]
+            sc.named_by = [f"{u.place} {u.key} {sorted(u.rules)}"]
+            sc.outcome = HIT if (u.finding or sc.expected_exit == 2) else DOWNGRADED
+        elif places[i]:
+            sc.outcome, sc.named_by = FLAGGED, places[i]
+        elif cands[i]:
+            sc.outcome = AMBIGUOUS
+        else:
+            sc.gap = listed_gap(sc.loc, sc.cls, (kinds or {}).get(sc.secret, ""))
+            if sc.gap:
+                sc.outcome = LISTED_GAP
     return scores
 
 
@@ -284,7 +394,8 @@ def lock_sha(root: Path, set_name: str) -> str:
 
 
 def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
-              values: Mapping[str, str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+              values: Mapping[str, str], kinds: Mapping[str, str] | None = None,
+              ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """(counts for stdout and --json, per-file rows for the local root)."""
     counts: dict[str, Any] = {}
     detail: list[dict[str, Any]] = []
@@ -299,15 +410,27 @@ def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
         misses_by_cell: Counter[str] = Counter()
         known_gap_by_cell: Counter[str] = Counter()
         partial: Counter[str] = Counter()
+        listed: Counter[str] = Counter()
+        flagged_by_cell: Counter[str] = Counter()
         provisional = 0
         for run, row in zip(mruns, rows):
             scores = ([] if run.result.report is None else
                       score_instances(run.record, run.truth, run.result.report, exact,
-                                      patterns, values))
+                                      patterns, values, kinds))
+            if run.result.report is None:
+                # Never dropped: a run without a report leaves its
+                # recoverable instances unmeasured, and counted.
+                outcomes[UNMEASURED] += sum(
+                    1 for r in run.record["instances"]
+                    if (r.get("override") or {}).get("class", r["class"]) != "removed")
             for s in scores:
                 outcomes[s.outcome] += 1
                 by_loc.setdefault(s.loc, Counter())[s.outcome] += 1
-                if s.outcome not in (HIT, FLAGGED):
+                if s.outcome == LISTED_GAP:
+                    listed[str(s.gap)] += 1
+                elif s.outcome == FLAGGED:
+                    flagged_by_cell[str(s.cell)] += 1
+                elif s.outcome != HIT:
                     if s.known_gap:
                         known_gap_by_cell[str(s.cell)] += 1
                     else:
@@ -329,9 +452,12 @@ def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
             "instances": {
                 "recoverable": sum(outcomes.values()),
                 **{o: outcomes[o] for o in OUTCOMES},
+                UNMEASURED: outcomes[UNMEASURED],
                 "by_location": {loc: dict(c) for loc, c in sorted(by_loc.items())},
                 "not_hit_by_cell": dict(sorted(misses_by_cell.items())),
                 "known_gap_not_hit_by_cell": dict(sorted(known_gap_by_cell.items())),
+                "listed_gap_by_kind": dict(sorted(listed.items())),
+                "flagged_by_cell": dict(sorted(flagged_by_cell.items())),
                 "partial_residue": dict(partial),
                 "provisional_mapping": provisional,
             },
@@ -384,10 +510,10 @@ def run(root: Path, set_name: str, rules_path: Path, *, verify_path: Path, workd
 def unmeasured(runs: list[FileRun]) -> list[str]:
     """Why a run cannot be counted: a crash, a timeout, an error report,
     or a report made without OCR (pixels instances would be unmeasured).
-    By method and sha prefix only."""
+    By method and position in the run only (no per-file identifier)."""
     problems = []
-    for r in runs:
-        tag = f"{r.method}/{r.record['sha256'][:12]}"
+    for n, r in enumerate(runs):
+        tag = f"{r.method} output #{n}"
         report = r.result.report
         if r.result.timed_out:
             problems.append(f"{tag}: timed out")
@@ -401,7 +527,9 @@ def unmeasured(runs: list[FileRun]) -> list[str]:
 
 
 def render(counts: Mapping[str, Any], sha: str) -> str:
-    lines = [f"adjudication lock sha256 {sha}"]
+    lines = [f"adjudication lock sha256 {sha}; seeds {counts.get('seeds', 'all locked')}"
+             + ("" if counts.get("valid", True) else
+                f"; INVALID: {counts.get('unmeasured_outputs')} output(s) without a verdict")]
     for method in METHODS:
         if method not in counts:
             continue
@@ -410,12 +538,15 @@ def render(counts: Mapping[str, Any], sha: str) -> str:
                      f"{f['clean_cases']}); silent miss {f['silent_miss']}, downgrade "
                      f"{f['downgrade']}, false hard {f['false_hard']}")
         lines.append(f"  instances recoverable {i['recoverable']}: hit {i[HIT]}, flagged "
-                     f"(⚑ cell, place reported) {i[FLAGGED]}, downgraded "
-                     f"{i[DOWNGRADED]}, ambiguous {i[AMBIGUOUS]}, miss {i[MISS]}")
+                     f"(caught by a ⚑ place warning) {i[FLAGGED]}, downgraded "
+                     f"{i[DOWNGRADED]}, ambiguous {i[AMBIGUOUS]}, listed gap (owner-accepted) "
+                     f"{i[LISTED_GAP]}, miss {i[MISS]}")
         for cell, n in i["not_hit_by_cell"].items():
             lines.append(f"    not hit: {cell}: {n}")
         for cell, n in i["known_gap_not_hit_by_cell"].items():
             lines.append(f"    not hit, known gap: {cell}: {n}")
+        for kind, n in i["listed_gap_by_kind"].items():
+            lines.append(f"    listed gap (owner-accepted 2026-10-15): {kind}: {n}")
         if i["partial_residue"]:
             lines.append(f"  partial residue: {i['partial_residue']}")
     u = counts["u3"]
@@ -425,7 +556,8 @@ def render(counts: Mapping[str, Any], sha: str) -> str:
     return "\n".join(lines)
 
 
-def check_lock_history(root: Path, sha: str, reason: str) -> str | None:
+def check_lock_history(root: Path, sha: str, reason: str, *, record: bool = True
+                       ) -> str | None:
     """Every measurement appends the lock's sha256 to
     `results/lock-history.json`. A lock that differs from the last one
     measured -- relabelled after the verifier has run -- needs a reason,
@@ -437,6 +569,8 @@ def check_lock_history(root: Path, sha: str, reason: str) -> str | None:
     if history and history[-1]["lock_sha256"] != sha and not reason:
         return ("the adjudication lock changed since the last measurement "
                 f"({history[-1]['lock_sha256'][:12]} -> {sha[:12]}): pass --lock-change-reason")
+    if not record:
+        return None
     history.append({"date": datetime.date.today().isoformat(), "lock_sha256": sha,
                     "reason": reason if history and history[-1]["lock_sha256"] != sha else ""})
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -459,19 +593,27 @@ def persona_values() -> dict[str, str]:
     return {s.id: s.value for s in SECRETS}
 
 
+def persona_kinds() -> dict[str, str]:
+    from redactor_set.persona import SECRETS
+
+    return {s.id: s.kind for s in SECRETS}
+
+
 def main(args: Any) -> int:
     from .corpus import ensure_local_only
     from .differential import default_workers
     from .refs import candidate_verify_path, repo_root
 
     root = ensure_local_only(args.root, allow_outside=args.allow_outside,
-                             boundary=REDACTOR_SET_DIR)
+                             boundary=REDACTOR_SET_DIR, docs="The real-redactor set")
     rules_path = args.rules or root / "config" / "redact.yaml"
+    locked = load_locked(root, args.set)        # refuses a lock that does not verify
     sha = lock_sha(root, args.set)
-    refusal = check_lock_history(root, sha, args.lock_change_reason)
+    refusal = check_lock_history(root, sha, args.lock_change_reason, record=False)
     if refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
         return 1
+    del locked
     runs = run(root, args.set, rules_path, verify_path=candidate_verify_path(repo_root()),
                workdir=root / "results" / "verifier", timeout=args.timeout,
                workers=args.workers or default_workers(),
@@ -480,16 +622,21 @@ def main(args: Any) -> int:
         print("ERROR: no locked outputs to measure.", file=sys.stderr)
         return 1
     exact, patterns = load_rules(rules_path)
-    counts, detail = summarise(runs, exact, patterns, persona_values())
+    counts, detail = summarise(runs, exact, patterns, persona_values(), persona_kinds())
+    problems = unmeasured(runs)
+    counts["valid"] = not problems
+    counts["unmeasured_outputs"] = len(problems)
+    counts["seeds"] = sorted(args.seed) if args.seed else "all locked"
     print(render(counts, sha))
     path = write_detail(root, detail, counts, sha)
     print(f"per-file rows: {path.relative_to(root)} (local only)", file=sys.stderr)
+    if problems:
+        # No shareable counts from a run that did not measure every output.
+        print("ERROR: not every output got a verdict (no --json written, not recorded "
+              "in the lock history):\n  " + "\n  ".join(problems), file=sys.stderr)
+        return 1
+    check_lock_history(root, sha, args.lock_change_reason, record=True)
     if args.json:
         args.json.write_text(json.dumps({"lock_sha256": sha, **counts}, indent=2,
                                         sort_keys=True) + "\n")
-    problems = unmeasured(runs)
-    if problems:
-        print("ERROR: not every output got a verdict:\n  " + "\n  ".join(problems),
-              file=sys.stderr)
-        return 1
     return 0
