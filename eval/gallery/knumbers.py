@@ -50,7 +50,8 @@ these were matched by hand against §8's table, cell id by cell id.
 
 K8 has no case: §8 says it was fixed in the current tool before this
 gallery existed. K9 and K34 were fixed after it: their cases are now
-ordinary caught leak cases, so they have no K-number here any more.
+ordinary caught leak cases, so they have no K-number here any more;
+so is K24's, flagged (exit 2) by the page-thumbnail hotfix.
 """
 
 from __future__ import annotations
@@ -87,7 +88,7 @@ CASE_TO_K: dict[str, int] = {
     "leftover.small-image": 21,
     "document.xmp-thumbnail": 22,
     "leftover.xmp-thumbnail": 23,
-    "page.thumb-image": 24,
+    # K24: fixed at the flagged tier (§8, H1 hotfix); page.thumb-image is now a caught case.
     "attachment.base64-zip": 25,
     "document.af-pattern-rule": 26,
     "document.af-image": 27,

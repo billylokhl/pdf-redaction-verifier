@@ -864,6 +864,64 @@ def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
             yield from walk(int(ref))
 
 
+def _parent_xref(doc: fitz.Document, node: int) -> int:
+    """A node's /Parent object number, or 0 at the root (no /Parent).
+    Anything else (an inline dictionary, a number, a bad reference) raises,
+    so the walk fails closed rather than stopping early."""
+    kind, value = doc.xref_get_key(node, "Parent")
+    if kind == "null":
+        return 0
+    parent = int(value.split()[0]) if kind == "xref" else 0
+    if parent <= 0:
+        raise ValueError("page tree /Parent is not a reference")
+    return parent
+
+
+def _thumb_carrier(doc: fitz.Document, page_xref: int, memo: dict[int, bool | None]) -> str:
+    """Where a page's /Thumb sits: "its own", "inherited" (on a Pages node
+    above it) or "" (none). Raises on a page tree cycle or unreadable key.
+
+    ``memo`` maps each Pages node already walked to whether it or a node
+    above it carries /Thumb, or None when its walk failed. Every page
+    shares the chain above it, so without the memo N pages under a deep
+    chain cost O(N x depth); with it each node is read once, O(objects).
+    A node whose walk failed stays failed, so a later page reaching it
+    through the memo fails closed too rather than passing.
+    """
+    if doc.xref_get_key(page_xref, "Thumb")[0] != "null":
+        return "its own"
+    path: list[int] = []
+    on_path: set[int] = set()
+    found = False
+    try:
+        node = _parent_xref(doc, page_xref)
+        while node:
+            if node in memo:
+                hit = memo[node]
+                if hit is None:
+                    raise ValueError("page tree walk failed earlier")
+                found = hit
+                break
+            # A walk that never repeats a node cannot visit more nodes
+            # than the file has objects; a repeat (the page itself
+            # included) is a cycle.
+            if node in on_path or node == page_xref or len(path) >= doc.xref_length():
+                raise ValueError("page tree cycle")
+            path.append(node)
+            on_path.add(node)
+            if doc.xref_get_key(node, "Thumb")[0] != "null":
+                found = True
+                break
+            node = _parent_xref(doc, node)
+    except Exception:
+        for walked in path:
+            memo[walked] = None
+        raise
+    for walked in path:
+        memo[walked] = found
+    return "inherited" if found else ""
+
+
 def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     """Yield HiddenItem for content no page renders, or a str warning.
 
@@ -964,6 +1022,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 hard=False,
             )
 
+    thumb_memo: dict[int, bool | None] = {}
     for page_index in range(doc.page_count):
         human_page = page_index + 1
         try:
@@ -976,6 +1035,34 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 storage="live",
             )
             continue
+        # A page's /Thumb preview is a second picture of the page that
+        # nothing here renders or OCRs (K24): flag every one, and fail
+        # closed, until Phase 4b reads it. /Thumb is not inheritable in
+        # the spec, but a Pages node carrying one is checked too.
+        try:
+            carrier = _thumb_carrier(doc, page.xref, thumb_memo)
+        except Exception as exc:
+            yield Warn(
+                "HIDDEN_ITEM_FAILED",
+                "Hidden",
+                f"Hidden: page {human_page} thumbnail check failed "
+                f"({type(exc).__name__}) — a page thumbnail may be present "
+                "and NOT read; manual review recommended",
+                storage="live",
+                page=human_page,
+            )
+        else:
+            if carrier:
+                yield Warn(
+                    "PAGE_THUMBNAIL",
+                    "Hidden",
+                    f"Hidden: page {human_page} carries a thumbnail image "
+                    f"(/Thumb, {carrier}) that is NOT read or OCR'd — it may "
+                    "still show what the page no longer does; manual review "
+                    "recommended",
+                    storage="live",
+                    page=human_page,
+                )
         try:
             annots = list(page.annots())
         except Exception as exc:
