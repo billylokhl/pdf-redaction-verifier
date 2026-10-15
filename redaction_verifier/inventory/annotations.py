@@ -102,8 +102,13 @@ class Annotation:
     """An annotation MuPDF lists: its page (an index into the revision's
     page list), its position in that page's /Annots, its object number
     (None when written directly in /Annots), the body holding it (its own,
-    or its page's), whether it is a widget (/Subtype /Widget, resolved) and
-    whether MuPDF synthesizes its appearance."""
+    or its page's), whether it is a widget (/Subtype /Widget, resolved),
+    whether MuPDF synthesizes its appearance, and -- when it does not --
+    the object number of the stored appearance stream MuPDF draws
+    (``appearance``, 3a-7e-2: a stream /AP /N, or the stream /AS names in
+    an /N state dictionary, each through up to MAX_HOPS references, as
+    pdf_annot_ap reads it; None when synthesized or when that is not a
+    stream: nothing drawn)."""
 
     page: int
     index: int
@@ -111,6 +116,7 @@ class Annotation:
     body: UnitRef
     widget: bool
     synthesized: bool
+    appearance: int | None = None
 
 
 @dataclass(frozen=True)
@@ -259,7 +265,8 @@ class _Walk:
         self.flags: list[tuple[FlagReason, int, int]] = []
         self.spent = False
         self.fields: dict[int, _Field] = {}       # a field node's inherited /FT and /V
-        self.classified: dict[int, bool] = {}     # an annotation's classification, by number
+        # An annotation's classification and drawn appearance, by number.
+        self.classified: dict[int, tuple[bool, int | None]] = {}
         self.number = 0  # the number of the body resolve() last reached
 
     def charge(self, n: int = 1) -> bool:
@@ -326,15 +333,17 @@ class _Walk:
                     continue
                 number = item.num if isinstance(item, PdfRef) and held is not None else None
                 if number is not None and number in self.classified:
-                    synthesized = self.classified[number]
+                    synthesized, drawn = self.classified[number]
                 else:
-                    synthesized = self.classify(value, number, subtype, need,
-                                                number if number is not None else page.number)
+                    synthesized, drawn = self.classify(
+                        value, number, subtype, need,
+                        number if number is not None else page.number)
                     if number is not None:
-                        self.classified[number] = synthesized
+                        self.classified[number] = synthesized, drawn
                 unit = held[0] if held is not None else page.unit
                 widget = isinstance(subtype, PdfName) and subtype.raw == b"Widget"
-                found.append(Annotation(page_index, index, number, unit, widget, synthesized))
+                found.append(Annotation(page_index, index, number, unit, widget, synthesized,
+                                        drawn))
         return None if self.spent else tuple(found)
 
     def need_appearances(self, root: PdfValue | None) -> bool:
@@ -353,8 +362,9 @@ class _Walk:
         return isinstance(need, PdfBool) and need.value
 
     def classify(self, value: PdfDict, number: int | None, subtype: PdfValue | None,
-                 need: bool, holder: int) -> bool:
-        """ADR 0011 item 5: does MuPDF synthesize this annotation's appearance?
+                 need: bool, holder: int) -> tuple[bool, int | None]:
+        """ADR 0011 item 5: does MuPDF synthesize this annotation's
+        appearance -- and if not, the stored stream it draws (None: none)?
         *holder*: the object a flag names -- the annotation's number, or its
         page's for one written directly."""
         widget = isinstance(subtype, PdfName) and subtype.raw == b"Widget"
@@ -365,14 +375,20 @@ class _Walk:
             ft = field.ft
             cause = field.cause if field.cause is not None else holder
             if isinstance(ft, PdfName) and ft.raw == b"Sig":
-                return not self.signed(field.v)  # whatever /AP or /NeedAppearances say
-        synthesized = not self.stored(value) or (widget and need)
+                # Whatever /AP or /NeedAppearances say: signed, the stored
+                # appearance is drawn.
+                if self.signed(field.v):
+                    return False, self.stored(value)[1]
+                return True, None
+        stored, drawn = self.stored(value)
+        synthesized = not stored or (widget and need)
         if synthesized:
             if not (isinstance(subtype, PdfName) and subtype.raw in SYNTHESIZABLE):
                 self.flag_unsupported(AppearanceRule.SUBTYPE, holder)
             elif widget and not self.buildable(ft):
                 self.flag_unsupported(AppearanceRule.FIELD_TYPE, cause)
-        return synthesized
+            return True, None
+        return False, drawn
 
     def buildable(self, ft: PdfValue | None) -> bool:
         """A field type MuPDF builds a widget's appearance for: /Tx, /Ch or
@@ -385,21 +401,27 @@ class _Walk:
     def flag_unsupported(self, rule: AppearanceRule, number: int) -> None:
         self.flags.append((FlagReason.APPEARANCE_UNSUPPORTED, int(rule), number))
 
-    def stored(self, value: PdfDict) -> bool:
-        """An /AP /N MuPDF draws as stored: a stream, or a dictionary in
-        which /AS names an entry (one that is not a stream draws nothing)."""
+    def stored(self, value: PdfDict) -> tuple[bool, int | None]:
+        """Whether MuPDF draws an /AP /N as stored -- a stream, or a
+        dictionary in which /AS names an entry (one that is not a stream
+        draws nothing) -- and the stream's number (None: no stream)."""
         ap, _ = self.resolve(self.get(value, b"AP"))
         if not isinstance(ap, PdfDict):
-            return False
+            return False, None
         normal, held = self.resolve(self.get(ap, b"N"))
         if held is not None and held[4]:
-            return True  # a stream (resolve ends on a body only through a reference)
+            # A stream (resolve ends on a body only through a reference).
+            return True, self.number
         if not isinstance(normal, PdfDict):
-            return False
+            return False, None
         state, _ = self.resolve(self.get(value, b"AS"))
         if not isinstance(state, PdfName):
-            return False
-        return self.get(normal, state.raw) is not None
+            return False, None
+        entry = self.get(normal, state.raw)
+        if entry is None:
+            return False, None
+        _, held = self.resolve(entry)
+        return True, (self.number if held is not None and held[4] else None)
 
     def signed(self, v: PdfValue | None) -> bool:
         """MuPDF's test: /V a dictionary (a stream's included) whose /Type

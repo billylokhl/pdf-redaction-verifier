@@ -1,6 +1,8 @@
 """The reference graph, part e (Phase 3a-7e, ADR 0011 item 5): labels.
-This first part (3a-7e-1) gives each revision its reachable objects and
-its STRUCTURAL streams; DRAWABLE and ORPHANED follow (3a-7e-2).
+Each revision's reachable objects and STRUCTURAL streams (3a-7e-1), its
+DRAWABLE streams (3a-7e-2, drawable.py: the drawing closure from the
+canonical page list), and every stream body's labels across the
+revisions it lives in, ORPHANED when it has no other (3a-7e-2).
 
 - **Reachable**: every object a reference reaches from the revision's
   trailer, following every edge item 4 collects whatever its use kind
@@ -36,12 +38,22 @@ its STRUCTURAL streams; DRAWABLE and ORPHANED follow (3a-7e-2).
     one, an /AP given by reference included. /Type, /Subtype and /S are read through one reference. The
     target is a stream whose dictionary carries no /Subtype /Image or
     /Form (resolved), no /BBox and no /Width. When in doubt, no label:
-    an unlabelled stream fails closed (ORPHANED, 3a-7e-2).
+    an unlabelled stream fails closed (ORPHANED).
   A record holds only its kind and what the walk established (the
   reachable source, -1 for the chain, and the key). Whether the kind's
   decoder parses the whole stream is checked where the decoder runs (3b's
   registry, REDESIGN), so a record is a candidate until then; no label
   discharges a unit, and no status is assigned here.
+- **DRAWABLE**: every stream drawable.py's closure reaches from the
+  revision's page list, its annotations' drawn appearances and (with one
+  synthesized) the catalog's /AcroForm /DR, over item 5's closed key
+  lists per role; a key outside them leads nowhere drawable.
+- **ORPHANED**: every stream with no other label. Per revision it is
+  derived (``Inventory.orphaned``), not kept; per body (BodyLabels, "Across
+  revisions") a body is orphaned when no revision it lives in gives it
+  another label -- a dead body, or one no live entry names, included.
+  Labels are by body (UnitRef), never by object number, so none passes
+  between two bodies sharing a number.
 
 Labels add no flag (owner decision R3). Revisions are read oldest first.
 A revision whose trailer references are unchanged and that changes no
@@ -50,14 +62,19 @@ bodies hold the same references (number, generation, key path) and that
 no by-key record read and no object stream is (a rewritten catalog, an
 update's usual shape) -- keeps the last walk's reachable set and by-key
 records, by identity, as does a revision walked again to the same ones.
+The DRAWABLE set is kept the same way (``_drawable``): when the walk's
+starts are the same, the catalog's /AcroForm as written too, and every
+body it read that changed is no stream, decided no role and holds the
+same references (a rewritten page, an update's usual shape).
 The chain's records are shared too: the cross-reference streams are one
 list for the whole file, each revision naming how many apply. A revision
 without a page list gets no labels, and the next walks afresh (the review
 of #140's rule: nothing records what the skipped revision changed).
 
 Memory: whatever a revision retains that is new -- its labels record, a
-new reachable set, new by-key records, a new object-stream set, each
-cross-reference stream appended -- is charged to the work budget at least
+new reachable set, new by-key records, a new object-stream set, a new
+DRAWABLE set, each cross-reference stream appended -- and each stream's
+per-body entry are charged to the work budget at least
 its size in bytes (the *_WORK constants, measured with sys.getsizeof), so
 labels retain at most one byte per unit of work: at most the budget's 64
 per byte of the file (DESIGN.md, "Bounded resources"). Iterative,
@@ -73,8 +90,11 @@ from typing import Final
 
 from ..budget import Budget
 from ..ledger import UnitRef
+from .annotations import _SPENT, Annotations, _catalog_key
+from .drawable import CATALOG, FORM, PAGE, RES_HOLDER, Drawing, Start
 from .graph import ARRAY, Body, Edge
 from .objects import PdfArray, PdfDict, PdfName, PdfRef, PdfValue
+from .pages import Page
 
 
 class StructuralKind(Enum):
@@ -118,9 +138,9 @@ class RevisionLabels:
     call from parts shared across revisions: the by-key records, the
     file's cross-reference streams (``xref_streams``, oldest first; the
     first ``xref_count`` are this revision's chain), the object streams
-    home to a live entry, and the hint stream. A revision that reads
-    nothing new shares its predecessor's record (by identity). 3a-7e-2
-    adds the DRAWABLE streams."""
+    home to a live entry, and the hint stream -- and its DRAWABLE stream
+    bodies (3a-7e-2). A revision that reads nothing new shares its
+    predecessor's record (by identity)."""
 
     reachable: frozenset[int]
     by_key: ByKey
@@ -128,6 +148,7 @@ class RevisionLabels:
     xref_count: int
     object_streams: frozenset[UnitRef]
     hint: UnitRef | None
+    drawable: frozenset[UnitRef]
 
     @property
     def structural(self) -> dict[UnitRef, tuple[Structural, ...]]:
@@ -138,7 +159,7 @@ class RevisionLabels:
         of a file with many cross-reference-stream updates pays O(R^2)
         outside the budget this way: read ``xref_streams[:xref_count]``,
         ``object_streams``, ``hint`` and ``by_key`` directly instead
-        (3a-7e-2 will)."""
+        (build_body_labels and Inventory.orphaned do)."""
         found: dict[UnitRef, tuple[Structural, ...]] = {}
         for unit in self.xref_streams[:self.xref_count]:
             found[unit] = (_XREF,)
@@ -149,6 +170,29 @@ class RevisionLabels:
         for unit, records in self.by_key.items():
             found[unit] = (*found.get(unit, ()), *records)
         return found
+
+
+@dataclass(frozen=True, slots=True)
+class BodyLabels:
+    """A stream body's labels across every revision it lives in (ADR 0011
+    item 5, "Across revisions"; by body, never by object number):
+    DRAWABLE when some revision's drawing closure reaches it, and the
+    STRUCTURAL kinds any revision gives it (distinct, in StructuralKind
+    order). ORPHANED when neither: no revision it lives in gives it
+    another label -- a dead body, a body no live entry names, or one no
+    walk reaches -- whatever kind of stream it is. A stream both
+    STRUCTURAL and DRAWABLE is drawable: every label's decoder runs on it
+    and the worst status wins (3b), never the structural decoder alone."""
+
+    drawable: bool
+    structural: tuple[StructuralKind, ...]
+
+    @property
+    def orphaned(self) -> bool:
+        return not self.drawable and not self.structural
+
+
+ORPHAN: Final = BodyLabels(False, ())
 
 
 # Work charged per body looked up: a body_of lookup through the xref
@@ -168,6 +212,9 @@ RECORD_WORK: Final = 64
 BY_KEY_WORK: Final = 384
 LABELS_WORK: Final = 192
 LIST_WORK: Final = 8
+# A stream body's entry in the per-body labels (its dictionary slot; the
+# BodyLabels values are interned, a handful per file).
+BODY_LABELS_WORK: Final = 96
 
 _EF: Final = 1        # a body reached as /EF: each of its entries is an embedded file
 _INTENTS: Final = 2   # the catalog's /OutputIntents array
@@ -213,15 +260,17 @@ def build_labels(revisions: int, changes: list[list[int]],
                  home_of: Callable[[int, int], int | None],
                  edges: dict[UnitRef, tuple[Edge, ...]],
                  trailers: tuple[tuple[Edge, ...], ...],
-                 pages: tuple[object, ...],
+                 pages: tuple[tuple[Page, ...] | None, ...],
+                 annotations: tuple[Annotations | None, ...],
                  xref_streams: list[list[UnitRef]],
                  hint: UnitRef | None,
                  budget: Budget) -> tuple[RevisionLabels | None, ...]:
     """Each revision's labels (None where it has no page list, or the
     budget ran out). *edges* and *trailers* are the graph's (graph.py);
-    *pages* each revision's page list (only whether it has one is read);
-    *xref_streams[r]* the cross-reference streams of revision r's own
-    sections; *hint* the hint stream's unit, if any. No flags."""
+    *pages* each revision's page list and *annotations* its annotations
+    (pages.py, annotations.py); *xref_streams[r]* the cross-reference
+    streams of revision r's own sections; *hint* the hint stream's unit,
+    if any. No flags."""
     results: list[RevisionLabels | None] = [None] * revisions
     # The chain's structural streams, kept as the revisions go: the
     # cross-reference streams so far (one list, shared by every revision's
@@ -260,7 +309,8 @@ def build_labels(revisions: int, changes: list[list[int]],
         chain_units += added
         if moved or (chain is not None and not chain[1].isdisjoint(changed)):
             chain = None  # made again below, when this revision has labels
-        if revision >= len(pages) or pages[revision] is None:
+        listed = pages[revision] if revision < len(pages) else None
+        if listed is None:
             last = None
             continue
         trailer = trailers[revision]
@@ -299,16 +349,23 @@ def build_labels(revisions: int, changes: list[list[int]],
                 reachable = last.labels.reachable  # walked again, the same: kept once
             if last is not None and by_key == last.labels.by_key:
                 by_key = last.labels.by_key
+        drawn = _drawable(revision, changed, body_of, home_of, edges, trailer, listed,
+                          annotations[revision] if revision < len(annotations) else None,
+                          last, budget)
+        if drawn is None:
+            break
+        drawable, drawn_last = drawn
         here = hint if hint is not None and hint.obj not in reachable else None
         previous = last.labels if last is not None else None
         if (previous is not None and reachable is previous.reachable
                 and by_key is previous.by_key and chain[0] is previous.object_streams
-                and len(chain_units) == previous.xref_count):
+                and len(chain_units) == previous.xref_count
+                and drawable is previous.drawable):
             # (The hint stream follows: it depends on the reachable set only.)
             labels = previous  # nothing new: shared, nothing new retained
         else:
             labels = RevisionLabels(reachable, by_key, chain_units, len(chain_units),
-                                    chain[0], here)
+                                    chain[0], here, drawable)
             retained = LABELS_WORK
             if previous is None or reachable is not previous.reachable:
                 retained += SET_WORK + RECORD_WORK * len(reachable)
@@ -316,11 +373,80 @@ def build_labels(revisions: int, changes: list[list[int]],
                 retained += SET_WORK + BY_KEY_WORK * sum(len(r) for r in by_key.values())
             if previous is None or chain[0] is not previous.object_streams:
                 retained += SET_WORK + RECORD_WORK * len(chain[0])
+            if previous is None or drawable is not previous.drawable:
+                retained += SET_WORK + RECORD_WORK * len(drawable)
             if not budget.charge_work(retained):
                 break
         results[revision] = labels
-        last = _Last(read, keyed, sources, ident, labels)
+        last = _Last(read, keyed, sources, ident, labels, drawn_last)
     return tuple(results)
+
+
+def _drawable(revision: int, changed: set[int], body_of: Callable[[int, int], Body | None],
+              home_of: Callable[[int, int], int | None],
+              edges: dict[UnitRef, tuple[Edge, ...]], trailer: tuple[Edge, ...],
+              listed: tuple[Page, ...], found: Annotations | None, last: _Last | None,
+              budget: Budget) -> tuple[frozenset[UnitRef], _Drawn] | None:
+    """The revision's DRAWABLE streams (drawable.py), and what the walk
+    read; None when the budget is spent. The last walk's set is kept, by
+    identity, when its starts are the same (each page and the ancestor
+    holding its /Resources, each drawn appearance, and -- with an
+    annotation synthesized -- the catalog), so are the trailer's /Root and
+    the catalog's /AcroForm as written, and every body it read that
+    changed is no stream, decided no role and holds the same references
+    (Drawing.same); or when walked again to the same set."""
+    if found is None:
+        return None  # a page list but no annotations: the budget ran out there
+    if not budget.charge_work(2 * (len(listed) + len(found)) + 1):
+        return None
+    synthesized = any(a.synthesized for a in found)
+    roots = [e for e in trailer if e.path == (b"Root",)]
+    root = PdfRef(0, 0, roots[0].num, roots[0].gen) if roots else None
+    held = _catalog_key(root, revision, body_of, budget) if synthesized else None
+    if held is _SPENT:
+        return None
+    ident = ((root.num, root.gen) if root is not None else None, synthesized, held)
+    starts: list[Start] = []
+    for page in listed:
+        starts.append((page.number, page.gen, PAGE, True))
+        inherited = page.attributes.get(b"Resources")
+        if inherited is not None and inherited.source != page.number:
+            starts.append((inherited.source, None, RES_HOLDER, True))
+    for annotation in found:
+        if not annotation.synthesized and annotation.appearance is not None:
+            starts.append((annotation.appearance, None, FORM, True))
+    if synthesized and root is not None:
+        # The catalog is compared by its /AcroForm as written (the ident),
+        # not read: a revision rewriting it otherwise keeps the set.
+        starts.append((root.num, root.gen, CATALOG, False))
+    walk = Drawing(revision, body_of, home_of, edges, budget)
+    before = last.drawn if last is not None else None
+    if (before is not None and before.ident == ident and before.starts == starts
+            and walk.same(before.read & changed, before.decided)):
+        return before.drawable, before
+    if walk.spent:
+        return None
+    reached = walk.run(starts)
+    if reached is None:
+        return None
+    drawable = frozenset(reached)
+    if last is not None and drawable == last.labels.drawable:
+        drawable = last.labels.drawable  # walked again, the same: kept once
+    return drawable, _Drawn(walk.read, walk.decided, ident, starts, drawable)
+
+
+@dataclass(frozen=True)
+class _Drawn:
+    """The last drawable walk: what it read and what decided a role
+    (drawable.Drawing), its ident (the trailer's /Root, whether an
+    annotation is synthesized, the catalog's /AcroForm as written then),
+    its starts and its set."""
+
+    read: set[int]
+    decided: set[int]
+    ident: tuple[object, ...]
+    starts: list[Start]
+    drawable: frozenset[UnitRef]
 
 
 @dataclass(frozen=True)
@@ -336,6 +462,7 @@ class _Last:
     sources: dict[int, _Made]
     ident: tuple[object, ...]
     labels: RevisionLabels
+    drawn: _Drawn
 
 
 class _Walk:
@@ -640,3 +767,64 @@ def _intents(number: int, edge: Edge, rest: tuple[bytes, ...], candidates: list[
         contexts.append((edge.num, edge.gen, _INTENT, False, number))
     elif rest == ():
         contexts.append((edge.num, edge.gen, _INTENTS, False, number))
+
+
+def build_body_labels(labels: tuple[RevisionLabels | None, ...], streams: list[UnitRef],
+                      budget: Budget) -> dict[UnitRef, BodyLabels]:
+    """Each stream body's labels across the revisions (*streams*: every
+    OBJECT or DEAD_BODY unit that is a stream): the union, by body, of
+    what each distinct revision record gives (a record shared by several
+    revisions is read once; so is each set or by-key dictionary shared
+    by several records, and the file's cross-reference streams, one list).
+    A body no record names is ORPHANED. Charged per element read and per
+    stream kept; {} when the budget is spent (the file is then flagged
+    BUDGET_EXHAUSTED: a body missing here is ORPHANED,
+    ``Inventory.labels_of``)."""
+    if not budget.charge_work(BODY_LABELS_WORK * len(streams) + 1):
+        return {}
+    drawable: set[UnitRef] = set()
+    kinds: dict[UnitRef, set[StructuralKind]] = {}
+    seen: set[int] = set()
+    xref: list[UnitRef] = []
+    count = 0
+    hints: set[UnitRef] = set()
+    for found in labels:
+        if found is None or id(found) in seen:
+            continue
+        seen.add(id(found))
+        xref, count = found.xref_streams, max(count, found.xref_count)
+        if found.hint is not None:
+            hints.add(found.hint)
+        if id(found.drawable) not in seen:
+            seen.add(id(found.drawable))
+            if not budget.charge_work(len(found.drawable) + 1):
+                return {}
+            drawable.update(found.drawable)
+        if id(found.object_streams) not in seen:
+            seen.add(id(found.object_streams))
+            if not budget.charge_work(len(found.object_streams) + 1):
+                return {}
+            for unit in found.object_streams:
+                kinds.setdefault(unit, set()).add(StructuralKind.OBJECT_STREAM)
+        if id(found.by_key) not in seen:
+            seen.add(id(found.by_key))
+            if not budget.charge_work(2 * len(found.by_key) + 1):
+                return {}
+            for unit, records in found.by_key.items():
+                kinds.setdefault(unit, set()).update(r.kind for r in records)
+    if not budget.charge_work(count + len(hints) + 1):
+        return {}
+    for unit in xref[:count]:
+        kinds.setdefault(unit, set()).add(StructuralKind.XREF_STREAM)
+    for unit in hints:
+        kinds.setdefault(unit, set()).add(StructuralKind.HINT_STREAM)
+    interned: dict[tuple[bool, tuple[StructuralKind, ...]], BodyLabels] = {(False, ()): ORPHAN}
+    out: dict[UnitRef, BodyLabels] = {}
+    for unit in streams:
+        held = kinds.get(unit)
+        key = (unit in drawable,
+               tuple(k for k in StructuralKind if k in held) if held else ())
+        if key not in interned:
+            interned[key] = BodyLabels(*key)
+        out[unit] = interned[key]
+    return out
