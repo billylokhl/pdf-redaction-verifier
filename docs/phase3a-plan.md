@@ -294,8 +294,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   goes uncompared, each with corpus/caselib/fuzz gate numbers re-measured before merge (any
   measured cost that differs from ADR 0011's figure goes to the owner before merge), its own docs sync
   (README, DESIGN, COVERAGE, eval/README, REDESIGN, CHANGELOG), adversarial review, and its
-  own linearity tests: work counts and wall clock at n vs 8n on that PR's adversarial shape
-  (ADR 0010: work counting alone cannot see uncharged work). Opus implements. The graph lives
+  own linearity tests: work counts at n vs 8n on that PR's adversarial shape, plus (since #94)
+  the lines executed in the inventory's modules per unit of work the step charges
+  (tests/steps.py, deterministic) and a wall-clock backstop for work inside C, sized so a
+  C-level quadratic shows (ADR 0010: work counting alone cannot see uncharged work). Opus
+  implements. The graph lives
   in a new `redaction_verifier/inventory/graph.py`, run by build_inventory after the bodies are
   found and before the budget's flags are gathered (build.py's `self.budget.flags()`), so a
   graph that runs out of budget leaves the file BUDGET_EXHAUSTED, never an unflagged inventory
@@ -456,6 +459,9 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     tiling claim) and counts against the unit cap (max_units). Inherited /FT and /V are
     memoized per field node; a /Parent cycle among fields flags FIELD_TREE (P5). Linearity: many fields deep
     in a /Parent chain over many revisions.
+    An annotation without /Subtype (#106: MuPDF warns, the gate disagrees) is flagged or
+    shown to agree, removing the strict xfail on
+    tests/test_inventory_build.py::test_an_annotation_without_a_subtype_is_flagged_or_agrees.
   - 3a-7e Labels (ADR 0011 item 5). Per revision: reachable (from the trailer by modeled
     edges), DRAWABLE (the drawing closure from the canonical page list over the closed key
     lists per role, with 7d's synthesized annotations), STRUCTURAL (the closed list; like

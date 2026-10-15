@@ -494,7 +494,19 @@ page turned, and up to 16 on unstacked lines, each capped at 4 Mpx (on
 the #67 page about 0.3 s more than before, of about 5 s). The worst
 case per page is about 147 Vision calls: 1, 64 re-reads of 2, 2 turned,
 16 unstacked.
-Vision calls themselves have no deadline (as before the re-reads).
+Each Vision call has a deadline of its own (`VISION_CALL_TIMEOUT_S`,
+120 s; #115): `performRequests` has no timeout, and a stalled Vision
+once held a test run for about 25 minutes with no CPU in use. The call
+runs on a worker thread joined with that deadline; past it, its
+requests are cancelled, the thread is left behind (a thread blocked in
+Vision cannot be stopped from Python; it is a daemon, so it never holds
+up the exit) and the page is `PAGE_FAILED`, a re-read or extra reading
+included: a timeout is not one of the read failures those drop. While a
+timed-out call has still not returned, every later call fails at once
+without calling Vision, so a stuck Vision costs one deadline per run,
+not one per call or page. A page whose calls each return in time can
+still take up to its 147 calls' worth of deadlines; that is slow, not
+unbounded.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)

@@ -295,7 +295,11 @@ flattened to images, text converted to vector outlines.
   CHANGELOG, this happened to every page on macOS 27.) A page where
   Vision reports success without delivering both readings is also
   `PAGE_FAILED`: a reading counts only once its request's completion
-  handler has run to the end. A page Vision reads without error but
+  handler has run to the end. So is a page where a Vision call does
+  not return within 120 seconds (a stalled Vision, #115); while that
+  call still has not returned, the later pages fail at once instead of
+  each waiting, so the run ends with exit `2` (or `1`) instead of
+  hanging. A page Vision reads without error but
   with text missing is not detected; see DESIGN's known limitations.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings — except a line Vision reads vertically that an upright
@@ -435,6 +439,14 @@ secret can still be **not detected** (exit `0`). In short:
   (a plain page-break split under a pattern rule is manual review, exit
   `2`); text at extreme coordinates (K35).
   <!-- gap-cells: match.letter-spaced-stack match.tight-fine-print match.mixed-direction-split match.undashed-wrap match.pattern-split match.extreme-coordinates -->
+- **Name forms not listed:** a reordered name on one line ("TESTPERSON,
+  JORDAN Q" in the document, "Jordan Q. Testperson" in the rules) and a fragment
+  of a listed name (the first name inside an email address, when only
+  the full name is listed). The tool matches the exact values you list,
+  after normalization, and does not generate reorderings or search for
+  parts of a name; list each form as its own value (see
+  [Rules file](#rules-file)).
+  <!-- gap-cells:  -->
 
 Other leftover images, other leftover text in non-plain font codes,
 attachments that are not text, and page thumbnails (`/Thumb` preview
@@ -466,6 +478,34 @@ backed by a measurement in [eval/spikes/](eval/spikes/).
 a redaction tool's `redact_config.yaml`
 (selected by the `.yaml`/`.yml` suffix), so one file can drive both
 redaction and verification without the two drifting apart.
+
+### List every written form of a secret
+
+A `value` rule matches exactly the value you list, and nothing derived
+from it. The tool does not generate reorderings, nicknames, initials or
+partial forms. A person who appears as "Jordan Q. Testperson" in the
+rules is not found as "TESTPERSON, JORDAN Q" unless that form is listed
+too. So list each form the document may use as its own value:
+
+- **Names:** "Jordan Q. Testperson" and "Testperson, Jordan Q.", each
+  with and without the middle initial ("Jordan Testperson", "Testperson,
+  Jordan"), and any shortened form you want treated as a secret.
+- **Email addresses and usernames:** the full address
+  (`jordan.testperson@example.com`) and any login or handle derived from
+  it (`jtestperson`, `jqtest`).
+- **Numbers:** only forms that differ in their digits, such as an account
+  number also printed with a leading branch code or cut to its last four
+  digits. Forms that differ only in separators need no entry.
+
+Matching already ignores case, punctuation, spacing and accents, and
+folds fullwidth characters (see [How a match is found](#how-a-match-is-found)).
+So do **not** list "JORDAN Q TESTPERSON" next to "Jordan Q. Testperson",
+or "123 45 6789" next to "123-45-6789": each pair is one value to the
+tool. A listed value is also found inside longer text, so a listed
+"Jordan Testperson" is found within `jordan.testperson@example.com`,
+because the address reads "jordantestpersonexamplecom" once normalized.
+Keep each value long enough to be specific; a bare first name is found
+in every word that contains it, and across word boundaries.
 
 ### JSON
 

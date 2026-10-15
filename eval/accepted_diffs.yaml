@@ -709,7 +709,7 @@
         - Hidden
         - null
       - 1
-  reason: 'H1 hotfix, owner decision of 2026-10-15: every page carrying a /Thumb image is
+  reason: 'H1 hotfix, owner decision of 2026-10-14: every page carrying a /Thumb image is
     flagged (PAGE_THUMBNAIL), whatever the image shows, so a clean memo whose page has a
     harmless thumbnail now exits 2 (was 0): the documented review-rate cost of the hotfix
     until Phase 4b reads thumbnails. Stricter only.'
@@ -1489,7 +1489,7 @@
         - Hidden
         - null
       - 1
-  reason: 'H1 hotfix, owner decision of 2026-10-15: a page /Thumb preview image is never
+  reason: 'H1 hotfix, owner decision of 2026-10-14: a page /Thumb preview image is never
     decoded or OCR''d, so a redacted page whose thumbnail still shows the SSN exited 0. The
     Hidden layer now flags every page carrying a /Thumb image (PAGE_THUMBNAIL, coverage,
     storage live): exit 2 until Phase 4b reads thumbnails (K24, thumbnail.pixels now
@@ -1511,7 +1511,7 @@
         - Hidden
         - null
       - 1
-  reason: 'H1 hotfix, owner decision of 2026-10-15: the same SSN thumbnail set on the Pages
+  reason: 'H1 hotfix, owner decision of 2026-10-14: the same SSN thumbnail set on the Pages
     node above the page (not inheritable by the spec, but a reader may still show it) is
     flagged like a page''s own /Thumb (PAGE_THUMBNAIL), exit 2; the reference exited 0.
     Stricter only.'
