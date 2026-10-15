@@ -18,9 +18,10 @@ jobs:
   # environment-gated tests can never silently skip on this job.
   full-macos:
     runs-on: macos-latest
-    # The whole suite, case library OCR included, takes about 21 minutes
-    # here (2026-10-15); 35 leaves room for runner variance and new tests.
-    timeout-minutes: 35
+    # The whole suite, case library OCR included, takes about 25-28 minutes
+    # here (2026-10-15), and one run hit 35 (#152); 50 leaves room for
+    # runner variance and new tests.
+    timeout-minutes: 50
     env:
       REQUIRE_FULL_ENV: "1"
     steps:
@@ -80,8 +81,10 @@ jobs:
   partial-linux:
     runs-on: ubuntu-latest
     # The 3.12 leg runs under coverage: about 14 min before 3a-7b's page-tree
-    # and linearity tests (wall-clock checks at n and 8n), past 15 after.
-    timeout-minutes: 25
+    # and linearity tests (wall-clock checks at n and 8n), past 15 after,
+    # and 24 min on main by 2026-10-15 (the others 8-12), so 25 cancelled
+    # it on runner variance; 40 leaves room.
+    timeout-minutes: 40
     strategy:
       matrix:
         # qpdf: the release matching each Python's pikepdf pin's libqpdf
