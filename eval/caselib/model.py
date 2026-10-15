@@ -107,26 +107,10 @@ def expect(exit: int, findings: tuple[tuple[str, str], ...] = (),
 class KnownGap:
     """Today's tool gets this case wrong. *today* pins exactly what it
     reports instead, so any change — a fix, a partial fix (0 → 2), a
-    broken generator — fails the test until the label is updated.
-
-    For a bomb case (``Case.bomb``) today's tool may give no answer at
-    all: *outcome* pins that instead of *today* -- ``"hang"`` (killed at
-    the case's wall-clock cap), ``"memory"`` (killed at its memory cap) or
-    ``"error:CODE"`` (the CLI reported error CODE). Exactly one of the two
-    is set; if the case stops doing it, the test fails like any closed gap."""
+    broken generator — fails the test until the label is updated."""
 
     cell: str
-    today: Expect | None = None
-    outcome: str | None = None
-
-    def __post_init__(self) -> None:
-        if (self.today is None) == (self.outcome is None):
-            raise ValueError(f"known gap {self.cell}: give exactly one of today and outcome")
-        if self.outcome is not None and not (
-                self.outcome in ("hang", "memory")
-                or (self.outcome.startswith("error:") and len(self.outcome) > 6)):
-            raise ValueError(f"known gap {self.cell}: outcome must be hang, memory or "
-                             f"error:CODE, not {self.outcome!r}")
+    today: Expect
 
 
 @dataclass(frozen=True)
@@ -136,15 +120,28 @@ class Bomb:
     case library's test, the gallery, the scorecard and its differential
     skip it -- and tests/test_bomb_cases.py judges it out of process,
     through redaction_verifier.sandbox, killed at these caps (reviewed
-    like a label, sized from the owner's Mac with headroom for CI)."""
+    like a label, sized on the owner's Mac with headroom for CI).
+
+    *today* pins how today's tool fails to answer, where it does not:
+    ``"hang"`` (killed at the wall-clock cap), ``"memory"`` (killed at the
+    memory cap) or ``"error:CODE"`` (the CLI reported error CODE). None:
+    it answers, and ``expected`` / ``known_gap`` judge the answer. If the
+    case stops doing what *today* says, the test fails until it is
+    relabelled, as a closed known gap does."""
 
     wall_clock_s: float
     memory_bytes: int
+    today: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 < self.wall_clock_s <= 900 or self.memory_bytes <= 0:
             raise ValueError("a bomb's caps must be positive, and its wall clock at most 900 s "
                              "(the suite's own timeout)")
+        if self.today is not None and not (
+                self.today in ("hang", "memory")
+                or (self.today.startswith("error:") and len(self.today) > 6)):
+            raise ValueError(f"a bomb's today must be hang, memory or error:CODE, "
+                             f"not {self.today!r}")
 
 
 # The macOS the case labels are measured on: the owner's (README: results
@@ -257,10 +254,6 @@ class Case:
                                  "differs on an older macOS")
             if self.older_macos.today == self.expected:
                 raise ValueError(f"{self.id}: older_macos.today equal to expected: use None")
-        if self.known_gap is not None and self.known_gap.outcome is not None \
-                and self.bomb is None:
-            raise ValueError(f"{self.id}: only a bomb case can pin a hang, memory or error "
-                             "outcome")
         if self.bomb is not None and (self.perf or self.scan_timeout is not None):
             raise ValueError(f"{self.id}: a bomb case's caps replace perf and scan_timeout")
         if self.scan_timeout is not None and (

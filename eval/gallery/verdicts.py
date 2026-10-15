@@ -93,10 +93,7 @@ def verdict_for(case: Case, results: dict[str, dict[str, Any] | None] | None) ->
         warnings = tuple(_fmt_warning(w) for w, _n in candidate.get("warnings", []))
         return Verdict(exit=candidate["exit"], findings=findings, warnings=warnings, source=MEASURED)
 
-    # A bomb case's known gap may be an outcome (hang, memory, error), not a
-    # label; the gallery never scans a bomb case, so only labels reach here.
-    want: Expect = (case.known_gap.today if case.known_gap and case.known_gap.today
-                    else case.expected)
+    want: Expect = case.known_gap.today if case.known_gap else case.expected
     source = FROM_KNOWN_GAP if case.known_gap else FROM_EXPECTED
     findings = tuple(f"{rule} ({storage})" for rule, storage in sorted(want.findings))
     warnings = tuple(f"{code} ({storage})" for code, storage in sorted(want.warnings, key=str))

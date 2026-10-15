@@ -18,7 +18,7 @@ from __future__ import annotations
 import zlib
 from pathlib import Path
 
-from ..model import Bomb, KnownGap, case, expect
+from ..model import SSN, Bomb, KnownGap, case, expect
 
 GB = 1 << 30
 
@@ -37,7 +37,11 @@ def _pdf(objects: list[bytes], root: int = 1) -> bytes:
     return body
 
 
-def _page(extra: bytes = b"") -> list[bytes]:
+FONT = b"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>"
+SHOW = b"BT /F1 12 Tf 72 700 Td (SSN " + SSN.encode() + b") Tj ET\n"
+
+
+def _page(extra: bytes = FONT) -> list[bytes]:
     return [b"<< /Type /Catalog /Pages 2 0 R >>",
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R %s >>"
@@ -48,79 +52,81 @@ def _stream(data: bytes, extra: bytes = b"") -> bytes:
     return b"<< /Length %d %s >>\nstream\n" % (len(data), extra) + data + b"\nendstream"
 
 
-def _zeros_flate(mib: int) -> bytes:
+def _bomb_then(mib: int, tail: bytes) -> bytes:
+    """*mib* MiB of spaces, then *tail*, Flate-compressed: a few hundred KB."""
     z = zlib.compressobj(9)
-    chunk = b"\0" * (1 << 20)
-    return b"".join(z.compress(chunk) for _ in range(mib)) + z.flush()
+    chunk = b" " * (1 << 20)
+    return b"".join(z.compress(chunk) for _ in range(mib)) + z.compress(tail) + z.flush()
 
 
 BUSY = "Opening an untrusted PDF in any tool that does not bound its own work."
 
 
-@case("page.bomb-flate-content", truth="clean", features="live.plain", writer="raw",
+@case("page.bomb-flate-content", truth="leak", cells="hostile.flate-bomb", writer="raw",
       bomb=Bomb(wall_clock_s=180, memory_bytes=3 * GB),
       expected=expect(2),
-      story="A page whose content stream is 256 MiB of zeros compressed to 250 KB: a "
-            "decompression bomb in live content.",
+      story="A page whose content stream is 256 MiB of spaces and then the SSN, compressed "
+            "to a few hundred KB: a decompression bomb in live content.",
       mistake=BUSY)
 def flate_content(path: Path) -> None:
-    path.write_bytes(_pdf(_page() + [_stream(_zeros_flate(256), b"/Filter /FlateDecode")]))
+    path.write_bytes(_pdf(_page() + [_stream(_bomb_then(256, SHOW), b"/Filter /FlateDecode")]))
 
 
-@case("leftover.bomb-flate-orphan", truth="clean", features="orphaned.plain", writer="raw",
+@case("leftover.bomb-flate-orphan", truth="leak", cells="hostile.flate-bomb", writer="raw",
       bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
       expected=expect(2),
-      story="The same 256 MiB decompression bomb in a stream nothing references.",
+      story="The same 256 MiB bomb, ending in the SSN, in a stream nothing references.",
       mistake=BUSY)
 def flate_orphan(path: Path) -> None:
     path.write_bytes(_pdf(_page() + [_stream(b"BT ET"),
-                                     _stream(_zeros_flate(256), b"/Filter /FlateDecode")]))
+                                     _stream(_bomb_then(256, b"SSN " + SSN.encode()),
+                                             b"/Filter /FlateDecode")]))
 
 
-@case("file.bomb-deep-nesting", truth="clean", features="live.plain", writer="raw",
+@case("file.bomb-deep-nesting", truth="leak", cells="hostile.deep-nesting", writer="raw",
       requires=("exiftool",), bomb=Bomb(wall_clock_s=400, memory_bytes=3 * GB),
       expected=expect(2),
-      story="A page dictionary holding an array nested 30,000 levels deep.",
+      story="A page showing the SSN, whose dictionary also holds an array nested 30,000 "
+            "levels deep.",
       mistake=BUSY)
 def deep_nesting(path: Path) -> None:
     deep = b"[" * 30000 + b"]" * 30000
-    path.write_bytes(_pdf(_page(b"/Deep " + deep) + [_stream(b"BT ET")]))
+    path.write_bytes(_pdf(_page(FONT + b" /Deep " + deep) + [_stream(SHOW)]))
 
 
-@case("file.bomb-page-tree-cycle", truth="clean", features="live.plain", writer="raw",
+@case("file.bomb-page-tree-cycle", truth="leak", cells="hostile.page-tree-cycle", writer="raw",
       bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
       expected=expect(2),
-      story="A page tree whose /Kids lists the tree itself: a reader that walks it "
-            "without remembering where it has been never stops.",
+      story="A page showing the SSN, in a page tree whose /Kids lists the tree itself: a "
+            "reader that walks it without remembering where it has been never stops.",
       mistake=BUSY)
 def page_tree_cycle(path: Path) -> None:
     path.write_bytes(_pdf([
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R 2 0 R] /Count 2 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
-        _stream(b"BT ET")]))
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " + FONT + b" >>",
+        _stream(SHOW)]))
 
 
-@case("file.bomb-huge-page-count", truth="clean", features="live.plain", writer="raw",
-      bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
+@case("file.bomb-huge-page-count", truth="leak", cells="hostile.huge-page-count", writer="raw",
+      bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB, today="error:INTERNAL_ERROR"),
       expected=expect(2),
-      known_gap=KnownGap("live.plain", outcome="error:INTERNAL_ERROR"),   # cell: pending
-      story="A one-page file whose page tree claims two billion pages.",
+      story="A page showing the SSN, in a page tree that claims two billion pages.",
       mistake=BUSY)
 def huge_page_count(path: Path) -> None:
     path.write_bytes(_pdf([
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 2000000000 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
-        _stream(b"BT ET")]))
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " + FONT + b" >>",
+        _stream(SHOW)]))
 
 
 @case("page.bomb-oversized-image", truth="clean", features="live.pixels", writer="raw",
       bomb=Bomb(wall_clock_s=180, memory_bytes=3 * GB),
       expected=expect(2),
-      known_gap=KnownGap("live.plain", today=expect(0)),                  # cell: pending
+      known_gap=KnownGap("live.pixels.oversized-image", today=expect(0)),
       story="A page drawing a 60,000 x 60,000 pixel image: far more detail than the "
-            "page's OCR render can resolve.",
+            "page's OCR render can resolve, read as if it were the render.",
       mistake=BUSY)
 def oversized_image(path: Path) -> None:
     pixels = zlib.compress(b"\0" * (60000 // 8 * 60000), 9)
@@ -131,15 +137,12 @@ def oversized_image(path: Path) -> None:
                            b"/ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode")]))
 
 
-@case("page.bomb-operator-flood", truth="clean", features="live.font", writer="raw",
+@case("page.bomb-operator-flood", truth="leak", cells="hostile.operator-flood", writer="raw",
       bomb=Bomb(wall_clock_s=180, memory_bytes=2 * GB),
-      expected=expect(0),
-      story="A page whose content is 10 MB of one-letter text operators, 130 KB on disk: "
-            "a reader answers, but should not need gigabytes to.",
+      expected=expect(1, findings=(("SSN", "live"),)),
+      story="A page whose content is 10 MB of one-letter text operators, 130 KB on disk, "
+            "with the SSN among them: a reader must still find it, within its limits.",
       mistake=BUSY)
 def operator_flood(path: Path) -> None:
-    font = (b"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 "
-            b"/BaseFont /Helvetica >> >> >>")
-    ops = b"BT /F1 1 Tf (x) Tj ET\n" * 500_000
-    path.write_bytes(_pdf(_page(font) + [_stream(zlib.compress(ops, 9),
-                                                 b"/Filter /FlateDecode")]))
+    ops = b"BT /F1 1 Tf (x) Tj ET\n" * 250_000 + SHOW + b"BT /F1 1 Tf (x) Tj ET\n" * 250_000
+    path.write_bytes(_pdf(_page() + [_stream(zlib.compress(ops, 9), b"/Filter /FlateDecode")]))
