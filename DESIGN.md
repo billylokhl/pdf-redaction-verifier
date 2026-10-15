@@ -77,7 +77,7 @@ raise a finding.
 | **Metadata** | exiftool fields + the XMP packet | Copies in Info/XMP that no reader displays |
 | **Objects** | PDF objects walked structurally (PyMuPDF) | Orphaned content streams, dictionary strings |
 | **Binary** | qpdf's decompressed rewrite of the reachable objects | Objects qpdf recovers from a damaged file; decompressed attachment bytes (value rules only) |
-| **Hidden** | Attachments, annotations, form fields, links, scripts, layer names (PyMuPDF) | Content no page renders at all |
+| **Hidden** | Attachments, annotations, form fields, links, scripts, layer names (PyMuPDF); page thumbnails flagged, not read | Content no page renders at all |
 
 They are independent on purpose: a leak that defeats extraction usually
 does not also defeat rasterization, and vice versa.
@@ -614,7 +614,7 @@ the gap is stated rather than implied away.
   review warnings. Value rules are hard only at a page seam (see the
   two-tier model).
 - **Remaining silent misses** are the ✗ cells in COVERAGE.md: pixels the
-  tool does not OCR (under a drawn box, off the page, thumbnails, other
+  tool does not OCR (under a drawn box, off the page, XMP thumbnails, other
   embedded files, an image's undeclared extra rows, one render split into
   strips a page never shows joined); font-coded text or images in
   switched-off layers, hidden annotations and never-drawn resources;
@@ -636,7 +636,8 @@ the gap is stated rather than implied away.
   extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
   a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
-  font codes, and attachments that are not text are flagged (exit `2`),
+  font codes, attachments that are not text, and page thumbnails
+  (`/Thumb`, the Hidden layer's `PAGE_THUMBNAIL`) are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`
   until the tool learns to read them.
 - **Some false positives remain.** A short value (a 5-digit ZIP) can be
