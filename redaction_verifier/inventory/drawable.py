@@ -31,8 +31,8 @@ coordinator's decision Q2 of 2026-10-15, an ADR 0011 note):
   /Shading, /ExtGState, /ColorSpace (/Properties: optional content,
   which draws nothing);
 - an XObject: by its /Subtype, read through one reference: /Form a
-  form, /Image an image; any other follows nothing (MuPDF draws
-  nothing), the stream itself still DRAWABLE;
+  form, /Image an image, either only when a stream; any other follows
+  nothing (MuPDF draws nothing), the stream itself still DRAWABLE;
 - a form (an appearance, a soft mask's /G whatever its /Subtype):
   /Resources, /Group; a group: /CS;
 - an image (also its /SMask and /Mask): /SMask, /Mask, /ColorSpace,
@@ -60,9 +60,10 @@ unless another label holds, failing closed (ADR 0010 item 6). A role
 decided by a value the walk cannot read -- a /Subtype or /HalftoneType
 two references away, a direct font or halftone inside an array -- takes
 the narrower reading, failing closed the same way. A reference is
-followed only when it resolves (live, the same generation). Iterative,
+followed only when it resolves (live, the same generation; a start the
+page or annotation walk found is taken as it resolved it). Iterative,
 never raises, every step charged: a node a few steps, each edge its key
-path's length."""
+path's length, each dictionary a decision reads its size, once."""
 
 from __future__ import annotations
 
