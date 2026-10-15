@@ -445,8 +445,9 @@ same object, which a reader-agreement test shows
 (`tests/test_inventory_trees.py`): MuPDF reads the key as a C string,
 the NUL cut off, libqpdf keeps it, and each finds the same object for
 the key as written. A printable-ASCII key may therefore end in one NUL
-byte (MuPDF keeps the NUL of a key holding any byte at or above 0x80, so
-there it flags -- found in 3a-7c's second review); keys must
+byte (with a byte at or above 0x80 it flags: MuPDF keeps the NUL when it
+reads the key as PDFDocEncoding and cuts it when it reads UTF-8 -- found
+in 3a-7c's second and third reviews); keys must
 be unique and in order under each reader's reading -- with it cut off
 (MuPDF's) and with it kept (libqpdf's): with keys of mixed encodings one
 does not imply the other (`(a\000)` and `<FEFF00610000>` are one name to
@@ -455,7 +456,15 @@ or any other control byte still flag. 3a-7c's reviews also found byte
 0xAD, which MuPDF's PDFDocEncoding maps to U+0000 and qpdf does not, and
 U+001B in a UTF-16 key (MuPDF strips a language escape byte-wise, ESC,
 2 or 4 bytes of any value, ESC; libqpdf strips none): both flag. A
-UTF-16 key is read alike only without U+0000 and U+001B. The other 13 files stay flagged. Known asymmetry, outside
+UTF-16 key is read alike only without U+0000 and U+001B. The third
+review found that MuPDF reads a BOM-less key as UTF-8 whenever it parses
+as such (leniently: overlong forms and surrogates included) and libqpdf
+as PDFDocEncoding, so `<C3A9>` is one character to MuPDF and two to
+libqpdf: a key that holds a lead byte 0xC0-0xFF followed by a
+continuation byte 0x80-0xBF flags (failing closed: every UTF-8 reading
+of a high byte holds one). A BOM-less key is read alike only in
+printable ASCII and 0xA1-0xFF but 0xAD, and only when MuPDF cannot read
+it as UTF-8. The other 13 files stay flagged. Known asymmetry, outside
 the key itself: MuPDF also finds the name without its NUL (its lookup
 compares C strings), libqpdf does not. Measured after: 13 files
 `NAME_TREE` (12 otherwise unflagged); corpus 1,920 agree, 153 flagged

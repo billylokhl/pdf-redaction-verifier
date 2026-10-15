@@ -11,7 +11,8 @@ and greatest key. Keys are strings (integers) unique and in order across
 the whole tree: by bytes, and (owner decision 9, P3) as text, which is
 what both readers compare -- so a name key must decode the same in both:
 lossless, without a language tag, and in PDFDocEncoding only from the
-bytes both readers map alike (printable ASCII and 0xA1-0xFF but 0xAD;
+bytes both readers map alike (printable ASCII and 0xA1-0xFF but 0xAD,
+in a key MuPDF cannot read as UTF-8;
 one trailing NUL after printable ASCII allowed, owner decision 10) or in
 UTF-16BE without U+0000 or U+001B -- unique and in order under each
 reader's reading. An empty root (neither /Names nor /Kids, or an empty array)
@@ -79,7 +80,13 @@ def build_trees(revisions: int, changes: list[list[int]],
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
         encrypted = trailer is not None and trailer.get(b"Encrypt") is not None
-        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, encrypted)
+        # The catalog is read through its /Names and /PageLabels as written
+        # (and where it lives): a revision rewriting the catalog but not
+        # those costs their bytes, not a walk of every tree (review round 3).
+        held = _catalog_key(root, revision, body_of, home_of, budget)
+        if held is _SPENT:
+            return tuple(results), flags
+        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, encrypted, held)
         if (previous is not None and previous[1] == ident
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]
@@ -98,6 +105,36 @@ def build_trees(revisions: int, changes: list[list[int]],
     return tuple(results), flags
 
 
+_SPENT: Final = object()
+
+
+def _catalog_key(root: PdfValue | None, revision: int,
+                 body_of: Callable[[int, int], Body | None],
+                 home_of: Callable[[int, int], int | None], budget: Budget) -> object:
+    """What the walk reads of the catalog: its /Names and /PageLabels
+    values' written bytes, and whether it lives in an object stream (where
+    3a-9's decryption reads strings differently); None without a catalog
+    dictionary; _SPENT when the budget refuses."""
+    if not isinstance(root, PdfRef) or root.num == 0:
+        return None
+    body = body_of(root.num, revision)
+    if body is None or body[2] != root.gen or not isinstance(body[1], PdfDict):
+        return None
+    catalog, text = body[1], body[3]
+    if not budget.charge_work(len(catalog.entries) + 1):
+        return _SPENT
+    written: list[bytes | None] = []
+    for key in (b"Names", b"PageLabels"):
+        value = catalog.get(key)
+        if value is None:
+            written.append(None)
+            continue
+        if not budget.charge_work(value.end - value.start + 1):
+            return _SPENT
+        written.append(text[value.start:value.end])
+    return (*written, home_of(root.num, revision) is not None)
+
+
 def key_text(raw: bytes) -> str | None:
     """A name key as MuPDF reads it as text, or None when the readers may
     not read it alike.
@@ -105,13 +142,20 @@ def key_text(raw: bytes) -> str | None:
     UTF-16BE without U+0000 (MuPDF handles text as C strings) and without
     U+001B (MuPDF strips a language escape byte-wise -- ESC, 2 or 4 bytes
     of any value, ESC -- where libqpdf strips nothing and our own tag rule
-    matches only ASCII letters). Or PDFDocEncoding from the bytes both
-    readers map alike: printable ASCII and 0xA1-0xFF but 0xAD, which MuPDF
-    maps to U+0000 and qpdf does not. A printable-ASCII key may end in one
-    NUL byte (owner decision 10, 2026-10-12, amending P3): MuPDF cuts it
-    off, libqpdf keeps it (qpdf_key_text), and both resolve the key as
-    written to the same object (tests/test_inventory_trees.py); MuPDF keeps
-    the NUL of a key holding any byte at or above 0x80, so there it flags.
+    matches only ASCII letters). Or, without a BOM, the bytes both readers
+    map alike as PDFDocEncoding -- printable ASCII and 0xA1-0xFF but 0xAD,
+    which MuPDF maps to U+0000 and qpdf does not -- in a key MuPDF cannot
+    read as UTF-8: MuPDF reads a BOM-less string as UTF-8 whenever it
+    parses as such (leniently: overlong forms and surrogates included),
+    libqpdf as PDFDocEncoding, so <C3A9> is one character to MuPDF and two
+    to libqpdf. Failing closed, any lead byte 0xC0-0xFF followed by a
+    continuation byte 0x80-0xBF flags (every UTF-8 reading of a high byte
+    holds one). A printable-ASCII key may end in one NUL byte (owner
+    decision 10, 2026-10-12, amending P3): MuPDF cuts it off, libqpdf
+    keeps it (qpdf_key_text), and both resolve the key as written to the
+    same object (tests/test_inventory_trees.py). With a high byte the NUL
+    flags: MuPDF keeps it when it reads the key as PDFDocEncoding and cuts
+    it when it reads UTF-8.
     Keys are checked unique and in order under both readings (_order):
     with keys of mixed encodings, order under one does not imply order
     under the other."""
@@ -125,7 +169,8 @@ def key_text(raw: bytes) -> str | None:
     if raw.endswith(b"\0"):
         body = raw[:-1]
         return decoded.text[:len(body)] if all(0x20 <= b <= 0x7E for b in body) else None
-    if all((0x20 <= b <= 0x7E or b >= 0xA1) and b != 0xAD for b in raw):
+    if all((0x20 <= b <= 0x7E or b >= 0xA1) and b != 0xAD for b in raw) and not any(
+            a >= 0xC0 and 0x80 <= b <= 0xBF for a, b in zip(raw, raw[1:])):
         return decoded.text
     return None
 
@@ -195,7 +240,14 @@ class _Walk:
 
     def run(self, root: PdfValue | None) -> Trees | None:
         before = len(self.flags)
-        catalog = self.body(root) if isinstance(root, PdfRef) else None
+        # The catalog itself is not in self.read: build_trees compares what
+        # the walk reads of it (_catalog_key). A tree reaching it as a node
+        # reads it through self.body, like any node.
+        catalog = None
+        if isinstance(root, PdfRef) and root.num != 0:
+            found_root = self.body_of(root.num, self.revision)
+            if found_root is not None and found_root[2] == root.gen:
+                catalog = found_root
         if catalog is None or not isinstance(catalog[1], PdfDict):
             return {}  # MISSING_ROOT's (the chain), not a tree's
         trees: Trees = {}

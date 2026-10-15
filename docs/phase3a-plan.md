@@ -403,7 +403,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     under each reader's reading. Round 2: U+001B in a UTF-16 key flags (MuPDF strips a
     language escape of any bytes); the trailing NUL only after printable ASCII (MuPDF keeps it
     after a high byte); /Limits comparisons charged by key length (a shared /Limits array
-    had compared a long key once per node, free). Gate: /EmbeddedFiles against
+    had compared a long key once per node, free). Round 3: a BOM-less key MuPDF may read
+    as UTF-8 (a lead byte 0xC0-0xFF then a continuation byte) flags -- libqpdf reads
+    PDFDocEncoding; a revision rewriting the catalog but not its /Names or /PageLabels reuses
+    the trees (they had been walked again: revisions x keys, BUDGET_EXHAUSTED on a benign
+    file). Gate: /EmbeddedFiles against
     MuPDF and libqpdf, keys as each reads them; EMPTY_TREE_ROOT anchored (R5), with
     agreement tests for /EmbeddedFiles, /Dests and /PageLabels. Measured cost differed from
     ADR 0011's: P3 flagged 85 corpus files (expected 0) -- 72 keys ending in one NUL, 10

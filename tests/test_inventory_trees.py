@@ -354,7 +354,11 @@ def _deep(levels: int) -> bytes:
 def test_a_deep_tree_stays_linear() -> None:
     (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(_deep, 1000)
     assert f_s == () and f_l == ()
-    assert w_l < 10 * w_s and t_l < 12 * max(t_s, 0.05), (t_s, t_l, w_s, w_l)
+    # Work counts are the exact measure (8x the bytes, within 10x the work);
+    # the wall clock only catches uncharged work, so its bound is looser
+    # (16x: the 8x run builds 16,000 objects, more allocator and GC time).
+    assert w_l < 10 * w_s, (w_s, w_l)
+    assert t_l < 16 * max(t_s, 0.05), (t_s, t_l)
 
 
 def test_many_trees_naming_one_node_stay_linear() -> None:
@@ -508,8 +512,11 @@ def test_other_nul_and_control_keys_stay_flagged(keys: list[bytes]) -> None:
     [b"<FEFF001B0041001B0061>", b"<FEFF0062>"],  # ... of any bytes; libqpdf strips none
     [b"(a)", b"<FEFF001B4142001B0061>"],         # one name to MuPDF ("a"), two to libqpdf
     [b"<A100>", b"<B0>"],                       # MuPDF keeps the NUL after a high byte
+    [b"<C3A9>"],                                # MuPDF reads UTF-8 "\u00e9", libqpdf two characters
+    [b"<C3A9>", b"<E9>"],                       # one name to MuPDF, two to libqpdf
+    [b"<C3A900>"],                              # UTF-8 to MuPDF, which then cuts the NUL
 ], ids=["soft-hyphen", "nul-mixed-encodings", "utf16-nul", "utf16-esc-any", "utf16-esc-ascii",
-        "utf16-esc-collides", "high-byte-nul"])
+        "utf16-esc-collides", "high-byte-nul", "utf8", "utf8-collides", "utf8-nul"])
 def test_keys_the_readers_read_apart_are_flagged(keys: list[bytes]) -> None:
     assert int(R.TEXT) in _rules(_files(*keys))
 
@@ -575,3 +582,52 @@ def test_a_shared_limits_array_of_a_long_key_is_charged() -> None:
         assert {f.reason for f in flags} <= {FlagReason.BUDGET_EXHAUSTED}
     assert t_l < 12 * max(t_s, 0.05), (t_s, t_l, w_s, w_l)
     assert FlagReason.BUDGET_EXHAUSTED in {f.reason for f in f_l}
+
+
+@requires_qpdf
+def test_a_lone_high_byte_key_agrees_with_the_readers(tmp_path: Path) -> None:
+    data = _files(b"<E9>", b"<F1>")  # not UTF-8: both read PDFDocEncoding
+    assert _inventory(data).flags == ()
+    found = compare(data, tmp_path)
+    assert found.agrees, found
+
+
+def _catalog_rewrites(keys: int, revisions: int) -> bytes:
+    """An /EmbeddedFiles tree of *keys* entries, then *revisions* updates
+    each rewriting only the catalog (an /OpenAction change, say): the trees
+    are not walked again (review round 3)."""
+    w = Writer()
+    table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+    catalog = b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 4 0 R >>%s >>"
+    table[1] = (1, w.obj(1, catalog % b""), 0)
+    table[2] = (1, w.obj(2, PAGES), 0)
+    table[3] = (1, w.obj(3, PAGE), 0)
+    pairs = b" ".join(b"(k%08d) %d 0 R" % (i, 10 + i) for i in range(keys))
+    table[4] = (1, w.obj(4, b"<< /Names [%s] >>" % pairs), 0)
+    for i in range(keys):
+        table[10 + i] = (1, w.obj(10 + i, b"<< /Type /Filespec /F (f.txt) >>"), 0)
+    size = 10 + keys
+    prev = w.table(table, b"/Size %d /Root 1 0 R" % size)
+    w.epilogue(prev)
+    for i in range(revisions):
+        body = catalog % (b" /PageMode /UseNone" if i % 2 else b" /PageMode /UseOutlines")
+        xref = w.table({1: (1, w.obj(1, body), 0)},
+                       b"/Size %d /Root 1 0 R /Prev %d" % (size, prev))
+        w.epilogue(xref)
+        prev = xref
+    return bytes(w.out)
+
+
+def test_rewriting_the_catalog_does_not_walk_the_trees_again() -> None:
+    (t_s, w_s, f_s), (t_l, w_l, f_l) = _measure(lambda n: _catalog_rewrites(n, n), 300)
+    assert f_s == () and f_l == ()
+    assert w_l < 10 * w_s and t_l < 16 * max(t_s, 0.05), (t_s, t_l, w_s, w_l)
+    inv = _inventory(_catalog_rewrites(20, 5))
+    assert all(t is inv.trees[-1] for t in inv.trees)  # one result, reused
+
+
+def test_rewriting_the_catalogs_names_walks_the_trees_again() -> None:
+    base = _files(b"(a.txt)", b"(b.txt)")
+    broken = _update(base, {1: b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles [] >> >>"})
+    found = [dict(f.params) for f in _inventory(broken).flags if f.reason is FlagReason.NAME_TREE]
+    assert found and {f["revision"] for f in found} == {0}
