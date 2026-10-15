@@ -978,7 +978,7 @@ def test_corpus_build_counts_unreadable_files_without_naming_them(tmp_path, caps
     assert "2 unreadable file(s)" in captured.out
     for text in ("private-", str(root)):
         assert text not in captured.out + captured.err
-    assert not list((tmp_path / "out").glob("*.partial"))
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["manifest.json"]
 
 
 @pytest.mark.parametrize("layout", ["empty", "no-pdf", "only-unreadable", "unlistable"])
@@ -1014,7 +1014,90 @@ def test_corpus_build_never_replaces_a_manifest_with_an_empty_one(tmp_path, layo
     if layout == "only-unreadable":
         assert "1 unreadable file(s)" in str(exc.value)
     assert manifest.read_text() == "previous manifest\n"
-    assert not list(tmp_path.glob("*.partial"))
+    assert not list(tmp_path.glob(".*partial"))
+
+
+@_POSIX_NON_ROOT
+def test_corpus_build_refuses_an_inaccessible_root_without_naming_it(tmp_path):
+    """A root whose parent cannot be searched used to raise PermissionError
+    with the root's path in the traceback (before 3.14), or read as "not a
+    directory" (3.14)."""
+    from scorecard.corpus import find_pdfs
+
+    parent = tmp_path / "private-parent"
+    (parent / "private-root").mkdir(parents=True)
+    parent.chmod(0o444)
+    try:
+        with pytest.raises(SystemExit, match="cannot be accessed") as exc:
+            find_pdfs(parent / "private-root")
+    finally:
+        parent.chmod(0o700)
+    assert "private-" not in str(exc.value)
+
+
+def test_corpus_build_counts_a_file_that_vanishes_before_it_is_classified(
+    tmp_path, monkeypatch
+):
+    """The read and the probe are separate reads; a file removed or locked
+    between them is counted like any unreadable file, not raised on."""
+    import scorecard.corpus as corpus_mod
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    real = corpus_mod.classify
+
+    def flaky(path):
+        if path.name == "plain.pdf":
+            raise PermissionError(13, "fabricated", str(path))
+        return real(path)
+
+    monkeypatch.setattr(corpus_mod, "classify", flaky)
+    files = corpus_mod.find_pdfs(root)
+    entries = corpus_mod.build_manifest(root, manifest_path=tmp_path / "m.json", files=files)
+    assert len(files.pdfs) - len(entries) == 1
+    assert "plain.pdf" not in {e.path for e in entries}
+
+
+def test_manifest_write_is_atomic_and_leaves_nothing_behind(tmp_path, monkeypatch):
+    """The manifest is written to a fresh temporary file and renamed into
+    place: a failure leaves the previous manifest byte for byte and no
+    temporary file; a file a user happens to have beside it is never
+    touched; the existing manifest's mode is kept; a symlinked manifest is
+    written through."""
+    import scorecard.corpus as corpus_mod
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    out = tmp_path / "out"
+    out.mkdir()
+    manifest = out / "manifest.json"
+    manifest.write_text("previous manifest\n")
+    manifest.chmod(0o600)
+    bystander = out / "manifest.json.partial"
+    bystander.write_text("a user's own file\n")
+
+    def boom(*args):
+        raise OSError("fabricated failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(corpus_mod.os, "replace", boom)
+        with pytest.raises(OSError, match="fabricated failure"):
+            corpus_mod.build_manifest(root, manifest_path=manifest)
+    assert manifest.read_text() == "previous manifest\n"
+    assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "manifest.json.partial"]
+
+    corpus_mod.build_manifest(root, manifest_path=manifest)
+    assert len(json.loads(manifest.read_text())["entries"]) == 6
+    assert (manifest.stat().st_mode & 0o777) == 0o600
+    assert bystander.read_text() == "a user's own file\n"
+    assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "manifest.json.partial"]
+
+    link = out / "link.json"
+    link.symlink_to(manifest)
+    manifest.write_text("previous manifest\n")
+    corpus_mod.build_manifest(root, manifest_path=link)
+    assert link.is_symlink() and len(json.loads(manifest.read_text())["entries"]) == 6
+
 
 def test_find_pdfs_refuses_a_root_that_is_not_a_directory(tmp_path):
     """A mistyped --root used to write an empty manifest; `corpus run` then
