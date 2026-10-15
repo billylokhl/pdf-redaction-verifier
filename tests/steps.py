@@ -3,25 +3,37 @@
 Wall-clock ratios flake on a loaded runner, and the budget's own work
 counter cannot see work that is never charged -- the bug class the
 linearity tests exist for (ADR 0010: "work counting alone cannot see
-uncharged work"). Counting the lines Python executes inside the module
-under test sees every loop, charged or not, and is the same on every
-machine and under coverage."""
+uncharged work"). Counting the lines Python executes in the inventory's
+modules sees every Python loop, charged or not, and is the same on every
+machine and under coverage. It cannot see work done inside C (a linear
+`in` on a list, a copy, a sort): the tests keep a coarse wall-clock
+backstop for that, with a margin wide enough not to flake."""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from types import FrameType, ModuleType
+from types import FrameType
 from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 
-def lines_executed(modules: tuple[ModuleType, ...], call: Callable[[], T]) -> tuple[T, int]:
-    """*call()*'s result and the number of line events in *modules*' code
-    while it ran (other code is not traced). The tracer in place before
+def _inventory_files() -> set[str]:
+    """Every module of redaction_verifier.inventory, and the budget."""
+    import redaction_verifier.budget
+    import redaction_verifier.inventory
+    files = {m.__file__ for name, m in list(sys.modules.items())
+             if name.startswith("redaction_verifier.inventory") and m is not None}
+    files.add(redaction_verifier.budget.__file__)
+    files.add(redaction_verifier.inventory.__file__)
+    return {f for f in files if f}
+
+
+def lines_executed(files: set[str], call: Callable[[], T]) -> tuple[T, int]:
+    """*call()*'s result and the number of line events in *files* while
+    it ran (other code is not traced). The tracer in place before
     (coverage's, say) is restored afterwards."""
-    files = {module.__file__ for module in modules}
     count = 0
 
     def local(frame: FrameType, event: str, arg: Any) -> Any:
@@ -42,25 +54,29 @@ def lines_executed(modules: tuple[ModuleType, ...], call: Callable[[], T]) -> tu
     return result, count
 
 
-def charged_steps(data: bytes, module: ModuleType, entry: str) -> tuple[int, int, Any]:
-    """Build *data*'s inventory and return (the work charged inside
-    build.<entry> -- one part of the inventory, e.g. "build_graph" --,
-    the lines executed in *module* meanwhile, the inventory)."""
+def charged_steps(data: bytes, entry: str) -> tuple[int, int, Any]:
+    """Build *data*'s inventory; return (the work charged inside
+    build.<entry> -- one part of the inventory, e.g. "build_graph" --, the
+    lines executed in every inventory module and the budget while that
+    part ran -- the callbacks it makes into build.py included --, the
+    inventory)."""
     import redaction_verifier.inventory.build as build_module
     from redaction_verifier.budget import Budget
     from redaction_verifier.inventory import build_inventory
     budget = Budget(file_size=len(data))
-    charged: list[int] = []
+    files = _inventory_files()
+    measured: list[tuple[int, int]] = []
     real = getattr(build_module, entry)
 
-    def measured(*args: Any, **kwargs: Any) -> Any:
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         before = budget.work
-        result = real(*args, **kwargs)
-        charged.append(budget.work - before)
+        result, lines = lines_executed(files, lambda: real(*args, **kwargs))
+        measured.append((budget.work - before, lines))
         return result
-    setattr(build_module, entry, measured)
+    setattr(build_module, entry, wrapped)
     try:
-        inv, lines = lines_executed((module,), lambda: build_inventory(data, budget=budget))
+        inv = build_inventory(data, budget=budget)
     finally:
         setattr(build_module, entry, real)
-    return charged[0], lines, inv
+    work, lines = measured[0]
+    return work, lines, inv

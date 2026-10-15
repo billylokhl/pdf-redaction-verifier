@@ -6,6 +6,7 @@ is generated here; fabricated content only."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,16 +16,16 @@ from scorecard.pdfgen import Writer
 
 from redaction_verifier.budget import Budget, Limits
 from redaction_verifier.inventory import build_inventory
-import redaction_verifier.inventory.pages as pages_module
 from redaction_verifier.inventory.pages import PageTreeRule
 from redaction_verifier.ledger import FlagReason
 
 from .conftest import requires_qpdf
 from .steps import charged_steps
 
-# Lines pages.py executes per unit of work it charges, at most (#94): its
-# charges are coarser than the graph's (about 24 lines a unit), but fixed.
-LINES_PER_UNIT = 30
+# Lines the inventory executes per unit of work the page walk charges, at
+# most (#94): coarser than the graph's charges (measured 11-34 lines a unit,
+# callbacks into build.py included), but fixed.
+LINES_PER_UNIT = 50
 
 SSN = b"123-45-6789"
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
@@ -233,26 +234,46 @@ def _wide(pages: int, updates: int) -> bytes:
     return bytes(w.out)
 
 
+def _timed(data: bytes) -> tuple[float, int]:
+    """(process time, work charged) of building *data*'s inventory."""
+    budget = Budget(file_size=len(data))
+    started = time.process_time()
+    build_inventory(data, budget=budget)
+    return time.process_time() - started, budget.work
+
+
 def test_rereading_a_wide_tree_is_charged_and_bounded() -> None:
     # Each update that touches the tree re-reads it: revisions x pages, by
     # design (ADR 0011 item 7). All of it is charged -- the work grows as
     # its product -- and the budget bounds it (flagged, never hanging).
-    # No hidden work: pages.py's lines executed per unit of work it charges
-    # stay under a fixed bound (a deterministic count, not wall clock: #94).
+    # No hidden work: the lines the inventory executes per unit of work the
+    # walk charges stay under a fixed bound (a deterministic count: #94);
+    # (work done inside C, which no line count sees: the test below).
     small = _wide(40, 40)
     large = _wide(320, 320)
     work = []
     for data in (small, large):
-        charged, lines, inv = charged_steps(data, pages_module, "build_pages")
+        charged, lines, inv = charged_steps(data, "build_pages")
         work.append(charged)
         assert lines <= LINES_PER_UNIT * charged, (lines, charged)
         reasons = {f.reason for f in inv.flags}
         assert reasons <= {FlagReason.BUDGET_EXHAUSTED}, reasons
     w_s, w_l = work
     # Superlinear by design (8x the input, revisions x pages: ~64x the walk).
-    # (Lines per unit differ between the sizes: the fixed PAGE_RECORD_WORK
-    # charges weigh more in the small file; the bound holds for both.)
     assert w_l >= 16 * w_s or w_l >= 0.99 * Limits().work_limit(len(large)), (w_s, w_l)
+
+
+def test_rereading_a_wide_tree_costs_its_charged_work_in_wall_clock_too() -> None:
+    # The backstop for work done inside C (a linear `in` on a list, a copy:
+    # review of #113): wall-clock time per charged unit does not grow with
+    # the input. Main's bound and sizes; measured 2.0x, and 3.6x with
+    # `list(self.kept)` scanned per page. Best of two: a loaded machine
+    # only slows a run.
+    per_unit = []
+    for data in (_wide(100, 100), _wide(800, 800)):
+        runs = [_timed(data) for _ in range(2)]
+        per_unit.append(max(min(t for t, _ in runs), 0.02) / runs[0][1])
+    assert per_unit[1] < 3 * per_unit[0], per_unit
 
 
 @requires_qpdf

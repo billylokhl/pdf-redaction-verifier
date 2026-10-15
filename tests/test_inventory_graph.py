@@ -14,7 +14,6 @@ from scorecard.inventory import compare
 from scorecard.pdfgen import Writer
 
 import redaction_verifier.inventory.build as build_module
-import redaction_verifier.inventory.graph as graph_module
 from redaction_verifier.budget import Budget, Counter, Limits
 from redaction_verifier.inventory import build_inventory
 from redaction_verifier.inventory.graph import ARRAY, UseKind, use_kind
@@ -22,6 +21,11 @@ from redaction_verifier.ledger import Flag, FlagReason
 
 from .conftest import requires_qpdf
 from .steps import charged_steps
+
+# Lines the inventory executes per unit of work the graph charges, at most
+# (#94): measured 9.6-15.3 on every shape here (callbacks into build.py
+# included).
+LINES_PER_GRAPH_UNIT = 24
 
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
@@ -346,24 +350,52 @@ def _stale(bodies: int, flips: int) -> bytes:
 
 
 def _graph_steps(data: bytes) -> tuple[int, int, tuple[Flag, ...]]:
-    """(work charged inside the graph, lines executed in graph.py, flags):
-    the line count sees every loop, charged or not, the same on every
-    machine (#94)."""
-    work, lines, inv = charged_steps(data, graph_module, "build_graph")
+    """(work charged inside the graph, lines executed in the inventory's
+    modules while it ran -- its callbacks into build.py included --,
+    flags): the line count sees every Python loop, charged or not, the
+    same on every machine (#94)."""
+    work, lines, inv = charged_steps(data, "build_graph")
     return work, lines, inv.flags
 
 
-# Lines graph.py executes per unit of work it charges, at most: every loop
+# Lines executed per unit of work the graph charges, at most: every loop
 # charges per pass, so this holds on any input; an uncharged loop breaks it.
-LINES_PER_UNIT = 12
+LINES_PER_UNIT = LINES_PER_GRAPH_UNIT
+
+
+def _best_time(data: bytes, runs: int = 3) -> float:
+    """The best of *runs* wall-clock runs (a loaded machine slows a run,
+    never speeds one), at least 20 ms (a floor for timer noise)."""
+    return max(min(_work(data)[1] for _ in range(runs)), 0.02)
+
+
+def test_the_graph_scales_in_wall_clock_too() -> None:
+    # The backstop for work done inside C, which the line count cannot see
+    # (a linear `in` on a list, a copy, a sort: review of #113). A C-level
+    # scan costs nanoseconds a step, so it shows only at large n: 4000 vs
+    # 64000 measured 18.7x (16x the input), and 56x with `moved_set` a list.
+    # 32x sits between, with ~1.7x room each way.
+    small, large = _best_time(_wide(4000)), _best_time(_wide(64000), runs=2)
+    assert large < 32 * small, (small, large)
+
+
+def test_flipping_costs_its_charged_work_in_wall_clock_too() -> None:
+    # The flip shape is quadratic by design, all of it charged: its time per
+    # charged unit stays that of a linear shape (C-level work: review of
+    # #113). Measured 0.6x; 4.1x with `seen` a list.
+    flip, linear = _rewrites(400, 400, flip=True), _rewrites(400, 400, flip=False)
+    per = _best_time(flip) / _work(flip)[0]
+    base = _best_time(linear) / _work(linear)[0]
+    assert per < 2 * base, (per, base)
 
 
 @pytest.mark.parametrize("shape", [lambda n: _wide(n), lambda n: _stale(n, n // 4)],
                          ids=["wide", "stale"])
 def test_every_step_of_the_graph_is_charged(shape) -> None:  # type: ignore[no-untyped-def]
     # Not only work counts (ADR 0010): 8x the input executes about 8x the
-    # graph's lines (an uncharged quadratic loop: ~64x), and the work
-    # charged keeps pace with it. Lines, not wall clock: deterministic.
+    # inventory's lines while the graph runs (an uncharged quadratic loop:
+    # ~64x), and the work charged keeps pace with it. Lines, not wall clock:
+    # deterministic (C-level work: test_the_graph_scales_in_wall_clock_too).
     work_s, lines_s, flags_s = _graph_steps(shape(500))
     work_l, lines_l, flags_l = _graph_steps(shape(4000))
     assert FlagReason.BUDGET_EXHAUSTED not in {f.reason for f in flags_s + flags_l}
