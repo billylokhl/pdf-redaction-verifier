@@ -518,7 +518,35 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     (R3, R6, R7). The item-7 timing test: revisions and objects scaled together (n vs 8n) --
     within the linear bound or flagged BUDGET_EXHAUSTED. The oracle's added per-revision
     page loads and pikepdf instances grow its cost (#52 item 4): re-measure the oracle's
-    time with each PR.
+    time with each PR. Split in three PRs (coordinator decisions Q1-Q8, 2026-10-15, owner
+    informed): 7e-1 reachable and STRUCTURAL with the REACHABLE gate, 7e-2 DRAWABLE,
+    ORPHANED and per-body labels, 7e-3 item 7 and the cost briefing.
+    Done (3a-7e-1 PR): labels.py gives each revision `Inventory.labels` -- its reachable
+    object numbers (every edge from the trailer, /Parent included: Q1, an ADR 0011 note) and
+    its STRUCTURAL records by stream body (the kind, the reachable source and key, or the
+    chain): cross-reference streams of the revision's chain, object streams home to a live
+    compressed entry (one home to nothing gets no label, Q4), the hint stream at the accepted
+    linearization dictionary's first /H offset (`Chain.linearization`; stale /L included,
+    Q8), and by key from reachable objects /Metadata, /EF entries, /JS and the catalog's
+    /OutputIntents profiles, the target a stream without /Subtype /Image or /Form, /BBox or
+    /Width. No flags (R3); a revision that reads nothing new shares its labels by identity,
+    one without a page list resets the reuse; every step charged, labels made again charged
+    per retained element; `Inventory.graph_work` (Q6). Gate (Q5): Check.REACHABLE, per
+    revision, ours exactly against MuPDF's `tobytes(garbage=1)` and libqpdf's QDF write;
+    the spike found both keep exactly every object a reference reaches from the trailer, and
+    that each writer drops references it rewrites though its reader reads them (a stream's
+    /Length, the trailer's /Encrypt, and in qpdf the trailer's /ID and /DecodeParms without
+    /Filter): added back as each reader reads them, failing closed where such a target holds
+    references. Measured on the final code: corpus 1,920 agree / 153 flagged / 0 unflagged
+    disagreements, unchanged (2,080 revisions' reachable sets compared); case library
+    435/27/0 (462 cases); fuzz 501/1,499/0. The check adds p50 0.003 s, p99 0.078 s, max
+    1.6 s to the oracle (corpus p50 0.54 s, on a loaded machine). STRUCTURAL in the
+    unflagged files' current revisions: hint streams 400 files (76 under a stale /L), XMP 712
+    files, JavaScript 86 files (159 streams), cross-reference streams 55 files (150), object
+    streams 55 files (284), embedded files 1, output intents 0. Graph work per file p50 634,
+    p99 28,774, max 131,430 units. Linearity: lines per charged unit about 11-12, at most 15
+    and not growing from n to 8n; the reviewer-style mutants on the charges are caught or
+    covered by another charge of the same loop.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page
