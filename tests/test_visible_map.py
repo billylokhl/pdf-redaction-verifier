@@ -1157,6 +1157,7 @@ class TestMaskedLabels:
         ("Иванов_Иван.pdf", "target"),              # Cyrillic letters of a value
         ("山田太郎_records.pdf", "target"),          # CJK letters of a value
         ("Ив.pdf", "target"),                       # two of them are enough
+        ("****rot.pdf", "target"),                  # would read as a masked tail
         ("quarterly.pdf", "quarterly.pdf"),
         ("文書.pdf", "target"),                     # drawn \u{6587}...: 6587 of a value
     ])

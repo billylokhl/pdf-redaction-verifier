@@ -214,6 +214,10 @@ class Rules:
             while text and len(latin(text + "…")) > cap:
                 text = text[:-1]
             text += "…"
+        if "****" in text:
+            # The self-check reads what follows a drawn "****" as a masked
+            # tail: a name holding one would cost the map.
+            return self.clean(neutral)
         values = {*self.index.values, *(s.normalized for s in self.secrets.values())}
         # Checked as written and as drawn: escaping a character outside
         # Latin-1 (文 as \u{6587}) adds hex digits the name did not have.
