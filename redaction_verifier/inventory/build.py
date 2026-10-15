@@ -35,6 +35,7 @@ from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .graph import Body, build_graph
 from .pages import build_pages
+from .trees import build_trees
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
 from .objects import (IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull,
                       PdfRef, PdfValue)
@@ -183,6 +184,9 @@ class _Builder:
         pages, page_flags = build_pages(len(chain.revisions), self.changes, self._body_of,
                                         self._home_number, trailers, self.budget)
         self.flags.extend(page_flags)
+        trees, tree_flags = build_trees(len(chain.revisions), self.changes, self._body_of,
+                                        self._home_number, trailers, self.budget)
+        self.flags.extend(tree_flags)
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -192,7 +196,7 @@ class _Builder:
         return Inventory(len(data), tiling, tiles,
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
-                         self.objects, self.streams, entries, graph, pages)
+                         self.objects, self.streams, entries, graph, pages, trees)
 
     def _claim(self, ref: UnitRef, span: Span, flags: tuple[Flag, ...] = ()) -> None:
         self.claims.append((ref, span))
