@@ -140,7 +140,9 @@ def _label(finding: Finding, rules: RuleSet | None) -> str:
 
 def _counts(report: ScanReport, rules: RuleSet) -> str:
     totals: dict[str, int] = {}
-    for label in rules.labels.values():
+    for name, label in rules.labels.items():
+        if name in report.informational:
+            continue  # its matches are notices (ADR 0012), never "found"
         totals[label.kind] = totals.get(label.kind, 0) + 1
     found: dict[str, set[str]] = {}
     for finding in report.findings:

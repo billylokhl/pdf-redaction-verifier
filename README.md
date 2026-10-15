@@ -84,8 +84,9 @@ own) prints the tool version.
 value of that shape, not a secret you listed. With `--no-strict-classes`
 their matches are reported in a separate section after the verdict, "Not
 counted in the verdict", and in the JSON report's `notices` array (`kind:
-"class-match"`, the same fields as a finding or warning, `tier` `hard` or
-`review`), and they never change the exit code: exit `0` then means that
+"class-match"`; every field a finding or a warning has, null when it
+does not apply; `tier` `hard` or `review`; a review warning's own kind as
+`warning_kind`), and they never change the exit code: exit `0` then means that
 none of the values you listed, and none of your own `pattern` rules, was
 found in any layer the tool read, and that nothing stopped it reading a
 layer -- it says nothing about other SSN-, card-, email- or phone-shaped
@@ -531,7 +532,9 @@ Each entry has a `name` and exactly one of:
 - `"value"` — a known secret string, matched through normalization.
 - `"class"` — a built-in class: `ssn`, `credit-card`, `email`, `us-phone`.
   Optional `"strict": true` keeps this class's matches in the verdict even
-  under `--no-strict-classes` (ADR 0012).
+  under `--no-strict-classes` (ADR 0012); a `"strict"` that is not `true`
+  or `false` is refused only then. On a `value` or `pattern` rule the key
+  is ignored, as any unknown key is.
 - `"pattern"` — a custom regex (`re.MULTILINE`; names must be unique).
 
 ### Shared YAML config
@@ -540,7 +543,7 @@ Each entry has a `name` and exactly one of:
 | --- | --- |
 | `exact_values` | value rules (normalized matching) |
 | `patterns` | pattern rules, compiled `IGNORECASE` — the same flags the redactor uses |
-| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card` |
+| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card` (informational notices under `--no-strict-classes`, like any built-in class; a YAML config has no per-type `strict`) |
 | `backend`, `model`, `llm_url`, `ollama_url`, `scrub_metadata` | ignored |
 | any other key | warning (exit `2`) — a typo or a newer redactor key is surfaced, not skipped |
 

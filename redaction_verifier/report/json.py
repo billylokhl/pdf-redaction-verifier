@@ -110,21 +110,22 @@ def build_json_report(
         entry["message"] = text(w)
         return entry
 
+    # Every field a finding or a warning has, so a notice has one shape.
+    notice_fields = ("layer", "rule", "storage", "object", "revision", "page",
+                     "location", "sample", "code", *WARNING_FIELDS, "message")
+
     def notice_entry(n: Finding | Warn) -> dict[str, Any]:
         """A built-in class match that does not count toward the verdict
-        (ADR 0012): one shape for both a would-be finding and a would-be
-        review warning, every field present."""
+        (ADR 0012): the fields of the finding or review warning it would
+        have been, every field present (null when it does not apply); the
+        warning's own kind is kept as `warning_kind`."""
         if isinstance(n, Finding):
-            base = finding_entry(n)
-            return {"kind": "class-match", "tier": "hard", "code": None,
-                    **{k: base[k] for k in ("layer", "rule", "storage", "object",
-                                            "revision", "page", "location", "sample")},
-                    "message": None}
-        w = warning_entry(n)
-        return {"kind": "class-match", "tier": "review", "code": w["code"],
-                "layer": w["layer"], "rule": w["rule"], "storage": w["storage"],
-                "object": w["object"], "revision": w["revision"], "page": w["page"],
-                "location": None, "sample": None, "message": w["message"]}
+            base, tier, warning_kind = finding_entry(n), "hard", None
+        else:
+            base, tier = warning_entry(n), "review"
+            warning_kind = base.pop("kind")
+        return {"kind": "class-match", "tier": tier, "warning_kind": warning_kind,
+                **{k: base.get(k) for k in notice_fields}}
 
     def ordered(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(entries, key=lambda d: json.dumps(d, sort_keys=True))

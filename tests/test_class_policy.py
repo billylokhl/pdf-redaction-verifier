@@ -13,7 +13,6 @@ from pathlib import Path
 import pymupdf as fitz
 import pytest
 
-from redaction_verifier.model import VerifyError
 from redaction_verifier.matching.policy import CLASS_KINDS, informational_rules
 from redaction_verifier.model import ScanReport
 from redaction_verifier.rules import _load_rules_json
@@ -58,13 +57,19 @@ def test_strict_key_is_recorded(tmp_path):
 
 
 @pytest.mark.parametrize("entry", [
+    {"name": "V", "value": "x", "strict": False},
     {"name": "V", "value": "x", "strict": True},
-    {"name": "P", "pattern": "x", "strict": True},
-    {"name": "S", "class": "ssn", "strict": "yes"},
+    {"name": "P", "pattern": "x", "strict": "anything"},
 ])
-def test_strict_key_is_refused_where_it_cannot_apply(tmp_path, entry):
-    with pytest.raises(VerifyError):
-        _rules(tmp_path, [entry])
+def test_strict_key_is_ignored_on_other_rules_as_unknown_keys_always_were(tmp_path, entry):
+    rs = _rules(tmp_path, [entry])
+    assert rs.strict_rules == frozenset() and rs.strict_invalid == frozenset()
+
+
+def test_a_malformed_strict_on_a_class_rule_still_loads(tmp_path):
+    # Refused only under --no-strict-classes (verify.py), where it matters.
+    rs = _rules(tmp_path, [{"name": "S", "class": "ssn", "strict": "yes"}])
+    assert rs.strict_invalid == frozenset({"S"}) and rs.strict_rules == frozenset()
 
 
 # ── model: routing to notices ────────────────────────────────────────────
@@ -102,18 +107,24 @@ def test_strict_report_routes_nothing():
 # ── the CLI, end to end ──────────────────────────────────────────────────
 
 
-def _pdf(path: Path, text: str) -> Path:
+def _pdf(path: Path, *pages: str) -> Path:
     doc = fitz.open()
-    doc.new_page().insert_text((50, 80), text)
+    for text in pages:
+        doc.new_page().insert_text((50, 80), text)
     doc.save(str(path))
     doc.close()
     return path
 
 
 def _run(tmp_path, text, rules, *flags):
-    pdf = _pdf(tmp_path / "f.pdf", text)
-    rp = tmp_path / "r.json"
-    rp.write_text(json.dumps(rules))
+    pages = text if isinstance(text, tuple) else (text,)
+    pdf = _pdf(tmp_path / "f.pdf", *pages)
+    if isinstance(rules, str):  # a redactor YAML config
+        rp = tmp_path / "r.yaml"
+        rp.write_text(rules)
+    else:
+        rp = tmp_path / "r.json"
+        rp.write_text(json.dumps(rules))
     out = tmp_path / "o.json"
     proc = subprocess.run([sys.executable, str(REPO_ROOT / "verify.py"), "--target", str(pdf),
                            "--secrets", str(rp), "--json", str(out), *flags],
@@ -161,3 +172,71 @@ def test_fail_fast_does_not_stop_on_a_notice(tmp_path):
     _, data = _run(tmp_path, TEXT, SSN_CLASS, "--no-strict-classes", "--fail-fast")
     assert data["findings"] == []
     assert not any(w["code"].startswith("SKIPPED_FAIL_FAST") for w in data["warnings"])
+
+
+def test_fail_fast_reads_on_past_a_notice_to_a_listed_value(tmp_path):
+    # A class hit on page 1 must not end the scan: the listed value is on
+    # page 2 (review round 1, finding 1: this exited 0).
+    rules = SSN_CLASS + [{"name": "Target", "value": "Zebraquokka"}]
+    proc, data = _run(tmp_path, ("Applicant 234-56-7890", "Codename Zebraquokka"), rules,
+                      "--no-strict-classes", "--fail-fast")
+    assert proc.returncode == 1
+    assert {f["rule"] for f in data["findings"]} == {"Target"}
+
+
+def test_a_malformed_strict_is_refused_only_when_classes_inform(tmp_path):
+    rules = [{"name": "Any SSN", "class": "ssn", "strict": "yes"}]
+    proc, data = _run(tmp_path, TEXT, rules)
+    assert proc.returncode == 1  # strict mode: loads as before
+    proc, data = _run(tmp_path, TEXT, rules, "--no-strict-classes")
+    assert proc.returncode == 2 and data["error"]["code"] == "RULES_INVALID"
+
+
+def test_a_scope_warning_beside_notices_still_gives_exit_2(tmp_path):
+    proc, data = _run(tmp_path, TEXT, "entity_types:\n  - person_name\n  - ssn\n",
+                      "--no-strict-classes")
+    assert proc.returncode == 2
+    assert any(w["code"] == "SCOPE_UNVERIFIABLE" for w in data["warnings"])
+    assert data["findings"] == [] and data["notices"]
+
+
+def test_redactor_entity_types_are_informational_under_no_strict(tmp_path):
+    proc, data = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n", "--no-strict-classes")
+    assert proc.returncode == 0
+    assert {n["rule"] for n in data["notices"]} == {"entity_types:ssn"}
+    proc, _ = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n")
+    assert proc.returncode == 1  # strict (default): as before
+
+
+def test_a_warning_notice_keeps_every_warning_field():
+    from redaction_verifier.report.json import build_json_report
+
+    r = ScanReport(informational=frozenset({"Any SSN"}))
+    r.warn("REVIEW_METADATA_RAW", "Metadata", "raw output matches pattern rule 'Any SSN' "
+           "(sample ****7890)", rule="Any SSN", tool="exiftool", adjacency="NOISY_SOURCE")
+    r.record("Text", "Any SSN", "page 1", "234-56-7890")
+    r.settle_notices()
+    data = build_json_report(r, 0, target=Path("f.pdf"), tool_version="x",
+                             ocr_available=True)
+    hard, review = sorted(data["notices"], key=lambda n: n["tier"])
+    assert set(hard) == set(review)  # one shape
+    assert review["tier"] == "review" and review["warning_kind"] == "review"
+    assert review["code"] == "REVIEW_METADATA_RAW"
+    assert review["tool"] == "exiftool" and review["adjacency"] == "NOISY_SOURCE"
+    assert hard["tier"] == "hard" and hard["warning_kind"] is None
+    assert hard["sample"] == "****7890"
+    assert data["findings"] == [] and data["warnings"] == []
+
+
+def test_the_text_report_lists_a_warning_notice_after_the_verdict(capsys):
+    from redaction_verifier.report.text import print_report
+
+    r = ScanReport(informational=frozenset({"Any SSN"}))
+    r.warn("REVIEW_FUSED_PATTERN", "Text", "Text: sequence matching pattern rule 'Any SSN'",
+           rule="Any SSN")
+    r.settle_notices()
+    print_report(r, Path("f.pdf"))
+    out = capsys.readouterr().out
+    assert out.index("[PASS]") < out.index("NOT COUNTED IN THE VERDICT")
+    assert "sequence matching pattern rule" in out.split("NOT COUNTED")[1]
+    assert "STILL PRESENT" not in out

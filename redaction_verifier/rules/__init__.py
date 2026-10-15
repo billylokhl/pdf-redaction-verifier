@@ -151,6 +151,10 @@ class RuleSet:
     # verdict as before, even when the scan's default leaves classes
     # informational.
     strict_rules: frozenset[str] = field(default_factory=frozenset)
+    # Class rules whose "strict" is not true or false. Refused only when
+    # classes are informational (--no-strict-classes): before ADR 0012 the
+    # key was ignored, and strict mode must still load every file it did.
+    strict_invalid: frozenset[str] = field(default_factory=frozenset)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
@@ -407,6 +411,7 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
     patterns: list[PatternRule] = []
     labels: dict[str, RuleLabel] = {}
     strict_rules: set[str] = set()
+    strict_invalid: set[str] = set()
     seen_names: set[str] = set()
     for i, entry in enumerate(payload):
         if not isinstance(entry, dict) or "name" not in entry:
@@ -431,17 +436,12 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
                 f"got {type(spec).__name__}"
             )
 
-        if "strict" in entry:
-            if kind != "class":
-                raise VerifyError(
-                    f"rules entry {i} ({name!r}): 'strict' applies only to a 'class' rule"
-                )
+        # "strict" means something only on a class rule (ADR 0012); on any
+        # other rule it is ignored, as every unknown key always was.
+        if kind == "class" and "strict" in entry:
             if not isinstance(entry["strict"], bool):
-                raise VerifyError(
-                    f"rules entry {i} ({name!r}): 'strict' must be true or false, "
-                    f"got {type(entry['strict']).__name__}"
-                )
-            if entry["strict"]:
+                strict_invalid.add(name)
+            elif entry["strict"]:
                 strict_rules.add(name)
 
         labels[name] = RuleLabel(kind, repr(name))
@@ -459,4 +459,5 @@ def _load_rules_json(rules_path: Path) -> RuleSet:
     if not secrets and not patterns:
         raise VerifyError("the rules file contains no rules")
     return RuleSet(secrets=secrets, patterns=patterns, labels=labels,
-                   strict_rules=frozenset(strict_rules))
+                   strict_rules=frozenset(strict_rules),
+                   strict_invalid=frozenset(strict_invalid))

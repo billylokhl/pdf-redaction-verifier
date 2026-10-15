@@ -563,7 +563,11 @@ def scan_page_layer(
         if patterns:
             cross_page_patterns.feed(
                 "\n" + (variants[cross_page_reading] if len(variants) > cross_page_reading else ""))
-        if fail_fast and (report.leaked or layer_hard):
+        # A hit of an informational class rule (ADR 0012) is a notice: it
+        # must not end the scan, or a listed value on a later page goes
+        # unread and the run certifies.
+        if fail_fast and (report.leaked
+                          or any(n not in report.informational for n in layer_hard)):
             break
 
     # Aggregate pattern results: one finding (or warning) per rule.
@@ -3442,7 +3446,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         except VerifyError as exc:
             return finish(2, ("RULES_INVALID", str(exc)))
         secrets, patterns = rules.secrets, rules.patterns
-        # ADR 0012: which rules' matches are notices rather than verdict.
+        # ADR 0012: which rules' matches are notices rather than verdict. A
+        # malformed "strict" on a class rule matters only when classes are
+        # informational; strict mode reads rules exactly as before.
+        if not args.strict_classes and rules.strict_invalid:
+            return finish(2, ("RULES_INVALID",
+                              "'strict' must be true or false on class rule(s) "
+                              f"{', '.join(repr(n) for n in sorted(rules.strict_invalid))}"))
         report.informational = informational_rules(
             {name: label.kind for name, label in rules.labels.items()},
             strict=args.strict_classes, strict_rules=rules.strict_rules,
