@@ -167,7 +167,10 @@ def aes_256_xref_streams(path: Path) -> None:
 
 
 @case("document.encrypted-plain-metadata", truth="leak", cells="metadata.plain",
-      writer="pikepdf", expected=expect(1, findings=(("SSN", "live"),)),
+      writer="pikepdf", requires=("exiftool",),
+      # Only the Metadata layer (exiftool) catches it today: MuPDF reads the
+      # plain-text packet as if encrypted (ADR 0001's 2026-10-15 amendment).
+      expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "Metadata"),)),
       story="An AES-128 file whose page was cleaned but whose XMP title still holds the "
             "SSN, with /EncryptMetadata false: the metadata is stored in plain text "
             "inside an encrypted file.",

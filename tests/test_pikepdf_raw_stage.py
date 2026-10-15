@@ -63,9 +63,19 @@ def _handler_encrypts(pdf: pikepdf.Pdf, stream: pikepdf.Stream) -> bool:
     if (stream.get("/Type") == "/Metadata" and encrypt is not None
             and encrypt.get("/EncryptMetadata") is False):
         return False
+    # A stream's own /Crypt filter decides only when it names /Identity
+    # (or no name, which means /Identity: ISO 32000-1 §7.4.10); under a
+    # named crypt filter such as /StdCF the stream is encrypted.
     filters = stream.get("/Filter")
-    return not (filters == "/Crypt" or (isinstance(filters, pikepdf.Array)
-                                        and pikepdf.Name.Crypt in list(filters)))
+    names = list(filters) if isinstance(filters, pikepdf.Array) else [filters]
+    if pikepdf.Name.Crypt in names:
+        parms = stream.get("/DecodeParms")
+        position = names.index(pikepdf.Name.Crypt)
+        if isinstance(parms, pikepdf.Array):
+            parms = parms[position] if position < len(parms) else None
+        name = parms.get("/Name") if isinstance(parms, pikepdf.Dictionary) else None
+        return name is not None and name != "/Identity"
+    return True
 
 
 def _reads(data: bytes) -> list[tuple[int, bool, str, bytes, bytes]]:

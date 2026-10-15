@@ -260,8 +260,11 @@ Owner decision, 2026-10-15: approve the carve-out (option a).
   filter -- are checked instead as pikepdf's plaintext against the
   file's own stored bytes, which need no decryption.
 - MuPDF's divergence on those streams (it decrypts them anyway) is pinned
-  with explicit assertions in `tests/test_pikepdf_raw_stage.py`, so a
-  change in either library is seen.
+  with explicit assertions in `tests/test_pikepdf_raw_stage.py` for
+  cross-reference streams and plain-text `/Metadata`, so a change in
+  either library is seen; no fixture has an `/Identity` crypt-filter
+  stream yet, so that one is not pinned. A stream under a named crypt
+  filter (e.g. `/StdCF`) is encrypted and stays in the cross-check.
 
 The decision otherwise stands: decryption by pikepdf, cross-checked
 against MuPDF, for every byte the handler actually encrypts.
