@@ -488,3 +488,22 @@ def test_a_value_split_across_pages_is_found_by_a_match_joined_across_them():
     # An unsplit value still needs its own page.
     one = truth(("NAME2", "Avery R. Samplename", 0))
     assert score(rows, one, [joined])[0].outcome == rs.MISS
+
+
+def test_targets_report_pass_or_fail_against_the_owners():
+    # Owner, 2026-10-14: U3 100%, false hard 0.
+    good = [run_of("m2", "clean", 0, 0), run_of("m2", "clean", 0, 0)]
+    counts, _ = rs.summarise(good, EXACT, PATTERNS_, VALUES)
+    assert counts["targets"]["u3_pass"] and counts["targets"]["false_hard_pass"]
+    assert "U3 100% PASS" in rs.render(counts, "f" * 64)
+    one_review = good[:1] + [run_of("m2", "clean", 0, 2)]
+    counts, _ = rs.summarise(one_review, EXACT, PATTERNS_, VALUES)
+    assert not counts["targets"]["u3_pass"]
+    assert "U3 100% FAIL" in rs.render(counts, "f" * 64)
+    hard = good[:1] + [run_of("m2", "clean", 0, 1, findings=[finding(SSN1, "live", page=1)])]
+    counts, _ = rs.summarise(hard, EXACT, PATTERNS_, VALUES)
+    assert not counts["targets"]["false_hard_pass"] and counts["targets"]["false_hard"] == 1
+    # No measured output is not a pass.
+    counts, _ = rs.summarise([run_of("m2", "clean", 0, 0, control=True)], EXACT, PATTERNS_,
+                             VALUES)
+    assert not counts["targets"]["u3_pass"]

@@ -393,7 +393,9 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     keeps its labels (owner decision, 2026-10-15).
   - U3: of the `m2` outputs whose truth is clean, the clean control
     apart, the share that exits `0`, with the warning codes behind every
-    exit `2`.
+    exit `2`. The owner's targets (2026-10-14): U3 100% -- one review
+    flag on a correctly redacted file blocks milestone U -- and false
+    hard 0; every run reports PASS or FAIL against both.
 
   Only counts, with the lock's sha256 and the seeds measured, reach
   stdout and `--json` (a rules file whose exact values are not the

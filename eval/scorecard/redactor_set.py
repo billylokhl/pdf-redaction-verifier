@@ -498,7 +498,29 @@ def summarise(runs: list[FileRun], exact: list[str], patterns: list[str],
             },
         }
     counts["u3"] = u3(runs)
+    counts["targets"] = targets(counts)
     return counts, detail
+
+
+# Owner decision (2026-10-14, Pacific): every correctly redacted output
+# must exit 0 -- one review flag on a clean file blocks milestone U -- and
+# false hard stays at 0.
+U3_TARGET = 1.0
+FALSE_HARD_TARGET = 0
+
+
+def targets(counts: Mapping[str, Any]) -> dict[str, Any]:
+    """Pass or fail against the owner's targets. U3 needs at least one
+    measured output, and an exit-0 share of exactly U3_TARGET."""
+    u = counts["u3"]
+    false_hard = sum(counts[m]["files"]["false_hard"] for m in METHODS if m in counts)
+    return {
+        "u3_target": U3_TARGET,
+        "u3_pass": bool(u["n"]) and u["exit_0"] / u["n"] >= U3_TARGET,
+        "false_hard_target": FALSE_HARD_TARGET,
+        "false_hard": false_hard,
+        "false_hard_pass": false_hard <= FALSE_HARD_TARGET,
+    }
 
 
 def u3(runs: list[FileRun]) -> dict[str, Any]:
@@ -588,6 +610,12 @@ def render(counts: Mapping[str, Any], sha: str) -> str:
     lines.append(f"U3: {u['exit_0']} of {u['n']} correctly redacted m2 outputs exit 0 "
                  f"(exit 2: {u['exit_2']}, exit 1: {u['exit_1_false_hard']}); exit-2 codes "
                  f"{u['exit_2_warning_codes']}; clean control exits {u['clean_control_exits']}")
+    t = counts.get("targets")
+    if t:
+        lines.append(f"targets (owner, 2026-10-14): U3 {t['u3_target']:.0%} "
+                     f"{'PASS' if t['u3_pass'] else 'FAIL'}; false hard "
+                     f"{t['false_hard']} (target {t['false_hard_target']}) "
+                     f"{'PASS' if t['false_hard_pass'] else 'FAIL'}")
     return "\n".join(lines)
 
 
