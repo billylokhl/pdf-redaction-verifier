@@ -19,13 +19,15 @@ from redaction_verifier.inventory.objects import PdfRef
 from redaction_verifier.inventory.trees import NameTreeRule
 from redaction_verifier.ledger import FlagReason
 
-# Lines the inventory executes per unit of work the measured step charges,
-# at most (#94; tests/steps.py): the trees measured 2.5-3.7, the graph's
-# resource scopes 11.4 (the graph's own tests bound it at 24).
-LINES_PER_UNIT = {"build_trees": 8, "build_graph": 24}
-
 from .conftest import requires_qpdf
 from .steps import charged_steps
+
+# Lines the inventory executes per unit of work the measured step charges,
+# at most (#94; tests/steps.py): the trees measured 2.5-4.05 on Python
+# 3.10-3.14, the graph's resource scopes 11.4 (the graph's own tests bound
+# it at 24). Not seen: work inside C or in Python outside the inventory's
+# modules (a list `in` calling a dataclass's __eq__) -- no wall clock here.
+LINES_PER_UNIT = {"build_trees": 8, "build_graph": 24}
 
 SSN = b"123-45-6789"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] /Resources << >> >>"

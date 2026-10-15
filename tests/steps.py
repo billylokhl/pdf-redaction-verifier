@@ -6,8 +6,9 @@ linearity tests exist for (ADR 0010: "work counting alone cannot see
 uncharged work"). Counting the lines Python executes in the inventory's
 modules sees every Python loop, charged or not, and is the same on every
 machine and under coverage. It cannot see work done inside C (a linear
-`in` on a list, a copy, a sort): the tests keep a coarse wall-clock
-backstop for that, with a margin wide enough not to flake."""
+`in` on a list, a copy, a sort) or Python outside those modules (a
+dataclass's generated __eq__): the graph and page-walk tests keep a
+wall-clock backstop for that, sized not to flake; the trees tests do not."""
 
 from __future__ import annotations
 
