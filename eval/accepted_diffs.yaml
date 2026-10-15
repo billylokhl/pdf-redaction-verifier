@@ -714,7 +714,7 @@
     harmless thumbnail now exits 2 (was 0): the documented review-rate cost of the hotfix
     until Phase 4b reads thumbnails. Stricter only.'
   cell: thumbnail.pixels
-  pr: '#TBD'
+  pr: '#133'
 - case: page.raw-font-coded-baseline-off-page-far
   old:
     exit: 0
@@ -1495,7 +1495,7 @@
     storage live): exit 2 until Phase 4b reads thumbnails (K24, thumbnail.pixels now
     flagged). Stricter only.'
   cell: thumbnail.pixels
-  pr: '#TBD'
+  pr: '#133'
 - case: page.thumb-image-on-page-tree
   old:
     exit: 0
@@ -1516,7 +1516,7 @@
     flagged like a page''s own /Thumb (PAGE_THUMBNAIL), exit 2; the reference exited 0.
     Stricter only.'
   cell: thumbnail.pixels
-  pr: '#TBD'
+  pr: '#133'
 - case: revision.earlier-trailer-id
   old:
     exit: 0
