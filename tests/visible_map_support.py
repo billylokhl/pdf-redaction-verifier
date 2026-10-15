@@ -3,8 +3,8 @@ in-process with a MapSink handed to its two hooks (scan_page_layer and
 scan_hidden_objects), build the header the map is planned from, and plan
 it in-process, so tests can look at boxes and lists directly.
 
-The CLI flag that does the same in a child process comes later; until
-then, this harness is the only caller of the hooks. mapped() plans with
+The --visible-map flag does the same in a child process; with
+the flag, run_cli() runs the real CLI. mapped() plans with
 an identity checker, to look at the plan alone; drawn() runs the map's
 own checker, drawing and self-check (render.build_map).
 
@@ -165,6 +165,53 @@ def map_strings(path: Path) -> str:
             parts.extend(render._decode_token(m.group(0))
                          for m in render._STRING_TOKEN.finditer(body))
     return "\n".join(parts)
+
+
+@dataclass
+class CliRun:
+    code: int
+    stdout: str
+    stderr: str
+    report: dict[str, Any] | None
+    header: dict[str, Any] | None
+    out: Path
+
+    @property
+    def written(self) -> bool:
+        return self.out.exists()
+
+
+def run_cli(monkeypatch: Any, target: Path, rules: Path, *extra: str, out: Path | None = None,
+            ocr: bool = False, flag: bool = True, json_report: bool = True) -> CliRun:
+    """verify.main with (or without) --visible-map, OCR off unless asked:
+    exit code, stdout, stderr, the --json report and the header the
+    child was given."""
+    from redaction_verifier.visible_map import runner
+
+    if not ocr:
+        monkeypatch.setattr(verify, "_OCR_IMPORTS_OK", False)
+    out = out if out is not None else target.with_name(target.stem + ".map.pdf")
+    report_path = target.with_name(target.stem + (".on" if flag else ".off") + ".json")
+    report_path.unlink(missing_ok=True)
+    headers: list[dict[str, Any]] = []
+    original = runner.MapJob.make
+
+    def capture(self: runner.MapJob, header: dict[str, Any], **kw: Any) -> str:
+        headers.append(header)
+        return original(self, header, **kw)
+
+    monkeypatch.setattr(runner.MapJob, "make", capture)
+    argv = ["--target", str(target), "--secrets", str(rules), *extra]
+    if json_report:
+        argv += ["--json", str(report_path)]
+    if flag:
+        argv += ["--visible-map", str(out)]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = verify.main(argv)
+    report = json.loads(report_path.read_text()) if report_path.exists() else None
+    return CliRun(code, stdout.getvalue(), stderr.getvalue(), report,
+                  headers[0] if headers else None, out)
 
 
 def without_ocr_warning(header: dict[str, Any]) -> dict[str, Any]:
