@@ -707,24 +707,50 @@ lost ("SSN123456789") is shaped `alnum-id` and would be demoted with the
 rest. That cost has to be measured on leak cases before any demotion
 ships (Phase 5, PR 2; ADR 0012).
 
-## Phase 5 recall: what each demotion option costs -- eval/scorecard/pattern_recall.py
+## Phase 5 recall: what each option costs -- eval/scorecard/pattern_recall.py
 
-Measured 2026-10-15 on the case library (fabricated): 109 leak cases with
-a built-in class rule, 52 of them exit 1 today. Each of ADR 0012's options
-applied to the shapes the recorder saw; the lower and upper bounds agree
-for every option.
+Measured 2026-10-15 on the case library (fabricated), macOS 27: every case
+with a built-in class rule, scanned with the pattern recorder. 109 are leak
+cases, and **every one names the `ssn` class**: no `us-phone`,
+`credit-card` or `email` leak case exists, so those classes' recall is not
+measured. 52 of the 109 exit 1 today: 43 are held there by a value rule
+(no option touches it) and 9 by `ssn` findings only. One case expected at
+exit 1 cannot be judged here: `page.dense-sideways-scan` (K43) exits 2
+today on macOS 27 (its story says 1 on macOS 26). No finding's shape was
+unknown or ambiguous.
 
-| Option (ADR 0012) | Leak cases moved from exit 1 to exit 2 |
-| --- | --- |
-| A: demote matches inside a token or a dated run | 0 |
-| B: A, plus bare digit runs and number lists | 1: `layout.form-boxes-pattern-only` |
-| C: demote the class | 9 |
-| B for `ssn`/`us-phone`, A for `credit-card` | 1 (the same) |
-| C for `ssn`, B for the others | 9 |
+**ADR 0012's demote-only options** (exit 1 → 2; the lower and upper bounds
+agree for every option):
 
-`layout.form-boxes-pattern-only` is an SSN typed one digit per form box;
-the Text layer reads it as a bare `123456789`, so B demotes it. The 9
-under C are every pattern-only leak: `page.visible-pattern-rule`, the five
-`pattern-only` rows of `page_text_labels.py`, `document.trailer-key-pattern-rule`
-and the two sideways scans. The case library holds no SSN written against
-a label with the space lost ("SSN123456789"), which A would also demote.
+| Option | Leak cases moved 1 → 2 | ... if the cases' value rules were absent |
+| --- | --- | --- |
+| A: demote matches inside a token or a dated run | 0 | 0 |
+| B: A, plus bare digit runs and number lists | 1: `layout.form-boxes-pattern-only` | 4 |
+| C: demote the class | 9 | 24 |
+
+`layout.form-boxes-pattern-only` is an SSN typed one digit per form box,
+which the Text layer reads as a bare `123456789`. The 9 under C are every
+leak case caught at exit 1 by the class rule alone (listed below).
+
+**Policy 1** (the owner's direction of 2026-10-15: a built-in class match
+no longer affects the exit code). 24 leak cases reach exit 0, all `ssn`:
+
+- from exit 1 (9): `page.visible-pattern-rule`, `layout.single-line-pattern-only`,
+  `layout.rotated-pattern-only`, `layout.form-boxes-pattern-only`,
+  `layout.overlapping-values-pattern-only`,
+  `layout.overlapping-split-short-tail-pattern-only`,
+  `document.trailer-key-pattern-rule`, `page.scan-image-sideways-90`,
+  `page.scan-image-sideways-270`;
+- from exit 2 (14; their only warnings were class reviews): `layout.split-lines-pattern-only`,
+  `layout.split-three-lines-pattern-only`, `layout.split-pages-pattern-only`,
+  `layout.split-pages-needs-later-lines-pattern-only`,
+  `layout.split-three-pages-pattern-only`, `layout.split-over-blank-page-pattern-only`,
+  `layout.two-page-breaks-pattern-only`, `layout.overlapping-split-pages-pattern-only`,
+  `layout.repeated-line-wraps-pattern-only`, `layout.several-values-pattern-only`,
+  `layout.table-rows-pattern-only`, `layout.table-rows-split-pages-pattern-only`,
+  `layout.vertical-stack-pattern-only`, `document.trailer-id-digits-pattern-rule`;
+- the known gap `page.dense-sideways-scan` (K43): exit 2 today, 1 expected,
+  0 under policy 1.
+
+Two clean cases change: `document.generated-id-digits` (2 → 0; expected
+0) and `page.digit-column` (2 → 0; expected 2, the clean side of #74).

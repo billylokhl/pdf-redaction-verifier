@@ -4,27 +4,37 @@ review (exit 2). Measurement only; nothing is demoted.
 
     PYTHONPATH=eval:. python -m scorecard.pattern_recall [--json OUT]
 
-Every case whose rules include a built-in class is scanned in-process
-with `scorecard.pattern_recorder.Recorder` installed (the report is
-unchanged: tests/test_pattern_baseline.py's parity test), and each
-option is applied to what was recorded. A demotion turns a hard finding
-into a review warning and never removes one, so an option can only move a
-case from exit 1 to exit 2, never to 0: a case moves when every hard
-finding it has today is a class match the option demotes.
+Every leak case whose rules include a built-in class is scanned
+in-process with `scorecard.pattern_recorder.Recorder` installed (the
+report is unchanged: tests/test_pattern_baseline.py's parity test), and
+each option is applied to what was recorded. A demotion turns a hard
+finding into a review warning and never removes one, so an option can
+only move a case from exit 1 to exit 2, never to 0: a case moves when
+every hard finding it has today is a class match the option demotes.
+
+Judged on cases that exit 1 today. A case whose label expects exit 1 but
+that exits otherwise today (a pinned known gap, or a label for another
+macOS version) cannot be judged here and is listed by id, so a count is
+never read as covering it.
 
 Two bounds per option, because the tool reports a rule's first match per
-page while a demotion would let it go on looking:
+page while a demotion would let it go on looking, and because a
+finding's shape can be unknown or ambiguous:
 
-- `moved_at_least` (the cases that certainly move): every class finding
-  is demoted judged by the finding's own match *and* no other match of
-  that class in a hard-capable call has a kept shape;
-- `moved_at_most` (the cases that may move): every class finding is
-  demoted judged by the finding's own match alone.
+- `moved_at_least` (certainly moves): every class finding is demoted
+  whichever of its recorded shapes is used, none is unknown, and no other
+  match of that class in a hard-capable call has a kept shape;
+- `moved_at_most` (may move): every class finding has some recorded shape
+  the option demotes, or no known shape at all.
 
-A case in `at_most` but not in `at_least` holds a kept-shape match the
-tool did not report as the finding; whether a demotion would surface it
-as hard depends on where it sits. Case ids are fabricated, so they are
-printed.
+Also reported: per class, how many cases were measured (a class with none
+has no measured recall); how many exit-1 cases a value rule holds at exit
+1 (no option touches a value rule) against how many have class findings
+only; `moved_if_class_rules_only`, the upper bound judged as if the cases'
+value rules were absent; and the exit-1 cases with an unknown or
+ambiguous finding shape. `main` exits 1 if any finding's shape is
+unknown, as the baseline treats an unjoined finding. Case ids are
+fabricated, so they are printed.
 """
 
 from __future__ import annotations
@@ -33,18 +43,18 @@ import argparse
 import json
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .pattern_baseline import CLASSES, UNKNOWN, FileResult, reduce_result
-from .runner import CliResult
+from .match_shapes import record_key
+from .pattern_baseline import CLASSES, UNKNOWN
 
 ALL_SHAPES_BUT_EMAIL = frozenset({
     "formatted", "uuid", "hex-id", "date-or-time", "alnum-id", "number-list", "bare-digits",
 })
-# Kept (hard) shapes, per ADR 0012 option. `email-address` and the unknown
-# shapes are always kept.
+# Kept (hard) shapes, per ADR 0012 option; an email address is always kept.
 KEEP_A = frozenset({"formatted", "number-list", "bare-digits"})  # demote embedded + dated
 KEEP_B = frozenset({"formatted"})                                  # keep only real groupings
 KEEP_C: frozenset[str] = frozenset()                               # demote the class
@@ -59,56 +69,141 @@ OPTIONS: dict[str, dict[str, frozenset[str]]] = {
     "A": _same(KEEP_A),
     "B": _same(KEEP_B),
     "C": _same(KEEP_C),
-    # ADR 0012's recommendation: B for ssn and us-phone, A for credit-card.
-    "D-recommended": {"ssn": KEEP_B, "us-phone": KEEP_B, "credit-card": KEEP_A},
-    # Its fallback if the owner keeps the gate as written: C for ssn.
-    "D-gate-as-written": {"ssn": KEEP_C, "us-phone": KEEP_B, "credit-card": KEEP_B},
+    # B for ssn and us-phone, A for credit-card.
+    "B-ssn-phone-A-card": {"ssn": KEEP_B, "us-phone": KEEP_B, "credit-card": KEEP_A},
+    # C for ssn, B for the others: the only mix that meets the gate as written.
+    "C-ssn-B-others": {"ssn": KEEP_C, "us-phone": KEEP_B, "credit-card": KEEP_B},
 }
 
 
-def _kept(option: Mapping[str, frozenset[str]], cls: str) -> frozenset[str]:
-    if cls not in option:  # email, or a class no option names: never demoted
-        return ALL_SHAPES_BUT_EMAIL | UNKNOWN | {"email-address"}
-    return option[cls] | UNKNOWN | {"email-address"}
-
-
-def moves(result: FileResult, other_hard: bool, option: Mapping[str, frozenset[str]],
-          *, judge_all_matches: bool) -> bool:
-    """Would *option* move this exit-1 case to exit 2? *other_hard*: the
-    case has a hard finding that is not a built-in class match (a value
-    rule), which no option touches."""
-    if result.exit_code != 1 or other_hard or not result.hard:
-        return False
-    for h in result.hard:
-        keep = _kept(option, h.rule)
-        if h.shape in keep:
-            return False
-        if judge_all_matches and result.match_shapes.get(h.rule, frozenset()) & keep:
-            return False
-    return True
+@dataclass(frozen=True)
+class ClassFinding:
+    cls: str
+    shapes: frozenset[str]  # every shape joined to the finding; empty = unjoined
 
 
 @dataclass(frozen=True)
 class CaseOutcome:
     case_id: str
     expected_exit: int
-    result: FileResult
-    other_hard: bool
+    exit_today: int
+    findings: tuple[ClassFinding, ...]  # today's hard class findings
+    match_shapes: Mapping[str, frozenset[str]]  # class -> every recorded match's shape
+    other_hard: bool  # a hard finding of a non-class rule (a value rule)
+    classes: frozenset[str]  # the built-in classes the case's rules name
+    truth: str = "leak"
+    policy1_exit: int | None = None  # the exit with class matches informational only
+    unattributed: int = 0  # warnings naming a class rule in text but not in `rule`
+
+
+def policy1_exit(report: Mapping[str, Any], class_names: frozenset[str],
+                 have: frozenset[str] | None) -> int:
+    """The exit code under the owner's policy 1 (ADR 0012): a built-in class
+    match affects nothing, so its findings and its review warnings (those
+    whose `rule` is a class rule) are dropped, and the exit is recomputed
+    by the tool's own formula. An error report keeps its exit. *have*
+    drops environmental warnings as `keys.effective_exit` does."""
+    from .keys import is_environmental
+
+    if report.get("error"):
+        return int(report["exit_code"])
+    findings = [f for f in report["findings"] if f.get("rule") not in class_names]
+    warnings = [w for w in report["warnings"]
+                if w.get("rule") not in class_names
+                and not (have is not None and is_environmental(w, have))]
+    return 1 if findings else 2 if warnings else 0
+
+
+def unattributed_class_warnings(report: Mapping[str, Any], class_names: frozenset[str]) -> int:
+    """Warnings that name a class rule in their message but carry no `rule`
+    field: policy 1 could not drop them, so they must stay 0."""
+    return sum(1 for w in report["warnings"] if not w.get("rule")
+               and any(repr(n) in w.get("message", "") for n in class_names))
+
+
+def _kept(option: Mapping[str, frozenset[str]], cls: str) -> frozenset[str]:
+    if cls not in option:  # email, or a class no option names: never demoted
+        return ALL_SHAPES_BUT_EMAIL | {"email-address"}
+    return option[cls] | {"email-address"}
+
+
+def moves(o: CaseOutcome, option: Mapping[str, frozenset[str]], *, upper: bool,
+          ignore_value_rules: bool = False) -> bool:
+    """Would *option* move this exit-1 case to exit 2? The lower bound
+    (`upper=False`) needs every finding certainly demoted; the upper bound
+    needs each finding possibly demoted, an unknown shape counting as
+    demoted."""
+    if o.exit_today != 1 or not o.findings or (o.other_hard and not ignore_value_rules):
+        return False
+    for f in o.findings:
+        keep = _kept(option, f.cls)
+        known = f.shapes - UNKNOWN
+        if upper:
+            if f.shapes and known == f.shapes and known <= keep:
+                return False  # every shape it could have is kept
+        else:
+            if not known or known != f.shapes or known & keep:
+                return False
+            if o.match_shapes.get(f.cls, frozenset()) & (keep | UNKNOWN):
+                return False
+    return True
 
 
 def evaluate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
-    """Per option: the expected-exit-1 leak cases it moves, both bounds."""
-    out: dict[str, Any] = {}
+    """Per option, the exit-1-today cases it moves (both bounds), plus the
+    coverage counts the module docstring lists."""
+    all_outcomes = outcomes
+    outcomes = [o for o in outcomes if o.truth == "leak"]  # A/B/C: leak cases only
+    exit1 = [o for o in outcomes if o.exit_today == 1]
+    per_option: dict[str, Any] = {}
     for name, option in OPTIONS.items():
-        at_least = sorted(o.case_id for o in outcomes
-                          if moves(o.result, o.other_hard, option, judge_all_matches=True))
-        at_most = sorted(o.case_id for o in outcomes
-                         if moves(o.result, o.other_hard, option, judge_all_matches=False))
-        out[name] = {"moved_at_least": at_least, "moved_at_most": at_most}
-    return out
+        per_option[name] = {
+            "moved_at_least": sorted(o.case_id for o in exit1 if moves(o, option, upper=False)),
+            "moved_at_most": sorted(o.case_id for o in exit1 if moves(o, option, upper=True)),
+            "moved_if_class_rules_only": sorted(
+                o.case_id for o in exit1
+                if moves(o, option, upper=True, ignore_value_rules=True)),
+        }
+    measured = Counter(c for o in outcomes for c in o.classes)
+    return {
+        "cases": len(outcomes),
+        "cases_per_class": {c: measured.get(c, 0) for c in CLASSES},
+        "exit_1_today": len(exit1),
+        "exit_1_held_by_a_value_rule": sum(o.other_hard for o in exit1),
+        "exit_1_with_class_findings_only": sum(bool(o.findings) and not o.other_hard
+                                               for o in exit1),
+        "expected_1_not_judged": sorted(
+            f"{o.case_id} (exit {o.exit_today} today)" for o in outcomes
+            if o.expected_exit == 1 and o.exit_today != 1),
+        "unknown_shape_cases": sorted(
+            o.case_id for o in exit1
+            if any(not (f.shapes - UNKNOWN) or f.shapes & UNKNOWN for f in o.findings)),
+        "ambiguous_shape_cases": sorted(
+            o.case_id for o in exit1 if any(len(f.shapes - UNKNOWN) > 1 for f in o.findings)),
+        "options": per_option,
+        "policy1": _policy1(all_outcomes),
+    }
 
 
-def _scan_case(case: Any, workdir: Path) -> CaseOutcome:
+def _policy1(outcomes: list[CaseOutcome]) -> dict[str, Any]:
+    """Every case whose exit policy 1 changes, with its labels: a leak case
+    that reaches 0 is a loosening that needs the owner's per-case sign-off."""
+    changed = [o for o in outcomes if o.policy1_exit is not None
+               and o.policy1_exit != o.exit_today]
+    return {
+        "leak_to_0": sorted(f"{o.case_id}: {o.exit_today} -> 0 (expected {o.expected_exit})"
+                            for o in changed if o.truth == "leak" and o.policy1_exit == 0),
+        "leak_other": sorted(f"{o.case_id}: {o.exit_today} -> {o.policy1_exit}"
+                             f" (expected {o.expected_exit})"
+                             for o in changed if o.truth == "leak" and o.policy1_exit != 0),
+        "clean_changed": sorted(f"{o.case_id}: {o.exit_today} -> {o.policy1_exit}"
+                                f" (expected {o.expected_exit})"
+                                for o in changed if o.truth != "leak"),
+        "unattributed_class_warnings": sum(o.unattributed for o in outcomes),
+    }
+
+
+def _scan_case(case: Any, workdir: Path, have: frozenset[str] | None = None) -> CaseOutcome:
     from caselib.run import build, scan
 
     from .pattern_recorder import Recorder
@@ -120,17 +215,67 @@ def _scan_case(case: Any, workdir: Path) -> CaseOutcome:
         s = scan(case, pdf, workdir)
     finally:
         recorder.uninstall()
-    records = {
-        "joins": [{"key": k, "shape": shape} for k, shape in recorder.joins],
-        "shapes": {r: sorted(v) for r, v in recorder.shapes.items()},
-    }
-    cli = CliResult(returncode=s.exit_code, report=s.report, elapsed=0.0, timed_out=False,
-                    stderr_tail="")
+    joins: dict[str, set[str]] = {}
+    for key, shape in recorder.joins:
+        joins.setdefault(key, set()).add(shape)
     class_of = {r["name"]: r["class"] for r in case.rules if r.get("class") in CLASSES}
-    result = reduce_result("case", cli, records, "recall", class_of)
-    other_hard = any(f.get("tier") == "hard" and f["rule"] not in class_of
-                     for f in s.report.get("findings", []))
-    return CaseOutcome(case.id, case.expected.exit, result, other_hard)
+    findings = []
+    other_hard = False
+    for f in s.report.get("findings", []):
+        if f.get("tier") != "hard":
+            continue
+        cls = class_of.get(f["rule"])
+        if cls is None:
+            other_hard = True
+            continue
+        key = record_key("recall", f["rule"], f.get("sample", ""))
+        findings.append(ClassFinding(cls, frozenset(joins.get(key, ()))))
+    shapes: dict[str, frozenset[str]] = {}
+    for name, v in recorder.shapes.items():
+        if name in class_of:
+            shapes[class_of[name]] = shapes.get(class_of[name], frozenset()) | frozenset(v)
+    names = frozenset(class_of)
+    return CaseOutcome(case.id, case.expected.exit, s.exit_code, tuple(findings), shapes,
+                       other_hard, frozenset(class_of.values()), case.truth,
+                       policy1_exit(s.report, names, have),
+                       unattributed_class_warnings(s.report, names))
+
+
+def select_cases(registry: Mapping[str, Any], have: frozenset[str]) -> list[Any]:
+    """Cases (leak and clean) with a built-in class rule that this machine
+    can build. The A/B/C options are judged on the leak cases only."""
+    return [c for _, c in sorted(registry.items())
+            if not (c.requires - have) and not c.perf
+            and any(r.get("class") in CLASSES for r in c.rules)]
+
+
+def render(agg: Mapping[str, Any]) -> str:
+    lines = [
+        f"{agg['cases']} leak cases with a built-in class rule, per class: "
+        f"{agg['cases_per_class']} (a class with 0 has no measured recall)",
+        f"{agg['exit_1_today']} exit 1 today: {agg['exit_1_held_by_a_value_rule']} held there "
+        f"by a value rule (no option touches it), {agg['exit_1_with_class_findings_only']} "
+        "by class findings only",
+        f"expected exit 1 but not judged: {agg['expected_1_not_judged'] or 'none'}",
+        f"unknown finding shape: {agg['unknown_shape_cases'] or 'none'}; "
+        f"ambiguous: {agg['ambiguous_shape_cases'] or 'none'}",
+    ]
+    p1 = agg["policy1"]
+    lines.append(f"policy 1 (class matches informational): {len(p1['leak_to_0'])} leak "
+                 f"case(s) to exit 0 (each needs the owner's sign-off), "
+                 f"{len(p1['leak_other'])} other leak change(s), "
+                 f"{len(p1['clean_changed'])} clean case(s) changed; "
+                 f"unattributed class warnings: {p1['unattributed_class_warnings']}")
+    for line in p1["leak_to_0"] + p1["leak_other"] + p1["clean_changed"]:
+        lines.append(f"    {line}")
+    for name, r in agg["options"].items():
+        lines.append(f"  {name:20} moves 1->2: at least {len(r['moved_at_least'])}, "
+                     f"at most {len(r['moved_at_most'])}; "
+                     f"if class rules only: {len(r['moved_if_class_rules_only'])}")
+        for cid in r["moved_at_most"]:
+            mark = "" if cid in r["moved_at_least"] else " (maybe)"
+            lines.append(f"    {cid}{mark}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,31 +287,25 @@ def main(argv: list[str] | None = None) -> int:
     from caselib import REGISTRY, load
     from caselib.run import available
 
+    from .differential import normalization_have
+
     load()
     have = available()
-    cases = [c for _, c in sorted(REGISTRY.items())
-             if c.truth == "leak" and not (c.requires - have) and not c.perf
-             and any(r.get("class") in CLASSES for r in c.rules)]
-    outcomes = []
+    cases = select_cases(REGISTRY, have)
     with tempfile.TemporaryDirectory(prefix="pattern-recall-") as tmp:
-        for case in cases:
-            outcomes.append(_scan_case(case, Path(tmp)))
-    options = evaluate(outcomes)
-    agg = {
-        "cases": len(outcomes),
-        "exit_1_today": sum(o.result.exit_code == 1 for o in outcomes),
-        "options": options,
-    }
-    print(f"{agg['cases']} leak cases with a built-in class rule; "
-          f"{agg['exit_1_today']} exit 1 today")
-    for name, r in options.items():
-        print(f"  {name:18} moves 1->2: at least {len(r['moved_at_least'])}, "
-              f"at most {len(r['moved_at_most'])}")
-        for cid in r["moved_at_most"]:
-            mark = "" if cid in r["moved_at_least"] else " (maybe)"
-            print(f"    {cid}{mark}")
+        outcomes = [_scan_case(case, Path(tmp), normalization_have(have)) for case in cases]
+    agg = evaluate(outcomes)
+    print(render(agg))
     if args.json:
         args.json.write_text(json.dumps(agg, indent=2, sort_keys=True) + "\n")
+    if agg["policy1"]["unattributed_class_warnings"]:
+        print("ERROR: a warning names a class rule but has no rule field; policy 1's "
+              "exits cannot be trusted.", file=sys.stderr)
+        return 1
+    if agg["unknown_shape_cases"]:
+        print("ERROR: a class finding has no known shape (see above); the bounds cannot "
+              "be trusted until it is joined.", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -965,24 +965,30 @@ under `real_corpus/pattern-baseline-workdir`. It changes no verdict.
 Results: eval/spikes/RESULTS.md, "Phase 5 baseline".
 
 **Recall cost** (`scorecard.pattern_recall`, Phase 5 PR 2a): the other
-side of the same choice. Every case-library leak case with a built-in
-class rule is scanned in-process with the recorder installed, and each of
-ADR 0012's options (per class, a set of shapes kept hard) is applied to
-what it saw:
+side of the same choice. Every case-library case with a built-in class
+rule is scanned in-process with the recorder installed, and each of ADR
+0012's options is applied to what it saw:
 
 ```bash
 PYTHONPATH=eval:. python -m scorecard.pattern_recall [--json OUT]
 ```
 
-A demotion turns a hard finding into a review warning and never removes
-one, so an option can only move a case from exit 1 to exit 2. It prints,
-per option, the cases it moves, as two bounds: `moved_at_least` (every
-class finding is demoted by its own match's shape, and no other match of
-the class in a hard-capable call has a kept shape) and `moved_at_most`
-(judged by the findings' own matches alone; the tool reports a rule's
-first match per page, a demotion would go on looking). A value rule's
-hard finding keeps a case at exit 1 under every option. Case ids are
-fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
+For ADR 0012's demote-only options (per class, a set of shapes kept hard)
+it prints, per option, the leak cases that exit 1 today and would move to
+exit 2, as two bounds: `moved_at_least` (every class finding demoted
+whichever of its recorded shapes is used, none unknown, and no other match
+of the class in a hard-capable call kept) and `moved_at_most` (each finding
+possibly demoted, an unknown shape counting as demoted); and the same upper
+bound as if the cases' value rules were absent. For the owner's policy 1
+(a class match no longer affects the exit code) it recomputes every case's
+exit from its report without the class findings and class review warnings
+and lists every case whose exit changes; a leak case reaching 0 needs the
+owner's sign-off. It also prints the cases measured per class (a class with
+none has no measured recall), how many exit-1 cases a value rule holds, the
+cases expected at exit 1 that exit otherwise today (not judged), and any
+finding of unknown or ambiguous shape. It exits 1 if a finding's shape is
+unknown, or a warning names a class rule without carrying it in `rule`.
+Case ids are fabricated and printed. Results: eval/spikes/RESULTS.md, "Phase 5 recall".
 
 ### The inventory agreement gate (Phase 3a-6, 3a-6b)
 

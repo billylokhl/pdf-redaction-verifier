@@ -41,8 +41,9 @@ RECORDER = HERE / "pattern_recorder.py"
 BUILTIN_RULES = HERE / "builtin_classes.rules.json"
 CLASSES: tuple[str, ...] = ("ssn", "credit-card", "email", "us-phone")
 # ADR 0005: a validated email match is a true positive for "an address is
-# here", and credit-card measured 0%; the union a Phase 5 fix must bring
-# under 1% is the digit classes that miscolour unrelated numbers.
+# here", and credit-card measured 0% on page text (1.4% of text-bearing
+# files under the full CLI, Phase 5 PR 1); the unions are the digit
+# classes that miscolour unrelated numbers.
 UNIONS: dict[str, tuple[str, ...]] = {
     "ssn|us-phone": ("ssn", "us-phone"),
     "ssn|us-phone|credit-card": ("ssn", "us-phone", "credit-card"),
