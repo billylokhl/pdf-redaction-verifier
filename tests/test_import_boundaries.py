@@ -205,7 +205,7 @@ def _module_attributes() -> frozenset[str]:
 
 # _module_attributes() under this test suite on Python 3.10 to 3.15 (3.15
 # on its release candidate), so the ban does not depend on the interpreter
-# the guard runs on: CI's 3.10 and 3.12 must also ban what only a newer
+# the guard runs on: CI's older Pythons must also ban what only a newer
 # Python exposes (dataclasses.annotationlib from 3.14), and a newer Python
 # what only an older one does (typing.contextlib before 3.13). The set also depends on
 # what has run: on 3.14, typing rebinds _lazy_annotationlib to the

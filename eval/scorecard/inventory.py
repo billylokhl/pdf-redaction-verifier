@@ -602,7 +602,11 @@ def _compare_revisions(data: bytes, workdir: Path, inv: Inventory, stats: _Stats
         doc = pymupdf.open(stream=blob, filetype="pdf")
         opened.append(doc)
         if doc.needs_pass:
-            raise _Disagreement(Check.NEEDS_PASSWORD, revision)
+            # The gate flags a needs_password file rather than failing it
+            # (owner decision, 2026-10-12), so only when our trailer reads
+            # it encrypted too; otherwise the readers split on encryption.
+            raise _Disagreement(Check.NEEDS_PASSWORD if ours_encrypted else Check.ENCRYPTION,
+                                revision)
         # Readers decrypt what they read; the inventory does not until 3a-8/9,
         # so an encrypted revision's bytes and values are not compared -- but
         # only when the readers themselves read it encrypted, as we do.

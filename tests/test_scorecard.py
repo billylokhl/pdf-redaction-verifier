@@ -10,6 +10,7 @@ they run identically with or without qpdf/exiftool/OCR installed.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import textwrap
 
@@ -899,6 +900,87 @@ def _write_corpus(root):
             "empty.pdf": "unreadable"}
 
 
+def test_find_pdfs_matches_any_case_and_counts_what_it_skips(tmp_path):
+    """`rglob("*.pdf")` is case-sensitive, so `.PDF` files were silently
+    left out of the manifest (#48, item 4). Every case now matches, and
+    everything else the walk leaves out is counted."""
+    import os
+
+    from scorecard.corpus import find_pdfs
+
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    for name in ("a.pdf", "B.PDF", "sub/c.Pdf", "notes.txt", "sub/d.pdf.bak"):
+        (root / name).write_bytes(b"%PDF-1.7\n")
+    os.symlink(root / "a.pdf", root / "link-to-file.pdf")  # a link to a file is that file
+    os.symlink(root / "missing.pdf", root / "dangling.pdf")
+    (root / "folder.pdf").mkdir()  # a directory named like a PDF is walked, not recorded
+    (root / "folder.pdf" / "e.pdf").write_bytes(b"%PDF-1.7\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "f.pdf").write_bytes(b"%PDF-1.7\n")
+    os.symlink(outside, root / "linked-dir")
+
+    found = find_pdfs(root)
+    assert [p.relative_to(root).as_posix() for p in found.pdfs] == [
+        "B.PDF", "a.pdf", "folder.pdf/e.pdf", "link-to-file.pdf", "sub/c.Pdf"]
+    assert (found.other_files, found.not_regular, found.linked_dirs, found.unreadable_dirs) == (
+        2, 1, 1, 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
+                    reason="needs POSIX permissions and a non-root user")
+def test_find_pdfs_counts_an_unreadable_directory(tmp_path):
+    from scorecard.corpus import find_pdfs
+
+    root = tmp_path / "root"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    (locked / "hidden.pdf").write_bytes(b"%PDF-1.7\n")
+    locked.chmod(0)
+    try:
+        found = find_pdfs(root)
+    finally:
+        locked.chmod(0o700)
+    assert found.pdfs == () and found.unreadable_dirs == 1
+
+
+def test_find_pdfs_refuses_a_root_that_is_not_a_directory(tmp_path):
+    """A mistyped --root used to write an empty manifest; `corpus run` then
+    refuses zero files, but only later. The build now refuses it, without
+    echoing the path."""
+    from scorecard.corpus import build_manifest, find_pdfs
+
+    missing = tmp_path / "private-name"
+    for call in (lambda: find_pdfs(missing),
+                 lambda: build_manifest(missing, manifest_path=tmp_path / "m.json")):
+        with pytest.raises(SystemExit) as exc:
+            call()
+        assert "private-name" not in str(exc.value)
+    assert not (tmp_path / "m.json").exists()
+
+
+def test_corpus_build_cli_records_upper_case_pdfs_and_counts_skips(tmp_path, capsys):
+    import scorecard.cli as cli
+
+    root = tmp_path / "root"
+    _write_corpus(root)
+    (root / "plain.pdf").rename(root / "PLAIN.PDF")
+    (root / "readme.txt").write_text("not a PDF")
+    args = cli.build_parser().parse_args(
+        ["corpus", "build", "--root", str(root), "--allow-outside",
+         "--manifest", str(tmp_path / "out" / "manifest.json")]
+    )
+    assert args.func(args) == 0
+    out = capsys.readouterr().out
+    assert "wrote 6 entries" in out
+    assert "skipped: 1 file(s) without a .pdf extension" in out
+    for name in ("PLAIN", "readme", str(root)):
+        assert name not in out
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert "PLAIN.PDF" in {e["path"] for e in manifest["entries"]}
+
+
 def test_build_manifest_records_encrypted_and_unreadable_files(tmp_path):
     """`corpus build` used to abort on the first password-protected or
     corrupt file, so `corpus run`'s exemption for PDF_PASSWORD and
@@ -1025,7 +1107,9 @@ def test_corpus_run_end_to_end_counts_unread_files_as_review_verdicts(tmp_path, 
     assert run.func(run) == 0
     strata = json.loads(out.read_text())
     assert strata["all"]["review_rate"] == 2 and strata["all"]["total"] == 2
-    assert set(strata) == {"all", "text-unknown", "probe:password", "probe:unreadable"}
+    assert set(strata) == {"all", "text-unknown", "probe:password", "probe:unreadable",
+                           "probe:text-unreadable"}
+    assert strata["probe:text-unreadable"]["total"] == 0
     captured = capsys.readouterr()
     for name in ("locked", "not-a-pdf", str(root)):
         assert name not in captured.err and name not in captured.out
@@ -1043,19 +1127,26 @@ def test_stratify_keeps_unread_files_out_of_every_measured_stratum():
     nameless = CorpusEntry("dd" * 32, "d.pdf", True, False, "unknown")
     locked = CorpusEntry("bb" * 32, "b.pdf", None, True, "unknown", probe="password")
     broken = CorpusEntry("ee" * 32, "e.pdf", None, False, "unknown", probe="unreadable")
+    unread_text = CorpusEntry("ff" * 32, "f.pdf", None, True, "unknown",
+                              probe="text-unreadable")
     runs = [CorpusRun(plain, _corpus_result("ok")), CorpusRun(blank, _corpus_result("ok")),
             CorpusRun(nameless, _corpus_result("ok")),
             CorpusRun(locked, _corpus_result("PDF_PASSWORD")),
-            CorpusRun(broken, _corpus_result("PDF_UNREADABLE"))]
+            CorpusRun(broken, _corpus_result("PDF_UNREADABLE")),
+            CorpusRun(unread_text, _corpus_result("ok"))]
     strata = stratify(runs)
     assert strata["text-bearing"].total == 2 and strata["text-bearing"].review_rate == 0
     assert strata["text-free"].total == 1 and strata["text-free"].review_rate == 0
-    assert strata["text-unknown"].total == 2
+    # A text-unreadable file is scanned (exit 0 here) but is its own group:
+    # all, text-unknown and probe:text-unreadable only (owner decision).
+    assert strata["text-unknown"].total == 3
     assert strata["probe:password"].total == 1 and strata["probe:unreadable"].total == 1
-    assert strata["all"].total == 5 and strata["all"].review_rate == 2
+    assert strata["probe:text-unreadable"].total == 1
+    assert strata["all"].total == 6 and strata["all"].review_rate == 2
     assert "multi-revision" not in strata and strata["single-revision"].total == 3
     assert strata["producer:unknown"].total == 1  # the readable file, alone
-    assert not any(k in strata for k in ("probe:ok", "probe:text-unreadable"))
+    assert "probe:ok" not in strata
+    assert stratify([])["probe:text-unreadable"].total == 0  # always reported, even empty
 
 
 def test_corpus_build_cli_counts_unread_files_without_naming_them(tmp_path, capsys):
@@ -1469,8 +1560,12 @@ def _corpus_result(outcome):
          "password"),
         (["PDF_PASSWORD"], (), (), 1, ["(unreadable; CLI error PDF_PASSWORD)"], "unreadable"),
         (["PDF_UNREADABLE"], (), (), 1, ["(ok; CLI error PDF_UNREADABLE)"], "ok"),
-        # Scanned, but its text stratum is unknown: never placeable.
-        (["ok"], (), (), 1, ["(text-unreadable; CLI error none)"], "text-unreadable"),
+        # Scanned, text stratum unknown: its own counted group, and the run
+        # passes (owner decision, 2026-10-12). The count is always printed.
+        (["ok"], (), (), 0, ["note: 1 text-unreadable file(s)"], "text-unreadable"),
+        (["PDF_UNREADABLE"], (), (), 1, ["(text-unreadable; CLI error PDF_UNREADABLE)"],
+         "text-unreadable"),
+        (["ok"], (), (), 0, ["note: 0 text-unreadable file(s)"], "ok"),
         # A crash or run-level error is listed once, by the unmeasured check,
         # not again as a probe mismatch.
         (["crash"], (), (), 1, ["crashed    " + "ab" * 8], "password"),
