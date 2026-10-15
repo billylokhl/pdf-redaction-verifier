@@ -526,7 +526,8 @@ Guards against same-author bias:
   tesseract) and adjudicated and locked per file, then measured by
   `scorecard redactor-set run` (silent misses per file and per planted
   instance, downgrades, and U3's exit-`0` share on correctly redacted
-  outputs; counts only); a committed subset follows.
+  outputs; counts only). Six of its measured outputs are committed in
+  the tier, each with its locked adjudication in its sidecar.
 - A **blind red-team slot**: cases written from `COVERAGE.md` and the
   threat model by someone (or an agent) who has not read the code.
 
