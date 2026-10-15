@@ -928,6 +928,39 @@ class TestClasses:
         assert alone.row == 2 and "Nothing visible found" not in alone.headline
 
 
+# ── Pinned, out of scope (issues #124, #125) ──────────────────────────
+def test_pinned_a_hidden_annotation_counts_as_not_visible(tmp_path, monkeypatch) -> None:
+    """Pinned as it is (issue #124): an annotation flagged Hidden is
+    counted "not visible" and never boxed, though some viewers list it
+    in a comments panel. Its live copies still keep the map incomplete."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Cover")
+    annot = page.add_freetext_annot(fitz.Rect(100, 300, 400, 330), f"note {SSN}")
+    annot.set_flags(fitz.PDF_ANNOT_IS_HIDDEN)
+    annot.update()
+    pdf = _save(doc, tmp_path / "hidden.pdf")
+    _run, the_plan = mapped(monkeypatch, tmp_path, pdf)
+    assert the_plan.not_visible == {"hidden annotation": 1} and not the_plan.boxes
+    assert the_plan.row == 2 and sections(the_plan, "live")
+
+
+def test_pinned_an_annotation_outside_the_crop_is_unpositioned(tmp_path, monkeypatch) -> None:
+    """Pinned as it is (issue #125): an annotation wholly outside the
+    crop gets no box, and its contents are listed "could not be
+    positioned" (fail safe: the map is incomplete), not "outside"."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Cover")
+    page.add_freetext_annot(fitz.Rect(400, 100, 550, 130), SSN).update()
+    page.set_cropbox(fitz.Rect(0, 0, 300, 792))
+    pdf = _save(doc, tmp_path / "outcrop.pdf")
+    _run, the_plan = mapped(monkeypatch, tmp_path, pdf)
+    assert not the_plan.boxes and the_plan.row == 2
+    assert (1, "value rule #1", "on hover / in the comments panel") in sections(
+        the_plan, "unpositioned")
+
+
 # ── Tiers and truth (design §9 tests 6, 8) ────────────────────────────
 class TestTiers:
     def test_fused_only_and_reconstructed_only_never_get_a_box(self, tmp_path,
