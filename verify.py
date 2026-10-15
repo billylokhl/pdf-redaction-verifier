@@ -863,8 +863,16 @@ def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
 
 
 def _parent_xref(doc: fitz.Document, node: int) -> int:
+    """A node's /Parent object number, or 0 at the root (no /Parent).
+    Anything else (an inline dictionary, a number, a bad reference) raises,
+    so the walk fails closed rather than stopping early."""
     kind, value = doc.xref_get_key(node, "Parent")
-    return int(value.split()[0]) if kind == "xref" else 0
+    if kind == "null":
+        return 0
+    parent = int(value.split()[0]) if kind == "xref" else 0
+    if parent <= 0:
+        raise ValueError("page tree /Parent is not a reference")
+    return parent
 
 
 def _thumb_carrier(doc: fitz.Document, page_xref: int, memo: dict[int, bool | None]) -> str:

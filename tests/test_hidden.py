@@ -440,11 +440,15 @@ class TestPageThumbnails:
         assert "thumbnail image (/Thumb, its own)" in result.stdout
 
 
+
 def _raw_chain_pdf(depth: int, npages: int, *, thumb_at_root: bool = False,
-                   cycle: bool = False) -> fitz.Document:
+                   cycle: str = "", leaf_per_page: bool = False) -> fitz.Document:
     """``npages`` pages under a chain of ``depth`` + 1 Pages nodes, written
-    as raw bytes (pikepdf/QPDF refuse trees this deep). ``cycle`` points
-    the second-lowest node's /Parent back at the lowest one."""
+    as raw bytes (pikepdf/QPDF refuse trees this deep). ``leaf_per_page``
+    gives each page its own Pages node below the chain. ``cycle="bottom"``
+    points the second-lowest chain node's /Parent at the lowest one;
+    ``cycle="top"`` points the root's /Parent at the lowest, so the whole
+    chain is one cycle."""
     objs: dict[int, bytes] = {
         1: b"<< /Type /Catalog /Pages 4 0 R >>",
         2: b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 "
@@ -452,18 +456,28 @@ def _raw_chain_pdf(depth: int, npages: int, *, thumb_at_root: bool = False,
         3: b"<< /Length 0 >>\nstream\n\nendstream",
     }
     nodes = list(range(4, 4 + depth + 1))          # root .. lowest
-    pages = list(range(nodes[-1] + 1, nodes[-1] + 1 + npages))
+    leaves = list(range(nodes[-1] + 1, nodes[-1] + 1 + npages)) if leaf_per_page else []
+    first_page = (leaves or nodes)[-1] + 1
+    pages = list(range(first_page, first_page + npages))
+
+    def ref_list(nums: list[int]) -> bytes:
+        return b" ".join(b"%d 0 R" % n for n in nums)
+
     for k, num in enumerate(nodes):
-        kids = [nodes[k + 1]] if k + 1 < len(nodes) else pages
+        kids = [nodes[k + 1]] if k + 1 < len(nodes) else (leaves or pages)
         parent = b" /Parent %d 0 R" % nodes[k - 1] if k else b""
-        if cycle and k == len(nodes) - 2:
+        if (cycle == "bottom" and k == len(nodes) - 2) or (cycle == "top" and k == 0):
             parent = b" /Parent %d 0 R" % nodes[-1]
         thumb = b" /Thumb 2 0 R" if thumb_at_root and k == 0 else b""
         objs[num] = b"<< /Type /Pages /Kids [%s] /Count %d%s%s >>" % (
-            b" ".join(b"%d 0 R" % c for c in kids), npages, parent, thumb)
-    for num in pages:
+            ref_list(kids), npages, parent, thumb)
+    for leaf, page in zip(leaves, pages):
+        objs[leaf] = b"<< /Type /Pages /Kids [%d 0 R] /Count 1 /Parent %d 0 R >>" % (
+            page, nodes[-1])
+    for n, num in enumerate(pages):
+        parent = leaves[n] if leaves else nodes[-1]
         objs[num] = (b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] "
-                     b"/Resources << >> /Contents 3 0 R >>" % nodes[-1])
+                     b"/Resources << >> /Contents 3 0 R >>" % parent)
     out = bytearray(b"%PDF-1.7\n")
     offsets = []
     for num in range(1, max(objs) + 1):
@@ -477,36 +491,64 @@ def _raw_chain_pdf(depth: int, npages: int, *, thumb_at_root: bool = False,
     return fitz.open(stream=bytes(out), filetype="pdf")
 
 
+def _count_key_reads(monkeypatch) -> list[int]:
+    real = fitz.Document.xref_get_key
+    calls = [0]
+
+    def counting(self, xref, key):
+        calls[0] += 1
+        return real(self, xref, key)
+
+    monkeypatch.setattr(fitz.Document, "xref_get_key", counting)
+    return calls
+
+
 class TestPageThumbnailWalkCost:
     """Every page shares the Pages chain above it; the /Thumb walk must
     read each node once (memoised), not once per page."""
 
     DEPTH, PAGES = 300, 300
+    # Unmemoised, each shape below costs ~2 x pages x depth (180,000
+    # reads); memoised, a small constant times (pages + depth).
+    BOUND = 10 * (DEPTH + PAGES)
 
-    def test_many_pages_under_a_deep_chain_cost_linear_reads(self, monkeypatch) -> None:
-        doc = _raw_chain_pdf(self.DEPTH, self.PAGES)
+    @pytest.mark.parametrize("leaf_per_page", [False, True], ids=["shared-leaf", "own-leaf"])
+    def test_many_pages_under_a_deep_chain_cost_linear_reads(
+            self, monkeypatch, leaf_per_page) -> None:
+        doc = _raw_chain_pdf(self.DEPTH, self.PAGES, leaf_per_page=leaf_per_page)
         assert doc.page_count == self.PAGES
-        real = fitz.Document.xref_get_key
-        calls = 0
-
-        def counting(self, xref, key):
-            nonlocal calls
-            calls += 1
-            return real(self, xref, key)
-
-        monkeypatch.setattr(fitz.Document, "xref_get_key", counting)
+        calls = _count_key_reads(monkeypatch)
         assert _hidden_warnings(doc) == []
-        # Unmemoised this is ~2 x pages x depth (180,000); memoised it is
-        # a small constant times (pages + depth).
-        assert calls <= 10 * (self.DEPTH + self.PAGES), calls
+        assert calls[0] <= self.BOUND, calls[0]
+
+    def test_many_pages_under_a_deep_cycle_cost_linear_reads(self, monkeypatch) -> None:
+        doc = _raw_chain_pdf(self.DEPTH, self.PAGES, cycle="top")
+        calls = _count_key_reads(monkeypatch)
+        warns = _hidden_warnings(doc)
+        assert [w.code for w in warns] == ["HIDDEN_ITEM_FAILED"] * self.PAGES
+        assert calls[0] <= self.BOUND, calls[0]
 
     def test_a_thumbnail_at_the_root_flags_every_page(self) -> None:
-        warns = _hidden_warnings(_raw_chain_pdf(self.DEPTH, 5, thumb_at_root=True))
+        warns = _hidden_warnings(_raw_chain_pdf(self.DEPTH, 5, thumb_at_root=True,
+                                                leaf_per_page=True))
         assert [(w.code, w.fields["page"]) for w in warns] == [
             ("PAGE_THUMBNAIL", n) for n in range(1, 6)]
         assert all("inherited" in w for w in warns)
 
     def test_a_cycle_fails_every_page_even_through_the_memo(self) -> None:
-        warns = _hidden_warnings(_raw_chain_pdf(5, 4, cycle=True))
+        warns = _hidden_warnings(_raw_chain_pdf(5, 4, cycle="bottom"))
         assert [(w.code, w.fields["page"]) for w in warns] == [
             ("HIDDEN_ITEM_FAILED", n) for n in range(1, 5)]
+
+    @pytest.mark.parametrize("parent", [("dict", "<< /Thumb 9 0 R >>"), ("int", "7"),
+                                        ("xref", "0 0 R")])
+    def test_a_parent_that_is_not_a_reference_fails_closed(self, monkeypatch, parent) -> None:
+        doc = _doc_with_clean_page()
+        real = fitz.Document.xref_get_key
+
+        def odd(self, xref, key):
+            return parent if key == "Parent" else real(self, xref, key)
+
+        monkeypatch.setattr(fitz.Document, "xref_get_key", odd)
+        (w,) = _hidden_warnings(doc)
+        assert w.code == "HIDDEN_ITEM_FAILED"
