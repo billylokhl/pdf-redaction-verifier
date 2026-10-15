@@ -458,6 +458,19 @@ clean scans: turned, a column of repeated digits reads as a row, so a
 questionnaire with sideways headers and answer columns of 1–5 matched
 the phone pattern (manual review; 1 of 14 generated clean scans moved).
 
+**The readings with their glyphs.** `views.text.visual_text_glyphs`
+gives the same readings as `extract_visual_text`, built by the same code,
+with every line as the indices of the glyphs it was read from, and each
+glyph's character, box and visibility: the code runs once with each
+glyph's character replaced by a tag naming its index, and since lines are
+clustered, ordered and split at column breaks from geometry alone, the
+tagged readings are the real ones line for line. It is for callers that
+must say *where* the scan read something (the visible map) without a
+second copy of the reading code; nothing in the scan calls it, and a test
+checks its text equals `extract_visual_text`'s, reading for reading, on
+every page of every case in the case library and on fabricated pages at
+every rotation.
+
 ## Bounded resources
 
 The tool must survive documents that are hostile or merely huge. qpdf
@@ -598,9 +611,18 @@ the gap is stated rather than implied away.
   thumbnail, a second decoded picture the tool never looks at; pattern
   rules on non-attachment embedded files, on scripts stored as streams on
   actions, and on an image's own raw sample or codec bytes (a known value
-  there is still found, via the Binary layer's raw byte sweep); and the
-  matching limits — page-break splits with something between the halves,
-  multi-column wraps, dash-less pattern wraps, extreme coordinates.
+  there is still found, via the Binary layer's raw byte sweep, when the
+  image is drawn) and on an editor's private data; text after a stream's
+  compression end marker; leftover plain text labelled as a font or an
+  image, leftover outlines, leftover images just under the size gate,
+  leftover one-character strings, and a removed attachment taken for page
+  content; font-coded text off the page without a `/ToUnicode` map or
+  drawn from the same point as other text; a zip in a non-attachment
+  embedded file; and the matching limits — page-break splits with
+  something between the halves, pattern-rule page-break splits in
+  layouts no reading joins, multi-column wraps, dash-less pattern wraps,
+  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
+  a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, and attachments that are not text are flagged (exit `2`),
   so a clean document that merely contains them cannot certify as `0`

@@ -160,6 +160,13 @@ matcher sees it whole. Each is ✗:
 
 - A value split around other text into more than three pieces, or with
   its pieces more than five lines apart (see the review net below).
+- A name written in a form the rules do not list: a reordered name
+  ("TESTPERSON, JORDAN Q" against "Jordan Q. Testperson") or a fragment
+  of one, such as a first name alone inside an email address. A value
+  rule is matched whole after normalization (case, punctuation, spacing);
+  the tool generates no reorderings and does not look for parts of a
+  listed value. Not detected unless each form is listed as its own value
+  (see README, Rules file).
 - A letter-spaced value in fine print that the page's reading breaks into
   one-character lines around other text — more than three pieces
   (`match.letter-spaced-stack`).
@@ -173,7 +180,9 @@ matcher sees it whole. Each is ✗:
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
-  one-character-per-line stack or rotated text, or with mixed separators —
+  one-character-per-line stack or rotated text, over four pages, or where
+  the split needs more than the last line before the break, or with
+  mixed separators —
   no reading joins it in a form the pattern accepts, so without a value
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which

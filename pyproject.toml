@@ -42,7 +42,15 @@ dependencies = [
 test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.5",
         "pytest-timeout==2.4.0",
         "pikepdf==10.16.0; python_version >= '3.11'",          # libqpdf 12.4.2
-        "pikepdf==10.13.0.post1; python_version < '3.11'"]     # libqpdf 12.3.2 (3.10)
+        "pikepdf==10.13.0.post1; python_version < '3.11'",     # libqpdf 12.3.2 (3.10)
+        # pdfminer.six: the real-redactor set's text locator (eval only, pure
+        # Python), here so its planting checks run in CI.
+        "pdfminer.six==20260107"]
+# The real-redactor set's generator (eval/redactor_set, local-only runs; never
+# imported by the verifier): reportlab writes the fillable-form and scan
+# pages, Pillow degrades the scans. pikepdf and pdfminer.six come from
+# `test`. Eval only, pinned exact like everything else.
+redactor-set = ["reportlab==5.0.1", "pillow==12.3.0"]
 
 [dependency-groups]
 # Lint tools, pinned exact like everything else here: CI's lint job
@@ -130,6 +138,7 @@ files = [
     "eval/scorecard",
     "eval/check_ratchets.py",
     "eval/gallery",
+    "eval/redactor_set",
     "redaction_verifier",
 ]
 warn_unused_ignores = true
