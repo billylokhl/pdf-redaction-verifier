@@ -168,7 +168,9 @@ matcher sees it whole. Each is ✗:
 - Pattern-class numbers written without dashes (bare or space-separated)
   and wrapped at a line or page break.
 - A pattern-rule value split at a page break inside form boxes, a
-  one-character-per-line stack or rotated text, or with mixed separators —
+  one-character-per-line stack or rotated text, over four pages, or where
+  the split needs more than the last line before the break, or with
+  mixed separators —
   no reading joins it in a form the pattern accepts, so without a value
   rule for the same number it passes silently.
 - Text placed at extreme coordinates (around 10⁹ points and beyond), which
