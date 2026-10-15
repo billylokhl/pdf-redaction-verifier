@@ -174,13 +174,14 @@ map that is incomplete also carries a red INCOMPLETE banner naming why
 (warning codes with their pages).
 
 **Masked, always.** No character of an exact value appears anywhere in
-the map; a pattern match shows at most `mask()`'s output (`****6789`),
-and not even that when the match lies on, contains or runs into one of
-your exact values, or any character it would show could be part of one
-(a built-in SSN rule matching your exact SSN shows `****`; so does a
-`\d\d` pattern matching inside it, or a pattern matching text that runs
-on past it). The human and `--json`
-reports keep `mask()` as it is. A
+the map. A sample is masked by the same rule as the reports (`****6789`,
+or only `****` when the match contains one of your exact values or any
+character it would show is a character of one, ignoring case, accents
+and the script of a digit), and the map then checks the tail as it is
+drawn: a character outside Latin-1 is drawn as `\u{XXXX}`, so a tail
+whose escape holds a character of an exact value (文 is `\u{6587}`) shows
+only `****` too. A pattern match drawn on any glyph of an exact value
+shows no tail at all. A
 rules file entry from this tool's own JSON format is shown by number
 (`value rule #3`, explained as "3rd value entry, rules-file entry 5"),
 because its `name` is your own words and may be the secret; a shared

@@ -14,6 +14,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -906,6 +907,33 @@ def test_a_leftover_with_an_impossible_process_id_is_left_alone(tmp_path) -> Non
     os.utime(junk, (0, 0))
     paths.sweep_temps(out)
     assert junk.exists()
+
+
+@pytest.mark.parametrize("cjk", ["文書文書文書文書", "書文"])
+def test_a_tail_drawn_with_escapes_shows_no_digit_of_a_value(cjk, tmp_path, monkeypatch) -> None:
+    """A CJK tail is drawn as \\u{6587}...: hex digits an exact value may
+    hold. The map shows only "****", on the page and in the panels list
+    (the --json sample, re-checked as drawn), while the reports keep
+    mask()'s tail (no character of the value in it)."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Ref 65871234 noted.")
+    page.insert_text((72, 120), cjk, fontname="china-s")
+    doc.set_metadata({"title": cjk})
+    target = tmp_path / "cjk.pdf"
+    doc.save(target)
+    rules = write_rules(tmp_path, [{"name": "ref", "value": "65871234"},
+                                   {"name": "cjk", "pattern": "[\\u4e00-\\u9fff]{%d}" % len(cjk)}])
+    run = run_main(monkeypatch, target, rules)
+    assert run.code == 1 and run.written, run.stderr
+    tail = cjk[-min(4, len(cjk) // 2):]
+    assert run.report is not None
+    assert {f["sample"] for f in run.report["findings"] if f["sample"]} == {"****" + tail}
+    text = map_text(run.out)
+    assert "pattern rule #1 ****, selectable text" in text            # the box
+    assert "pattern rule #1 **** -- object" in text                   # the --json sample
+    assert "\\u{" not in text
+    assert re.findall(r"\*{4}(\S*)", text) and not any(re.findall(r"\*{4}([^\s,]+)", text))
 
 
 def test_closed_stderr_keeps_map_status_off_stdout(tmp_path) -> None:
