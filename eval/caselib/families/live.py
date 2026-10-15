@@ -53,6 +53,32 @@ def visible_pattern(path: Path) -> None:
     doc = fitz.open(); body(doc.new_page(), lines=[*FILLER, f"SSN {SSN}"]); save(doc, path)
 
 
+# One leak case per other built-in class (ADR 0012's follow-up: strict mode
+# needs recall coverage for every class, not only `ssn`). Fabricated
+# values: a 555-01xx fictional number, a card network's published test
+# number, an address at a reserved domain.
+_CLASS_VALUES = {
+    "us-phone": ("Any phone number", "Phone (212) 555-0147"),
+    "credit-card": ("Any card number", "Card 4111 1111 1111 1111"),
+    "email": ("Any email address", "Email jane.roe@example.org"),
+}
+
+
+def _visible_class(cls: str) -> Callable[[Path], None]:
+    def build(path: Path) -> None:
+        doc = fitz.open(); body(doc.new_page(), lines=[*FILLER, _CLASS_VALUES[cls][1]])
+        save(doc, path)
+    return build
+
+
+for _cls, (_name, _line) in _CLASS_VALUES.items():
+    leak(f"page.visible-{_cls}-class-rule", "live.plain",
+         f"A value of the built-in {_cls} class on the page, searched for by the class.",
+         rules=({"name": _name, "class": _cls},),
+         expected=expect(1, findings=((_name, "live"),), layers=((_name, "Text"),)),
+         mistake="Nobody redacted it.", recovery="Read the page.")(_visible_class(_cls))
+
+
 @leak("page.scan-image", "live.pixels", "A scanned image showing the SSN, drawn on the page.",
       expected=expect(1, findings=(("SSN", "live"),), layers=(("SSN", "OCR"),)),
       requires=("ocr",), mistake="Redacting the text layer and forgetting the scan.",

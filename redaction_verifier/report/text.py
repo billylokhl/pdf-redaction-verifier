@@ -141,7 +141,9 @@ def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = No
 
 def _counts(report: ScanReport, rules: RuleSet) -> str:
     totals: dict[str, int] = {}
-    for label in rules.labels.values():
+    for name, label in rules.labels.items():
+        if name in report.informational:
+            continue  # its matches are notices (ADR 0012), never "found"
         totals[label.kind] = totals.get(label.kind, 0) + 1
     found: dict[str, set[str]] = {}
     for finding in report.findings:
@@ -254,7 +256,30 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
             print("\n  ⚠ ATTENTION — warnings were raised during the scan:")
         for w in report.warnings:
             print(_sanitize_report_text(f"    - {w}"))
+    if report.notices:
+        _print_notices(report, rules, exact)
     print()
+
+
+def _print_notices(report: ScanReport, rules: RuleSet | None, exact: MaskIndex) -> None:
+    """ADR 0012: built-in class matches that are not counted in the
+    verdict -- after the verdict, never mistakable for a finding."""
+    print("\n  ℹ NOT COUNTED IN THE VERDICT: values shaped like a built-in class")
+    for line in _wrap("These match a built-in class (SSN, card number, email address, phone "
+                      "number) but none of them is one of the secrets you listed, so they do "
+                      "not change the result above. Check them yourself if they should not "
+                      "be in the file (or run with --strict-classes to count them).", "    "):
+        print(line)
+    for n in report.notices:
+        if isinstance(n, Finding):
+            tag, _ = _where(n)
+            # Masked like a finding (the same index): never a tail that is
+            # part of a listed value.
+            line = (f"    · {_label(n, rules, exact):<36} | {n.layer:<8} | "
+                    f"{tag:<15} | {n.location}")
+        else:
+            line = f"    · {n}"
+        print(_sanitize_report_text(line))
 
 
 def _print_meaning(report: ScanReport, rules: RuleSet | None) -> None:
