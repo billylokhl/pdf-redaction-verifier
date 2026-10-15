@@ -98,7 +98,7 @@ class TestConfig:
 
 class TestTruth:
     def test_round_trip(self) -> None:
-        inst = Instance("SSN1", "123-45-6789", "T1", "page-text", 0, [1, 2, 3, 4],
+        inst = Instance("SSN1", "666-51-4073", "T1", "page-text", 0, [1, 2, 3, 4],
                         fingerprints=["31"])
         truth = DocTruth("D01", 0, "chrome", 1, "Title", [inst])
         assert DocTruth.from_dict(json.loads(truth.to_json())) == truth
@@ -108,7 +108,7 @@ class TestTruth:
         {"written": "731904628155"},          # ACCT's value, filed under SSN1
     ])
     def test_rejects_bad_instances(self, kwargs) -> None:
-        base = {"secret": "SSN1", "written": "123-45-6789", "loc": "T1",
+        base = {"secret": "SSN1", "written": "666-51-4073", "loc": "T1",
                 "encoding": "page-text"}
         with pytest.raises(ValueError):
             Instance(**{**base, **kwargs})
@@ -182,6 +182,7 @@ class TestFingerprints:
     def test_codes_for_a_cid_font_and_ascii_for_a_simple_one(self, tmp_path) -> None:
         _type0_pdf(tmp_path / "f.pdf")
         with pikepdf.open(tmp_path / "f.pdf") as pdf:
+            # A fixture value the test CMap covers (digits 1-9), not a persona one.
             prints = locate.fingerprints(pdf, 0, "123-45-6789")
         assert sorted(prints) == sorted(["00140015001600100017001800100019001a001b001c",
                                          b"123-45-6789".hex()])
@@ -210,7 +211,7 @@ class TestSkew:
 # ── Preflight ──────────────────────────────────────────────────────────
 
 def _truth(doc: str = "X") -> DocTruth:
-    return DocTruth(doc, 0, "test", 1, "t", [Instance("SSN1", "123-45-6789", "M1", "string")])
+    return DocTruth(doc, 0, "test", 1, "t", [Instance("SSN1", "666-51-4073", "M1", "string")])
 
 
 class TestPreflight:
@@ -280,7 +281,7 @@ class TestPreflight:
     def test_refuses_a_secret_inside_a_font_program(self, tmp_path) -> None:
         pdf = pikepdf.new()
         page = pdf.add_blank_page()
-        font_file = pdf.make_stream(b"\x00\x01glyf123-45-6789\x00")
+        font_file = pdf.make_stream(b"\x00\x01glyf666-51-4073\x00")
         desc = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name.FontDescriptor,
                                                     FontFile2=font_file))
         page.obj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(
@@ -326,24 +327,24 @@ class TestFinalize:
 
     def test_declared_value_is_located(self, tmp_path) -> None:
         from redactor_set.build import Built, TextSpec, finalize
-        self._page_with(tmp_path / "a.pdf", "SSN 123-45-6789")
+        self._page_with(tmp_path / "a.pdf", "SSN 666-51-4073")
         truth = finalize("X", 0, Built(tmp_path / "a.pdf", "test", "t",
-                                       text=[TextSpec("SSN1", "123-45-6789", "T1", 1)]))
+                                       text=[TextSpec("SSN1", "666-51-4073", "T1", 1)]))
         (inst,) = truth.instances
-        assert inst.page == 0 and inst.fingerprints == [b"123-45-6789".hex()]
+        assert inst.page == 0 and inst.fingerprints == [b"666-51-4073".hex()]
         # Baseline 700 pt up from the bottom: the top-left frame puts the
         # glyph tops a little above 792 - 700 = 92.
         assert inst.bbox is not None and 78 < inst.bbox[1] < 92 < inst.bbox[3]
 
     def test_undeclared_or_miscounted_values_are_refused(self, tmp_path) -> None:
         from redactor_set.build import Built, PlantError, TextSpec, finalize
-        self._page_with(tmp_path / "b.pdf", "SSN 123-45-6789 acct 731904628155")
+        self._page_with(tmp_path / "b.pdf", "SSN 666-51-4073 acct 731904628155")
         with pytest.raises(PlantError, match="731904628155"):
             finalize("X", 0, Built(tmp_path / "b.pdf", "test", "t",
-                                   text=[TextSpec("SSN1", "123-45-6789", "T1", 1)]))
+                                   text=[TextSpec("SSN1", "666-51-4073", "T1", 1)]))
         with pytest.raises(PlantError, match="drawn 1 times"):
             finalize("X", 0, Built(tmp_path / "b.pdf", "test", "t",
-                                   text=[TextSpec("SSN1", "123-45-6789", "T1", 2),
+                                   text=[TextSpec("SSN1", "666-51-4073", "T1", 2),
                                          TextSpec("ACCT", "731904628155", "T1", 1)]))
 
 
@@ -370,7 +371,7 @@ class TestFinalize:
         # Declared, it passes; declared but absent, it is refused.
         ok = Instance("NAME1", "Jordan Q. Testperson", "M1", "string")
         finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", other=[ok]))
-        ghost = Instance("SSN1", "123-45-6789", "M1", "string")
+        ghost = Instance("SSN1", "666-51-4073", "M1", "string")
         with pytest.raises(PlantError, match="not stored"):
             finalize("X", 0, Built(tmp_path / "e.pdf", "test", "t", other=[ok, ghost]))
 
@@ -389,7 +390,7 @@ class TestFinalize:
         cases.append(("x.pdf", "xmp store"))
         self._blank(tmp_path / "a.pdf")
         with pikepdf.open(tmp_path / "a.pdf", allow_overwriting_input=True) as pdf:
-            pdf.attachments["d.csv"] = pikepdf.AttachedFileSpec(pdf, b"ssn,123-45-6789\n")
+            pdf.attachments["d.csv"] = pikepdf.AttachedFileSpec(pdf, b"ssn,666-51-4073\n")
             pdf.save(tmp_path / "a.pdf")
         cases.append(("a.pdf", "embedded store"))
         self._blank(tmp_path / "o.pdf")

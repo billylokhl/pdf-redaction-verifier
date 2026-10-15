@@ -156,12 +156,16 @@ class InstanceScore:
 # secret's instance the pattern happens to fit.
 
 def _place(e: Mapping[str, Any]) -> str:
+    """Where an entry says its occurrence is. Entries that name neither a
+    page nor an object (the Hidden and Metadata layers' locations, say)
+    are alternative views of the same content, not further occurrences:
+    they share one place per storage."""
     storage = e.get("storage")
     if e.get("page") is not None:
         return f"{storage}|p{e['page']}"
     if e.get("object") is not None:
         return f"{storage}|o{e['object']}"
-    return f"{storage}|{e.get('layer')}:{e.get('location') or e.get('code')}"
+    return f"{storage}|elsewhere"
 
 
 @dataclass
@@ -169,6 +173,7 @@ class Unit:
     place: str
     storage: str
     page: int | None             # 1-based, as the report counts
+    object: int | None
     key: str                     # a secret id, or "pattern"
     rules: frozenset[str]        # the rules that fired for it here
     finding: bool                # a hard finding (else warnings only)
@@ -195,18 +200,30 @@ def occurrence_units(report: Mapping[str, Any], exact: list[str],
             own = [(e, h) for e, h in group
                    if (key != "pattern" and secret_of.get(str(e["rule"])) == key)
                    or str(e["rule"]) in pattern_rules]
-            units.append(Unit(place, str(e0.get("storage")), e0.get("page"), key,
+            units.append(Unit(place, str(e0.get("storage")), e0.get("page"), e0.get("object"),
+                              key,
                               frozenset(str(e["rule"]) for e, _ in own),
                               any(h for _, h in own)))
     return units
 
 
 def _candidate(u: Unit, secret: str, rules: frozenset[str],
-               storages: frozenset[str] | None, page: int | None) -> bool:
+               storages: frozenset[str] | None, page: int | None, objects: set[int],
+               object_units: set[tuple[str, str]]) -> bool:
     if storages is not None and u.storage not in storages:
         return False
     if page is not None and u.page != page + 1:
         return False
+    if page is None and u.page is None:
+        # Content with no page (an annotation, a field, metadata): an
+        # object-bearing occurrence must be the instance's own object,
+        # when the oracle's evidence names it; one that names no object
+        # vouches only where no layer placed this secret in an object.
+        if u.object is not None:
+            if objects and u.object not in objects:
+                return False
+        elif (u.key, u.storage) in object_units:
+            return False
     if u.key == "pattern":
         return bool(u.rules & rules)
     return u.key == secret and bool(u.rules & rules)
@@ -261,6 +278,7 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
     record against the verifier's JSON report. *values* maps a secret id
     to its configured value, *kinds* to what it is (for LISTED_GAPS)."""
     units = occurrence_units(report, exact, values)
+    object_units = {(u.key, u.storage) for u in units if u.object is not None}
     warnings = list(report.get("warnings", []))
     scores: list[InstanceScore] = []
     cands: list[list[int]] = []
@@ -284,14 +302,14 @@ def score_instances(record: Mapping[str, Any], truth: Mapping[str, Any],
             cell=override.get("cell", row.get("cell")), storage=storage,
             expected_exit=int(override.get("expected_exit", row.get("expected_exit"))),
             known_gap=bool(row.get("known_gap")), provisional=bool(row.get("provisional")))
+        objects = instance_objects(row)
         mine = [k for k, u in enumerate(units)
-                if _candidate(u, row["secret"], rules, storages, page)]
+                if _candidate(u, row["secret"], rules, storages, page, objects, object_units)]
         # Prefer an occurrence a hard finding reports.
         mine.sort(key=lambda k: (not units[k].finding, k))
         column = _flagged_column(score.cell)
         place = []
         if column in PLACE_WARNINGS and score.expected_exit == 2:
-            objects = instance_objects(row)
             place = sorted({str(w.get("message", ""))[:80] for w in warnings
                             if _place_warning(w, PLACE_WARNINGS[str(column)], storages,
                                               objects)})
@@ -622,6 +640,10 @@ def main(args: Any) -> int:
         print("ERROR: no locked outputs to measure.", file=sys.stderr)
         return 1
     exact, patterns = load_rules(rules_path)
+    if set(exact) != set(persona_values().values()):
+        print("ERROR: the rules file's exact values are not the persona's (a config from "
+              "before a persona change?): regenerate the set's config", file=sys.stderr)
+        return 1
     counts, detail = summarise(runs, exact, patterns, persona_values(), persona_kinds())
     problems = unmeasured(runs)
     counts["valid"] = not problems

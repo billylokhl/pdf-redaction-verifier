@@ -353,7 +353,12 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     matching the string as written), in a storage class it can sit in
     (`live`; `orphaned` or `unreferenced` for an orphaned object;
     `superseded`) and, for drawn text and pixels, on its page. Each
-    occurrence vouches for at most one instance (the largest one-to-one
+    occurrence vouches for at most one instance. Content with no page
+    (an annotation, a field, metadata) must be found in its own object
+    when the oracle names it, and entries that name neither page nor
+    object (the Hidden and Metadata layers' locations) count as one
+    occurrence per storage, and only where no layer placed that secret
+    in an object (the largest one-to-one
     matching decides); an instance with candidates the matching cannot
     cover is **ambiguous**, not a hit. A hard finding is a **hit**; a
     warning alone is a hit where review (exit `2`) is expected and a
@@ -365,7 +370,12 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     when its code fits the cell's column (`LEFTOVER_UNDECODABLE_TEXT`
     for font, `LEFTOVER_IMAGE` for pixels, `LEFTOVER_CONTAINER`), the
     instance expects exit `2`, and the instance's object, from the
-    oracle's evidence, is in the warning's object list.
+    oracle's evidence, is in the warning's object list. Two blind spots,
+    both on the safe side (a miss, never a false catch): the verifier
+    lists at most eight objects and then "(+N more)", and
+    `LEFTOVER_CONTAINER` lists payloads, not objects, so a container
+    instance is never flagged. Read such misses as limits of the
+    warning's text, not necessarily of the verifier.
   - **listed gaps** (owner decision, 2026-10-15): a missed name written
     in another form than the configured one (word order, case) and a
     missed piece of a name (a whole word of it, in an email address,
@@ -383,7 +393,8 @@ PYTHONPATH=eval:. python -m scorecard redactor-set run [--seed 0] [--json OUT]
     exit `2`.
 
   Only counts, with the lock's sha256 and the seeds measured, reach
-  stdout and `--json`; per-file rows go to `results/<date>.json` in the
+  stdout and `--json` (a rules file whose exact values are not the
+  persona's is refused); per-file rows go to `results/<date>.json` in the
   local root. A run in which any output gets no verdict (a crash, a
   timeout, an error report) or was scanned without OCR exits `1`, writes
   no `--json`, counts those outputs' instances as unmeasured, and is not

@@ -351,9 +351,39 @@ def test_a_flagged_cell_left_unmatched_falls_back_to_its_place_warning():
     tr = truth(("NAME1", "Jordan Q. Testperson", 0), ("NAME1", "Jordan Q. Testperson", 1),
                encoding="pixels")
     images = place_warning("LEFTOVER_IMAGE", "8, 10")
-    outcomes = sorted(s.outcome for s in score(rows, tr, [finding(NAME1, obj=6)], [images]))
-    assert outcomes == [rs.FLAGGED, rs.HIT]
-    outcomes = sorted(s.outcome for s in score(rows, tr, [finding(NAME1, obj=6)], []))
+    found = [s.outcome for s in score(rows, tr, [finding(NAME1, obj=8)], [images])]
+    assert found == [rs.HIT, rs.FLAGGED]
+    assert [s.outcome for s in score(rows, tr, [finding(NAME1, obj=8)], [])] == [rs.HIT, rs.MISS]
+    # A finding in another object (an orphaned text layer, say) vouches for neither.
+    assert [s.outcome for s in score(rows, tr, [finding(NAME1, obj=6)], [])] == [rs.MISS] * 2
+
+
+def test_two_layers_reporting_one_annotation_vouch_once():
+    # Round 2, probe 1: NAME1 in two annotations (objects 20 and 21); the
+    # verifier finds only the first, by the Hidden layer (no object) and
+    # the Objects layer (object 20).
+    rows = [row(0, "NAME1", loc="A1", where="live", cell="annot-fields.plain",
+                evidence=ev(20)),
+            row(1, "NAME1", loc="A2", where="live", cell="annot-fields.plain",
+                evidence=ev(21))]
+    tr = truth(("NAME1", "Jordan Q. Testperson", 0), ("NAME1", "Jordan Q. Testperson", 0),
+               encoding="string")
+    hidden = {**finding(NAME1, "live", obj=None), "layer": "Hidden", "location": "annotation"}
+    objects = {**finding(NAME1, "live", obj=20), "layer": "Objects"}
+    assert [s.outcome for s in score(rows, tr, [hidden, objects])] == [rs.HIT, rs.MISS]
+
+
+def test_layers_reporting_one_metadata_value_without_objects_vouch_once():
+    # Round 2, probe 2: NAME1 in the Info /Title (missed) and in XMP; the
+    # Metadata layer reports the XMP value twice (the packet, a field
+    # sweep), neither naming an object: one occurrence, so one instance.
+    rows = [row(0, "NAME1", loc="M1", where="live", cell="metadata.plain"),
+            row(1, "NAME1", loc="M3", where="live", cell="metadata.plain")]
+    tr = truth(("NAME1", "Jordan Q. Testperson", 0), ("NAME1", "Jordan Q. Testperson", 0),
+               encoding="string")
+    packet = {**finding(NAME1, "live", obj=None), "layer": "Metadata", "location": "XMP packet"}
+    sweep = {**finding(NAME1, "live", obj=None), "layer": "Metadata", "location": "field sweep"}
+    outcomes = sorted(s.outcome for s in score(rows, tr, [packet, sweep]))
     assert outcomes == [rs.AMBIGUOUS, rs.HIT]
 
 
@@ -383,8 +413,10 @@ def test_owner_accepted_name_gaps_are_listed_not_missed():
 def _main_args(tmp_path, **kw):
     import argparse
 
+    from redactor_set.persona import redactor_config_yaml
+
     rules = tmp_path / "redact.yaml"
-    rules.write_text("exact_values: []\npatterns: []\n")
+    rules.write_text(redactor_config_yaml())
     return argparse.Namespace(root=tmp_path, allow_outside=True, rules=rules, set="inputs",
                               timeout=5.0, workers=1, seed=[0], json=tmp_path / "out.json",
                               lock_change_reason="", **kw)
@@ -413,3 +445,13 @@ def test_a_lock_that_does_not_verify_is_refused_before_anything_is_recorded(tmp_
     with pytest.raises(SystemExit):
         rs.main(_main_args(tmp_path, ))
     assert not (tmp_path / "results").exists()
+
+
+def test_a_rules_file_that_is_not_the_personas_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(rs, "load_locked", lambda root, s: [])
+    monkeypatch.setattr(rs, "lock_sha", lambda root, s: "c" * 64)
+    monkeypatch.setattr(rs, "run", lambda *a, **k: [run_of("m2", "clean", 0, 0)])
+    args = _main_args(tmp_path)
+    args.rules.write_text(args.rules.read_text().replace("666-51-4073", "123-45-6789"))
+    assert rs.main(args) == 1
+    assert not (tmp_path / "out.json").exists()
