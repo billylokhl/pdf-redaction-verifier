@@ -41,13 +41,14 @@ jobs:
         # the official release binary, checksum from qpdf's own .sha256.
         # That binary links OpenSSL statically but loads OpenSSL's legacy
         # provider (RC4: 40- to 128-bit encrypted PDFs) at run time from a
-        # modules directory fixed when it was built. When the runner image
-        # changes Homebrew's openssl@3, that directory can vanish: qpdf then
-        # exits 2 on any RC4 file ("unable to load openssl legacy provider"),
-        # which the gate reads as a split on encryption (macos-26-arm64
-        # 20261013, openssl@3 3.6.4 -> 3.6.5). So point OpenSSL at the
-        # installed openssl@3's modules, and fail this step, not a test, if
-        # qpdf still cannot write and read an RC4 file.
+        # modules directory fixed when it was built (12.4.2's, per `strings`:
+        # /opt/homebrew/Cellar/openssl@3/3.6.4/lib/ossl-modules). When the
+        # runner image changes Homebrew's openssl@3, that directory can
+        # vanish: qpdf then exits 2 on any RC4 file ("unable to load
+        # openssl legacy provider"), which the gate reads as a split on
+        # encryption (macos-26-arm64 20261013, openssl@3 3.6.4 -> 3.6.5). So
+        # point OpenSSL at the installed openssl@3's modules, and fail this
+        # step, not a test, if qpdf still cannot write and read an RC4 file.
         run: |
           curl -fsSL -o "$RUNNER_TEMP/qpdf.zip" \
             https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip
@@ -55,8 +56,6 @@ jobs:
           unzip -q "$RUNNER_TEMP/qpdf.zip" -d "$RUNNER_TEMP/qpdf"
           bin="$(find "$RUNNER_TEMP/qpdf" -type f -name qpdf -perm -u+x | head -1)"
           "$bin" --version
-          echo "DIAG compiled-in modules dir:"; strings "$(dirname "$bin")"/../lib/libqpdf*.dylib | grep -m3 -i "ossl-modules" || true
-          echo "DIAG RC4 without OPENSSL_MODULES:"; "$bin" --allow-weak-crypto --empty --encrypt --user-password= --owner-password=owner --bits=128 --use-aes=n -- "$RUNNER_TEMP/diag.pdf" || echo "DIAG exit $?"
           modules="$(brew --prefix openssl@3)/lib/ossl-modules"
           test -f "$modules/legacy.dylib"
           export OPENSSL_MODULES="$modules"
