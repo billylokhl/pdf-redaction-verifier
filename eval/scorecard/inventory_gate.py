@@ -370,7 +370,7 @@ def _labels(agree: Sequence[FileResult]) -> dict[str, Any]:
 _EXIT_2_CLASSES: Final = (
     ("orphan", "bodies_orphaned"),                  # R3, per body (item 5's definition)
     ("hint_stream", "structural_hint_stream"),      # R6, ADR 0003
-    ("xmp_image", "xmp_image_bodies"),              # R7, decision D
+    ("xmp_image", "xmp_flag_bodies"),               # R7, decision D: an image or binary
     ("javascript", "structural_javascript"),        # no decoder yet
     ("synthesized", "synthesized_current"),         # until 4a decodes it
     ("output_intent", "structural_output_intent"),  # no decoder yet
@@ -417,6 +417,9 @@ def _labels_cost(agree: Sequence[FileResult]) -> dict[str, Any]:
         "exit_2_only_class": dict(sorted(only.items())),
         "exit_2_files_but_thumbnails_marked_today": sum(
             1 for r in hit if not _thumbnails_only(r.measures)),
+        # Already exit 2 today for a page thumbnail (#133); the full overlap
+        # with today's exit 2 is 3a-12's to measure.
+        "exit_2_files_marked_today": sum(1 for r in hit if r.measures.get("page_thumb_legacy")),
         "orphan_files_current": sum(1 for r in agree if r.measures.get("orphaned_current", 0)),
         "orphan_body_classes": {key[len("orphan_body_class_"):]: _files_and_total(agree, key)
                                 for key in body},
@@ -425,7 +428,7 @@ def _labels_cost(agree: Sequence[FileResult]) -> dict[str, Any]:
             1 for r in agree if r.measures.get("orphan_body_class_thumbnail", 0) > 0
             and r.measures.get("page_thumb_legacy")),
         "xmp": {key: _files_and_total(agree, key)
-                for key in ("xmp_bodies", "xmp_image_bodies", "xmp_image_current",
+                for key in ("xmp_bodies", "xmp_flag_bodies", "xmp_image_bodies", "xmp_image_current",
                             "xmp_binary_bodies", "xmp_binary_current", "xmp_undecoded_bodies")},
         "graph_work": _percentiles((w for w, _ in work), 0),
         "graph_sum": _percentiles((s for _, s in work), 0),

@@ -24,12 +24,12 @@ from redaction_verifier.inventory import build_inventory
 from redaction_verifier.inventory.labels import StructuralKind
 from redaction_verifier.ledger import FlagReason
 
-from .steps import charged_steps, step_cost
+from .steps import charged_steps, step_costs
 from .test_inventory_labels import PER_UNIT_GROWTH, XMP, make
 
 # Lines the inventory executes per unit of work the whole stage charges, at
 # most (#94), with the retained-memory charges left out (walk_only):
-# measured 10.3 to 10.6 on this shape (n = 20 to 320), as the label walks'
+# measured 10.2 to 10.6 on this shape (n = 20 to 320), as the label walks'
 # own tests find; 15, as there, leaves room for a change in the mix of
 # steps, not for an uncharged loop.
 LINES_PER_UNIT = 15
@@ -39,19 +39,23 @@ IMG = (b" /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8"
 FORM = b" /Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << %s>>"
 
 
-def _stage(n: int, updates: int | None = None) -> bytes:
-    """A file of about 2n objects and n + 1 revisions. With q = n / 4:
-    q pages sharing one resource dictionary, which draws a chain of q forms
-    and q images; q JavaScript actions in the catalog's /JavaScript name
-    tree (a leaf each), each with its script stream; the catalog's XMP
-    packet; a stamp annotation with a stored appearance. Each of the n
+def _stage(n: int, updates: int | None = None, pages: int | None = None) -> bytes:
+    """A file of about 2.25n objects and n + 1 revisions. With q = n / 4 and
+    p = *pages* (q by default): p pages sharing one resource dictionary,
+    which draws a chain of q forms and q images; p JavaScript actions in the
+    catalog's /JavaScript name tree (a leaf each), each with its script
+    stream; the catalog's XMP packet; on each page a stamp annotation with
+    its own stored appearance (so the annotation stage scales too). Each of
+    the n (or *updates*)
     updates draws one page with a new content stream and rewrites the
     catalog and one leaf of the name tree as they were: every
     revision's page list, name trees, annotations, reachable set and
     drawing are made again (no reuse applies), each over the whole file."""
     q = max(n // 4, 1)
-    page0, form0, image0, content0, action0, script0, leaf0 = (100 + k * q for k in range(7))
-    new0 = 100 + 7 * q
+    p = pages if pages is not None else q
+    page0, content0, action0, script0, leaf0, annot0, ap0 = (100 + k * p for k in range(7))
+    form0, image0 = 100 + 7 * p, 100 + 7 * p + q
+    new0 = 100 + 7 * p + 2 * q
     w = Writer()
     table: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
 
@@ -67,36 +71,38 @@ def _stage(n: int, updates: int | None = None) -> bytes:
 
     def page(i: int, contents: int) -> bytes:
         return (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Resources 9 0 R"
-                b" /Contents %d 0 R%s >>" % (contents, b" /Annots [10 0 R]" if i == 0 else b""))
+                b" /Contents %d 0 R /Annots [%d 0 R] >>" % (contents, annot0 + i))
     def leaf(i: int) -> bytes:
         return b"<< /Limits [(a%05d) (a%05d)] /Names [(a%05d) %d 0 R] >>" % (i, i, i, action0 + i)
     obj(1, catalog(0))
     obj(2, b"<< /Type /Pages /Kids [%s] /Count %d >>"
-        % (b" ".join(b"%d 0 R" % (page0 + i) for i in range(q)), q))
+        % (b" ".join(b"%d 0 R" % (page0 + i) for i in range(p)), p))
     stream(4, b" /Type /Metadata /Subtype /XML", XMP)
-    obj(5, b"<< /Kids [%s] >>" % b" ".join(b"%d 0 R" % (leaf0 + i) for i in range(q)))
+    obj(5, b"<< /Kids [%s] >>" % b" ".join(b"%d 0 R" % (leaf0 + i) for i in range(p)))
     obj(9, b"<< /XObject << /Fm0 %d 0 R %s >> >>"
         % (form0, b" ".join(b"/Im%d %d 0 R" % (i, image0 + i) for i in range(q))))
-    obj(10, b"<< /Type /Annot /Subtype /Stamp /Rect [0 0 9 9] /AP << /N 11 0 R >> >>")
-    stream(11, FORM % b"", b"0 0 m")
     for i in range(q):
-        obj(page0 + i, page(i, content0 + i))
         stream(form0 + i, FORM % (b"/XObject << /X %d 0 R >> " % (form0 + i + 1)
                                   if i + 1 < q else b""), b"/X Do")
         stream(image0 + i, IMG, b"\x00")
-        stream(content0 + i, b"", b"/Fm0 Do /Im%d Do" % i)
+    for i in range(p):
+        obj(page0 + i, page(i, content0 + i))
+        stream(content0 + i, b"", b"/Fm0 Do /Im%d Do" % (i % q))
         obj(action0 + i, b"<< /S /JavaScript /JS %d 0 R >>" % (script0 + i))
         stream(script0 + i, b"", b"app.alert(%d);" % i)
         obj(leaf0 + i, leaf(i))
+        obj(annot0 + i, b"<< /Type /Annot /Subtype /Stamp /Rect [0 0 9 9] /AP << /N %d 0 R >> >>"
+            % (ap0 + i))
+        stream(ap0 + i, FORM % b"", b"0 0 m")
     prev = w.table(table, b"/Size %d /Root 1 0 R" % new0)
     w.epilogue(prev)
     for i in range(n if updates is None else updates):
         number = new0 + i
         table = {}
         stream(number, b"", b"/Im%d Do" % (i % q))
-        obj(page0 + i % q, page(i % q, number))
+        obj(page0 + i % p, page(i % p, number))
         obj(1, catalog(i + 1))
-        obj(leaf0 + i % q, leaf(i % q))
+        obj(leaf0 + i % p, leaf(i % p))
         prev = w.table(table, b"/Size %d /Root 1 0 R /Prev %d" % (number + 1, prev))
         w.epilogue(prev)
     return bytes(w.out)
@@ -131,22 +137,22 @@ def test_the_shape_walks_every_stage_in_every_revision() -> None:
     assert labels is not None
     kinds = {record.kind for records in labels.structural.values() for record in records}
     assert kinds == {StructuralKind.XMP, StructuralKind.JAVASCRIPT}
-    # q = 2: two forms, two images, each page's content stream now, the appearance.
-    assert len(labels.drawable) == 2 + 2 + 2 + 1
+    # q = 2: two forms, two images, each page's content stream now, two appearances.
+    assert len(labels.drawable) == 2 + 2 + 2 + 2
     # The content streams the pages drew before: the two first, six updates'.
     assert len(inv.orphaned(0)) == 8
 
 
 def test_the_stage_is_within_the_linear_bound_or_flagged() -> None:
     # ADR 0011 item 7: revisions and objects scaled together (n vs 8n each,
-    # about 64 times the work). Measured: n = 40 charges 464,543 units to the
-    # stage, within its file's limit of 2,950,080 (64 per byte, plus the
-    # floor); n = 320 would charge about 64 times that, 30 million, against
-    # a limit of 16.3 million: the budget stops the stage, the newest
+    # about 64 times the work). Measured: n = 40 charges 554,309 units to the
+    # stage, within its file's limit of 3,145,536 (64 per byte, plus the
+    # floor); n = 320 would charge about 64 times that, 35 million, against
+    # a limit of 18.0 million: the budget stops the stage, the newest
     # revisions have no labels, and the file is flagged BUDGET_EXHAUSTED --
-    # never an unflagged inventory, never a hang. (About 50-70 units per
-    # live object or edge per revision walked again, n = 20 to 160: DESIGN.md,
-    # "Bounded resources", the 64 N R bound.)
+    # never an unflagged inventory, never a hang. (51-69 units per live
+    # object or edge per revision walked again, n = 20 to 160, 103-136 per
+    # object: DESIGN.md, "Bounded resources".)
     work = []
     for n in (40, 320):
         data = _stage(n)
@@ -159,9 +165,10 @@ def test_the_stage_is_within_the_linear_bound_or_flagged() -> None:
         work.append((inv.graph_work, exhausted, inv.labels))
     (w_s, small_out, small_labels), (w_l, large_out, large_labels) = work
     assert not small_out and None not in small_labels
-    # Superlinear by design (revisions x objects), and stopped at the cap.
+    # Stopped at the cap. (Its work is the cap's, so how it grows is read
+    # in the next test, where neither size reaches it.)
     assert large_out and large_labels[0] is None and large_labels[-1] is not None
-    assert w_l >= 16 * w_s, (w_s, w_l)
+    assert w_l <= Limits().work_limit(len(_stage(320))) < 64 * w_s, (w_s, w_l)
 
 
 def test_every_step_of_the_stage_is_charged(walk_only: None) -> None:
@@ -177,30 +184,58 @@ def test_every_step_of_the_stage_is_charged(walk_only: None) -> None:
     (w_s, l_s), (w_l, l_l) = work
     assert l_s <= LINES_PER_UNIT * w_s and l_l <= LINES_PER_UNIT * w_l, work
     assert l_l / w_l <= PER_UNIT_GROWTH * (l_s / w_s), work
-    assert w_l >= 16 * w_s, work  # revisions x objects: every revision walked again
+    # Revisions x objects, every revision walked again: measured 46.9x
+    # (34,518 against 1,618,303 units), where linear work would be 8x.
+    assert w_l >= 16 * w_s, work
+
+
+# Each part's bound on its time per charged unit, 8n against n (the
+# wall-clock backstop below), on _stage(n, 4 updates, n pages) at n = 1,000.
+# Measured clean, load average 10-14: whole stage 0.76-1.15x, graph
+# 0.95-1.16, pages 0.80-1.39, trees 0.85-1.19, annotations 0.69-1.21,
+# labels 0.73-1.12. The review of #165's C-level mutants (a set read as
+# `in list(...)`): pages' visited 2.73x, trees' visited 3.41x, the drawing
+# walk's seen-set 4.75x (labels; whole 3.13x). The whole stage alone had
+# missed pages' and trees' (they are a small share of it), so each part has
+# its bound. Not caught: annotations' per-page `kept` set as a list (1.01x;
+# it holds one page's annotations).
+STAGE_BOUNDS: dict[str, float] = {
+    "_reference_graph": 2.0, "build_graph": 2.0, "build_pages": 2.0, "build_trees": 2.0,
+    "build_annotations": 2.0, "build_labels": 2.0}
+
+
+def _per_unit_ratios(small: bytes, large: bytes) -> dict[str, float]:
+    """Each part's time per charged unit at 8n over that at n: best of
+    three runs at n, one at 8n (a loaded machine only slows a run), from
+    one build per run."""
+    best = []
+    for data, runs in ((small, 3), (large, 1)):
+        timed = [step_costs(data, list(STAGE_BOUNDS)) for _ in range(runs)]
+        # The work charged is the same on every run (deterministic).
+        best.append({e: (min(t[e][0] for t in timed), timed[0][e][1]) for e in STAGE_BOUNDS})
+    return {e: (best[1][e][0] / best[1][e][1]) / (max(best[0][e][0], 1e-3) / best[0][e][1])
+            for e in STAGE_BOUNDS}
 
 
 def test_the_stage_costs_its_charged_work_in_wall_clock_too(walk_only: None) -> None:
     # The backstop for work done inside C, which no line count sees (a
-    # linear `in` on a list, a copy: review of #113): the whole stage's time
-    # per unit it charges does not grow with the input. A C-level scan
-    # costs nanoseconds a step, so it shows with many objects, not many
-    # revisions: 2,000 against 16,000 objects' worth (n), four updates.
-    # Measured clean 1.23-1.33x (0.24-0.33 us a unit), and with the
-    # reachable walk's seen-set a list 4.6x (5.8x at 4,000 vs 32,000); with
-    # n revisions as well (60 vs 480) clean 0.96-0.98x, that mutant only
-    # 1.3x. 2x leaves 1.5x of room on the clean side and 2.3x on the
-    # mutant's. Best of three at n, two at 8n: a loaded machine only slows
-    # a run. Under coverage Python runs slower and C does not, diluting the
-    # signal: the uncovered leg is the one that catches it (as for the graph
-    # and the page walk).
-    per_unit = []
-    for n, runs in ((2000, 3), (16000, 2)):
-        data = _stage(n, updates=4)
-        timed = [step_cost(data, "_reference_graph") for _ in range(runs)]
-        # The work charged is the same on every run (deterministic).
-        per_unit.append(max(min(t for t, _ in timed), 0.02) / timed[0][1])
-    assert per_unit[1] < 2 * per_unit[0], per_unit
+    # linear `in` on a list, a copy: review of #113): each part's time per
+    # unit it charges does not grow with the input (STAGE_BOUNDS). A C-level
+    # scan costs nanoseconds a step, so it shows with many objects, not many
+    # revisions: 1,000 against 8,000 pages, name-tree leaves and
+    # annotations, four updates. (With n revisions as well, 60 vs 480, a
+    # reachable-set mutant read only 1.3x.) A part over its bound is measured
+    # once more and passes if either reading is under it: load only slows a
+    # run, a mutant fails both. Under coverage Python runs slower and C does
+    # not, diluting the signal: the uncovered leg is the one that catches it
+    # (as for the graph and the page walk).
+    small, large = _stage(1000, updates=4, pages=1000), _stage(8000, updates=4, pages=8000)
+    ratios = _per_unit_ratios(small, large)
+    over = [e for e, bound in STAGE_BOUNDS.items() if ratios[e] >= bound]
+    if over:
+        again = _per_unit_ratios(small, large)
+        over = [e for e in over if again[e] >= STAGE_BOUNDS[e]]
+    assert not over, (over, ratios)
 
 
 # ── The cost briefing's measures (eval only) ──────────────────────────────
@@ -243,6 +278,7 @@ def test_cost_measures_scan_xmp_packets_and_sum_the_graph() -> None:
     assert found["xmp_image_bodies"] == found["xmp_image_current"] == 2  # 4, 5
     assert found["xmp_binary_bodies"] == 1  # 7: a digest is binary nothing accounts for
     assert found["xmp_undecoded_bodies"] == 0
+    assert found["xmp_flag_bodies"] == 3  # an image or binary: R7's class
     assert found["page_thumb_legacy"] == 1
     drawn = drawing_measures(data, inv)
     assert drawn["orphan_body_class_thumbnail"] == 1
@@ -256,13 +292,21 @@ def test_cost_measures_mark_no_thumbnail_and_no_image_where_there_is_none() -> N
     assert found["xmp_bodies"] == 1
 
 
+def test_a_run_that_does_not_decode_counts_as_undecoded() -> None:
+    # 65 base64 characters: one more than a multiple of four, no decoding.
+    data = make(catalog=b" /Metadata 4 0 R",
+                streams={4: (META, _packet(b"<my:x>" + b"A" * 65 + b"</my:x>"))})
+    found = cost_measures(data, build_inventory(data, budget=Budget(file_size=len(data))))
+    assert found["xmp_undecoded_bodies"] == 1 and found["xmp_flag_bodies"] == 0
+
+
 def test_the_cost_aggregate_counts_each_file_once() -> None:
     files = [
         # Page thumbnails only, which today's CLI already marks (#133).
         {"bodies_orphaned": 2, "orphan_body_class_thumbnail": 2, "page_thumb_legacy": 1,
          "orphaned_current": 2},
         # A hint stream and an XMP image: one file, two classes.
-        {"structural_hint_stream": 1, "xmp_image_bodies": 1, "graph_work": 900,
+        {"structural_hint_stream": 1, "xmp_flag_bodies": 1, "graph_work": 900,
          "graph_sum": 30},
         # An orphan labelled in an older revision: not the verdict's.
         {"orphaned_current": 1, "graph_work": 100, "graph_sum": 10},
@@ -275,6 +319,7 @@ def test_the_cost_aggregate_counts_each_file_once() -> None:
                                         "javascript": 1, "synthesized": 1, "output_intent": 0}
     assert found["exit_2_only_class"] == {"orphan": 1}
     assert found["exit_2_files_but_thumbnails_marked_today"] == 2
+    assert found["exit_2_files_marked_today"] == 1  # the thumbnail file, #133
     assert found["orphan_files_current"] == 2
     assert found["orphan_body_classes"]["properties"] == {"files": 1, "total": 1}
     assert found["thumbnail_orphan_files_marked_today"] == 1

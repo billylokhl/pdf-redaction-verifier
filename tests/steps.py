@@ -116,3 +116,37 @@ def step_cost(data: bytes, entry: str) -> tuple[float, int]:
     # Spent, the step stops early: its time per unit would mean nothing.
     assert not budget.exhausted(Counter.WORK), "the budget ran out"
     return taken[0]
+
+
+def step_costs(data: bytes, entries: list[str]) -> dict[str, tuple[float, int]]:
+    """step_cost for several entries of build.py at once, from one build:
+    each entry's (process time, work charged). An entry that calls another
+    (``_reference_graph`` calls each ``build_*``) includes its time."""
+    import time
+
+    import redaction_verifier.inventory.build as build_module
+    from redaction_verifier.budget import Budget, Counter
+    from redaction_verifier.inventory import build_inventory
+    budget = Budget(file_size=len(data))
+    taken: dict[str, tuple[float, int]] = {}
+    reals = {entry: getattr(build_module, entry) for entry in entries}
+
+    def wrap(entry: str) -> Callable[..., Any]:
+        real = reals[entry]
+
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            before, started = budget.work, time.process_time()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                taken[entry] = (time.process_time() - started, budget.work - before)
+        return wrapped
+    for entry in entries:
+        setattr(build_module, entry, wrap(entry))
+    try:
+        build_inventory(data, budget=budget)
+    finally:
+        for entry, real in reals.items():
+            setattr(build_module, entry, real)
+    assert not budget.exhausted(Counter.WORK), "the budget ran out"
+    return taken

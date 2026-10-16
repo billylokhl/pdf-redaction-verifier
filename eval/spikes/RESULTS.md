@@ -717,43 +717,63 @@ so the `/Metadata` holder allowlist costs nothing today.
 
 | Class | Files | ADR 0011 | Deviation |
 | --- | --- | --- | --- |
-| Orphan (R3), per body | 242 | 307 (current revision, prototype) | -65: the per-body definition (current revision: 294, -13) |
-| Linearization hint stream (R6, ADR 0003) | 400 | 416 | -16 (76 under a stale `/L`, counted apart: decision Q8) |
-| XMP packet holding an image (R7, decision D) | 516 | 519 | -3. 558 packets; no packet holds other binary; none undecoded |
-| JavaScript stream (no decoder yet) | 86 | 89 | -3 (159 streams) |
-| Synthesized annotation (until 4a) | 130 | 139 | -9: 139 is over the whole corpus, 9 of those files are flagged |
+| Orphan (R3), per body | 242 | 307 (current revision, prototype) | -65 (-21.2%): the per-body definition (current revision: 294, -13, -4.2%) |
+| Linearization hint stream (R6, ADR 0003) | 400 | 416 | -16 (-3.8%; 76 under a stale `/L`, counted apart: decision Q8) |
+| XMP packet holding an image or binary (R7, decision D) | 516 | 519 | -3 (-0.6%). 558 packets, all images; none holds other binary; none undecoded |
+| JavaScript stream (no decoder yet) | 86 | 89 | -3 (-3.4%; 159 streams) |
+| Synthesized annotation (until 4a) | 130 | 139 | -9 (-6.5%): 139 is over the whole corpus, 9 of those files are flagged |
 | Output-intent profile | 0 | 0 | -- |
-| **Any of these** | **707 (36.8%)** | about 728 | -21 |
+| **Any of these** | **707 (36.8%)** | about 728 | -21 (-2.9%) |
 
 707 files have at least one class; 144 have only an XMP image, 63 only a hint stream, 6 only an
 orphan. Orphans, hint streams and XMP images alone cover all 707, so decoding synthesized
-annotations (4a) and JavaScript does not lower the count. The thumbnail orphans add no file
-of their own: 8 files have only thumbnail orphans, and each also has another class. Whether
-these files already exit `2` in today's CLI for other reasons is 3a-12's measurement (ADR
-0007's overlap); only the thumbnails' overlap (#133) is measured here.
+annotations (4a) and JavaScript does not lower the count. Counting orphans in the current
+revision's sense instead moves the total by 2 files (709).
 
-| Scenario (whole corpus, 2,073 files) | Measured | ADR 0011 |
-| --- | --- | --- |
-| Inventory flags (3a-7) | 153 (7.38%) | 141 (6.80%) |
-| Every kind enforced | 860 (41.5%) | about 865 (42%) |
-| -- after 4a and a JavaScript decoder | 860 (41.5%) | about 865 (42%) |
-| -- hint streams not flagged (R6 (b), at best) | 797 (38.4%) | about 840 (40-41%) |
-| -- orphans and XMP images only | 728 (35.1%) | about 775 (37%) |
-| -- orphans alone | 395 (19.1%) | about 441 (21%) |
+**At least 194 of the 707 already exit `2` today; labels add at most 513 new exit-`2` files
+among the unflagged (26.7%).** Today's CLI marks every page carrying a `/Thumb` (#133,
+`PAGE_THUMBNAIL`, exit `2`), and all 194 files with a thumbnail orphan are among the 707
+(`labels_cost.exit_2_files_marked_today`). Over the whole corpus, 50 of the 153 flagged files
+are marked too, so at least 244 of the 860 below already exit `2` today. These are lower
+bounds on the overlap: whether the other files already exit `2` for another reason is
+3a-12's measurement (ADR 0007's overlap, Lane A), not made here.
 
-No cost differs from the ADR's figure in a way that changes the picture: every class is within
-3% of its file count except orphans, which are lower under the per-body definition.
+| Scenario (whole corpus, 2,073 files) | Measured | ADR 0011 | Deviation |
+| --- | --- | --- | --- |
+| Inventory flags (3a-7) | 153 (7.38%) | 141 (6.80%) | +12 |
+| Every kind enforced | 860 (41.5%) | about 865 (42%) | -5 |
+| -- after 4a and a JavaScript decoder | 860 (41.5%) | about 865 (42%) | -5 |
+| -- hint streams not flagged (R6 (b), at best) | 797 (38.4%) | about 840 (40-41%) | -43 |
+| -- orphans and XMP images only | 728 (35.1%) | about 775 (37%) | -47 |
+| -- orphans alone | 395 (19.1%) | about 441 (21%) | -46 |
+
+The orphans-alone row's -46: the per-body orphans are 65 fewer files than the prototype's
+current-revision 307, and 19 more files are flagged by the inventory now (153 against the
+ADR's 134), which the row adds back. The two rows above it move for the same reason.
+
+No class moves the owner's picture: the classes are 0.6% to 6.5% under the ADR's file counts
+(hint streams -3.8%, JavaScript -3.4%, synthesized -6.5%, partly the 19 files now flagged),
+and orphans 21% under, from the per-body definition. The picture that does change is the
+overlap above: at least 194 of the 707 already exit `2` today.
 
 **Item 7, the graph's cost.** The reference graph's whole stage (edges, page lists, name
 trees, annotations, labels) charged at most 322,346 units on a corpus file, whose sum of live
 objects and edges over its revisions is 6,062 (53 units each); p50 3,221, p99 58,966. The
-largest sum is 6,381 (p50 24, p99 997). Units per object or edge: p50 120, p99 224, max 243,
-falling to 18-71 on files whose sum is 500 or more -- small files pay the fixed charges for
-what the labels keep, at most a byte per unit. Work per byte of the file stays at most 6.52
-of the budget's 64. The bound, for the owner: **R revisions, each changing a reachable set of
-N objects and edges, cost about 64·N·R units** (measured 50-70 per object or edge per
-revision walked again on the item-7 test's shape); a 1 MB file with 5,000 objects and 200
-such saves reaches the limit and is flagged `BUDGET_EXHAUSTED`, failing closed. **Memory:**
+largest sum is 6,381 (p50 24, p99 997). The sum counts every revision, a revision whose
+results are reused from its predecessor's too, so it overstates what was walked in a file
+with such revisions. Units per object or edge: p50 120, p99 224, max 243; 18.4 to 108.8 on
+the 56 files whose sum is 500 or more -- small files pay the fixed charges for what the labels
+keep, at most a byte per unit. Work per byte of the file stays at most 6.52 of the budget's
+64.
+
+The bound, for the owner: the stage walks the whole live set again -- every live object and
+edge, S of them -- in each revision that changes something it read. **R such revisions cost
+about c·S·R units**, c measured at 51-69 per object or edge on the item-7 test's shape (n = 20
+to 160; 103-136 per object, since S is about twice the objects there), and on the corpus p50
+120 (18-109 on sums of 500 or more). The budget is 64 per byte plus 1,000,000, so c·S·R past
+it flags `BUDGET_EXHAUSTED`, failing closed. Example: a 1 MB file with 5,000 objects (S about
+10,000) reaches the limit of about 68 million units after roughly 100 saves that each change
+something the stage reads (c = 64), or about 57 at the corpus's median c. **Memory:**
 the labels keep at most one byte per unit of work, so at most 64 times the file's size plus
 about 1 MB (DESIGN.md, "Bounded resources").
 
@@ -771,8 +791,8 @@ machine before reading the absolute times.
 | Fuzz (2,000, seed 0) | 501 | 1,499 | 0 |
 
 **What is left, at the agents' pace.** Phase 3a has five PRs left: 3a-8 and 3a-9 (encryption,
-Lane A2), 3a-12 and 3a-13 (the unit budget and orphan overlap; decision D's cost, Lane G), and
-3a-14 (close-out). 3b's row in REDESIGN names six deliverables -- obligations and parent
+Lane A2), 3a-12 (the unit budget and orphan overlap, Lane A), 3a-13 (decision D's cost, Lane
+G), and 3a-14 (close-out). 3b's row in REDESIGN names six deliverables -- obligations and parent
 anchors, the child protocol and completion sentinel, witnesses, the verdict function (with the
 orphan mapping and its test), shadow and enforced verdicts with worst-of shipping, `--explain`
 -- so about 7 to 9 PRs with its plan. Lane A merged five 3a-7 PRs on 2026-10-15, reviews

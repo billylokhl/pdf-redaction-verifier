@@ -493,13 +493,19 @@ def test_an_xobject_is_drawn_as_mupdf_reads_its_subtype(subtype: bytes,
         == (7 in drawn)
 
 
-def _broken_icc(alternate: bytes, stream: tuple[bytes, bytes]) -> bytes:
-    """A page filling with colour space [/ICCBased 4 0 R], profile 4
-    unreadable (MuPDF cannot use it -- "ignoring broken ICC profile" -- so
-    it draws with the /Alternate), whose /Alternate names stream 7."""
+def _broken_icc(alternate: bytes, stream: tuple[bytes, bytes],
+                profile: tuple[bytes, bytes] = (b" /N 1", b"icc")) -> bytes:
+    """A page filling with colour space [/ICCBased 4 0 R], whose
+    /Alternate names stream 7; profile 4 by default unreadable."""
     return page(b"/ColorSpace << /C0 [/ICCBased 4 0 R] >>", streams={
         5: (b"", b"/C0 cs 1 scn 0 0 100 100 re f"),
-        4: (b" /N 1 /Alternate " + alternate, b"icc"), 7: stream})
+        4: (profile[0] + b" /Alternate " + alternate, profile[1]), 7: stream})
+
+
+def _srgb() -> tuple[bytes, bytes]:
+    """A valid sRGB profile (the review of #165's reproducer)."""
+    cms = pytest.importorskip("PIL.ImageCms")
+    return b" /N 3", cms.ImageCmsProfile(cms.createProfile("sRGB")).tobytes()
 
 
 _TINT = b" /FunctionType 4 /Domain [0 1] /Range [0 1 0 1 0 1]"
@@ -511,25 +517,30 @@ BROKEN_ICC = [
 ]
 
 
+@pytest.mark.parametrize("valid", [False, True], ids=["unreadable-profile", "valid-srgb-profile"])
 @pytest.mark.parametrize(("alternate", "stream", "mutated"),
                          [(a, s, m) for _, a, s, m in BROKEN_ICC],
                          ids=[n for n, _, _, _ in BROKEN_ICC])
-def test_known_gap_a_broken_icc_profiles_alternate_is_drawn_but_orphaned(
-        alternate: bytes, stream: tuple[bytes, bytes], mutated: tuple[bytes, bytes]) -> None:
+def test_known_gap_an_icc_profiles_separation_or_indexed_alternate_is_drawn_but_orphaned(
+        alternate: bytes, stream: tuple[bytes, bytes], mutated: tuple[bytes, bytes],
+        valid: bool) -> None:
     # KNOWN GAP, recorded in ADR 0011's note on a colour-space array's
     # elements (Q2, coordinator decision 2026-10-15: measured gaps go to
     # notes, never silent widening). An ICC profile's /Alternate is not
-    # followed, so a stream there is ORPHANED -- failing closed -- though
-    # MuPDF draws it whenever it cannot use the profile: one it cannot read
-    # (as here), or a profile type it rejects. Fails if the lists are
-    # widened (update the note with them) or if MuPDF stops drawing it
-    # (the note is then stale).
-    data = _broken_icc(alternate, stream)
+    # followed, so a stream there is ORPHANED -- failing closed. MuPDF 1.28
+    # takes the ICC space's type from its /Alternate: with a Separation or
+    # Indexed alternate it rejects every profile ("invalid colorspace type
+    # for ICC profile"), a valid sRGB one included, and draws the
+    # alternate -- so for these alternates the gap holds whatever the
+    # profile. Fails if the lists are widened (update the note with them)
+    # or if MuPDF stops drawing it (the note is then stale).
+    profile = _srgb() if valid else (b" /N 1", b"icc")
+    data = _broken_icc(alternate, stream, profile)
     inv = _inventory(data)
     assert inv.flags == ()
     assert 4 in _drawn(inv) and 7 not in _drawn(inv)  # (a) ours: orphaned
     assert 7 in _orphans(inv)
-    assert _pixels(_broken_icc(alternate, mutated)) != _pixels(data)  # (b) MuPDF draws it
+    assert _pixels(_broken_icc(alternate, mutated, profile)) != _pixels(data)  # (b) MuPDF draws it
 
 
 T3_ = (b"<< /Type /Font %s /FontBBox [0 0 10 10] /FontMatrix [0.1 0 0 0.1 0 0]"
@@ -609,6 +620,13 @@ def _chained(where: str, content: bytes = b"0 0 m") -> bytes:
 CHAINED = ["as", "ap", "n-dictionary", "entry", "n"]
 APPEARANCES = [(name, data) for name, data, _ in ANNOTATION_CASES] + [
     (f"{where}-through-references", _chained(where)) for where in CHAINED] + [
+    # An /N chain to a stream (no stream to MuPDF) whose dictionary holds
+    # the entry /AS names: MuPDF reads that dictionary as the state
+    # dictionary and draws 12 (ADR 0011's Q3 note; the review of #165).
+    ("n-chain-to-a-stream-holding-the-as-entry", _annotated(
+        b"<< %s /AS /On /AP << /N 20 0 R >> >>" % SQ, objects={20: b"21 0 R"},
+        streams={21: (FORM_ % b"" + b" /On 12 0 R", b"0 0 m"),
+                 12: (FORM_ % b"", b"0 0 m")})),
     # An /AS entry naming a dictionary, not a stream: nothing drawn.
     ("as-entry-a-dictionary", _annotated(b"<< %s /AS /On /AP << /N << /On 9 0 R >> >> >>" % SQ,
                                          objects={9: b"<< /Foo 1 >>"}))]

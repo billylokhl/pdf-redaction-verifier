@@ -627,14 +627,18 @@ rule is unchanged.
   a colour space) and `/Process` (its `/ColorSpace`) are followed. So an
   ICC profile's `/Alternate` and `/Metadata`, and a function's other keys,
   lead nowhere drawable and fail closed.
-  **Measured gap** (the review of #158; recorded, not widened): MuPDF
-  draws an ICC profile's `/Alternate` whenever it cannot use the profile
-  -- one it cannot read ("ignoring broken ICC profile"), or a profile
-  type it rejects -- not only when the profile is broken. A Separation's
-  tint function there,
-  or an Indexed lookup there, is drawn by MuPDF -- its drawing changes
-  with the stream -- while we label it `ORPHANED`. That fails closed (an
-  orphan is `FLAGGED`), so it costs a verdict, never a miss.
+  **Measured gap** (the reviews of #158 and #165; recorded, not
+  widened): MuPDF draws an ICC profile's `/Alternate` whenever it cannot
+  use the profile -- one it cannot read ("ignoring broken ICC profile"),
+  or one it rejects. MuPDF 1.28 takes the ICC space's type from its
+  `/Alternate`, so with a Separation or Indexed alternate it rejects
+  every profile ("invalid colorspace type for ICC profile"), a valid
+  sRGB or Lab profile included, and draws the alternate: for those
+  alternates the gap holds whatever the profile. A Separation's tint
+  function there, or an Indexed lookup there, is drawn by MuPDF -- its
+  drawing changes with the stream -- while we label it `ORPHANED`. That
+  fails closed (an orphan is `FLAGGED`), so it costs a verdict, never a
+  miss (pinned with an unreadable and a valid sRGB profile).
 - **The drawn appearance** (coordinator decision Q3).
   `Annotation.appearance` records the stream MuPDF draws for an
   annotation it does not synthesize: a stream `/AP /N`, or the stream
@@ -752,24 +756,40 @@ in [RESULTS.md](../../eval/spikes/RESULTS.md), "Phase 3a-7e".
   scaled together, n against 8n, every revision walked again: at n the
   work is within the file's limit, at 8n it would be about 64 times as
   much and the file is flagged `BUDGET_EXHAUSTED`, its newest revisions
-  unlabelled. Lines executed per charged unit (walks' own charges) are
-  10.3 to 10.6 against a bound of 15, not growing from n to 8n; a
-  wall-clock backstop for work inside C (time per unit at 2,000 against
-  16,000 objects: clean 1.23-1.33x, bound 2x; a reachable set kept as a
-  list, 4.6x).
+  unlabelled. Every page carries an annotation, so the annotation stage
+  scales too. Lines executed per charged unit (walks' own charges) are
+  10.2 to 10.6 against a bound of 15, not growing from n to 8n. A
+  wall-clock backstop for work inside C times each part on its own (time
+  per unit at 1,000 against 8,000 pages, name-tree leaves and
+  annotations; clean 0.69-1.39x; a bound of 2x each): a set read as a list
+  is caught in pages (2.5-2.7x), trees (3.4x), the drawing walk (4.8x)
+  and the reachable walk (7.4x for the whole stage). The whole stage alone
+  had missed the pages and trees mutants. Annotations' per-page set as a
+  list is not caught (1.0x: it holds one page's annotations).
+- **The cost of a revision.** The stage walks the whole live set, S live
+  objects and edges, again in each revision that changes something it
+  read: R such revisions cost about c·S·R units, c 51-69 on the test's
+  shape (103-136 per object) and a median of 120 on the corpus (DESIGN.md,
+  "Bounded resources"). A 1 MB file with 5,000 objects reaches the limit
+  after roughly 100 such saves.
 - **The cost table, re-measured** (unflagged files, 1,920 of 2,073;
   the table above counted 1,939): orphans per body 242 files (294 in the
   current revision's sense; the table's 307), hint streams 400 (416),
-  XMP packets holding an image 516 (519; scanned in eval only), JavaScript
-  86 (89), synthesized annotations 130 (139 over the whole corpus), output
-  intents 0 (0); any of them 707 (about 728). Whole corpus once every
-  kind is enforced: 860 files, 41.5% (about 865, 42%). No figure moves the
-  owner's picture; orphans are lower under item 5's per-body definition.
+  XMP packets holding an image or binary 516 (519; scanned in eval only),
+  JavaScript 86 (89), synthesized annotations 130 (139 over the whole
+  corpus), output intents 0 (0); any of them 707 (about 728). Whole corpus
+  once every kind is enforced: 860 files, 41.5% (about 865, 42%). The
+  classes are 0.6% to 6.5% under the table's file counts, orphans 21%
+  under (item 5's per-body definition). At least 194 of the 707 already
+  exit 2 today: each has a page thumbnail today's CLI marks (#133); so
+  labels add at most 513 unflagged files. The full overlap with today's
+  exit 2 is 3a-12's.
 - **Item 7's sum on the corpus.** The largest graph work is 322,346 units,
   for a sum of 6,062 live objects and edges over the file's revisions; the
-  largest sum is 6,381. Units per object or edge are 18 to 71 on files
-  whose sum is 500 or more, up to 243 on small files, which pay the fixed
-  charges for what the labels keep.
+  largest sum is 6,381. Units per object or edge are 18.4 to 108.8 on the
+  56 files whose sum is 500 or more, up to 243 on small files, which pay
+  the fixed charges for what the labels keep. The sum counts reused
+  revisions too.
 
 ## Owner decisions
 

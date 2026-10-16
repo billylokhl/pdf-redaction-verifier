@@ -1443,29 +1443,31 @@ _IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a"
 _XMP_DECODED_CAP = 64 << 20  # bytes of a packet inflated, at most
 
 
-def _xmp_scan(packet: bytes) -> tuple[bool, bool]:
-    """(holds an image, holds binary nothing accounts for): every base64,
-    hex, ASCII85 or quoted-printable run in *packet* decoded, and an image
-    signature, or else bytes that are not text (a tenth or more outside
-    printable ASCII and whitespace), looked for in what it decodes to."""
+def _xmp_scan(packet: bytes) -> tuple[bool, bool, bool]:
+    """(holds an image, holds binary nothing accounts for, holds a run
+    that does not decode): every base64, hex, ASCII85 or quoted-printable
+    run in *packet* decoded, and an image signature, or else bytes that are
+    not text (a tenth or more outside printable ASCII and whitespace),
+    looked for in what it decodes to."""
     import base64
     import binascii
     import quopri
     text = _XML_BREAKS.sub(b"", packet)
     found: list[bytes] = []
+    failed = False
     for match in _BASE64_RUN.finditer(text):
         run = re.sub(rb"[\t\n\r ]", b"", match.group())
         try:
             found.append(base64.b64decode(run + b"=" * (-len(run) % 4)))
         except (binascii.Error, ValueError):
-            continue
+            failed = True
     for match in _HEX_RUN.finditer(text):
         found.append(bytes.fromhex(re.sub(rb"[\t\n\r ]", b"", match.group()).decode()))
     for match in _ASCII85_RUN.finditer(text):
         try:
             found.append(base64.a85decode(match.group(1), ignorechars=b" \t\n\r"))
         except ValueError:
-            continue
+            failed = True
     for match in _QP_RUN.finditer(text):
         if match.group().count(b"=") >= 8:
             found.append(quopri.decodestring(match.group()))
@@ -1477,7 +1479,7 @@ def _xmp_scan(packet: bytes) -> tuple[bool, bool]:
             image = True
         elif sum(1 for b in run if b < 32 and b not in b"\t\n\r" or b > 126) * 10 >= len(run):
             binary = True
-    return image, binary
+    return image, binary, failed
 
 
 def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
@@ -1486,8 +1488,10 @@ def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
     revisions of live objects and their edges, against ``graph_work``.
     The XMP packets the labels call STRUCTURAL, per body across revisions
     and in the current revision, scanned for an image or for binary (R7's
-    cost; in eval only, see _xmp_scan), and those whose filter the scan
-    does not decode. ``page_thumb_legacy``: whether today's CLI (#133,
+    cost; in eval only, see _xmp_scan; ``xmp_flag_bodies`` either), and
+    those the scan does not decode: a filter other than Flate, or a run
+    that does not decode. ``graph_sum`` counts every revision, a revision
+    whose labels are shared with its predecessor's (reused) too. ``page_thumb_legacy``: whether today's CLI (#133,
     verify._thumb_carrier) marks a page of the current revision as
     carrying a /Thumb, or fails that check -- the thumbnail orphans' cost
     already paid."""
@@ -1502,7 +1506,8 @@ def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
             if u.ref.within is None and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)}
     current = set(inv.bodies_by_number(0).values())
     counts = {"xmp_bodies": 0, "xmp_image_bodies": 0, "xmp_binary_bodies": 0,
-              "xmp_undecoded_bodies": 0, "xmp_image_current": 0, "xmp_binary_current": 0}
+              "xmp_undecoded_bodies": 0, "xmp_image_current": 0, "xmp_binary_current": 0,
+              "xmp_flag_bodies": 0}
     for unit, labels in inv.body_labels.items():
         if StructuralKind.XMP not in labels.structural:
             continue
@@ -1525,7 +1530,9 @@ def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
         if packet is None:
             counts["xmp_undecoded_bodies"] += 1
             continue
-        image, binary = _xmp_scan(packet)
+        image, binary, failed = _xmp_scan(packet)
+        counts["xmp_undecoded_bodies"] += failed
+        counts["xmp_flag_bodies"] += image or binary  # R7's class: an image, or binary
         counts["xmp_image_bodies"] += image
         counts["xmp_binary_bodies"] += binary and not image
         counts["xmp_image_current"] += image and unit in current

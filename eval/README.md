@@ -1244,27 +1244,32 @@ What each part of the output means:
   files:
   - `exit_2_files`: files that would exit `2` once labels gate (3b's
     verdict; 4a's decoders), each counted once, and `exit_2_by_class`
-    (`orphan` per body, `hint_stream`, `xmp_image`, `javascript`,
-    `synthesized`, `output_intent`) and `exit_2_only_class` (files with
-    one class only); `exit_2_files_but_thumbnails_marked_today` leaves
-    out the files whose only class is page-thumbnail orphans on a page
-    today's CLI already marks (`page_thumb_legacy`: #133's
-    `PAGE_THUMBNAIL`, or its check failing, read without importing
-    verify.py);
+    (`orphan` per body, `hint_stream`, `xmp_image` -- an image or
+    binary --, `javascript`, `synthesized`, `output_intent`) and
+    `exit_2_only_class` (files with one class only);
+    `exit_2_files_marked_today`: those that already exit `2` today for a
+    page thumbnail (`page_thumb_legacy`: #133's `PAGE_THUMBNAIL`, or its
+    check failing, read without importing verify.py) -- a lower bound on
+    the overlap with today's exit `2`, which 3a-12 measures in full;
+    `exit_2_files_but_thumbnails_marked_today` leaves out only the files
+    whose sole class is page-thumbnail orphans so marked;
   - `orphan_files_current` beside the per-body count, and
     `orphan_body_classes` (files and streams per class);
   - `xmp`: the XMP packets labelled `STRUCTURAL`, per body across
     revisions, holding an image (`xmp_image_bodies`; `xmp_image_current`
     in the current revision) or binary nothing accounts for
-    (`xmp_binary_*`), or with a filter the scan does not decode
-    (`xmp_undecoded_bodies`). The scan is eval's, not the inventory's:
-    every base64, hex, ASCII85 or quoted-printable run of at least 48
-    decoded bytes, XML line breaks removed, looked at for an image
+    (`xmp_binary_*`), either (`xmp_flag_bodies`, the `xmp_image` class),
+    or that the scan does not decode -- a filter other than Flate, or a
+    run that does not decode (`xmp_undecoded_bodies`). The scan is eval's,
+    not the inventory's: every XML numeric character reference
+    (`&#xA;` and the like) is removed, then every base64, hex, ASCII85 or
+    quoted-printable run of at least 48 decoded bytes is looked at for an image
     signature (JPEG, PNG, GIF, TIFF, BMP, JPEG 2000, JBIG2, WebP), else
     for bytes that are not text (ADR 0011 item 5's XMP bullet; R7);
   - `graph_work` against `graph_sum`, item 7's own sum over revisions of
-    live objects and their edges: percentiles of each, the sum of the
-    file with the largest work, and work per unit of sum.
+    live objects and their edges (every revision, one whose results are
+    reused included): percentiles of each, the sum of the file with the
+    largest work, and work per unit of sum.
 
   `timing.reachable_share` (since 3a-7e-3): the `reachable` check's
   share of each agreeing file's oracle time, and over the run
