@@ -72,8 +72,8 @@ sidecar), the red-team example round's file, and the README's
 needing Apple Vision, `exiftool` or `qpdf` skip with a reason when the tool
 is absent; with `REQUIRE_FULL_ENV=1` (as on CI's macOS jobs) a missing tool
 fails collection instead. pytest's per-test timeout is 900 s
-(`pyproject.toml`), so a hung Vision call fails the run instead of stalling
-it.
+(`pyproject.toml`; 300 s on CI's macOS shards), so a hung Vision call fails
+the run instead of stalling it.
 
 Property tests use Hypothesis. With `CI` set (as on GitHub Actions) they
 run the derandomized `ci` profile; locally the `dev` profile explores fresh
