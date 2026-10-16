@@ -49,7 +49,7 @@ from .inventory.objects import (
     PdfString, PdfValue)
 from .inventory.types import Inventory
 from .inventory.xref import Chain
-from .ledger import Flag, FlagReason, Span
+from .ledger import Flag, FlagReason, Span, UnitRef
 
 # PyMuPDF is untyped: every use goes through this one Any.
 pymupdf: Any = _pymupdf
@@ -136,6 +136,7 @@ class _Revision:
         self.flags: list[Flag] = []
         self.values: dict[Key, object] = {}
         self.streams: dict[Key, bytes] = {}
+        self.spans: dict[UnitRef, Span] | None = None
 
     def unverified(self, rule: CryptRule, key: Key | None = None) -> None:
         self.flags.append(_flag(FlagReason.DECRYPTION_UNVERIFIED, rule, self.revision, key,
@@ -156,7 +157,9 @@ class _Revision:
         unit = None if key is None else self.inv.body(key[0], self.revision)
         if unit is None or unit.within is not None:
             return None
-        return next((s for u in self.inv.units if u.ref == unit for s in u.spans[:1]), None)
+        if self.spans is None:                  # built once: flags are many on a hostile file
+            self.spans = {u.ref: u.spans[0] for u in self.inv.units if u.spans}
+        return self.spans.get(unit)
 
     def charge(self, *parts: bytes) -> bool:
         self.budget[0] -= sum(len(p) for p in parts)
@@ -234,7 +237,10 @@ class _Revision:
         eff = _eff_differs(encrypt)
         for (number, gen), entry in sorted(pdf.get_xref_table().items()):
             key = (number, gen)
-            if entry.type == 0 or number >= doc.xref_length():
+            if entry.type == 0:
+                continue
+            if number >= doc.xref_length():     # pikepdf lists it, MuPDF has no such number
+                self.unverified(CryptRule.WARNING, key)
                 continue
             if entry.type == 2 and not self._container_decoded(entry):
                 continue                        # the inventory flags what it could not decode
