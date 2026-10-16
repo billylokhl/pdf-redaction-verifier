@@ -651,8 +651,8 @@ codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
 never reads, #133), are named with their pages as INCOMPLETE reasons,
 whatever their storage, and nothing of the page's content is shown; a
 code seen both on pages and with no page adds "and document-wide"), and the
-headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
-`--no-strict-classes`) is not a finding: the header names the
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012:
+the default; not under `--strict-classes`) is not a finding: the header names the
 informational rules (required; a header without them is refused), their
 matches in the scan's truth are never boxed, classified or listed as OCR
 finds, and each of the report's `notices` is listed under "Not counted in

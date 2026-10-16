@@ -1031,7 +1031,8 @@ class TestNotices:
                     and i.section != "unpositioned" and i.section != "not_scanned"]
 
     def test_strict_classes_still_box_the_match(self, tmp_path, monkeypatch) -> None:
-        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES)
+        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES,
+                               "--strict-classes")
         assert run.header is not None and run.header["informational"] == []
         assert run.report["findings"] and not run.report["notices"]
         assert boxes(the_plan, plan.SOLID) and not sections(the_plan, "notices")
@@ -1103,7 +1104,7 @@ class TestTiers:
         for i, ch in enumerate(SSN.replace("-", "")):  # one character per line
             page.insert_text((400, 200 + 14 * i), ch)
         pdf = _save(doc, tmp_path / "tiers.pdf")
-        rules = [{"name": "any ssn", "class": "ssn"}, {"name": "ssn", "value": SSN}]
+        rules = [{"name": "any ssn", "class": "ssn", "strict": True}, {"name": "ssn", "value": SSN}]
         run, the_plan = mapped(monkeypatch, tmp_path, pdf, rules)
         codes = {w["code"] for w in run.report["warnings"]}
         assert {"REVIEW_FUSED_PATTERN", "REVIEW_CROSS_LINE"} <= codes

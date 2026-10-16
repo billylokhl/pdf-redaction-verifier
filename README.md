@@ -172,9 +172,9 @@ never reads, such as a tooltip shown on hover. A page's content stream
 and every other live object always do. Content stored outside the document (orphaned, unreferenced,
 superseded) and annotations flagged hidden (or "do not show" without
 "print") are only counted, under **Not visible**. Every finding is either
-boxed, listed, or listed as could not be positioned — none is dropped. With
-`--no-strict-classes`, a built-in class match that is only a notice (it
-does not count in the verdict) is never boxed: it is listed last, masked
+boxed, listed, or listed as could not be positioned — none is dropped. A
+built-in class match that is only a notice (the default; it does not count
+in the verdict) is never boxed: it is listed last, masked
 like any sample, under **Not counted in the verdict**, and sets no flag.
 
 **The headline** at the top of the summary is exactly one of:
@@ -693,10 +693,10 @@ Each entry has a `name` and exactly one of:
 
 - `"value"` — a known secret string, matched through normalization.
 - `"class"` — a built-in class: `ssn`, `credit-card`, `email`, `us-phone`.
-  Optional `"strict": true` keeps this class's matches in the verdict even
-  under `--no-strict-classes` (ADR 0012); a `"strict"` that is not `true`
-  or `false` is refused only then. On a `value` or `pattern` rule the key
-  is ignored, as any unknown key is.
+  Optional `"strict": true` keeps this class's matches in the verdict
+  (ADR 0012; by default they are notices); a `"strict"` that is not `true`
+  or `false` is a rules error unless `--strict-classes` is given. On a
+  `value` or `pattern` rule the key is ignored, as any unknown key is.
 - `"pattern"` — a custom regex (`re.MULTILINE`; names must be unique).
 
 ### Shared YAML config
