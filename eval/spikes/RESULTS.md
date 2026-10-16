@@ -926,6 +926,97 @@ clean), almost no text-bearing file clears, because nearly every one carries hin
 warnings. Whether those warnings could be accepted without leaving room for hidden values
 is the question a hint-table decoder would have to answer.
 
+#### Owner choice: the linearization hint stream
+
+What qpdf's linearization check says about the 400 hint-stream files (`qpdf
+--check-linearization` once per file, its messages with numbers normalised, counted a file
+once per message; a one-off tally beside the spike's `levers` step, which keeps only the
+exit status):
+
+- **230 pass with no warning**: 154 single-revision files, plus 76 files with an incremental
+  update. For those 76, qpdf reports the file "is not linearized" (its `/L` no longer matches
+  the file's length) and checks nothing, which is why the lever above counts them as stale.
+- **170 have warnings, and all 170 are single-revision files**: the tables disagree with
+  qpdf's computed layout in files no update touched. Every one carries "page N has shared
+  identifier entries" and "shared object N: in hint table but not computed list". Most also
+  carry object-count (149), page-length, first-page-offset and shared-object-length (120 each)
+  mismatches. They span several producer families (the manifest's coarse buckets), not one
+  writer.
+- **The 108 text-bearing new files** are 101 of those warned files, 6 updated files (stale),
+  and 1 clean file.
+
+So offset drift from a later update explains none of the warned files.
+
+**(a) A full hint-table decoder.**
+- **What it does.** It reads the page-offset and shared-object hint tables, and any others
+  present (outlines, thumbnails and the rest of ISO 32000 Annex F), and checks every bit
+  against the file's actual layout: object offsets, lengths, per-page object counts,
+  shared-object references.
+- **How it fails closed.** On any mismatch; on any unused or padding bit that is not zero;
+  on any entry that accounts for no real object. A file qpdf's check warns on is accepted
+  only when the decode proves every value accounted for, under a stated reading of Annex F.
+  For an updated file, it decodes against the base revision: the linearized pair, owner
+  decision 7.
+- **Decisions it reopens.** ADR 0003's closed `NOT_APPLICABLE` list (a new reason, with its
+  own ADR at the list's bar) and R6 (a), moving to R6's own option (b), with the qpdf-clean
+  condition widened to "the decode accounts for every value".
+- **Cost: about 6 PRs, 2-3 days at the agents' current pace** (Lane A merged five 3a-7 PRs
+  on 2026-10-15):
+  1. a spike decoding the 101 warned text-bearing files, to see whether one reading of
+     Annex F accounts for their values exactly;
+  2. the decoder module;
+  3. its registry hookup in 3b;
+  4. a differential against qpdf's own hint parsing (`qpdf --show-linearization` dumps the
+     tables);
+  5. adversarial fixtures that hide bytes in hint fields, padding and unused entries;
+  6. the corpus measure.
+- **Where it slots in.** After 3b's registry exists, in 3c, before hint streams are
+  enforced (R6 deferred this "with the decoders (3c/4)").
+- **What it would clear.** Measured: 153 of the 263 new files are already qpdf-clean and
+  fresh. Estimated: up to the 101 warned text-bearing files and 6 updated ones, depending
+  on what the spike finds. The uniformity of the warnings (the same two messages on all
+  170) suggests a reading of the tables that differs from qpdf's, not damage, but that is
+  a guess until the spike decodes them. If all 108 cleared, the "hint outright" rows above
+  apply: text-bearing 31.9% with 4a and a JavaScript decoder, 27.2% with every lever.
+
+**(b) Keep hint streams flagged** (ADR 0003 and R6 (a) as decided). No cost. The text-bearing
+rate stays at 46.4-47.6%, whatever the other levers do (the table above): 108 of its 113 new
+files have a hint stream.
+
+**(c) Options in between**, judged:
+
+- **qpdf clean and an exact decode.** Fails closed. It clears 153 of the 263 new files but
+  only 1 of the 108 text-bearing ones, and it needs the same decoder as (a). Option (a)
+  includes it.
+- **Decode, and accept mismatches a later incremental update explains.** This is sound only
+  as a decode against the base revision, the linearized pair (decision 7): an appended update
+  moves no byte of that pair, so the decode is still exact. It is part of (a). Alone it
+  reaches at most the 76 updated files, 6 of them new and all 6 text-bearing. It explains
+  none of the 170 warned files.
+- **Validate against the linearization dictionary only** (`/H`, `/L`, `/O`, `/E`, `/N`,
+  `/T`). Does not fail closed: it never reads the tables' values.
+- **Accept qpdf's warnings as known lint, or accept a mismatch whose values are few or
+  small.** Neither fails closed: any value the check does not account for can carry a
+  writer's chosen bits.
+- **An allowlist of writers.** Not sound: the producer name is part of the file.
+
+**Recommendation: (a), staged, starting with its spike, with (b) in force until then.** Hint
+streams stay flagged, as decided, until the spike shows whether one reading of Annex F
+accounts for every value in the warned files. If it does, the decoder clears what it proves,
+fails closed on the rest, and lowers the text-bearing rate as far as the other levers allow.
+If it does not, the spike's single PR is the whole cost and (b) stands, with the measured
+reason. The middle options either need the same decoder (so they are (a) with less reach) or
+do not fail closed.
+
+**Plausibility.** Hint tables are written by the PDF writer at linearization time ("Fast Web
+View" on save, or a tool such as qpdf `--linearize`), not by a redaction tool or a user. A
+redaction tool that saves linearized gets them rebuilt from the new layout. Not checked here:
+whether any tool copies old tables through. Copied tables would mismatch the new offsets,
+which (a) flags. Their capacity is integers and bit fields, with no room for free text. Still,
+each page's entry holds several integer fields, enough together to encode an SSN's digits.
+So hiding a secret there takes a deliberately crafted writer, not a redaction mistake: a
+low-likelihood leak for this tool's threat model, but not an impossible one.
+
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 
 Measured 2026-10-14 (commit 90669ef), on the owner's local corpus: 2,073
