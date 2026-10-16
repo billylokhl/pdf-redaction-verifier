@@ -4,9 +4,9 @@ scan_hidden_objects), build the header the map is planned from, and plan
 it in-process, so tests can look at boxes and lists directly.
 
 The CLI flag that does the same in a child process comes later; until
-then, this harness is the only caller of the hooks. Labels go through
-an identity checker here: the map's own checker (the self-check) is
-tested with the rendering.
+then, this harness is the only caller of the hooks. mapped() plans with
+an identity checker, to look at the plan alone; drawn() runs the map's
+own checker, drawing and self-check (render.build_map).
 
 Every PDF here is fabricated (SSN 123-45-6789, "Jane Q. Example") and
 written under the test's own tmp_path.
@@ -130,6 +130,47 @@ def mapped(monkeypatch: Any, tmp_path: Path, target: Path,
     run = run_main(monkeypatch, target, write_rules(tmp_path, rules), *extra, ocr=ocr)
     assert run.header is not None, run.stderr
     return run, plan_of(target, run.header)
+
+
+def drawn(monkeypatch: Any, tmp_path: Path, target: Path,
+          rules: list[dict[str, str]] | str = SSN_RULES, *extra: str,
+          ocr: bool = False) -> tuple[Run, MapPlan, Path]:
+    """The scan, then the checked map (render.build_map: the map's own
+    checker, drawing and self-check), written to a file beside the
+    target."""
+    from redaction_verifier.visible_map import render
+
+    run = run_main(monkeypatch, target, write_rules(tmp_path, rules), *extra, ocr=ocr)
+    assert run.header is not None, run.stderr
+    data = target.read_bytes()
+    pdf, _shown, the_plan = render.build_map(data, hashlib.sha256(data).hexdigest(), run.header)
+    out = target.with_name(target.stem + ".map.pdf")
+    out.write_bytes(pdf)
+    return run, the_plan, out
+
+
+def map_text(path: Path) -> str:
+    doc = fitz.open(path)
+    return "\n".join(doc[i].get_text() for i in range(doc.page_count))
+
+
+def map_strings(path: Path) -> str:
+    """Everything a reader of the map file could recover as text: the
+    page text, every decompressed stream with its string tokens decoded,
+    the document information, XMP and the raw bytes."""
+    from redaction_verifier.visible_map import render
+
+    doc = fitz.open(path)
+    parts = [map_text(path), path.read_bytes().decode("latin-1"),
+             json.dumps(doc.metadata), doc.get_xml_metadata() or ""]
+    for xref in range(1, doc.xref_length()):
+        parts.append(doc.xref_object(xref))
+        if doc.xref_is_stream(xref):
+            body = doc.xref_stream(xref) or b""
+            parts.append(body.decode("latin-1"))
+            parts.extend(render._decode_token(m.group(0))
+                         for m in render._STRING_TOKEN.finditer(body))
+    return "\n".join(parts)
 
 
 def without_ocr_warning(header: dict[str, Any]) -> dict[str, Any]:
