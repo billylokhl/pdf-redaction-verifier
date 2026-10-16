@@ -15,7 +15,7 @@ import pytest
 
 from redaction_verifier.model import ScanReport
 from redaction_verifier.report import print_report
-from redaction_verifier.rules import load_rules
+from redaction_verifier.rules import entity_types_info, load_rules
 
 from .conftest import SSN, ReportLine, report_banner, report_lines, run_verify
 
@@ -40,6 +40,8 @@ def yaml_rules(tmp_path: Path) -> Path:
         tmp_path,
         f'exact_values:\n  - "{VALUE}"\n  - "Another Value"\n'
         'patterns:\n  - "ACCT-[0-9]{4}"  # account numbers\n'
+        "  - '\\d{3}-\\d{2}-\\d{4}'\n"
+        # Not checked (owner decision 2026-10-16): only the info line.
         "entity_types:\n  - ssn\n  - email\n",
     )
 
@@ -48,7 +50,7 @@ def _leaky_report() -> ScanReport:
     report = ScanReport()
     report.record("Objects", "exact_values[0]", "ORPHANED object 143", storage="orphaned")
     report.record("Text", "patterns[0]", "page 3 (visual text layer)", "ACCT-5916", page=3)
-    report.record("OCR", "entity_types:ssn", "page 1", SSN, page=1)
+    report.record("OCR", "patterns[1]", "page 1", SSN, page=1)
     return report
 
 
@@ -64,7 +66,7 @@ class TestParser:
                        "ORPHANED object 143"),
             ReportLine("pattern #1 (patterns[0]) ****5916", "Text", "on a page",
                        "page 3 (visual text layer)"),
-            ReportLine("built-in type: SSN ****", "OCR", "on a page", "page 1"),
+            ReportLine("pattern #2 (patterns[1]) ****", "OCR", "on a page", "page 1"),
         ]
 
     def test_an_unparseable_finding_line_fails_loudly(self) -> None:
@@ -77,18 +79,36 @@ class TestBanners:
         out = _render(capsys, _leaky_report(), yaml_rules)
         assert "[FAIL]  SECRETS ARE STILL IN THIS FILE: doc.pdf" in out
         flat = " ".join(out.split())
-        assert ("Found: 1 of your 2 exact values, 1 of your 1 patterns, "
-                "1 of your 2 built-in types.") in flat
+        assert "Found: 1 of your 2 exact values, 2 of your 2 patterns." in flat
+        assert "built-in types checked by default" not in flat and "built-in type:" not in flat
         assert "the redaction did not remove them" in flat
         assert "there may be more" not in flat
 
-    def test_default_entity_types_are_called_out(self, capsys, tmp_path) -> None:
-        rules = _yaml_rules(tmp_path, f'exact_values:\n  - "{VALUE}"\n')
+    def test_entity_types_info_line_is_after_the_verdict(self, capsys, tmp_path) -> None:
+        # Owner decision 2026-10-16: entity_types are not checked; one
+        # plain line says so, after the verdict, and never as a finding.
+        rules_path = _yaml_rules(tmp_path, f'exact_values:\n  - "{VALUE}"\n'
+                                 "entity_types: [person_name, ssn]\n")
+        rules = load_rules(rules_path)
         report = ScanReport()
-        report.record("Text", "entity_types:ssn", "page 1", SSN)
-        flat = " ".join(_render(capsys, report, rules).split())
-        assert "built-in types checked by default" in flat
-        assert "because your secrets file does not list entity_types" in flat
+        report.info.append(entity_types_info(rules.entity_types_ignored, by_default=False))
+        out = _render(capsys, report, rules_path)
+        assert report_banner(out) == "PASS" and report_lines(out) == []
+        flat = " ".join(out.split())
+        assert ("ℹ FOR YOUR INFORMATION (does not change the result above) Entity types "
+                "in your config (person_name, ssn) are not checked; only your listed "
+                "exact_values and patterns are.") in flat
+        assert flat.index("[PASS]") < flat.index("FOR YOUR INFORMATION")
+
+    def test_default_entity_types_info_line_names_all_ten(self, capsys, tmp_path) -> None:
+        rules = load_rules(_yaml_rules(tmp_path, f'exact_values:\n  - "{VALUE}"\n'))
+        report = ScanReport()
+        report.info.append(entity_types_info(rules.entity_types_ignored, by_default=True))
+        report.record("Text", "exact_values[0]", "page 1")
+        flat = " ".join(_render(capsys, report, None).split())
+        assert "[FAIL]" in flat
+        assert "does not list entity_types, which a redaction tool reads as all ten" in flat
+        assert flat.index("STILL PRESENT") < flat.index("FOR YOUR INFORMATION")
 
     def test_fail_fast_note_only_when_checks_were_skipped(self, capsys, yaml_rules) -> None:
         report = _leaky_report()
@@ -135,7 +155,7 @@ class TestLabels:
         # ...nor the YAML comment beside a pattern.
         assert "account" not in out
 
-    def test_pattern_and_builtin_samples_stay_masked(self, capsys, yaml_rules) -> None:
+    def test_pattern_samples_stay_masked(self, capsys, yaml_rules) -> None:
         out = _render(capsys, _leaky_report(), yaml_rules)
         assert "ACCT" not in out and "123-45" not in out
         # The OCR finding is always fully masked (look-alike misreadings).

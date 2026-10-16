@@ -283,7 +283,10 @@ PYTHONPATH=eval:. python -m redactor_set subset --set inputs --pick NAME=STEM:ME
   example.com), no two sharing a run of six digits. One fabricated config
   with a real config's structure (exact values, patterns, entity types;
   LLM detection off), written to `config/redact.yaml`, drives every
-  document and is also the verifier's `--secrets`.
+  document and is also the verifier's `--secrets`. Its `entity_types` is
+  the empty list; the verifier does not check entity types in any case
+  (owner decision 2026-10-16), so the set's verdicts rest on its exact
+  values and patterns alone.
 - **Truth** (`truth.py`, `<id>-s<seed>.truth.json`): every place a
   secret was written — its location code (live text, a variant format, a
   split value, a form field, each annotation kind, Info, XMP, an outline,

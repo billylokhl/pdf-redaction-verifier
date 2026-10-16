@@ -16,34 +16,18 @@ from pathlib import Path
 from typing import Any
 
 from redaction_verifier.matching import BUILTIN_PATTERN_CLASSES, PatternRule, normalize_string
-from redaction_verifier.model import Secret, VerifyError, Warn, WarnList, fold_wide
+from redaction_verifier.model import Info, Secret, VerifyError, Warn, WarnList, fold_wide
 
-# Upstream (the redactor's) entity types this tool's rules format can be
-# asked to verify. Kept separate from ENTITY_TYPE_TO_CLASS below: an entity
-# type can be a real upstream type with no regex equivalent here yet.
+# Upstream (the redactor's) entity types. A redactor's config names them
+# under entity_types; this tool does NOT check them (owner decision
+# 2026-10-16, superseding ADR 0012's YAML ruling): its job is to prove that
+# the values and patterns the user explicitly listed are gone, not to
+# detect generic categories. The roster is kept only so a name outside it
+# is still refused (most often a value pasted under the wrong key).
 UPSTREAM_ENTITY_TYPES: frozenset[str] = frozenset({
     "person_name", "ssn", "email", "phone", "address", "date_of_birth",
     "account_number", "credit_card", "drivers_license", "passport",
 })
-
-# The redactor's entity types that have a regex equivalent here. The value is
-# one of THIS tool's built-in classes: verification deliberately uses its
-# own regexes and validators rather than importing the redactor's, so a
-# flaw in the redactor's detection cannot hide itself from the check.
-ENTITY_TYPE_TO_CLASS: dict[str, str] = {
-    "ssn": "ssn",
-    "email": "email",
-    "phone": "us-phone",
-    "credit_card": "credit-card",
-}
-
-# Mapped types whose class covers only PART of what the redactor means by
-# that name. Having a regex for a name is not the same as covering the
-# name, so these raise the same scope warning an unmapped type does.
-PARTIAL_ENTITY_COVERAGE: dict[str, str] = {
-    "phone": "only North American (NANP) numbers are checked; "
-             "international formats are not",
-}
 
 # Top-level keys the redactor itself understands. Anything else is a typo or
 # an upstream addition; either way the section it names is not scanned, so
@@ -53,12 +37,23 @@ UPSTREAM_CONFIG_KEYS: frozenset[str] = frozenset({
     "backend", "model", "llm_url", "ollama_url", "scrub_metadata",
 })
 
-# These tables are edited for different reasons and live far apart; an
-# unguarded subscript would turn a rename into a KeyError that exits 1,
-# this tool's code for "secret detected".
-assert set(ENTITY_TYPE_TO_CLASS) <= UPSTREAM_ENTITY_TYPES
-assert set(ENTITY_TYPE_TO_CLASS.values()) <= set(BUILTIN_PATTERN_CLASSES)
-assert set(PARTIAL_ENTITY_COVERAGE) <= set(ENTITY_TYPE_TO_CLASS)
+def entity_types_info(entity_types: tuple[str, ...], *, by_default: bool) -> Info:
+    """The report's one line about a redactor config's entity_types, which
+    are not checked (owner decision 2026-10-16). Information only: it
+    never changes the exit code. *by_default*: the config leaves the key
+    out, which the redactor reads as all ten types."""
+    names = ", ".join(entity_types)
+    if by_default:
+        where = ("Your config does not list entity_types, which a redaction tool reads "
+                 f"as all ten ({names}). Entity types are not checked")
+    else:
+        where = f"Entity types in your config ({names}) are not checked"
+    return Info(
+        "ENTITY_TYPES_NOT_CHECKED",
+        f"{where}; only your listed exact_values and patterns are. List specific "
+        "names or numbers under exact_values to have them verified.",
+        entity_types=tuple(entity_types), by_default=by_default,
+    )
 
 
 def _make_value_rule(name: str, spec: str, label: str = "") -> Secret:
@@ -104,21 +99,12 @@ def _make_class_rule(
     return PatternRule(name, re.compile(regex_src), validator)
 
 
-# Plain names for the redactor's mapped entity types, for the report.
-ENTITY_TYPE_DISPLAY: dict[str, str] = {
-    "ssn": "SSN",
-    "email": "email address",
-    "phone": "phone number",
-    "credit_card": "card number",
-}
-
-
 @dataclass(frozen=True)
 class RuleLabel:
     """How the human report names a rule: *kind* is the rule's source
-    section ("exact_values", "patterns", "entity_types" in the redactor's
-    config; "value", "pattern", "class" in this tool's own format) and
-    *text* the plain label shown for it. Never holds any part of a value
+    section ("exact_values" or "patterns" in the redactor's config;
+    "value", "pattern" or "class" in this tool's own format) and *text*
+    the plain label shown for it. Never holds any part of a value
     or a pattern: the report must not reveal more than the masked samples
     it already shows."""
 
@@ -128,24 +114,25 @@ class RuleLabel:
 
 @dataclass
 class RuleSet:
-    """Rules to scan for, plus what the source config asked for that
-    cannot be scanned for at all."""
+    """Rules to scan for, plus what the source config named that this
+    tool deliberately does not check."""
 
     secrets: list[Secret] = field(default_factory=list)
     patterns: list[PatternRule] = field(default_factory=list)
-    # Entity types a redactor was told to remove that have no regex
-    # equivalent (LLM-detected categories). Recorded, never dropped:
-    # they are a hole in verification scope and must be reported.
-    unverifiable: list[str] = field(default_factory=list)
+    # The entity types a redactor's config names (every one of the ten
+    # when it leaves the key out, as the redactor then removes all ten).
+    # Never scanned for and never part of the verdict (owner decision
+    # 2026-10-16); the report says so in one informational line.
+    entity_types_ignored: tuple[str, ...] = ()
     # Problems with the rules file that do not stop the scan but make a
     # clean result untrustworthy (surfaced as warnings -> exit 2).
     warnings: list[str] = field(default_factory=WarnList)
     # The report's plain label for each rule, keyed by rule name (a side
     # table: the rule types themselves are frozen and compared by value).
     labels: dict[str, RuleLabel] = field(default_factory=dict)
-    # True when a redactor config left out entity_types, so the built-in
-    # types were checked by default rather than because the user listed
-    # them.
+    # True when a redactor config left out entity_types, so
+    # entity_types_ignored is the redactor's default roster rather than
+    # types the user listed.
     entity_types_by_default: bool = False
     # Class rules marked "strict": true (ADR 0012): their matches decide the
     # verdict as before, even when the scan's default leaves classes
@@ -218,9 +205,9 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
       exact_values -> value rules (normalized matching)
       patterns     -> pattern rules, compiled IGNORECASE exactly as the
                       redactor compiles them
-      entity_types -> this tool's own built-in classes; types with no
-                      regex equivalent, or only partial coverage, are
-                      recorded so the scope gap is reported
+      entity_types -> NOT checked (owner decision 2026-10-16): validated
+                      against the redactor's roster, then recorded only so
+                      the report can say, once, that they were not checked
 
     Keys the redactor needs but verification does not (backend, model,
     llm_url, ollama_url, scrub_metadata) are ignored.
@@ -350,40 +337,34 @@ def _load_rules_yaml(rules_path: Path) -> RuleSet:
         rules.labels[f"patterns[{i}]"] = RuleLabel(
             "patterns", f"pattern #{i + 1} (patterns[{i}])")
 
-    # Upstream defaults entity_types to the FULL roster when the key is
-    # absent, so treating absent as empty would certify clean a document
-    # whose ten redacted categories were never searched for.
+    # entity_types are not checked: the verifier proves that the values and
+    # patterns the user listed are gone, and does not detect generic
+    # categories (owner decision 2026-10-16, superseding ADR 0012's YAML
+    # ruling). They produce no rule, no match, no notice and no warning --
+    # only the report's one informational line. The redactor removes all
+    # ten when the key is absent, so that line names all ten then.
     if "entity_types" in raw:
         entity_types = _yaml_section(raw, "entity_types")
     else:
         entity_types = sorted(UPSTREAM_ENTITY_TYPES)
         rules.entity_types_by_default = True
-    for i, entity in enumerate(dict.fromkeys(str(e) for e in entity_types)):
+    listed = list(dict.fromkeys(str(e) for e in entity_types))
+    for i, entity in enumerate(listed):
         if entity not in UPSTREAM_ENTITY_TYPES:
             # Not echoed: a value pasted under the wrong key is a secret.
             raise VerifyError(
                 f"entity_types[{i}] is not a known entity type — valid types: "
                 f"{', '.join(sorted(UPSTREAM_ENTITY_TYPES))}"
             )
-        mapped = ENTITY_TYPE_TO_CLASS.get(entity)
-        if mapped is None:
-            rules.unverifiable.append(entity)
-            continue
-        rules.patterns.append(_make_class_rule(f"entity_types:{entity}", mapped))
-        rules.labels[f"entity_types:{entity}"] = RuleLabel(
-            "entity_types", f"built-in type: {ENTITY_TYPE_DISPLAY.get(entity, entity)}")
-        if entity in PARTIAL_ENTITY_COVERAGE:
-            rules.warn(
-                "SCOPE_PARTIAL_ENTITY",
-                "Rules",
-                f"Scope: entity type {entity!r} is only partly verifiable — "
-                f"{PARTIAL_ENTITY_COVERAGE[entity]}",
-            )
+    rules.entity_types_ignored = tuple(listed)
 
-    # A config of only unverifiable entity types is allowed: it scans
-    # nothing, warns loudly, and exits 2 — which is the honest answer.
-    if not (rules.secrets or rules.patterns or rules.unverifiable):
-        raise VerifyError("the rules file contains no rules")
+    # Nothing to verify: a PASS would claim a check that never ran.
+    if not (rules.secrets or rules.patterns):
+        raise VerifyError(
+            "the rules file contains no rules — it lists no exact_values or "
+            "patterns, and entity_types are not checked (list the specific "
+            "values under exact_values to have them verified)"
+        )
     return rules
 
 

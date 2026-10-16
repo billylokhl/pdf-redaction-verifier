@@ -212,8 +212,6 @@ try:
     from redaction_verifier.report import build_json_report as build_json_report
     from redaction_verifier.report import print_report as print_report
     from redaction_verifier.report import write_json_report as write_json_report
-    from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS as ENTITY_TYPE_TO_CLASS
-    from redaction_verifier.rules import PARTIAL_ENTITY_COVERAGE as PARTIAL_ENTITY_COVERAGE
     from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS
     from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES as UPSTREAM_ENTITY_TYPES
     from redaction_verifier.rules import RuleSet as RuleSet
@@ -225,6 +223,7 @@ try:
     from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
+    from redaction_verifier.rules import entity_types_info as entity_types_info
     from redaction_verifier.views import MAX_LINE_TOLERANCE_PT as MAX_LINE_TOLERANCE_PT
     from redaction_verifier.views import MIN_LINE_TOLERANCE_PT as MIN_LINE_TOLERANCE_PT
     from redaction_verifier.views import OCR_DPI as OCR_DPI
@@ -4163,10 +4162,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--strict-classes",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="count the built-in classes' matches (ssn, credit-card, email, "
-        "us-phone; a redactor config's entity_types) toward the verdict like "
-        "any rule. By default they are reported as notices that never change "
-        "the exit code (ADR 0012). A class rule with \"strict\": true always counts",
+        help="count the built-in classes' matches (a JSON rules file's "
+        "\"class\" rules: ssn, credit-card, email, us-phone) toward the verdict "
+        "like any rule. By default they are reported as notices that never "
+        "change the exit code (ADR 0012). A class rule with \"strict\": true "
+        "always counts. A redactor config's entity_types are never checked, "
+        "with or without this flag",
     )
     parser.add_argument(
         "--json",
@@ -4453,21 +4454,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         matcher = SecretMatcher(secrets)
 
-        # Scope, not coverage: a shared redaction config can ask for entity
-        # types this tool has no way to search for. Say so — a PASS that
-        # silently skipped a category would be the false assurance the whole
-        # exit-code contract exists to prevent.
+        # Problems with the rules file that make a clean result
+        # untrustworthy (an unquoted value, a truncated pattern, ...).
         report.warnings.extend(rules.warnings)
-
-        if rules.unverifiable:
-            report.warn(
-                "SCOPE_UNVERIFIABLE",
-                "Rules",
-                "Scope: the config asks a redactor to remove "
-                f"{', '.join(sorted(set(rules.unverifiable)))} — these are "
-                "identified by LLM judgement and have no regex equivalent, so "
-                "this tool CANNOT verify they were removed",
-            )
+        # A redactor config's entity_types are not checked (owner decision
+        # 2026-10-16): say so once, as information that never touches the
+        # verdict, the findings, the warnings or the notices.
+        if rules.entity_types_ignored:
+            report.info.append(entity_types_info(
+                rules.entity_types_ignored, by_default=rules.entity_types_by_default))
 
         # Start the independent subprocess layers now; they run concurrently
         # behind the in-process Text/OCR scans. procs/tools_scratch default

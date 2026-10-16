@@ -536,17 +536,20 @@ class TestStructuredFields:
     def test_review_warning_names_rule_and_adjacency(self, tmp_path) -> None:
         pdf = _pdf(tmp_path / "wrapped.pdf", "Account ref 123-45-", "6789 continues")
         rules = tmp_path / "rules.yaml"
-        rules.write_text("entity_types:\n  - person_name\n  - ssn\n")
-        # Strict: a YAML config's entity types are classes, notices by default.
-        code, data = _run(pdf, rules, tmp_path, "--strict-classes")
+        rules.write_text("entity_types:\n  - person_name\n  - ssn\n"
+                         "patterns:\n  - '\\d{3}-\\d{2}-\\d{4}'\n")
+        # A listed pattern decides as ever; entity_types make no rule and
+        # no scope warning (owner decision 2026-10-16).
+        code, data = _run(pdf, rules, tmp_path)
         assert code == 2
         review = [w for w in data["warnings"] if w["code"] == "REVIEW_FUSED_PATTERN"]
         assert review and all(
-            w["kind"] == "review" and w["rule"] == "entity_types:ssn"
+            w["kind"] == "review" and w["rule"] == "patterns[0]"
             and w["adjacency"] == "JOINED_LINES" and w["storage"] == "live"
             for w in review)
-        (scope,) = [w for w in data["warnings"] if w["code"] == "SCOPE_UNVERIFIABLE"]
-        assert scope["kind"] == "scope" and scope["layer"] == "Rules"
+        assert not any(w["kind"] == "scope" for w in data["warnings"])
+        (info,) = data["info"]
+        assert info["code"] == "ENTITY_TYPES_NOT_CHECKED"
 
     def test_missing_tools_are_named(self, clean_pdf, secrets_file, tmp_path,
                                      monkeypatch) -> None:
@@ -558,8 +561,8 @@ class TestStructuredFields:
 
     def test_every_warning_has_the_full_shape(self, tmp_path) -> None:
         # Many codes at once: a binary attachment, a link carrying the
-        # value, and a YAML config with an unquoted number and no
-        # entity_types (so the default roster applies).
+        # value, and a YAML config with an unquoted number and an
+        # unrecognized key.
         path = tmp_path / "many.pdf"
         doc = fitz.open()
         page = doc.new_page()
@@ -568,11 +571,10 @@ class TestStructuredFields:
         doc.embfile_add("blob.bin", bytes(range(256)) * 8)
         doc.save(path)
         rules = tmp_path / "rules.yaml"
-        rules.write_text("exact_values:\n  - 0777\n  - \"" + SSN + "\"\n")
+        rules.write_text("exact_values:\n  - 0777\n  - \"" + SSN + "\"\nexact_value: []\n")
         _, data = _run(path, rules, tmp_path)
         codes = {w["code"] for w in data["warnings"]}
-        assert {"ATTACHMENT_NOT_TEXT", "RULES_UNQUOTED_VALUE", "SCOPE_UNVERIFIABLE",
-                "SCOPE_PARTIAL_ENTITY"} <= codes
+        assert {"ATTACHMENT_NOT_TEXT", "RULES_UNQUOTED_VALUE", "RULES_UNKNOWN_KEY"} <= codes
         shape = {"code", "kind", "layer", "message", *WARNING_FIELDS}
         for w in data["warnings"]:
             assert set(w) == shape
@@ -630,7 +632,7 @@ class TestToolReturnCodeField:
     def test_returncode_is_null_when_not_applicable(self, tmp_path) -> None:
         # Additive field: every OTHER warning must still carry it, null.
         rules = tmp_path / "rules.yaml"
-        rules.write_text("entity_types:\n  - person_name\n")
+        rules.write_text('exact_value: []\nexact_values: ["Q7-ZEBRA"]\n')
         pdf = _pdf(tmp_path / "clean.pdf", "nothing here")
         _, data = _run(pdf, rules, tmp_path)
         assert data["warnings"]

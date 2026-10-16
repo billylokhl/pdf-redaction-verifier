@@ -38,6 +38,10 @@ from .visible_map_support import (
 
 EMPTY_AP = b""
 
+# A listed pattern for an SSN (a redactor config's entity_types are not
+# checked: owner decision 2026-10-16).
+SSN_PATTERN = "'\\d{3}-\\d{2}-\\d{4}'"
+
 
 def _save(doc: fitz.Document, path: Path) -> Path:
     doc.save(path)
@@ -1339,13 +1343,13 @@ class TestMaskedLabels:
                                                                 monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "overlap.pdf")
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
-                                f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
+                                f'exact_values:\n  - "{SSN}"\npatterns:\n  - {SSN_PATTERN}\n')
         labels = {b.label for b in the_plan.boxes}
-        assert "built-in type: SSN ****" in labels
+        assert "pattern #1 (patterns[0]) ****" in labels
         assert "exact value #1 (exact_values[0])" in labels and not the_plan.legend
         # With no exact value it would reveal, the masked tail stays.
-        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n", "--strict-classes")
-        assert "built-in type: SSN ****6789" in {b.label for b in the_plan.boxes}
+        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, f"patterns:\n  - {SSN_PATTERN}\n")
+        assert "pattern #1 (patterns[0]) ****6789" in {b.label for b in the_plan.boxes}
 
     def test_a_one_character_tail_on_a_value_is_hidden(self, tmp_path, monkeypatch) -> None:
         # \d\d matches 12, 34, 67, 89 inside the value; mask() of each shows

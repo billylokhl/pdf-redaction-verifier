@@ -219,3 +219,21 @@ The cap is re-derived at 4c/4d, once the decoders count their children.
 It stays a named limit, pinned by
 `tests/test_ledger_types.py::test_limits_default_to_adr_0006s_numbers`;
 Phase 3d stress-tests it with the other bounds.
+
+## Note (2026-10-15, 3a-9b-1a): an encrypted file is read twice
+
+`crypt.inventory` (3a-9b) builds an encrypted file's inventory twice,
+each pass with its own budget. The first is structural
+(`build_inventory(structure_only=True)`): the chain, units, spans,
+stream data and object streams, with no reference graph. `crypt.py`
+locates each stream's stored bytes by it before decrypting. The second
+is the full build, with each revision's `Decryption`. The first pass
+skips only the reference graph's stage, so it costs most of a full build
+(measured on a 3,000-page RC4 file: 72-80% of the full build's time and
+work), and the chain is read three times in all. The decryption between
+the passes has its own caps (bytes read and xref entries visited:
+`crypt.decrypt`). A file is built once only when no trailer or
+cross-reference stream dictionary holds an `/Encrypt` key at all, null
+or repeated ones included: a reader that follows the chain takes
+`/Encrypt` from nowhere else, and one that repairs finds a chain we have
+already flagged.

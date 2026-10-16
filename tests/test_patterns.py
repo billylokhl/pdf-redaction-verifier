@@ -13,7 +13,6 @@ import pytest
 import verify
 
 from redaction_verifier.matching import (
-    BUILTIN_PATTERN_CLASSES,
     SecretMatcher,
     _valid_card,
     _valid_email,
@@ -23,7 +22,7 @@ from redaction_verifier.matching import (
     match_patterns,
 )
 from redaction_verifier.model import ScanReport, Secret, VerifyError
-from redaction_verifier.rules import ENTITY_TYPE_TO_CLASS, load_rules
+from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES, load_rules
 from redaction_verifier.views import OCR_GENUINE_READINGS
 
 from .conftest import (
@@ -394,28 +393,29 @@ scrub_metadata: true
 """)
         rules = load_rules(path)
         assert len(rules.secrets) == 2                      # exact_values
-        assert len(rules.patterns) == 3                     # 1 regex + ssn + email
-        # Unmappable entity types are recorded, never silently dropped.
-        assert sorted(rules.unverifiable) == ["address", "person_name"]
+        assert len(rules.patterns) == 1                     # the one regex only
+        # entity_types are not checked (owner decision 2026-10-16): no
+        # rule, no label; recorded only for the report's info line.
+        assert rules.entity_types_ignored == ("ssn", "email", "person_name", "address")
+        assert not any(name.startswith("entity_types") for name in rules.labels)
 
-    def test_entity_types_use_our_own_classes(self, tmp_path) -> None:
-        # Independence: an entity_type maps to THIS tool's regex and
-        # validator, not to the redactor's pattern for the same concept.
-        path = self._yaml(tmp_path, "entity_types: [ssn]\n")
-        patterns = load_rules(path).patterns
-        assert len(patterns) == 1
-        assert patterns[0].validator is _valid_ssn
-        assert patterns[0].regex.pattern == BUILTIN_PATTERN_CLASSES["ssn"][0]
+    def test_entity_types_make_no_rules(self, tmp_path) -> None:
+        # Not read as built-in classes any more: an SSN-typed entity adds
+        # no pattern, and no warning.
+        path = self._yaml(tmp_path, 'entity_types: [ssn, phone, person_name]\n'
+                                    'exact_values: ["Q7-RULE"]\n')
+        rules = load_rules(path)
+        assert rules.patterns == [] and len(rules.secrets) == 1
+        assert list(rules.warnings) == []
 
-    def test_unverifiable_types_force_exit_2(self, tmp_path) -> None:
-        # A clean document must NOT certify as 0 when the config asked
-        # for categories this tool cannot search for.
-        pdf = _pdf_with_text(tmp_path, "nothing sensitive here")
+    def test_only_entity_types_is_no_rules(self, tmp_path) -> None:
+        # Nothing the user listed is left to verify: a PASS would claim a
+        # check that never ran, so the config is refused (exit 2).
         path = self._yaml(tmp_path, "entity_types: [person_name]\nexact_values: []\n")
-        result = run_verify(pdf, path)
-        assert result.returncode == 2, result.stdout
-        assert "CANNOT verify" in result.stdout
-        assert "person_name" in result.stdout
+        with pytest.raises(VerifyError, match="entity_types are not checked"):
+            load_rules(path)
+        pdf = _pdf_with_text(tmp_path, "nothing sensitive here")
+        assert run_verify(pdf, path).returncode == 2
 
     def test_exact_values_still_normalize(self, tmp_path) -> None:
         # YAML-sourced value rules get the same normalization as JSON
@@ -507,14 +507,15 @@ class TestYamlAdapterFidelity:
         assert [s.normalized for s in load_rules(path).secrets] == ["secreta"]
 
     def test_absent_entity_types_means_the_full_roster(self, tmp_path) -> None:
-        # Upstream defaults to every type when the key is absent; reading
-        # it as "none" certified clean what was never scanned.
+        # Upstream defaults to every type when the key is absent; the info
+        # line then names all ten -- and none of them is checked.
         rules = load_rules(self._yaml(tmp_path, 'exact_values: ["x1"]\n'))
-        assert len(rules.unverifiable) == 6
-        assert len(rules.patterns) == len(ENTITY_TYPE_TO_CLASS)
+        assert rules.entity_types_by_default
+        assert set(rules.entity_types_ignored) == UPSTREAM_ENTITY_TYPES
+        assert rules.patterns == []
 
     def test_unknown_top_level_key_is_warned(self, tmp_path) -> None:
-        path = self._yaml(tmp_path, 'exact_value: ["x"]\nentity_types: [email]\n')
+        path = self._yaml(tmp_path, 'exact_value: ["x"]\npatterns: ["q7-[0-9]{3}"]\n')
         assert any("unrecognized" in w for w in load_rules(path).warnings)
 
     def test_duplicate_key_rejected(self, tmp_path) -> None:
@@ -545,9 +546,11 @@ class TestYamlAdapterFidelity:
             with pytest.raises(VerifyError, match="not a known entity type"):
                 load_rules(path)
 
-    def test_partial_coverage_is_declared(self, tmp_path) -> None:
-        path = self._yaml(tmp_path, "entity_types: [phone]\n")
-        assert any("partly verifiable" in w for w in load_rules(path).warnings)
+    def test_phone_raises_no_scope_warning(self, tmp_path) -> None:
+        # phone used to add SCOPE_PARTIAL_ENTITY (exit 2); entity_types
+        # are no longer checked, so there is nothing partial to declare.
+        path = self._yaml(tmp_path, 'entity_types: [phone]\nexact_values: ["x1"]\n')
+        assert list(load_rules(path).warnings) == []
 
     def test_capture_group_pattern_warns(self, tmp_path) -> None:
         # The redactor removes only group text, so the rule verifies more
@@ -563,8 +566,8 @@ class TestYamlAdapterFidelity:
         assert flags & re.IGNORECASE and not flags & re.MULTILINE
 
     def test_entity_types_are_deduped(self, tmp_path) -> None:
-        path = self._yaml(tmp_path, "entity_types: [ssn, ssn]\n")
-        assert len(load_rules(path).patterns) == 1
+        path = self._yaml(tmp_path, 'entity_types: [ssn, ssn]\nexact_values: ["x1"]\n')
+        assert load_rules(path).entity_types_ignored == ("ssn",)
 
     def test_divergence_warning_masks_the_secret(self, tmp_path) -> None:
         # The warning must not re-leak the value it warns about.

@@ -21,8 +21,9 @@ from .conftest import REPO_ROOT
 
 # ── matching.policy ──────────────────────────────────────────────────────
 
-KINDS = {"Any SSN": "class", "entity_types:ssn": "entity_types", "Target": "value",
-         "Ref": "pattern", "My SSN": "class"}
+KINDS = {"Any SSN": "class", "Other SSN": "class", "Target": "value",
+         "Ref": "pattern", "My SSN": "class", "exact_values[0]": "exact_values",
+         "patterns[0]": "patterns"}
 
 
 def test_strict_mode_makes_nothing_informational():
@@ -31,13 +32,15 @@ def test_strict_mode_makes_nothing_informational():
 
 def test_without_strict_every_class_rule_is_informational_and_nothing_else():
     assert informational_rules(KINDS, strict=False) == frozenset(
-        {"Any SSN", "entity_types:ssn", "My SSN"})
-    assert CLASS_KINDS == frozenset({"class", "entity_types"})
+        {"Any SSN", "Other SSN", "My SSN"})
+    # A redactor config's entity_types are not read as classes (owner
+    # decision 2026-10-16): they make no rules, so no kind for them.
+    assert CLASS_KINDS == frozenset({"class"})
 
 
 def test_a_strict_class_rule_stays_in_the_verdict():
     assert informational_rules(KINDS, strict=False, strict_rules={"My SSN"}) == frozenset(
-        {"Any SSN", "entity_types:ssn"})
+        {"Any SSN", "Other SSN"})
 
 
 # ── rules: the "strict" key ──────────────────────────────────────────────
@@ -210,27 +213,84 @@ def test_a_malformed_strict_is_refused_only_when_classes_inform(tmp_path):
     assert proc.returncode == 2 and data["error"]["code"] == "RULES_INVALID"
 
 
-def test_a_scope_warning_beside_notices_still_gives_exit_2(tmp_path):
-    proc, data = _run(tmp_path, TEXT, "entity_types:\n  - person_name\n  - ssn\n",
-                      "--no-strict-classes")
-    assert proc.returncode == 2
-    assert any(w["code"] == "SCOPE_UNVERIFIABLE" for w in data["warnings"])
-    assert data["findings"] == [] and data["notices"]
+# ── a redactor config's entity_types: not checked (owner, 2026-10-16) ────
+
+INFO_LINE = "only your listed exact_values and patterns are"
 
 
-def test_redactor_entity_types_are_informational_under_no_strict(tmp_path):
+def _clean_here(data):
+    """The run's exit once this machine's missing tools are set aside (no
+    OCR on Linux CI gives 2 for that reason alone)."""
     from caselib.run import available
     from scorecard.differential import normalization_have
     from scorecard.keys import effective_exit
 
-    proc, data = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n", "--no-strict-classes")
+    return effective_exit(data, normalization_have(available()))
+
+
+@pytest.mark.parametrize("flag", ["--no-strict-classes", "--strict-classes"])
+def test_listed_entity_types_give_clean_plus_the_info_line(tmp_path, flag):
+    # person_name used to add SCOPE_UNVERIFIABLE (exit 2) and ssn a class
+    # rule (a notice, or exit 1 under --strict-classes). Now neither is
+    # checked, with or without --strict-classes: only the listed value is,
+    # and it is not in the file.
+    cfg = 'entity_types:\n  - person_name\n  - ssn\n  - phone\nexact_values:\n  - "Q7-ZEBRA"\n'
+    proc, data = _run(tmp_path, TEXT, cfg, flag)
     assert proc.returncode == data["exit_code"]
-    # 0 once this machine's missing tools are set aside (no OCR on Linux CI: 2).
-    assert effective_exit(data, normalization_have(available())) == 0
-    assert data["findings"] == []
-    assert {n["rule"] for n in data["notices"]} == {"entity_types:ssn"}
-    proc, _ = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n", "--strict-classes")
-    assert proc.returncode == 1  # strict: as before
+    assert _clean_here(data) == 0
+    assert data["findings"] == [] and data["notices"] == []
+    assert not any(w["code"].startswith("SCOPE_") for w in data["warnings"])
+    (info,) = data["info"]
+    assert info["code"] == "ENTITY_TYPES_NOT_CHECKED"
+    assert info["entity_types"] == ["person_name", "ssn", "phone"]
+    assert info["by_default"] is False and INFO_LINE in info["message"]
+    flat = " ".join(proc.stdout.split())
+    assert "FOR YOUR INFORMATION (does not change the result above)" in flat
+    assert "Entity types in your config (person_name, ssn, phone) are not checked" in flat
+    # After the verdict banner, never one of its lines.
+    assert flat.index("FOR YOUR INFORMATION") > flat.index("=" * 70)
+    assert "STILL PRESENT" not in proc.stdout
+
+
+def test_omitted_entity_types_give_the_info_line_for_all_ten(tmp_path):
+    proc, data = _run(tmp_path, TEXT, 'exact_values:\n  - "Q7-ZEBRA"\n')
+    assert _clean_here(data) == 0 and data["notices"] == []
+    (info,) = data["info"]
+    assert info["by_default"] is True and len(info["entity_types"]) == 10
+    flat = " ".join(proc.stdout.split())
+    assert "does not list entity_types, which a redaction tool reads as all ten" in flat
+    assert INFO_LINE in flat
+
+
+def test_an_empty_entity_types_list_gives_no_info_line(tmp_path):
+    proc, data = _run(tmp_path, TEXT, 'entity_types: []\nexact_values:\n  - "Q7-ZEBRA"\n')
+    assert data["info"] == [] and "FOR YOUR INFORMATION" not in proc.stdout
+
+
+def test_a_listed_exact_value_is_still_found_beside_entity_types(tmp_path):
+    # The info line never stands in for a listed value: still exit 1.
+    cfg = 'entity_types:\n  - person_name\n  - ssn\nexact_values:\n  - "234-56-7890"\n'
+    proc, data = _run(tmp_path, TEXT, cfg)
+    assert proc.returncode == 1
+    assert {f["rule"] for f in data["findings"]} == {"exact_values[0]"}
+    assert data["info"] and data["info"][0]["code"] == "ENTITY_TYPES_NOT_CHECKED"
+
+
+def test_a_listed_pattern_is_still_found_beside_entity_types(tmp_path):
+    cfg = "entity_types: [ssn]\npatterns:\n  - '\\d{3}-\\d{2}-\\d{4}'\n"
+    proc, data = _run(tmp_path, TEXT, cfg)
+    assert proc.returncode == 1
+    assert {f["rule"] for f in data["findings"]} == {"patterns[0]"}
+
+
+def test_a_json_class_rule_is_unchanged(tmp_path):
+    # Policy 1 (ADR 0012) for this tool's own rules format: a notice by
+    # default, a finding under --strict-classes; never an info line.
+    proc, data = _run(tmp_path, TEXT, SSN_CLASS)
+    assert data["findings"] == [] and {n["rule"] for n in data["notices"]} == {"Any SSN"}
+    assert data["info"] == []
+    proc, data = _run(tmp_path, TEXT, SSN_CLASS, "--strict-classes")
+    assert proc.returncode == 1 and {f["rule"] for f in data["findings"]} == {"Any SSN"}
 
 
 def test_a_warning_notice_keeps_every_warning_field():
