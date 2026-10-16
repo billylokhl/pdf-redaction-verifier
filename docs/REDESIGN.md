@@ -788,6 +788,21 @@ for a later PR: the additive
 `target_sha256`), xdist/sharding, and the large (~300-page/~500-page/~50 MB)
 performance files the real corpus wants.
 
+### Beside the plan: the visible map's later stages
+
+`--visible-map` (README, DESIGN "The visible map's engine" and "The `--visible-map` flag") is a
+picture of the legacy scan, not part of this plan's verdict path, and
+changes no verdict. It reads page text only through the views' own
+interface (`views.text.visual_text_glyphs`, the readings with their
+glyphs), never a copy of the reading code. Stage 1 draws the masked map only. Three later
+stages are designed, each with a precondition:
+
+| Stage | Adds | Precondition |
+| --- | --- | --- |
+| **S2. `--visible-map-reveal`** | Pixel clips at 300 dpi from one display list per page, in displayed coordinates, capped at 40 MP; a REVEALING band, title and stderr warning; real click and hover text only as rasterized callouts (a print callout never claims `/Contents` is what prints); temp-file cleanup after a killed run limited to files carrying both markers; "not drawn" decided from pixels — the box clip rendered with and without the text (a copy with the span removed, or render mode 3), "not drawn" only if no pixel changes, "partly drawn" per glyph — passing the five cases white text on an earlier black bar, text under a 25%-opacity highlight, a half-covered value, text under an opaque black image, and a plain control | Stage 1 has shipped |
+| **S3. OCR positions** | `boundingBoxForRange` with UTF-16 offsets and the normalized-box formula; OCR corroboration labels | The macOS Vision failure is fixed, and both the formula and the UTF-16 handling are probed on a working Mac |
+| **S4. Switched-off-layer boxes** | A copy of the document with every layer on, and boxes positioned "when a layer is on" | Phase 4a closes K6 and K15 in the verdict |
+
 ## 7a. Operating rules
 
 Adopted 2026-10-12. They complement §6 and §7 and override none of them

@@ -96,6 +96,143 @@ rule) counts class matches like any rule, as before. The default changes
 to `--no-strict-classes` in a later release
 ([ADR 0012](docs/adr/0012-pattern-classes-inform.md)).
 
+## Visible map (`--visible-map`)
+
+```bash
+pdf-verify --target document.pdf --secrets secrets.json --visible-map map.pdf
+```
+
+also writes `map.pdf`: a masked picture of *where* each finding is — a
+summary page, then one page per original page that has something to box,
+at the same displayed size, with a box over each place and a numbered
+list saying what each box is. It is a picture of the scan, **not a
+verdict**: it is built after the report is printed, in a separate
+process, and nothing it does can change the exit code, stdout or the
+`--json` report. The one exception is before scanning: if `map.pdf`
+cannot safely be written the run stops with exit `2` and
+`MAP_PATH_CONFLICT` or `MAP_PATH_UNWRITABLE`. Whether a map was written,
+and if not why (`MAP_TIMEOUT`, `MAP_TARGET_CHANGED`,
+`MAP_SELF_CHECK_FAILED`, ...), is one line on stderr; a run that ends
+without a map leaves no file at all.
+
+**The output file.** The map is only ever written as a new file. An
+existing `map.pdf` is replaced only if it is one of this tool's own maps
+— a regular file you own whose second line and last line are both
+`%PRV-VISIBLE-MAP-1` — and it is removed at the start of every run that
+gets as far as checking it (a run refused for a malformed command line
+does not), so a run that dies never leaves an old map behind. Anything else at that
+path (another PDF, a symbolic link, a directory, the target, the rules
+file or the `--json` report) is refused untouched; there is deliberately
+no `--force`. A file with only the line-2 marker is a map an interrupted
+run left half-written; it is refused by name, and you delete it. Hidden
+temp files a killed run left beside it (`.map.pdf.<pid>.<token>.tmp`,
+`.old` or `.probe`, carrying
+the marker, or still empty) are removed by a later run once they are
+older than 20 minutes and no process with that id is running. The flag must be spelled out in
+full: `--v` and other abbreviations of it are refused.
+
+**What it shows.** Each box is a place a finding can be seen, and how:
+
+| Box | Meaning |
+| --- | --- |
+| solid | On the page: selectable text matching a rule (whether or not it is covered — see the limits), or an annotation or form field whose appearance shows it, or an open note |
+| hatched | A form field whose stored value differs from what its appearance shows: on the page in viewers that redraw form fields |
+| dashed | On click, hover or scroll: a comment's text, author or subject, a link's address, a list box's hidden choice, an annotation shown only while the pointer is over it (ToggleNoView) |
+| dotted | When printed (an annotation flagged "print, but do not show") |
+
+An open note is solid for its text only: its author and subject stay
+dashed. Every copy of a value on a page is boxed or listed on its own,
+including text drawn out of reading order. A value that runs past the
+edge of the visible page is boxed where it shows, and its hidden part is
+listed as outside the crop.
+
+Findings that cannot be boxed are listed on the summary page, by page:
+found by OCR, outside the crop (recoverable by uncropping), on a
+switched-off layer, behind a layer rule the map does not evaluate, in a
+panel (document properties, attachment names, form field names, layer
+names), when a script runs, live content that may be visible (with the
+object's role), possible matches left for review (among them an
+attachment's or an annotation's attached file's contents, which the scan
+itself only flags for review), and anything that **could not be
+positioned**. Three more lists:
+**Stored, not shown** (a checkbox's or radio button's export value);
+**Stored; not shown by viewers that honour the password flag** (a
+password field's value — counted as shown on click, unlike the design's
+"stored" row, because a viewer that ignores the flag displays it); and
+**Also stored in a boxed annotation's or field's own objects** (the
+Objects layer finding the same value in the dictionary or appearance of
+an annotation, field or link the map has already boxed for that rule —
+every one of them, when one appearance serves several — which adds
+nothing a reader could not already see, so it does not make the map
+incomplete). A field listed as stored, hidden or password keeps its live
+copy flagged: the Objects layer may have matched a key the Hidden layer
+never reads, such as a tooltip shown on hover. A page's content stream
+and every other live object always do. Content stored outside the document (orphaned, unreferenced,
+superseded) and annotations flagged hidden (or "do not show" without
+"print") are only counted, under **Not visible**. Every finding is either
+boxed, listed, or listed as could not be positioned — none is dropped. With
+`--no-strict-classes`, a built-in class match that is only a notice (it
+does not count in the verdict) is never boxed: it is listed last, masked
+like any sample, under **Not counted in the verdict**, and sets no flag.
+
+**The headline** at the top of the summary is exactly one of:
+
+| Headline | When |
+| --- | --- |
+| VISIBLE SECRETS FOUND | a solid or hatched box, or an OCR hit (then: "by OCR, not positioned") |
+| MAP INCOMPLETE — a secret may be visible that is not drawn (*N* incomplete, *N* possible, *N* in live content; *N* shown on click / hover / ...) | something could not be placed or was not scanned, a switched-off layer, a layer rule, a page with area outside its crop, a coverage or scope warning, a possible match, or live stored content; the counts are of each reason and of the items shown on click, hover, print or open, in panels or when uncropped |
+| SHOWN ON CLICK / HOVER / PRINT / OPEN / IN PANELS / WHEN UNCROPPED — none drawn on the page | only dashed or dotted boxes and such lists |
+| LEAK, NOT VISIBLE — the file stores a secret no page shows | exit `1`, and nothing above |
+| Nothing visible found; uncertified (exit 2) for: *codes* | exit `2` only for content stored outside the document |
+| Nothing visible found — every check ran; JSON report not written (exit 2) | exit `2` only because `--json` could not be written |
+| Nothing visible found — every check ran (exit 0) | exit `0`, and nothing above |
+| NOT CERTIFIED (exit *N*): *codes* | anything else; unreachable by design (every warning code makes the map incomplete, marks a possible match, or is an "outside" code), kept as the fail-closed answer |
+
+When the `--json` report was not written every headline says so, and a
+map that is incomplete also carries a red INCOMPLETE banner naming why
+(warning codes with their pages).
+
+**Masked, always.** The map never shows an exact value, and no sample
+it shows reveals a character of one. A sample is masked by the same rule as the reports (`****6789`,
+or only `****` when the match contains one of your exact values or any
+character it would show is a character of one, ignoring case, accents
+and the script of a digit), and the map then checks the tail as it is
+drawn: a character outside Latin-1 is drawn as `\u{XXXX}`, so a tail
+whose escape holds a character of an exact value (文 is `\u{6587}`) shows
+only `****` too. A pattern match drawn on any glyph of an exact value
+shows no tail at all. The target's file name is shown only when no
+two consecutive characters of it, as written or as drawn, occur
+together in an exact value (letters of any script count) and it holds
+no `****`; otherwise the
+map says "target", and the sha256 identifies the file. A
+rules file entry from this tool's own JSON format is shown by number
+(`value rule #3`, explained as "3rd value entry, rules-file entry 5"),
+because its `name` is your own words and may be the secret; a shared
+YAML config's rules keep their report labels (`exact value #2
+(exact_values[1])`). Before the map is written it is checked against
+every rule twice — each label, name and masked sample on its own, then
+the saved file's text, metadata and streams, with escapes decoded — and
+a whole value, a pattern match or a masked tail showing a value's
+character anywhere except the tool's own fixed wording (headings,
+counts, page numbers) means no map (`MAP_SELF_CHECK_FAILED`).
+
+**Limits of this first version.** It draws the masked map only. OCR hits
+are listed, not positioned. A switched-off layer's content is not fully
+checked (images and font-coded text on it are not read), so a document
+with one is always MAP INCOMPLETE, even at exit `0`. The same holds for
+any layer rule (an OCMD, or any `/VE` visibility expression), and for
+any page whose MediaBox reaches past its CropBox on any side (a
+smaller CropBox, or a shifted one): images there are not
+checked, so the map says so instead of "Nothing visible found". A
+switched-off layer is one MuPDF evaluates as off, or one the default
+configuration's `/OFF` or `/BaseState /OFF` turns off (MuPDF's own
+answer misses a layer that carries a `/Usage` dictionary). A solid text box
+means the text is in the page's text layer — it does not say whether the
+text is drawn, covered by a box, white on white or invisible; deciding
+that from pixels is a later step. Annotations gated by a visibility
+expression (an OCMD) are listed "behind a layer rule (may be visible)"
+unless the page text shows them.
+
 ## How it works
 
 New to PDF internals? Unfamiliar terms are defined in the
@@ -773,4 +910,7 @@ and what the file stores.
 | **Surface** | One real piece of text: a line, a decoded PDF string, a form or annotation field. |
 | **UTF-16** | A text encoding PDFs use for non-ASCII strings; the Objects layer decodes it. |
 | **Validator** | A check that a match is structurally real (e.g. SSNs never start with `000` or `666`). |
+| **Visible map** | The masked PDF `--visible-map` writes: where each finding is, and how a reader would come across it. A picture of the scan, never a verdict. |
+| **Switched-off layer** | An optional-content group the document's default configuration turns off: its content is in the file but not drawn until a reader switches it on. |
+| **Marker** | The line `%PRV-VISIBLE-MAP-1`, written as a visible map's second and last line; only a file carrying both is ever replaced. |
 | **Walked structurally** | Reading objects one by one through the PDF's own structure rather than scanning raw bytes. |

@@ -570,9 +570,8 @@ than the scan; and it never implies "not visible" for content a reader
 could click, hover, print, open, uncrop or switch on. This first part is
 its engine: what the scan hands over, where each finding is, and what
 the map says about it (`plan.make_plan`, a `MapPlan` of boxes, lists,
-flags and one headline). Drawing the map, its self-check, and the
-command-line flag that runs it in a child process come in later changes;
-until then nothing on the command line reaches this code, and every scan
+flags and one headline). The map is drawn and self-checked as described
+below, and run by `--visible-map` (below); without the flag every scan
 passes no sink. A finding that cannot be located (a page the locator
 fails on) is listed "could not be positioned"; it never stops the plan.
 
@@ -715,10 +714,115 @@ variable `****` is checked for a tail (the variable characters after
 it, as drawn and decoded) holding any character of an exact value: a
 value or pattern hit is tolerated only where every character of it is the
 tool's own text, and any other hit means no map
-(`SelfCheckFailed`). The self-check is a backstop for whole values,
+(`SelfCheckFailed`, reported as `MAP_SELF_CHECK_FAILED`). The self-check is a backstop for whole values,
 pattern matches and masked tails; the rules for parts of a value (a
 tail's characters, the name's pairs of characters) are applied first,
-where the label and the name are made. Nothing on the command line reaches this yet.
+where the label and the name are made.
+
+## The `--visible-map` flag
+
+`--visible-map OUT.pdf` runs the map (the engine and the drawing above)
+for a scan and writes it to OUT. It never changes the verdict; the code
+it adds is `redaction_verifier/visible_map/{runner,child,paths}.py` and
+the wiring in `main()`, and nothing there is imported without the flag.
+
+**Where it sits.** With the flag, `main()` makes a sink and hands it to
+the scan's two hooks, and offers the page count once the document is
+open. The map is built only from `main()`'s two normal returns, after the
+human report is out (`_map_after_report`, never from `finish()` or
+`crash()`), and that whole step — its own handler, cleanup and `[ERROR]`
+line included — runs inside one `suppress(BaseException)`, and while it
+runs SIGINT and SIGTERM do not raise at all: their handlers only stop the
+child and the map, and the previous handlers are put back only at the
+very end of `main()`'s `finally`, so a burst that outlasts the map
+cannot land in the cleanup after it either (a suppress's own `__exit__` is Python code a burst of Ctrl-C
+could land in; before this a burst could turn a confirmed leak's 1 into
+the crash code, and SIGTERM ended the run at -15 after its verdict was
+decided). Once `main()` has returned, the command line's entry point
+(`run_cli`) is unchanged: a signal that lands in its last flush can still
+end the process by signal after the verdict, with or without the flag,
+as on main (#130, outside the map's scope). `main()`'s `finally` kills a child anything left running, under
+the same suppression. Map status goes to stderr only — with fd 2 closed
+it is dropped, never printed to stdout; a failure after OUT already holds
+the map is reported as written. The `--json` path refusals, which end a run before the map's own
+path check, remove a stale map too — after the same check that OUT names
+no input, so the cleanup can never delete the target. Tests run a case from every cell of
+the case library (every case with `RUN_MAP_IDENTITY=1`) with the flag off
+and on and compare the exit code, every byte of stdout and the `--json`
+report, and inject raising, mutating, crashing, hanging and flooding
+faults at every map-only step against clean (exit 0), degraded (exit 2)
+and leaking (exit 1) targets, so a map failure that moved an exit code
+either way fails them.
+
+**The child process.** The map is built in `python -I -c BOOTSTRAP`,
+run from the private scratch directory with the minimal environment the
+external tools get. It needs the document, but the parent never holds
+it: before the scan the parent opens the target once — read-only,
+`O_NONBLOCK` so a FIFO swapped in cannot hang it, regular files only —
+hashes it, and keeps that descriptor — moved to 3 or above and marked
+close-on-exec, so with stdin closed it cannot land on fd 0, where the
+child's stdin (and exiftool's and qpdf's) would replace it; the child
+inherits it (`pass_fds`), reads it into one buffer (so the child, not
+the parent, holds the target's size in memory, for at most its
+deadline), hashes exactly what
+it read (a target that grew or shrank hashes differently) and returns
+the digest, so a
+target edited after the scan is caught by hash and one replaced by
+rename by its identity. The rules and the scan's truth go in on stdin,
+never to disk; the child writes nothing to disk either. Its only output
+is one record line — `{ok, length, map_sha256, target_sha256}` — and
+exactly that many bytes, which the parent streams in 64 KB chunks under
+one deadline (30 s + 0.25 s a page, at most 600 s) into a 0600 temp
+file, hashing as it goes: a record line over 4 KB, more bytes than
+declared, or a length over a ceiling scaled to pages and items ends it.
+Its stderr goes to `/dev/null`, its exit status is ignored, and after
+its stdout closes it is given the rest of the deadline before it is
+killed and reaped. The child also keeps its own deadline and exits once
+its parent is gone, so a parent killed mid-stream leaves no process
+behind. The bootstrap is standard library only and sets
+`sys.path` to the parent's absolute entries, without `''` or the
+parent's working directory, with this package's own parent directory
+first — so a decoy package in either directory cannot load, and an
+uninstalled checkout maps with its own code.
+
+**File safety.** A marker beats a `--force` flag, which users add by
+habit: an existing OUT is removed only when it is a regular file the
+user owns whose line 2 and last line are both `%PRV-VISIBLE-MAP-1`
+(inserted by shifting the xref offsets, so the map reopens unrepaired).
+Anything else — the target, the rules, the `--json` path, a symlink, a
+directory, someone else's file — refuses the run before scanning
+(`MAP_PATH_CONFLICT`), as does a directory that will not take a probe
+file (`MAP_PATH_UNWRITABLE`). The old map goes before the scan starts,
+so every run that writes no map leaves nothing; it is moved aside before
+it is deleted and checked again there, so a file swapped in after the
+check is put back, not removed (moved aside under a fresh random name;
+if it cannot be put back, the error names the hidden file). A killed
+run's marked or empty temp, probe and moved-aside files beside OUT are
+swept by the next, when no process with that id runs and they are older
+than twice the child's longest deadline (a run on another host sharing
+the directory, or in another pid namespace, can look dead by its id);
+each is re-checked after it is moved aside, by inode unless it is empty
+(FAT renumbers an empty file when it is renamed). Temp and probe names
+carry a random token, so a stale one never blocks a later run with the
+same process id. Every unlink of the map's own files first checks the
+file is still the one it made. Limitation: on SMB and other network
+filesystems inode numbers may not be stable, so these identity checks
+may refuse (or, at worst, not notice a swap); the map is written to a
+local disk in the tests. Every hidden name beside OUT hashes a long
+OUT name to stay under the filesystem's limit. Publishing re-checks OUT,
+reads the temp file back, streamed, through a descriptor that must be
+the file written (identified after its last write: on FAT an empty
+file's inode number changes once it has data) and hashes it again, and
+uses `os.link`, which never replaces a
+file that appeared in the meantime; on a filesystem without hard links
+the bytes are written in place front to back, so a run killed mid-copy
+leaves a file with only the line-2 marker, which the next run refuses by
+name rather than deletes. `--visible-map` is never abbreviated: argparse
+would otherwise read `--v X`, an error before the flag existed, as a
+request to write X.
+The self-check reads the finished map back against every rule; a whole
+value, a pattern match or a masked tail showing a value's character
+anywhere but the tool's own fixed wording means no map.
 
 ## Sharing a config with the redactor
 
