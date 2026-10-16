@@ -13,16 +13,31 @@ it. You don't need to know how PDFs work. It runs on macOS.
 
 ## Install
 
-You need [Homebrew](https://brew.sh). In Terminal:
+Pick one of three ways. If you're not sure, use the first. Type the commands
+in Terminal, then do the check at the end.
+
+### 1. Install as a command (recommended)
+
+Use this to check your own files. You need [Homebrew](https://brew.sh).
+
+```bash
+brew install exiftool qpdf uv
+git clone https://github.com/billylokhl/pdf-redaction-verifier.git
+cd pdf-redaction-verifier
+uv tool install --python 3.13 .
+```
+
+`exiftool` and `qpdf` are helper programs the checker runs. `uv` installs the
+checker with its own copy of Python. Afterwards `pdf-verify` works in any
+Terminal window. If it says `command not found`, run `uv tool update-shell`
+and open a new window.
+
+### 2. A local copy, for working on the project
 
 ```bash
 brew install exiftool qpdf
 curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh
 ```
-
-`exiftool` and `qpdf` are helper programs the checker runs. `uv` installs the
-checker and the Python it needs. Use the uv version shown: this project accepts
-only uv 0.12 (0.12.3 or newer), and refuses to install with any other.
 
 Open a **new** Terminal window, then:
 
@@ -31,11 +46,40 @@ git clone https://github.com/billylokhl/pdf-redaction-verifier.git
 cd pdf-redaction-verifier
 uv sync --python 3.13
 source .venv/bin/activate
-pdf-verify --version
 ```
 
-The last line prints `pdf-verify 0.1.0`. In each new Terminal window, run
-`source .venv/bin/activate` in this folder again before using `pdf-verify`.
+`uv sync` needs uv 0.12 (0.12.3 or newer, not 0.13): the project pins uv's
+version so everyone gets exactly the same packages, and Homebrew's uv may be
+newer. (Route 1 doesn't check this.) In each new Terminal window, run
+`source .venv/bin/activate` in this folder before using `pdf-verify`.
+
+### 3. Conda
+
+If you already use [conda](https://docs.conda.io) (Miniconda or Anaconda), it
+can supply exiftool and qpdf too, so you don't need Homebrew or uv:
+
+```bash
+git clone https://github.com/billylokhl/pdf-redaction-verifier.git
+cd pdf-redaction-verifier
+conda env create -f environment.yml
+conda activate pdf-redaction-verifier
+```
+
+Keep the folder: the checker runs from it. Run
+`conda activate pdf-redaction-verifier` in each new Terminal window.
+
+### Check that it works
+
+In the `pdf-redaction-verifier` folder (and, for route 2 or 3, activated):
+
+```bash
+pdf-verify --target examples/ocr-check.pdf --secrets examples/ocr-check-secrets.json | grep 'STILL PRESENT'
+```
+
+This file holds a made-up SSN as a picture only, so only the OCR check can
+find it. You should see one line, with `OCR` and
+`page 1 (Apple Vision @ 300 dpi)` in it. If nothing prints, see
+[Troubleshooting](#troubleshooting).
 
 ## Your first check
 
@@ -237,17 +281,21 @@ read, what is only flagged, and what is missed.
   `brew install exiftool qpdf`. Until both are installed, no run can be
   Clean.
 - **`error: Required uv version ... does not match the running version ...`.**
-  Install uv as shown in [Install](#install). If `uv --version` still shows
-  another version, remove the other copy (for example `brew uninstall uv`).
+  Only `uv sync` (route 2) checks this. Install uv 0.12.3 as shown there, or
+  use route 1. If `uv --version` still shows another version, remove the other
+  copy (for example `brew uninstall uv`).
 - **`[ERROR] PDF is password-protected`.** The tool can't open files that need
   a password, and has no option to supply one. The result is Needs review. A
   file that opens without a password but restricts printing or copying is
   checked normally.
-- **Every page says `OCR: page N failed (Apple Vision request failed ...)`.**
-  The picture check could not run, so the result can't be Clean. We have seen
-  this when the checker was installed into a Miniconda Python. Install as shown
-  in [Install](#install), which uses uv's own Python. OCR needs no macOS
-  permission prompts.
+- **The OCR check prints nothing, or every page says
+  `OCR: page N failed (Apple Vision request failed ...)`.** The picture check
+  could not run, so no result can be Clean. OCR uses macOS's built-in text
+  recognition and needs no permission prompts. Run the check from the
+  Terminal app itself, not from a tool that restricts what programs may do.
+  If it still fails, try route 1.
+- **`pdf-verify` runs an old copy.** `which -a pdf-verify` lists every copy;
+  the first one runs. Remove the ones you don't use.
 
 ## Learn more
 
