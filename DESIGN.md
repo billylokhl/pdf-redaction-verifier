@@ -521,14 +521,35 @@ The redesign's inventory (Phase 3a, shadow mode) charges every parse and
 walk to a work budget of 64 units per byte of the file plus a floor of
 1,000,000 ([ADR 0010](docs/adr/0010-readers-are-the-authority.md)); past
 it the file is flagged `BUDGET_EXHAUSTED`, never certified. What the
-reference graph's labels keep per revision (3a-7e-1) is charged at least
-its size in bytes as well -- a new reachable set, new structural records,
-a new revision record -- so the labels retain at most one byte per unit
-of work: at most 64 times the file's size plus about 1 MB, however many
-revisions rewrite it. Measured on many-revision shapes (each revision
-reaching a new object, adding an object stream, adding structural
-records, or only adding a cross-reference stream, n = 40 to 2,000):
-0.30 to 0.86 bytes per unit of the labels' own work, at most 52.5 bytes per byte of the file (a test pins the one-byte bound).
+reference graph's labels keep per revision (3a-7e-1, 3a-7e-2) is charged
+at least its size in bytes as well -- a new reachable set, new structural
+records, a new drawable set, a new revision record -- and so is each
+stream body's entry in the per-body labels, so the labels retain at most
+one byte per unit of work: at most 64 times the file's size plus about 1
+MB, however many revisions rewrite it. Measured on many-revision shapes
+(each revision reaching a new object, adding an object stream, adding
+structural records, only adding a cross-reference stream, or drawing one
+more image, n = 40 to 2,000): 0.30 to 0.86 bytes per unit of the labels'
+own work, at most 52.5 bytes per byte of the file; the per-body labels
+0.24 to 0.76 bytes per unit of their own work (tests pin the one-byte
+bound).
+The reference graph's stage walks the whole live set again -- every live
+object and edge, S of them -- in each revision that changes something it
+read (ADR 0011 item 7): R such revisions cost about c·S·R units. c is
+measured at 51 to 69 units per object or edge on the item-7 test's shape
+(103 to 136 per object, S being about twice the objects there), and on
+the corpus at a median of 120 (18 to 109 on files whose sum is 500 or
+more; small files pay fixed charges). A revision that reads nothing new
+shares its predecessor's results and costs almost nothing. Past the
+budget (64 per byte plus 1,000,000) the file is flagged
+`BUDGET_EXHAUSTED`, failing closed, never certified: a 1 MB file with
+5,000 objects (S about 10,000) reaches its limit of about 68 million
+units after roughly 100 saves that each change what the stage reads (c =
+64), or about 57 at the corpus's median c. `tests/test_inventory_stage.py` scales revisions and
+objects together (n against 8n, about 64 times the work): within the
+limit, or flagged. On the corpus the stage charged at most 322,346 units
+(a sum of 6,062 objects and edges), at most 6.52 units of work per byte
+of the file in all.
 
 The subprocesses themselves are launched defensively, not just bounded:
 `qpdf`/`exiftool` are resolved once to an absolute path (`shutil.which`)
@@ -556,6 +577,269 @@ of the two are still running and removes that scratch directory
 (best-effort: a cleanup failure is reported but never allowed to
 overwrite an already-decided, already-printed verdict), so neither
 survives as an orphan.
+
+## The visible map's engine
+
+The visible map (`redaction_verifier/visible_map/`) will draw where the
+findings are, as a picture of the scan, never a verdict. It is held to
+three rules: it never changes the verdict; it is never more complete
+than the scan; and it never implies "not visible" for content a reader
+could click, hover, print, open, uncrop or switch on. This first part is
+its engine: what the scan hands over, where each finding is, and what
+the map says about it (`plan.make_plan`, a `MapPlan` of boxes, lists,
+flags and one headline). The map is drawn and self-checked as described
+below, and run by `--visible-map` (below); without the flag every scan
+passes no sink. A finding that cannot be located (a page the locator
+fails on) is listed "could not be positioned"; it never stops the plan.
+
+**Where it sits.** The scan hands the map its own truth and nothing
+else. `scan_page_layer` offers, per page and before its `--fail-fast`
+stop, the rule names in each tier (hard on a line, hard across the seam,
+pattern hard, pattern only when fused, value only when joined or
+reconstructed, crossing a page break); `scan_hidden_objects` offers each
+matching item's page, xref, kind, location and rule names (new plain
+fields on `HiddenItem`, filled on every run and never printed). Both do
+so only when given a sink (`sink=None` by default, and in every scan
+today). `offer` copies into plain lists inside its own
+`try/except Exception`, so a broken or hostile sink can cost the map its
+completeness — it then says so — but cannot raise into the scan or
+mutate what the scan still uses. Tests scan a case from every cell of
+the case library (every case with `RUN_MAP_IDENTITY=1`) with and
+without a sink and compare the exit code, every byte of stdout and of
+stderr, and the
+`--json` report.
+
+**Every finding is accounted for.** No box is drawn without a hard truth
+entry from the scan for that rule on that page, and a match is located
+with the scan's own matchers and tiers, on the scan's own readings: the
+engine reads each page through `views.text.visual_text_glyphs`, which
+runs the same code as `extract_visual_text` with each glyph tagged by its
+index and gives every reading's lines as the glyphs they were read from
+(a test checks its text equals `extract_visual_text`'s, reading for
+reading, on every page of the case library), and maps each match back to
+its glyphs. The genuine readings overlap, so one occurrence (one set of
+glyphs) is placed once. A match found only across the visible edge
+(readings 4-6) is boxed over its visible glyphs, marked part of a value,
+and its off-page part is listed as outside the crop; a match wholly off
+the page is only listed. A pattern match's label carries the same masked
+sample as the human report (`mask()`'s tail), even on a box over only
+its visible part. A hidden item the scan only reviews (an attachment's
+body, an annotation's attached file: `REVIEW_HIDDEN_TEXT`) is never
+boxed or classified; its warning lists it for review. Every occurrence is
+accounted for on its own, so a copy that cannot be boxed is listed even
+when another copy on the page was. PyMuPDF reports glyphs (and takes text
+clips) in an unrotated frame whose origin is the top-left of the
+*visible* area, the CropBox clipped to the MediaBox, while its
+`rotation_matrix` is built from the unclipped CropBox: on a rotated page
+whose CropBox reaches past its MediaBox the two disagree. The map
+therefore never converts glyph positions with `rotation_matrix`; it uses
+a display matrix built from the displayed size and the rotation alone.
+Every box is then checked: the page's glyphs under a text box, read in
+the scan's own geometric orders (not the content stream's, which may draw
+a value out of order), must hold the match — a check on the same glyph
+positions the box came from, in the same frame, so it catches a box
+built from the wrong glyphs, not a wrong frame; the frame is what the
+geometry tests check against the rendered page's ink, at every rotation,
+with shifted and overhanging CropBoxes. An annotation box (MuPDF's own
+annotation or link rectangle, displayed) must agree with the raw `/Rect`
+taken through the page's boxes into the glyph frame and displayed — two
+independent routes. An occurrence without a verified box is listed as
+"could not be positioned", which marks the map incomplete. Every --json finding is checked off against the boxes and
+lists, every warning code is classified (a ratchet test keeps the table
+complete; an unclassified code counts as document-level; the page
+codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
+never reads, #133), are named with their pages as INCOMPLETE reasons,
+whatever their storage, and nothing of the page's content is shown; a
+code seen both on pages and with no page adds "and document-wide"), and the
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
+`--no-strict-classes`) is not a finding: the header names the
+informational rules (required; a header without them is refused), their
+matches in the scan's truth are never boxed, classified or listed as OCR
+finds, and each of the report's `notices` is listed under "Not counted in
+the verdict", its sample masked as any --json sample, setting no flag
+(a page-less fused-pattern notice takes its pages from the scan's truth,
+as the same warning does in strict mode).
+Switched-off layers are counted from MuPDF's evaluation *and* the default
+configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
+reports a group with a `/Usage` dictionary as on while MuPDF hides it.
+What no check reads also marks the map incomplete, so it can never say
+"Nothing visible found" over it: a switched-off layer, any layer rule
+(an OCMD, or any `/VE` expression), and any page whose MediaBox reaches
+past its CropBox on any side (the CropBox is clipped to the MediaBox in
+PDF space and every side compared, so a shifted CropBox counts).
+Live-content findings mark it incomplete (L) unless the object is the
+dictionary or appearance of an annotation, field or link the map has
+already *boxed* for that rule — every owner, when one appearance serves
+several widgets: that copy adds nothing a reader could not already see,
+and flagging it made nearly every map with an annotation "incomplete". A
+stored, hidden or password classification does not absorb it, because
+the Objects layer does not say which key matched: in a checkbox, it may
+be the tooltip, which a reader sees on hover. The map has no masking
+rule of its own: every sample it shows (a box's label, and a `--json`
+finding's sample) is `mask()`'s output with the same index of exact
+values the reports use (#66: only `****` when the sample contains an
+exact value or any revealed character, in either folding, is a character
+of one). The map then checks the tail once more as drawn: escaping a
+character outside Latin-1 adds hex digits (文 is drawn `\u{6587}`), so
+the tail is dropped when its drawn form holds any character of an exact
+value. A pattern match drawn on any glyph of an exact value's occurrence
+shows no tail at all.
+
+Every string the plan keeps from outside its own fixed wording (a rule's
+label, a masked sample, the target's name, an object's role) goes
+through a checker the caller supplies (`Rules.clean`); the map's own
+checker comes with its self-check.
+
+**Drawing the map, and its self-check.** `render.build_map` draws the
+plan as a new document — nothing is copied from the target: a summary
+page (the target's name and sha256, the version, the exit code, the
+headline, an INCOMPLETE banner with its reasons, every finding that
+cannot be boxed, listed by page, and last any ADR 0012 notices, masked,
+under "Not counted in the verdict") and, for each page with something to
+box, a page of the same displayed size with numbered solid, hatched,
+dashed and dotted boxes and a numbered list (a small page is widened and
+given a band below it for the list; a list that does not fit continues
+on overflow pages). The target's name is shown only when no two
+consecutive characters of it, as written or as drawn, occur together in
+an exact value, in either folding (ASCII-normalized, or keeping letters
+and digits of any script, so a value's Cyrillic or CJK letters count)
+and when it holds no `****` (which the self-check would read as a tail),
+cut so its drawn form fits 60
+characters before it is checked (otherwise "target": the sha256
+identifies the file). Its only font is Helvetica, never embedded,
+written in Latin-1: typographic dashes, quotes and the ellipsis become
+their ASCII forms, and any other character outside Latin-1 is written as
+`\u{XXXX}`. Text the map writes itself is drawn in its own colours
+(black, red for alerts, the box colours); every string that came from
+the plan's variable inputs (labels, samples, the target's name, an
+object's role) in one more colour that no fixed text uses, so
+the self-check can tell them apart in the saved file. The self-check has
+two steps. First, every variable string is checked whole and as drawn
+(cut to 80 characters), before and after escaping, against every rule:
+each value as a substring of the normalized string and, folded the way
+the masking folds (letters and digits of any script kept), of the folded
+string, each pattern
+strictly and with separators collapsed, and a string that hits is replaced by a
+neutral form, itself checked. Then the saved bytes are reopened
+(they must reopen unrepaired and carry the map's marker,
+`%PRV-VISIBLE-MAP-1`, as line 2 and last line) and all page text (per
+line, knowing each character's colour), the document information, XMP
+and every decompressed stream (knowing which string tokens are fixed
+text) are scanned for a value (normalized, or folded with the
+`\u{XXXX}` escapes decoded) or a pattern's strict match, and every
+variable `****` is checked for a tail (the variable characters after
+it, as drawn and decoded) holding any character of an exact value: a
+value or pattern hit is tolerated only where every character of it is the
+tool's own text, and any other hit means no map
+(`SelfCheckFailed`, reported as `MAP_SELF_CHECK_FAILED`). The self-check is a backstop for whole values,
+pattern matches and masked tails; the rules for parts of a value (a
+tail's characters, the name's pairs of characters) are applied first,
+where the label and the name are made.
+
+## The `--visible-map` flag
+
+`--visible-map OUT.pdf` runs the map (the engine and the drawing above)
+for a scan and writes it to OUT. It never changes the verdict; the code
+it adds is `redaction_verifier/visible_map/{runner,child,paths}.py` and
+the wiring in `main()`, and nothing there is imported without the flag.
+
+**Where it sits.** With the flag, `main()` makes a sink and hands it to
+the scan's two hooks, and offers the page count once the document is
+open. The map is built only from `main()`'s two normal returns, after the
+human report is out (`_map_after_report`, never from `finish()` or
+`crash()`), and that whole step — its own handler, cleanup and `[ERROR]`
+line included — runs inside one `suppress(BaseException)`, and while it
+runs SIGINT and SIGTERM do not raise at all: their handlers only stop the
+child and the map, and the previous handlers are put back only at the
+very end of `main()`'s `finally`, so a burst that outlasts the map
+cannot land in the cleanup after it either (a suppress's own `__exit__` is Python code a burst of Ctrl-C
+could land in; before this a burst could turn a confirmed leak's 1 into
+the crash code, and SIGTERM ended the run at -15 after its verdict was
+decided). Once `main()` has returned, the command line's entry point
+(`run_cli`) is unchanged: a signal that lands in its last flush can still
+end the process by signal after the verdict, with or without the flag,
+as on main (#130, outside the map's scope). `main()`'s `finally` kills a child anything left running, under
+the same suppression. Map status goes to stderr only — with fd 2 closed
+it is dropped, never printed to stdout; a failure after OUT already holds
+the map is reported as written. The `--json` path refusals, which end a run before the map's own
+path check, remove a stale map too — after the same check that OUT names
+no input, so the cleanup can never delete the target. Tests run a case from every cell of
+the case library (every case with `RUN_MAP_IDENTITY=1`) with the flag off
+and on and compare the exit code, every byte of stdout and the `--json`
+report, and inject raising, mutating, crashing, hanging and flooding
+faults at every map-only step against clean (exit 0), degraded (exit 2)
+and leaking (exit 1) targets, so a map failure that moved an exit code
+either way fails them.
+
+**The child process.** The map is built in `python -I -c BOOTSTRAP`,
+run from the private scratch directory with the minimal environment the
+external tools get. It needs the document, but the parent never holds
+it: before the scan the parent opens the target once — read-only,
+`O_NONBLOCK` so a FIFO swapped in cannot hang it, regular files only —
+hashes it, and keeps that descriptor — moved to 3 or above and marked
+close-on-exec, so with stdin closed it cannot land on fd 0, where the
+child's stdin (and exiftool's and qpdf's) would replace it; the child
+inherits it (`pass_fds`), reads it into one buffer (so the child, not
+the parent, holds the target's size in memory, for at most its
+deadline), hashes exactly what
+it read (a target that grew or shrank hashes differently) and returns
+the digest, so a
+target edited after the scan is caught by hash and one replaced by
+rename by its identity. The rules and the scan's truth go in on stdin,
+never to disk; the child writes nothing to disk either. Its only output
+is one record line — `{ok, length, map_sha256, target_sha256}` — and
+exactly that many bytes, which the parent streams in 64 KB chunks under
+one deadline (30 s + 0.25 s a page, at most 600 s) into a 0600 temp
+file, hashing as it goes: a record line over 4 KB, more bytes than
+declared, or a length over a ceiling scaled to pages and items ends it.
+Its stderr goes to `/dev/null`, its exit status is ignored, and after
+its stdout closes it is given the rest of the deadline before it is
+killed and reaped. The child also keeps its own deadline and exits once
+its parent is gone, so a parent killed mid-stream leaves no process
+behind. The bootstrap is standard library only and sets
+`sys.path` to the parent's absolute entries, without `''` or the
+parent's working directory, with this package's own parent directory
+first — so a decoy package in either directory cannot load, and an
+uninstalled checkout maps with its own code.
+
+**File safety.** A marker beats a `--force` flag, which users add by
+habit: an existing OUT is removed only when it is a regular file the
+user owns whose line 2 and last line are both `%PRV-VISIBLE-MAP-1`
+(inserted by shifting the xref offsets, so the map reopens unrepaired).
+Anything else — the target, the rules, the `--json` path, a symlink, a
+directory, someone else's file — refuses the run before scanning
+(`MAP_PATH_CONFLICT`), as does a directory that will not take a probe
+file (`MAP_PATH_UNWRITABLE`). The old map goes before the scan starts,
+so every run that writes no map leaves nothing; it is moved aside before
+it is deleted and checked again there, so a file swapped in after the
+check is put back, not removed (moved aside under a fresh random name;
+if it cannot be put back, the error names the hidden file). A killed
+run's marked or empty temp, probe and moved-aside files beside OUT are
+swept by the next, when no process with that id runs and they are older
+than twice the child's longest deadline (a run on another host sharing
+the directory, or in another pid namespace, can look dead by its id);
+each is re-checked after it is moved aside, by inode unless it is empty
+(FAT renumbers an empty file when it is renamed). Temp and probe names
+carry a random token, so a stale one never blocks a later run with the
+same process id. Every unlink of the map's own files first checks the
+file is still the one it made. Limitation: on SMB and other network
+filesystems inode numbers may not be stable, so these identity checks
+may refuse (or, at worst, not notice a swap); the map is written to a
+local disk in the tests. Every hidden name beside OUT hashes a long
+OUT name to stay under the filesystem's limit. Publishing re-checks OUT,
+reads the temp file back, streamed, through a descriptor that must be
+the file written (identified after its last write: on FAT an empty
+file's inode number changes once it has data) and hashes it again, and
+uses `os.link`, which never replaces a
+file that appeared in the meantime; on a filesystem without hard links
+the bytes are written in place front to back, so a run killed mid-copy
+leaves a file with only the line-2 marker, which the next run refuses by
+name rather than deletes. `--visible-map` is never abbreviated: argparse
+would otherwise read `--v X`, an error before the flag existed, as a
+request to write X.
+The self-check reads the finished map back against every rule; a whole
+value, a pattern match or a masked tail showing a value's character
+anywhere but the tool's own fixed wording means no map.
 
 ## Sharing a config with the redactor
 

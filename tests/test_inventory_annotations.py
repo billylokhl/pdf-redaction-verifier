@@ -266,6 +266,46 @@ def test_each_condition_is_classified_as_mupdf_draws_it(data: bytes, expected: b
     assert len(inv.synthesized[0]) == int(expected)
 
 
+def _chained(where: str, need: bool) -> bytes:
+    """A text widget whose /AP /N stream ("n"), state entry ("entry") or
+    /AS ("as") is given through two references (`20 0 obj 21 0 R`); the
+    stored appearance 5 fills red, the synthesized one shows /V."""
+    annot = {"n": b"<< %s %s /AP << /N 20 0 R >> >>",
+             "entry": b"<< %s %s /AS /On /AP << /N << /On 20 0 R >> >> >>",
+             "as": b"<< %s %s /AS 20 0 R /AP << /N << /On 5 0 R >> >> >>"}[where] % (TX, RECT)
+    return build(annot, {20: b"21 0 R", 21: b"/On" if where == "as" else b"5 0 R"},
+                 NEED if need else FIELDS)
+
+
+@pytest.mark.parametrize("need", [False, True], ids=["stored", "need-appearances"])
+@pytest.mark.parametrize(("where", "synthesized", "drawn"), [
+    ("n", True, False), ("entry", False, False), ("as", False, True)])
+def test_a_chained_appearance_is_classified_as_mupdf_draws_it(
+        where: str, synthesized: bool, drawn: bool, need: bool) -> None:
+    # MuPDF's pdf_is_stream follows no reference chain: an /N stream two
+    # references away is no stream, so MuPDF synthesizes (fixes 3a-7d,
+    # which called it stored); a state entry two references away draws
+    # nothing, not synthesized; names and dictionaries (/AS) are read
+    # through references. /NeedAppearances synthesizes a widget whatever
+    # its /AP. Pinned by MuPDF's drawing: the synthesized appearance shows
+    # /V's text, the stored one fills red.
+    import pymupdf
+    data = _chained(where, need)
+    inv = _inventory(data)
+    assert inv.flags == (), inv.flags
+    expected = synthesized or need
+    assert _ours(data) == [expected]
+    assert len(inv.synthesized[0]) == int(expected)
+    page = pymupdf.open(stream=data, filetype="pdf")[0]
+    pix = page.get_pixmap()
+    red = any(pix.samples[i] > 200 and pix.samples[i + 1] < 60
+              for i in range(0, len(pix.samples), pix.n))
+    assert ("SSN" in page.get_text()) == expected
+    assert red == (drawn and not need)
+    found = inv.annotations[0]
+    assert found is not None and found[0].appearance == (5 if drawn and not need else None)
+
+
 # An object whose value is a lone reference (`6 0 obj 7 0 R endobj`):
 # MuPDF follows it, qpdf --check warns "expected endobj" and the inventory
 # does not flag it -- outside this PR (reported); the gate disagrees.

@@ -50,6 +50,7 @@ import subprocess
 import sys
 import time
 from bisect import bisect_right
+from collections import deque
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -1288,6 +1289,8 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
     out["labels_missing"] = sum(1 for found in inv.labels if found is None)
     out["reachable_current"] = len(current_labels.reachable) if current_labels else 0
     out["graph_work"] = inv.graph_work
+    out |= drawing_measures(data, inv)
+    out |= cost_measures(data, inv)
 
     # Dead bodies, and dead object streams (#46 item 4: not decoded).
     dead = [u for u in inv.units if u.ref.kind is UnitKind.DEAD_BODY]
@@ -1297,6 +1300,359 @@ def measure(data: bytes, inv: Inventory) -> dict[str, int]:
         and isinstance(value := parsed(u.ref.start), PdfDict)
         and isinstance(kind := value.get(b"Type"), PdfName) and kind.raw == b"ObjStm")
     return out
+
+
+def drawing_measures(data: bytes, inv: Inventory) -> dict[str, int]:
+    """3a-7e-2 (ADR 0011 item 5), integers only. The current revision:
+    its live streams, DRAWABLE and ORPHANED; per body across revisions:
+    streams, drawable, structural, both, orphaned; orphans for the verdict
+    that the current revision does not call orphaned (older bodies, dead
+    bodies) and the converse (labelled only in an older revision).
+    Orphans by class, informational: each orphaned stream live in the
+    current revision by the use kind of the path that first reaches it
+    from the trailer (graph.UseKind, the nearest listed key on it:
+    thumbnail, piece_info, appearance, properties, ...), else referenced
+    only by objects nothing reaches (``unreachable_source``) or by nothing
+    (``unreferenced``); an object stream home to no live entry
+    (``objstm``); the verdict's dead and older bodies. The same classes
+    over the verdict's orphans only, per body (``orphan_body_class_*``:
+    an orphan of the current revision labelled in an older one is left
+    out, 3a-7e-3). The /Metadata
+    streams orphaned on an annotation or an ICC profile (both fail closed
+    today; the /Metadata allowlist's cost, for 3a-7e-3). And
+    the closure gap: streams MuPDF lists on the current revision's pages
+    -- each page's contents, its images and their soft masks
+    (get_images(full=True), form XObjects' included), its form XObjects,
+    and pdf_annot_ap of each annotation we do not call synthesized --
+    that we do not label DRAWABLE (measured, never widened into the
+    lists: ADR 0011's Q2 note)."""
+    out: dict[str, int] = {}
+    current = inv.labels[0] if inv.labels else None
+    live = inv.bodies_by_number(0)
+    streams = {ref for ref in live.values() if ref.within is None and ref.start in inv.stream_data}
+    orphans = inv.orphaned(0)
+    out["streams_current"] = len(streams)
+    out["drawable_current"] = len(current.drawable) if current is not None else 0
+    out["orphaned_current"] = len(orphans)
+    bodies = inv.body_labels
+    out["bodies_streams"] = len(bodies)
+    out["bodies_drawable"] = sum(1 for b in bodies.values() if b.drawable)
+    out["bodies_structural"] = sum(1 for b in bodies.values() if b.structural)
+    out["bodies_drawable_structural"] = sum(1 for b in bodies.values()
+                                            if b.drawable and b.structural)
+    verdict = {unit for unit, b in bodies.items() if b.orphaned}
+    out["bodies_orphaned"] = len(verdict)
+    out["orphaned_older_only"] = len(verdict - orphans)
+    out["orphaned_current_labelled_older"] = len(orphans - verdict)
+    classes: dict[str, int] = {}
+    body_classes: dict[str, int] = {}  # the verdict's orphans only (3a-7e-3)
+
+    def count(name: str, unit: UnitRef) -> None:
+        classes[name] = classes.get(name, 0) + 1
+        if unit in verdict:
+            body_classes[name] = body_classes.get(name, 0) + 1
+    for unit in verdict - orphans:
+        count("dead_body" if unit.kind is UnitKind.DEAD_BODY else "older_body", unit)
+    # From the trailer, breadth first over references resolving in the
+    # current revision: each object's use kind, the nearest listed one on
+    # the path that first reaches it (graph.use_kind; OTHER inherits its
+    # holder's, so a /PieceInfo dictionary's private streams are piece_info).
+    orphan_numbers = {unit.obj for unit in orphans}
+    kind: dict[int, str] = {}
+    metadata: dict[int, list[int]] = {}  # an orphan's reachable /Metadata holders
+    queue: deque[int] = deque()
+
+    def resolves(number: int, gen: int) -> bool:
+        entry = inv.entry(number, 0)
+        return number in live and (entry[2] if entry is not None and entry[0] == 1 else 0) == gen
+    for edge in (inv.graph.trailers[0] if inv.graph.trailers else ()):
+        if resolves(edge.num, edge.gen) and edge.num not in kind:
+            kind[edge.num] = edge.kind.value
+            queue.append(edge.num)
+    referenced: set[int] = set()
+    while queue:
+        number = queue.popleft()
+        for edge in inv.graph.edges.get(live[number], ()):
+            if not resolves(edge.num, edge.gen):
+                continue
+            if edge.num in orphan_numbers and edge.path and edge.path[-1] == b"Metadata":
+                metadata.setdefault(edge.num, []).append(number)
+            if edge.num not in kind:
+                use = edge.kind.value
+                kind[edge.num] = kind[number] if use == "other" else use
+                queue.append(edge.num)
+    for number, ref in live.items():  # references from objects nothing reaches
+        if number not in kind:
+            referenced.update(e.num for e in inv.graph.edges.get(ref, ()))
+    annotations = ({a.number for a in (inv.annotations[0] or ()) if a.number is not None}
+                   if inv.annotations else set())
+    drawable = current.drawable if current is not None else frozenset()
+    parser = ObjectParser(data)
+    ends = {u.ref.start: u.spans[0].end for u in inv.units
+            if u.ref.within is None and u.ref.kind is UnitKind.OBJECT}
+
+    def value_of(number: int) -> PdfValue | None:
+        ref = live.get(number)
+        if ref is None or ref.within is not None:
+            return None
+        obj = parser.parse_indirect_at(ref.start, ends.get(ref.start, len(data)))
+        return obj.value if obj is not None else None
+    meta = {"annotation": 0, "icc": 0, "other": 0}
+    for unit in orphans:
+        number = unit.obj if unit.obj is not None else -1
+        value = value_of(number)
+        if isinstance(value, PdfDict) and _name_of(value.get(b"Type")) == b"ObjStm":
+            count("objstm", unit)
+        elif number in kind:
+            count(kind[number], unit)
+        else:
+            count("unreachable_source" if number in referenced else "unreferenced", unit)
+        for holder_number in metadata.get(number, [])[:1]:
+            holder = value_of(holder_number)
+            if holder_number in annotations or (isinstance(holder, PdfDict)
+                                                and _name_of(holder.get(b"Type")) == b"Annot"):
+                meta["annotation"] += 1
+            elif (live.get(holder_number) in drawable and isinstance(holder, PdfDict)
+                  and isinstance(holder.get(b"N"), PdfInt) and holder.get(b"Subtype") is None
+                  and holder.get(b"FunctionType") is None):
+                meta["icc"] += 1
+            else:
+                meta["other"] += 1
+    for name, n in classes.items():
+        out[f"orphan_class_{name}"] = n
+    for name, n in body_classes.items():
+        out[f"orphan_body_class_{name}"] = n
+    for name, n in meta.items():
+        out[f"orphan_metadata_{name}"] = n
+    out |= _closure_gap(data, inv, drawable)
+    return out
+
+
+# 3a-7e-3: an XMP packet's encoded runs (ADR 0011 item 5's XMP bullet; R7),
+# scanned here in eval only -- labels.py reads no content; the XMP decoder
+# (3b/3c) is where the rule is enforced. A run is at least 48 bytes once
+# decoded, so a UUID or a short digest is not one.
+_XML_BREAKS = re.compile(rb"&#(?:x[0-9A-Fa-f]{1,2}|[0-9]{1,3});")
+_BASE64_RUN = re.compile(rb"(?:[A-Za-z0-9+/][\t\n\r ]*){64,}={0,2}")
+_HEX_RUN = re.compile(rb"(?:[0-9A-Fa-f]{2}[\t\n\r ]*){48,}")
+_ASCII85_RUN = re.compile(rb"<~([!-u\t\n\r z]{60,}?)~>")
+_QP_RUN = re.compile(rb"(?:=[0-9A-F]{2}|=\r?\n|[!-<>-~\t ]){64,}")
+_IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"II*\x00",
+                     b"MM\x00*", b"\x00\x00\x00\x0cjP  \r\n\x87\n", b"\xff\x4f\xff\x51",
+                     b"BM", b"\x97JB2\r\n\x1a\n")
+_XMP_DECODED_CAP = 64 << 20  # bytes of a packet inflated, at most
+
+
+def _xmp_scan(packet: bytes) -> tuple[bool, bool, bool]:
+    """(holds an image, holds binary nothing accounts for, holds a run
+    that does not decode): every base64, hex, ASCII85 or quoted-printable
+    run in *packet* decoded, and an image signature, or else bytes that are
+    not text (a tenth or more outside printable ASCII and whitespace),
+    looked for in what it decodes to."""
+    import base64
+    import binascii
+    import quopri
+    text = _XML_BREAKS.sub(b"", packet)
+    found: list[bytes] = []
+    failed = False
+    for match in _BASE64_RUN.finditer(text):
+        run = re.sub(rb"[\t\n\r ]", b"", match.group())
+        try:
+            found.append(base64.b64decode(run + b"=" * (-len(run) % 4)))
+        except (binascii.Error, ValueError):
+            failed = True
+    for match in _HEX_RUN.finditer(text):
+        found.append(bytes.fromhex(re.sub(rb"[\t\n\r ]", b"", match.group()).decode()))
+    for match in _ASCII85_RUN.finditer(text):
+        try:
+            found.append(base64.a85decode(match.group(1), ignorechars=b" \t\n\r"))
+        except ValueError:
+            failed = True
+    for match in _QP_RUN.finditer(text):
+        if match.group().count(b"=") >= 8:
+            found.append(quopri.decodestring(match.group()))
+    image = binary = False
+    for run in found:
+        if len(run) < 48:
+            continue
+        if run.startswith(_IMAGE_SIGNATURES) or (run[:4] == b"RIFF" and run[8:12] == b"WEBP"):
+            image = True
+        elif sum(1 for b in run if b < 32 and b not in b"\t\n\r" or b > 126) * 10 >= len(run):
+            binary = True
+    return image, binary, failed
+
+
+def cost_measures(data: bytes, inv: Inventory) -> dict[str, int]:
+    """3a-7e-3 (ADR 0011 items 5 and 7; the owner's cost briefing),
+    integers only. ``graph_sum``: item 7's own quantity, the sum over
+    revisions of live objects and their edges, against ``graph_work``.
+    The XMP packets the labels call STRUCTURAL, per body across revisions
+    and in the current revision, scanned for an image or for binary (R7's
+    cost; in eval only, see _xmp_scan; ``xmp_flag_bodies`` either), and
+    those the scan does not decode: a filter other than Flate, or a run
+    that does not decode. ``graph_sum`` counts every revision, a revision
+    whose labels are shared with its predecessor's (reused) too. ``page_thumb_legacy``: whether today's CLI (#133,
+    verify._thumb_carrier) marks a page of the current revision as
+    carrying a /Thumb, or fails that check -- the thumbnail orphans' cost
+    already paid."""
+    out: dict[str, int] = {}
+    total = 0
+    for revision in range(inv.revisions):
+        live = inv.bodies_by_number(revision)
+        total += len(live) + sum(len(inv.graph.edges.get(ref, ())) for ref in live.values())
+    out["graph_sum"] = total
+    parser = ObjectParser(data)
+    ends = {u.ref.start: u.spans[0].end for u in inv.units
+            if u.ref.within is None and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)}
+    current = set(inv.bodies_by_number(0).values())
+    counts = {"xmp_bodies": 0, "xmp_image_bodies": 0, "xmp_binary_bodies": 0,
+              "xmp_undecoded_bodies": 0, "xmp_image_current": 0, "xmp_binary_current": 0,
+              "xmp_flag_bodies": 0}
+    for unit, labels in inv.body_labels.items():
+        if StructuralKind.XMP not in labels.structural:
+            continue
+        counts["xmp_bodies"] += 1
+        obj = parser.parse_indirect_at(unit.start, ends.get(unit.start, len(data)))
+        head = obj.value if obj is not None and isinstance(obj.value, PdfDict) else None
+        filters = head.get(b"Filter") if head is not None else None
+        names = ([f.raw for f in filters.items if isinstance(f, PdfName)]
+                 if isinstance(filters, PdfArray) else
+                 [filters.raw] if isinstance(filters, PdfName) else [] if filters is None else None)
+        span = inv.stream_data[unit.start]
+        raw = data[span.start:span.end]
+        if names == []:
+            packet: bytes | None = raw
+        elif names == [b"FlateDecode"] and (head is None or head.get(b"DecodeParms") is None):
+            decoded = flate_decode(raw, None, Budget(file_size=_XMP_DECODED_CAP // 64))
+            packet = decoded.data if decoded.complete else None
+        else:
+            packet = None
+        if packet is None:
+            counts["xmp_undecoded_bodies"] += 1
+            continue
+        image, binary, failed = _xmp_scan(packet)
+        counts["xmp_undecoded_bodies"] += failed
+        counts["xmp_flag_bodies"] += image or binary  # R7's class: an image, or binary
+        counts["xmp_image_bodies"] += image
+        counts["xmp_binary_bodies"] += binary and not image
+        counts["xmp_image_current"] += image and unit in current
+        counts["xmp_binary_current"] += binary and not image and unit in current
+    out |= counts
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            out["page_thumb_legacy"] = int(_page_thumb(doc))
+    except Exception:
+        out["page_thumb_legacy_error"] = 1
+    return out
+
+
+def _page_thumb(doc: pymupdf.Document) -> bool:
+    """Whether today's CLI marks a page as carrying a thumbnail (#133,
+    verify._thumb_carrier, PAGE_THUMBNAIL or HIDDEN_ITEM_FAILED): a /Thumb
+    on the page or on a Pages node up its /Parent chain, or a walk that
+    fails (a /Parent not a reference, a cycle). verify.py is not imported:
+    its OCR imports would add a third of a second to every oracle run."""
+    memo: dict[int, bool] = {}  # a Pages node: it or a node above has /Thumb
+    for index in range(doc.page_count):
+        xref = doc.page_xref(index)
+        if doc.xref_get_key(xref, "Thumb")[0] != "null":
+            return True
+        path: list[int] = []
+        node, found = xref, False
+        while True:
+            kind, value = doc.xref_get_key(node, "Parent")
+            if kind == "null":
+                break
+            parent = int(value.split()[0]) if kind == "xref" else 0
+            if parent <= 0 or parent in path or parent == xref \
+                    or len(path) >= doc.xref_length():
+                return True  # the walk fails: marked
+            if parent in memo:
+                found = memo[parent]
+                break
+            path.append(parent)
+            if doc.xref_get_key(parent, "Thumb")[0] != "null":
+                found = True
+                break
+            node = parent
+        for walked in path:
+            memo[walked] = found
+        if found:
+            return True
+    return False
+
+
+def _name_of(value: PdfValue | None) -> bytes | None:
+    return value.raw if isinstance(value, PdfName) else None
+
+
+def _closure_gap(data: bytes, inv: Inventory, drawable: frozenset[UnitRef]) -> dict[str, int]:
+    """Streams MuPDF lists on the current revision's pages that are not
+    DRAWABLE, by listing (see drawing_measures); not listed (no keys)
+    without a page list or labels, or when MuPDF reads another page count
+    or the file is encrypted."""
+    found: dict[str, set[int]] = {"contents": set(), "images": set(), "xobjects": set(),
+                                  "annotations": set()}
+    pages = inv.pages[0] if inv.pages else None
+    if pages is None or not inv.labels or inv.labels[0] is None:
+        return {}
+    stored = {(a.page, a.number) for a in (inv.annotations[0] or ())
+              if not a.synthesized and a.number is not None}
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        if mupdf_encrypted(doc) or doc.page_count != len(pages):
+            return {}
+        for index, page in enumerate(doc):
+            found["contents"] |= set(page.get_contents())
+            found["images"] |= {n for img in page.get_images(full=True) for n in img[:2] if n}
+            found["xobjects"] |= {xo[0] for xo in page.get_xobjects() if xo[0]}
+            for annot in _annots(page):
+                number = M.pdf_to_num(M.pdf_annot_obj(annot))
+                if (index, number) in stored:
+                    found["annotations"].add(_drawn_stream(M.pdf_annot_ap(annot)))
+    drawn = {unit.obj for unit in drawable}
+    listed: set[int] = set()
+    gap: set[int] = set()
+    out: dict[str, int] = {}
+    for name, held in found.items():
+        held.discard(0)
+        listed |= held
+        missing = set()
+        for n in held:
+            body = inv.body(n, 0)
+            if n not in drawn and body is not None and body.start in inv.stream_data:
+                missing.add(n)
+        out[f"closure_gap_{name}"] = len(missing)
+        gap |= missing
+    out["mupdf_listed"] = len(listed)
+    out["closure_gap"] = len(gap)
+    return out
+
+
+M = pymupdf.mupdf
+
+
+def _annots(page: pymupdf.Page) -> list[Any]:
+    """MuPDF's annotation list on a page: annotations, then widgets."""
+    raw = M.pdf_page_from_fz_page(page.this)
+    found = []
+    annot = M.pdf_first_annot(raw)
+    while annot.m_internal:
+        found.append(annot)
+        annot = M.pdf_next_annot(annot)
+    widget = M.pdf_first_widget(raw)
+    while widget.m_internal:
+        found.append(widget)
+        widget = M.pdf_next_widget(widget)
+    return found
+
+
+def _drawn_stream(obj: Any) -> int:
+    """The number of the stream MuPDF draws for *obj* (pdf_annot_ap's
+    answer): a reference to a stream, one reference away -- pdf_is_stream
+    follows no chain, and MuPDF then draws nothing (0)."""
+    if obj.m_internal and M.pdf_is_indirect(obj) and M.pdf_is_stream(obj):
+        return int(M.pdf_to_num(obj))
+    return 0
 
 
 def regions(inv: Inventory) -> dict[str, dict[str, int]]:

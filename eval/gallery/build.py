@@ -441,7 +441,9 @@ def build(out: Path, results_path: Path | None = None,
         tmpdir = Path(tmp)
         for case_id in selected:
             case = REGISTRY[case_id]
-            if getattr(case, "perf", False):
+            # A bomb case is never scanned here (tests/test_bomb_cases.py
+            # judges it out of process); it counts with the large files.
+            if getattr(case, "perf", False) or getattr(case, "bomb", None) is not None:
                 skipped_perf += 1
                 continue
             if case.requires - have:

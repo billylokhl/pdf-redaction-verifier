@@ -63,6 +63,8 @@ def _cells() -> dict[str, Cell]:
             gap, "a line of pixels OCR reports reading but leaves out of its result"),
         "live.pixels.oversized-page": Cell(
             flagged, "pixels on a page whose OCR render is too large for Vision to read whole"),
+        "live.pixels.oversized-image": Cell(
+            gap, "a drawn image with far more detail than the page's OCR render resolves"),
         # off-page — outside the visible crop/media box
         "off-page.plain": Cell(read, "text outside the crop/media box"),
         "off-page.font": Cell(read, "font-coded text outside the page, font has a Unicode map"),
@@ -134,6 +136,13 @@ def _cells() -> dict[str, Cell]:
         "unindexed.pixels": Cell(gap, "images outside any indexed object"),
         "unindexed.container": Cell(gap, "containers outside any indexed object"),
         # matching limits
+        # hostile -- input made to cost a reader time or memory (Phase 3d)
+        "hostile.flate-bomb": Cell(flagged, "a value behind a decompression bomb"),
+        "hostile.deep-nesting": Cell(flagged, "a value in a file with deeply nested objects"),
+        "hostile.page-tree-cycle": Cell(read, "a value on a page in a cyclic page tree"),
+        "hostile.huge-page-count": Cell(
+            flagged, "a value in a file whose page tree claims an absurd page count"),
+        "hostile.operator-flood": Cell(read, "a value among a flood of content operators"),
         "match.page-break": Cell(read, "a value split across a page break, halves adjacent"),
         "match.page-break-furniture": Cell(
             read, "a page-break split with a header/footer between", tier="review"),
@@ -192,9 +201,9 @@ NEW_CELL_ALLOWLIST: dict[str, int] = {}
 
 def parts(cell_id: str) -> tuple[str, str | None, str | None]:
     """(row, column, qualifier) of a coverage cell; column is None for
-    match.* and false-alarm.* ids."""
+    match.*, false-alarm.* and hostile.* ids."""
     row, _, rest = cell_id.partition(".")
-    if row in ("match", "false-alarm"):
+    if row in ("match", "false-alarm", "hostile"):
         return row, None, rest
     column, _, qualifier = rest.partition(".")
     return row, column, qualifier or None

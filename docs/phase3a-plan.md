@@ -579,6 +579,104 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     and DRAWABLE labels is treated as drawable -- a page's /Contents also named by the
     catalog's /Metadata is labelled XMP while it is drawn, and the worst status of every
     label's decoder must win (ADR 0011 item 5), never the XMP decoder alone.
+    Done (3a-7e-2 PR): DRAWABLE, ORPHANED and per-body labels, with no flags (R3) and no
+    new gate (Q5).
+    - `Annotation.appearance` (Q3): the stream MuPDF draws for an annotation it does not
+      synthesize, pinned against `pdf_annot_ap` on every 7d fixture.
+    - `drawable.py` walks the drawing closure from each page (its /Contents, its own or
+      inherited /Resources, its own /Group), each drawn appearance, and /AcroForm /DR when
+      an annotation is synthesized. The walk is a key-path automaton over the graph's
+      edges, following item 5's closed list per role; a key outside the lists leads
+      nowhere drawable.
+    - XObject, font and halftone roles are decided by /Subtype or /HalftoneType, through
+      one reference. A value the walk cannot read gets the narrower reading.
+    - Colour-space elements follow Q2 (an ADR 0011 note).
+    - `RevisionLabels.drawable` holds each revision's set; `Inventory.orphaned(r)`
+      derives ORPHANED per revision.
+    - `Inventory.body_labels` gives each stream body's labels across the revisions it
+      lives in (BodyLabels; a body with none is ORPHANED, a dead body included).
+    - The drawable set is kept, by identity, when the starts are the same, so is the
+      catalog's /AcroForm as written, and every changed body the walk read is no stream,
+      decided no role and holds the same references. A rewritten page is not walked
+      again. Each condition has a REUSE test that fails under its mutant. A corpus
+      cross-check against fresh walks: 0 differences.
+    - The closure gap against PyMuPDF's page listings is 0 in the corpus (5,875 streams
+      listed), the case library and fuzz. Orphan classes and the per-body numbers are in
+      the ADR 0011 note.
+    Measured on the final code:
+    - corpus 1,920 / 153 / 0, unchanged; case library 437/27/0 (464 cases); fuzz
+      501/1,499/0;
+    - current revisions: 15,681 live streams, 10,919 DRAWABLE, 3,056 ORPHANED (294 files);
+    - per body: 15,947 stream bodies, 11,508 drawable, 1,926 structural, 0 both, 2,513
+      orphaned (242 files);
+    - graph work per file p50 3,221, p99 58,990, max 323,018 (was 2,573, 47,960,
+      232,020);
+    - oracle p50 0.237 s, max 14.5 s, with the closure-gap listing in measure();
+    - lines per charged unit at most about 12, not growing from n to 8n (walk_only);
+    - retained memory 0.50-0.63 bytes per unit of the labels' own work, the per-body
+      labels 0.24-0.76.
+    Mutants (after review round 1): 51 tried, all caught but three charge mutants (a
+    node's pop, a body lookup, the reuse comparison), each at most 13.7 lines per unit
+    without growth, covered by another charge on the same loop. (Round 1 found the
+    decision index's charge is not so covered: one image with n direct entries grew
+    4.45x; the big-dictionary shape now catches it.)
+    Review of #158, round 1: (B1, B1b) a stream counts only one reference away, as
+    MuPDF's pdf_is_stream reads it -- an /N naming an object whose value is a reference
+    to a stream is synthesized by MuPDF (3a-7d called it stored: fixed here, its own
+    CHANGELOG line), a state entry so given draws nothing; names and dictionaries are
+    read through references. (B2) A form's /Subtype2 replaces its /Subtype (MuPDF's Do
+    operator). (B3) A font is Type3 as pdf_load_font decides (/CharProcs under an
+    unknown or absent /Subtype guesses it); a descendant is a CID font. Names deciding
+    a role are read through up to nine references, as MuPDF reads a name. Each pinned
+    by MuPDF's drawing. (B4) The ICC /Alternate gap recorded in ADR 0011's Q2 note, not
+    widened; what the closure-gap measure cannot see stated; a "wider than MuPDF" note
+    for 3b and 4a/4b. (B5) The big-dictionary shape. (B6) Reuse across a revision
+    without a page list tested.
+    Re-measured on the round-1 code: corpus 1,920 / 153 / 0; case library 440/27/0 (467
+    cases, main's additions included); fuzz 501/1,499/0. Every per-file measure of
+    every corpus, case-library and fuzz file is unchanged but graph work (p99 58,966,
+    max 322,346): no corpus file has a chained /AP stream, so SYNTHESIZED stays 130
+    unflagged files and 373 units (139 files and 400 annotations over the whole
+    corpus), the closure gap 0.
+    Done (3a-7e-3 PR): item 7's test and the cost briefing (eval/spikes/RESULTS.md, "Phase
+    3a-7e"; summary below), with no flags and no verdict change.
+    - build.py runs the graph, pages, trees, annotations and labels through one seam,
+      `_reference_graph`; tests/test_inventory_stage.py scales revisions and objects
+      together (n vs 8n): within the limit at n, flagged BUDGET_EXHAUSTED at 8n (about 64x
+      the work); 10.2-10.6 lines per charged unit, bound 15, no growth; a wall-clock
+      backstop per part at 1,000 vs 8,000 pages (interleaved best of two, the collector
+      off; clean 0.99-1.16x at load averages 3-92, bound 1.75x each; mutants caught in
+      pages 2.9-3.9x, trees 3.4-3.6x, the drawing walk 4.2x, the reachable walk 6-7x whole,
+      annotations' read set sorted 6.4x; not annotations' per-page set as a list, 1.0x).
+    - eval: `graph_sum`, the XMP image scan (eval only), per-body orphan classes, today's
+      page-thumbnail mark (#133), `labels_cost`, the REACHABLE share of the oracle.
+    - ADR 0011 wording: the Q3 note (an /N chain is synthesized only when /AS is absent or
+      names nothing in that stream's dictionary) and the Q2 note (MuPDF draws the
+      /Alternate whenever it cannot use the profile, and with a Separation or Indexed
+      alternate rejects every profile, a valid one included).
+    Review of #165, round 1: the thumbnail overlap stated (below); deviations and the
+    corpus constant corrected; the c S R bound reworded; the Q2 note; per-part wall-clock
+    bounds (pages' and trees' C-level mutants escaped the whole stage's); the XMP class
+    an image or binary, undecodable runs counted; an annotation on every page of the
+    shape; a fixture for the Q3 chain with /AS naming an entry.
+    Briefing summary (1,920 unflagged corpus files; would exit 2 once labels gate):
+    orphans per body 242 files (current revision 294; the 52 between, drawn in an older
+    revision, are 4b's under decision D), with /Properties holding forms or /Contents its
+    own line at 16 files, failing closed; hint streams 400 (ADR 416, -3.8%); XMP images 516
+    (519); JavaScript 86 (89, -3.4%); synthesized 130 (139 over the whole corpus, -6.5%);
+    output intents 0; any of them 707 (about 728), 860 of 2,073 corpus files (41.5%) with
+    the inventory's 153. At least 194 of the 707 already exit 2 today (a page thumbnail
+    #133 marks: every thumbnail-orphan file), so labels add at most 513 new exit-2 files
+    among the unflagged (26.7%); over the corpus at least 244 of the 860; the full
+    overlap is 3a-12's. Item 7: largest graph work 322,346 units for a sum of 6,062
+    objects and edges; R revisions that each change what the stage reads cost about c S R
+    (S the live objects and edges, c 51-69 on the test's shape, median 120 on the corpus;
+    a 1 MB file with 5,000 objects reaches the limit after roughly 100 such saves:
+    DESIGN.md); labels keep at most a byte per unit. Oracle p50 0.616 s, max 54.5 under a load average
+    of 25-35 (REACHABLE 1.9% of it). Gates: corpus 1,920 / 153 / 0; case library 440/27/0
+    (467); fuzz 501/1,499/0. Remaining: 3a-8, 3a-9 (Lane A2), 3a-12 (Lane A), 3a-13 (Lane
+    G), 3a-14 (5 PRs); 3b about
+    7-9 PRs with its plan.
   OWNER DECISIONS for 3a-7 (P2-P5 decided 2026-10-11 as recommended, decision 9 below; P1
   decided 2026-10-14 as (a), decision 11 below): P1 the annotation gate's method -- a trace
   and 4x-pixel comparison against a stand-in, not exact below that resolution (3a-7d above); decided (decision 9): P2 how the gate reads libqpdf's inherited page

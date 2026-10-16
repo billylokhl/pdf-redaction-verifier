@@ -49,6 +49,20 @@ def redacted_no_gc(path):
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
   `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
+- **`bomb`** (`Bomb(wall_clock_s, memory_bytes, today=None)`): a bomb or
+  hang case (`families/bombs.py`, Phase 3d). It is never scanned in the
+  test process -- `test_case_library`, the gallery, the scorecard and its
+  differential skip it -- and `tests/test_bomb_cases.py` judges it out of
+  process through `redaction_verifier.sandbox` (`caselib/bombrun.py`),
+  its whole process group killed at its caps -- on macOS, on Linux's
+  Python 3.13 CI leg, or with `RUN_BOMBS=1` (once per platform per CI run;
+  nothing in it depends on the Python version). `today` pins how today's
+  tool fails to answer, where it does not (`"hang"`, `"memory"`,
+  `"error:CODE"`, exit 2), or, as an `Expect`, the exact answer it gives
+  when it finds the value but files it under the wrong storage (COVERAGE's
+  footnote ¹⁵); the test fails once that changes, as a closed known gap
+  does. Each bomb's built bytes are checked against `cases.lock.json`
+  there too. The cells are COVERAGE.md's `hostile.*` ("Hostile input").
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
   needs to be judged is missing — or, with `no-ocr`, where OCR is present
@@ -620,6 +634,18 @@ Build and judge cases outside pytest, keeping the PDFs and reports:
 ```bash
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
+```
+
+The case library is also how `--visible-map` proves it changes no
+verdict: `tests/test_visible_map_cli.py` runs one case from every
+(family, row, truth) cell with the flag off and on and compares exit
+code, stdout and the `--json` report, and `tests/test_visible_map.py`
+does the same in-process with and without a sink at the scan's hooks.
+`RUN_MAP_IDENTITY=1` runs every buildable case instead (grids included;
+`perf` cases stay excluded):
+
+```bash
+RUN_MAP_IDENTITY=1 pytest tests/test_visible_map_cli.py tests/test_visible_map.py -k case_library
 ```
 
 `tests/test_views_text_readings.py` also builds every case (`perf` ones
@@ -1213,7 +1239,67 @@ What each part of the output means:
   kind, files whose hint stream sits under a stale `/L` (an updated
   linearized file: coordinator decision Q8), files with a revision
   without labels, and percentiles of `graph_work`, the work the
-  reference graph's stages charged (ADR 0011 item 7).
+  reference graph's stages charged (ADR 0011 item 7). `labels.drawing`
+  (since 3a-7e-2; `scorecard.inventory.drawing_measures`), each as files
+  with any and the total over the unflagged files:
+  - the current revision's live streams, `DRAWABLE` and `ORPHANED`
+    (`streams_current`, `drawable_current`, `orphaned_current`);
+  - per body across revisions: stream bodies, drawable, structural, both,
+    orphaned (`bodies_*`);
+  - orphans for the verdict that the current revision does not call
+    orphaned (`orphaned_older_only`), and the converse
+    (`orphaned_current_labelled_older`);
+  - the current revision's orphans by class (`orphan_class_*`): the use
+    kind of the path that first reaches each from the trailer (thumbnail,
+    piece_info, appearance, properties, ...), `unreachable_source`,
+    `unreferenced`, `objstm` (home to no live entry), and the verdict's
+    `dead_body` and `older_body`; and the same classes over the verdict's
+    orphans only, per body (`orphan_body_class_*`, since 3a-7e-3: an
+    orphan of the current revision labelled in an older one is left out);
+  - `/Metadata` streams orphaned on an annotation or an ICC profile
+    (`orphan_metadata_*`, for 3a-7e-3's briefing);
+  - the closure gap, measured and never gated: streams MuPDF lists on the
+    current revision's pages that are not `DRAWABLE` (`closure_gap`, and by
+    listing `closure_gap_contents`, `_images` (with soft masks),
+    `_xobjects` and `_annotations` (`pdf_annot_ap`)), out of
+    `mupdf_listed`. Any gap goes to an ADR 0011 note, never into the
+    lists.
+
+  `labels_cost` (since 3a-7e-3; `scorecard.inventory.cost_measures`;
+  the owner's cost briefing, eval/spikes/RESULTS.md), over the unflagged
+  files:
+  - `exit_2_files`: files that would exit `2` once labels gate (3b's
+    verdict; 4a's decoders), each counted once, and `exit_2_by_class`
+    (`orphan` per body, `hint_stream`, `xmp_image` -- an image or
+    binary --, `javascript`, `synthesized`, `output_intent`) and
+    `exit_2_only_class` (files with one class only);
+    `exit_2_files_marked_today`: those that already exit `2` today for a
+    page thumbnail (`page_thumb_legacy`: #133's `PAGE_THUMBNAIL`, or its
+    check failing, read without importing verify.py) -- a lower bound on
+    the overlap with today's exit `2`, which 3a-12 measures in full;
+    `exit_2_files_but_thumbnails_marked_today` leaves out only the files
+    whose sole class is page-thumbnail orphans so marked;
+  - `orphan_files_current` beside the per-body count, and
+    `orphan_body_classes` (files and streams per class);
+  - `xmp`: the XMP packets labelled `STRUCTURAL`, per body across
+    revisions, holding an image (`xmp_image_bodies`; `xmp_image_current`
+    in the current revision) or binary nothing accounts for
+    (`xmp_binary_*`), either (`xmp_flag_bodies`, the `xmp_image` class),
+    or that the scan does not decode -- a filter other than Flate, or a
+    run that does not decode (`xmp_undecoded_bodies`). The scan is eval's,
+    not the inventory's: every XML numeric character reference
+    (`&#xA;` and the like) is removed, then every base64, hex, ASCII85 or
+    quoted-printable run of at least 48 decoded bytes is looked at for an image
+    signature (JPEG, PNG, GIF, TIFF, BMP, JPEG 2000, JBIG2, WebP), else
+    for bytes that are not text (ADR 0011 item 5's XMP bullet; R7);
+  - `graph_work` against `graph_sum`, item 7's own sum over revisions of
+    live objects and their edges (every revision, one whose results are
+    reused included): percentiles of each, the sum of the file with the
+    largest work, and work per unit of sum.
+
+  `timing.reachable_share` (since 3a-7e-3): the `reachable` check's
+  share of each agreeing file's oracle time, and over the run
+  (`reachable_share_total`).
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform
@@ -1285,8 +1371,10 @@ own machine (`sha256sum`) when a number needs explaining.
 - **Scheduled, weekly, macOS**: the full case library including grids,
   with OCR (`REQUIRE_FULL_ENV=1`), so the grids' OCR-free labels are
   checked to still hold with OCR present
-  (`.github/workflows/scorecard-weekly.yml`). A run takes about 35 minutes
-  (pytest ~12, scorecard diff ~15, metrics ~7); the job's limit is 60.
+  (`.github/workflows/scorecard-weekly.yml`). A run recently took 58-62
+  minutes (pytest ~22, scorecard diff ~23, metrics ~12; about 35 when first
+  measured, about 50 on 2026-10-12); the job's limit is 120. Each branch has its own queue, so
+  a branch can dispatch it as its pre-merge macOS+OCR check (#147).
 - Both macOS jobs — this one and `full-macos` in `tests.yml`, which runs
   the suite on every PR — use `macos-latest` (macOS 26 as of this
   writing), so a newer macOS is covered only by local runs. Run the case

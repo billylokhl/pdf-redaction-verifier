@@ -554,10 +554,10 @@ def test_a_spent_budget_leaves_the_rest_unlabelled() -> None:
     data = make(catalog=b" /Metadata 4 0 R", streams={4: (b"", XMP)},
                 updates=({3: PAGE % b" /Foo 5 0 R", 5: b"(new)"},))
     whole = Budget(file_size=len(data))
-    build_inventory(data, budget=whole)
-    # Just short of the whole: the labels, built last, stop first (the
-    # current revision, walked last).
-    limits = Limits(work_floor=whole.work - 1, work_per_byte=0)
+    after, _, _ = charged_steps(data, "build_body_labels", whole)
+    # Just short of the labels' whole: they stop first (the current
+    # revision, walked last); the per-body labels, built after, get none.
+    limits = Limits(work_floor=whole.work - after - 1, work_per_byte=0)
     inv = _inventory(data, limits)
     assert {f.reason for f in inv.flags} == {FlagReason.BUDGET_EXHAUSTED}
     assert inv.labels[0] is None and inv.labels[1] is not None
@@ -574,7 +574,7 @@ def test_graph_work_counts_the_graph_stages() -> None:
 
 def test_build_labels_runs_on_its_own() -> None:
     # No page list: nothing read, no labels.
-    assert build_labels(1, [[]], lambda n, r: None, lambda n, r: None, {}, ((),), (None,),
+    assert build_labels(1, [[]], lambda n, r: None, lambda n, r: None, {}, ((),), (None,), (None,),
                         [[]], None, Budget()) == (None,)
 
 

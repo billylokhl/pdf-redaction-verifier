@@ -13,8 +13,11 @@ on:
     - cron: "17 6 * * 1"   # Monday 06:17 UTC — an arbitrary off-peak time
   workflow_dispatch: {}
 
+# One queue per branch: a workflow-wide group lets a newer dispatch on
+# another branch replace (cancel) a pending one, and branches use this
+# run as their pre-merge macOS+OCR gate (#147).
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -29,8 +32,9 @@ jobs:
     # in all — pytest 12.4, scorecard diff (reference + candidate) 14.9,
     # metrics 6.8. The two runs before that default were cancelled at
     # the old 45-minute limit, their scorecard steps slowed by
-    # oversubscription.
-    timeout-minutes: 60
+    # oversubscription. By 2026-10-15 a run took 58-62 min (main's
+    # 38735403761: 58 min), so 60 cancelled runs mid-way; 120 leaves room.
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
