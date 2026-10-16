@@ -48,6 +48,8 @@ here logs input bytes or the child's output.
 from __future__ import annotations
 
 import os
+import queue
+import re
 import select
 import shutil
 import signal
@@ -69,6 +71,7 @@ MEMORY_BYTES = 4 << 30       # watchdog cap on the child group's physical footpr
 OUTPUT_BYTES = 64 << 20      # cap on what is read back from the child's stdout
 STDERR_BYTES = 64 << 10      # stderr is diagnostics only: keep its last part
 POLL_S = 0.05                # watchdog interval (see the overshoot note above)
+NICE = 10                    # the child runs below the parent (3b plan, blocker 4)
 PIPE_GRACE_S = 2.0           # how long the pipes may stay open after the child ends
 
 
@@ -89,8 +92,9 @@ class Limits:
 @dataclass(frozen=True)
 class Result:
     returncode: int | None       # None: killed by the parent (see ``killed``)
-    killed: str | None           # "wall-clock", "memory", "stray" (left its group),
-                                 # "reader-failed" (output may be incomplete), else None
+    killed: str | None           # "wall-clock", "memory", "cancelled", "stray" (left
+                                 # its group), "reader-failed" (output may be
+                                 # incomplete), else None
     stdout: bytes
     stdout_truncated: bool
     stderr_tail: str
@@ -111,15 +115,66 @@ def os_sandbox_available() -> bool:
 
 
 def limits_preamble(limits: Limits) -> str:
-    """Python the child runs first, before any untrusted work: its own
-    rlimits (CPU time, file size, no core dumps), and ``INPUT_FD``, the
-    input's descriptor, taken off its arguments."""
+    """Python the child runs first, before any untrusted work (3b-5a):
+
+    - ``INPUT_FD``, the input's descriptor, and the lifeline, the parent's
+      pid, the private directory and the package root, taken off its
+      arguments (the package root, a code path, goes first on sys.path);
+    - its own rlimits (CPU time, file size, no core dumps) and a lower
+      priority (nice +10);
+    - parent death: when the lifeline pipe (whose write end only the parent
+      holds) reaches EOF, or -- on macOS -- a kqueue watch sees the parent
+      exit, the child removes the private directory and kills its own
+      process group. On Linux, PR_SET_PDEATHSIG(SIGKILL) as well (the
+      parent spawns from one long-lived thread: it fires when the spawning
+      thread exits). Each re-checks ``getppid()`` once armed: a parent gone
+      before then is caught there. A child stuck in a long C call holds the
+      GIL, so its watch threads run only once the call returns; the CPU
+      rlimit bounds that, and on Linux PDEATHSIG does not wait for it (it
+      kills the child alone: the 3b child starts no processes of its own,
+      and 3d's OS sandbox denies fork)."""
     return (
-        "import resource, sys\n"
+        "import os, resource, shutil, signal, sys, threading\n"
         "INPUT_FD = int(sys.argv.pop(1))\n"
+        "_LIFELINE, _PARENT = int(sys.argv.pop(1)), int(sys.argv.pop(1))\n"
+        "_PRIVATE, _ROOT = sys.argv.pop(1), sys.argv.pop(1)\n"
+        "if _ROOT:\n"
+        "    sys.path.insert(0, _ROOT)\n"
         f"resource.setrlimit(resource.RLIMIT_CPU, ({limits.cpu_s}, {limits.cpu_s + 1}))\n"
         f"resource.setrlimit(resource.RLIMIT_FSIZE, ({limits.file_bytes}, {limits.file_bytes}))\n"
         "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+        f"os.nice({NICE})\n"
+        "def _orphaned():\n"
+        "    shutil.rmtree(_PRIVATE, ignore_errors=True)\n"
+        "    try:\n"
+        "        os.killpg(os.getpgrp(), signal.SIGKILL)\n"
+        "    finally:\n"
+        "        os._exit(70)\n"
+        "def _lifeline():\n"
+        "    try:\n"
+        "        while os.read(_LIFELINE, 64):\n"
+        "            pass\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "    _orphaned()\n"
+        "threading.Thread(target=_lifeline, daemon=True).start()\n"
+        "if sys.platform.startswith('linux'):\n"
+        "    import ctypes\n"
+        "    ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)\n"
+        "elif sys.platform == 'darwin':\n"
+        "    import select\n"
+        "    _KQ = select.kqueue()\n"
+        "    try:\n"
+        "        _KQ.control([select.kevent(_PARENT, select.KQ_FILTER_PROC, select.KQ_EV_ADD,\n"
+        "                                   select.KQ_NOTE_EXIT)], 0)\n"
+        "    except OSError:\n"
+        "        _orphaned()\n"
+        "    def _parent_exit():\n"
+        "        _KQ.control(None, 1)\n"
+        "        _orphaned()\n"
+        "    threading.Thread(target=_parent_exit, daemon=True).start()\n"
+        "if os.getppid() != _PARENT:\n"
+        "    _orphaned()\n"
     )
 
 
@@ -335,93 +390,275 @@ def _remove(path: Path) -> bool:
     return not path.exists()
 
 
-def run(child_code: str, input_path: Path, args: Sequence[str] = (),
-        limits: Limits = Limits()) -> Result:
-    """Run *child_code* (Python source) in a contained child process with
-    *input_path* open read-only on descriptor ``INPUT_FD``. The child sees
-    *args* as ``sys.argv[1:]``. Raises only SandboxUnavailable (the OS
-    sandbox was requested where it cannot apply); never for anything the
-    child does."""
+# ── The spawner: one long-lived thread starts every child ──────────────
+# Linux's PR_SET_PDEATHSIG fires when the *thread* that spawned the child
+# exits, not the process: every child is spawned from this one thread,
+# which lives as long as the parent, whatever thread calls start().
+_SPAWN_QUEUE: queue.Queue[tuple[Callable[[], Any], list[Any], threading.Event]] = queue.Queue()
+_SPAWNER: threading.Thread | None = None
+_SPAWNER_LOCK = threading.Lock()
+
+
+def _spawner_loop() -> None:
+    while True:
+        job, box, done = _SPAWN_QUEUE.get()
+        try:
+            box.append((True, job()))
+        except BaseException as exc:            # noqa: BLE001 -- handed back to the caller
+            box.append((False, exc))
+        done.set()
+
+
+def _on_spawner(job: Callable[[], Any]) -> Any:
+    """*job()* run on the spawner thread; its result, or its exception
+    raised here."""
+    global _SPAWNER
+    with _SPAWNER_LOCK:
+        if _SPAWNER is None or not _SPAWNER.is_alive():
+            _SPAWNER = threading.Thread(target=_spawner_loop, name="sandbox-spawner",
+                                        daemon=True)
+            _SPAWNER.start()
+    if threading.current_thread() is _SPAWNER:
+        return job()
+    box: list[Any] = []
+    done = threading.Event()
+    _SPAWN_QUEUE.put((job, box, done))
+    done.wait()
+    ok, value = box[0]
+    if not ok:
+        raise value
+    return value
+
+
+# ── The sweeper: private directories a dead parent left ────────────────
+_PRIVATE_PREFIX = "prv-child-"
+_PRIVATE_NAME = re.compile(r"prv-child-(\d+)-[A-Za-z0-9_]+\Z")
+
+
+def sweep(root: Path | None = None) -> int:
+    """Remove the private directories left by parents that died (killed
+    before they could, their child killed with them: PDEATHSIG cannot be
+    caught). Only a real directory -- never a link -- named exactly as
+    start() names one, owned by us, whose recorded parent pid is not
+    alive. Returns how many were removed. Spooled bytes never reach it
+    (opened and unlinked at once): what it removes is the child's own
+    temporary files."""
+    root = Path(tempfile.gettempdir()) if root is None else root
+    removed = 0
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return 0
+    for entry in entries:
+        match = _PRIVATE_NAME.match(entry.name)
+        if match is None:
+            continue
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            continue
+        parent = int(match.group(1))
+        if parent == os.getpid() or _alive(parent):
+            continue
+        if _remove(Path(entry.path)):
+            removed += 1
+    return removed
+
+
+# ── A running child ────────────────────────────────────────────────────
+class Child:
+    """A contained child started by ``start()``: ``cancel()`` it, or
+    ``wait()`` for its ``Result``. Its watchdog (wall clock, memory
+    footprint) and its output readers run in threads of their own, never
+    the caller's. As a context manager, any exception leaving the block --
+    ``KeyboardInterrupt`` included -- cancels the child, waits for it and
+    re-raises (a Ctrl-C reaches the parent's own interrupt path unchanged)."""
+
+    def __init__(self, proc: subprocess.Popen[bytes], private: Path, limits: Limits,
+                 lifeline: int, started: float) -> None:
+        self.proc, self.private, self.limits = proc, private, limits
+        self.started = started
+        self._lifeline: int | None = lifeline
+        self._cancelled = threading.Event()
+        self._done = threading.Event()
+        self._result: Result | None = None
+        assert proc.stdout is not None and proc.stderr is not None
+        self._out: list[bytes] = []
+        self._out_over: list[bool] = []
+        self._err: list[bytes] = []
+        self._err_over: list[bool] = []
+        self._stop = threading.Event()
+        self._failed: list[str] = []
+        self._readers = [
+            threading.Thread(target=_reader(_read_head, self._failed), daemon=True,
+                             args=(proc.stdout.fileno(), limits.output_bytes, self._out,
+                                   self._out_over, self._stop)),
+            threading.Thread(target=_reader(_read_tail, self._failed), daemon=True,
+                             args=(proc.stderr.fileno(), STDERR_BYTES, self._err,
+                                   self._err_over, self._stop))]
+        for t in self._readers:
+            t.start()
+        self._watchdog = threading.Thread(target=self._watch, name="sandbox-watchdog",
+                                          daemon=True)
+        self._watchdog.start()
+
+    def cancel(self) -> None:
+        """Kill the child's whole process group (``killed="cancelled"``
+        unless a limit killed it first). Idempotent."""
+        self._cancelled.set()
+        _kill_group(self.proc)
+
+    def wait(self, timeout: float | None = None) -> Result | None:
+        """The child's Result once it has ended and been cleaned up; None
+        if *timeout* seconds pass first."""
+        if not self._done.wait(timeout):
+            return None
+        assert self._result is not None
+        return self._result
+
+    def __enter__(self) -> Child:
+        return self
+
+    def __exit__(self, kind: object, exc: object, tb: object) -> None:
+        if kind is not None:
+            self.cancel()
+        self._done.wait()
+
+    def _watch(self) -> None:
+        proc, limits = self.proc, self.limits
+        killed: str | None = None
+        peak = 0
+        try:
+            while proc.poll() is None:
+                if self._cancelled.is_set():
+                    killed = "cancelled"
+                else:
+                    size = _group_footprint(proc.pid)
+                    if size is None:
+                        killed = "memory"                # unreadable live member: fail closed
+                    else:
+                        peak = max(peak, size)
+                        if peak > limits.memory_bytes:
+                            killed = "memory"
+                        elif time.monotonic() - self.started > limits.wall_clock_s:
+                            killed = "wall-clock"
+                if killed:
+                    break
+                time.sleep(POLL_S)
+            if killed is None and self._cancelled.is_set() and proc.returncode is None:
+                killed = "cancelled"
+        finally:
+            self._finish(killed, peak)
+
+    def _finish(self, killed: str | None, peak: int) -> None:
+        proc = self.proc
+        try:
+            _kill_group(proc)                     # whatever it started in its group dies too
+            proc.wait()
+            for t in self._readers:
+                t.join(timeout=PIPE_GRACE_S)
+            if any(t.is_alive() for t in self._readers):
+                # Something outside the group still holds the pipes: the child
+                # left its group. Report it; never pass its output as complete.
+                killed = killed or "stray"
+                self._stop.set()
+                for t in self._readers:
+                    t.join()
+            assert proc.stdout is not None and proc.stderr is not None
+            proc.stdout.close()
+            proc.stderr.close()
+            if self._failed:
+                killed = killed or "reader-failed"     # output may be incomplete: never ok
+            if killed is None and self._cancelled.is_set() and proc.returncode not in (0,):
+                killed = "cancelled"
+            elapsed = time.monotonic() - self.started
+            returncode = None if killed in ("wall-clock", "memory", "cancelled") \
+                else proc.returncode
+            stdout, stderr = b"".join(self._out), b"".join(self._err)
+        finally:
+            if self._lifeline is not None:
+                os.close(self._lifeline)              # the child's lifeline: EOF from here
+                self._lifeline = None
+            removed = _remove(self.private)
+        self._result = Result(returncode, killed, stdout, bool(self._out_over),
+                              stderr.decode("utf-8", "replace"), bool(self._err_over), peak,
+                              elapsed, self.limits.os_sandbox, removed)
+        self._done.set()
+
+
+def start(child_code: str, input_path: Path | None = None, args: Sequence[str] = (),
+          limits: Limits = Limits(), *, input_fd: int | None = None,
+          package_root: Path | None = None) -> Child:
+    """Start *child_code* (Python source) in a contained child process and
+    return its handle at once. The input is *input_path*, opened read-only
+    here, or *input_fd*, the parent's own open descriptor (both sides must
+    read it with ``os.pread``, never ``read``/``seek``: they share one open
+    file description and its offset). Either way the child finds it on
+    ``INPUT_FD``. *package_root*, a code path (never a rules path), goes
+    first on the child's sys.path. The child sees *args* as
+    ``sys.argv[1:]``. Raises only SandboxUnavailable."""
     if limits.os_sandbox and not os_sandbox_available():
         raise SandboxUnavailable("os_sandbox requested, but sandbox-exec is not available")
-    private = Path(tempfile.mkdtemp(prefix="prv-child-")).resolve()   # created 0700
-    proc: subprocess.Popen[bytes] | None = None
-    removed = False
+    if (input_path is None) == (input_fd is None):
+        raise ValueError("start() takes exactly one of input_path and input_fd")
+    sweep()
+    private = Path(tempfile.mkdtemp(prefix=f"{_PRIVATE_PREFIX}{os.getpid()}-")).resolve()
+    lifeline_r, lifeline_w = os.pipe()
+    handle = None
     try:
         source = private / "child.py"
         source.write_text(limits_preamble(limits) + child_code)
+        if input_fd is None:
+            assert input_path is not None
+            handle = open(input_path, "rb")
+            fd = handle.fileno()
+        else:
+            fd = input_fd
         # The interpreter as invoked, not resolved: a virtual environment's
         # python is a link whose packages come from its pyvenv.cfg, so the
         # resolved binary would not see them. The profile allows it, its
         # target and whatever a framework build re-execs into.
-        interpreter = Path(sys.executable)
-        with open(input_path, "rb") as handle:
-            argv = [str(interpreter), "-I", str(source), str(handle.fileno()), *args]
-            if limits.os_sandbox:
-                profile = _sandbox_profile(private, interpreters())
-                argv = ["sandbox-exec", "-p", profile, *argv]
+        argv = [str(Path(sys.executable)), "-I", str(source), str(fd), str(lifeline_r),
+                str(os.getpid()), str(private), str(package_root or ""), *args]
+        if limits.os_sandbox:
+            argv = ["sandbox-exec", "-p", _sandbox_profile(private, interpreters()), *argv]
+
+        def spawn() -> tuple[subprocess.Popen[bytes], float]:
             started = time.monotonic()
-            proc = subprocess.Popen(
+            return subprocess.Popen(
                 argv, cwd=private, env={"TMPDIR": str(private)},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                pass_fds=(handle.fileno(),), close_fds=True, start_new_session=True)
-        assert proc.stdout is not None and proc.stderr is not None
-        out: list[bytes] = []
-        out_over: list[bool] = []
-        err: list[bytes] = []
-        err_over: list[bool] = []
-        stop = threading.Event()
-        failed: list[str] = []
-        readers = [
-            threading.Thread(target=_reader(_read_head, failed), daemon=True,
-                             args=(proc.stdout.fileno(), limits.output_bytes, out, out_over,
-                                   stop)),
-            threading.Thread(target=_reader(_read_tail, failed), daemon=True,
-                             args=(proc.stderr.fileno(), STDERR_BYTES, err, err_over, stop))]
-        for t in readers:
-            t.start()
-        killed, peak = None, 0
-        while proc.poll() is None:
-            size = _group_footprint(proc.pid)
-            if size is None:
-                killed = "memory"                    # unreadable live member: fail closed
-            else:
-                peak = max(peak, size)
-                if peak > limits.memory_bytes:
-                    killed = "memory"
-                elif time.monotonic() - started > limits.wall_clock_s:
-                    killed = "wall-clock"
-            if killed:
-                _kill_group(proc)
-                break
-            time.sleep(POLL_S)
-        _kill_group(proc)                            # whatever it started in its group dies too
-        proc.wait()
-        for t in readers:
-            t.join(timeout=PIPE_GRACE_S)
-        if any(t.is_alive() for t in readers):
-            # Something outside the group still holds the pipes: the child
-            # left its group. Report it; never pass its output as complete.
-            # The readers stop first, so neither reads a closed, reused fd.
-            killed = killed or "stray"
-            stop.set()
-            for t in readers:
-                t.join()
-        proc.stdout.close()
-        proc.stderr.close()
-        if failed:
-            killed = killed or "reader-failed"     # output may be incomplete: never ok
-        elapsed = time.monotonic() - started
-        returncode = None if killed in ("wall-clock", "memory") else proc.returncode
-        stdout, stderr = b"".join(out), b"".join(err)
+                pass_fds=(fd, lifeline_r), close_fds=True,
+                start_new_session=True), started
+        proc, started = _on_spawner(spawn)
+    except BaseException:
+        os.close(lifeline_w)
+        _remove(private)
+        raise
     finally:
-        if proc is not None and proc.returncode is None:
-            _kill_group(proc)                        # any exception, Ctrl-C included
-            proc.wait()
-        removed = _remove(private)
-    return Result(returncode, killed, stdout, bool(out_over),
-                  stderr.decode("utf-8", "replace"), bool(err_over), peak, elapsed,
-                  limits.os_sandbox, removed)
+        os.close(lifeline_r)
+        if handle is not None:
+            handle.close()
+    try:
+        return Child(proc, private, limits, lifeline_w, started)
+    except BaseException:
+        _kill_group(proc)
+        proc.wait()
+        os.close(lifeline_w)
+        _remove(private)
+        raise
+
+
+def run(child_code: str, input_path: Path, args: Sequence[str] = (),
+        limits: Limits = Limits()) -> Result:
+    """``start()`` and ``wait()`` in one: the child's Result. Any exception
+    here, Ctrl-C included, cancels the child first."""
+    with start(child_code, input_path, args, limits) as child:
+        result = child.wait()
+    assert result is not None
+    return result
 
 
 def _kill_group(proc: subprocess.Popen[bytes]) -> None:

@@ -35,13 +35,15 @@ def test_the_input_arrives_as_a_read_only_descriptor_and_nothing_else(pdf):
         "except OSError:\n"
         "    print('read-only')\n"
         "print(len(data), sys.argv[1:])\n"
-        "print(sorted(set(os.listdir('/dev/fd')) - {'0', '1', '2', str(INPUT_FD)}))\n")
+        "own = {str(_LIFELINE)} | ({str(_KQ.fileno())} if '_KQ' in globals() else set())\n"
+        "print(sorted(set(os.listdir('/dev/fd')) - {'0', '1', '2', str(INPUT_FD)} - own))\n")
     r = sb.run(code, pdf, args=["x"], limits=FAST)
     lines = r.stdout.decode().splitlines()
     assert r.ok, r.stderr_tail
     assert lines[0] == "read-only"
     assert lines[1] == f"{pdf.stat().st_size} ['x']"
-    # Only the descriptor listdir itself opened may remain.
+    # Beside the preamble's own (the lifeline, macOS's kqueue), only the
+    # descriptor listdir itself opened may remain.
     assert len(eval(lines[2])) <= 1
 
 
@@ -121,22 +123,27 @@ def test_stderr_keeps_its_tail(pdf):
     assert r.stderr_truncated and len(r.stderr_tail) <= sb.STDERR_BYTES
 
 
-def test_an_exception_in_the_parent_kills_the_child(pdf, tmp_path, monkeypatch):
-    # Ctrl-C (or anything) while the parent waits must not leave the child.
+def test_ctrl_c_in_the_parent_cancels_the_child_and_re_raises(pdf, tmp_path):
+    # Ctrl-C while the parent waits: the child is cancelled and cleaned up,
+    # and the KeyboardInterrupt reaches the parent's own path unchanged.
+    import threading
+
     pid_file = tmp_path / "pid"
     code = (f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
             "time.sleep(60)\n")
-    real_sleep = time.sleep
 
-    def interrupted(seconds: float) -> None:
-        if pid_file.exists():
-            raise KeyboardInterrupt
-        real_sleep(seconds)
+    def ctrl_c_once_started() -> None:
+        for _ in range(200):
+            if pid_file.exists():
+                break
+            time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGINT)
 
-    monkeypatch.setattr(sb.time, "sleep", interrupted)
+    threading.Thread(target=ctrl_c_once_started, daemon=True).start()
+    started = time.monotonic()
     with pytest.raises(KeyboardInterrupt):
         sb.run(code, pdf, limits=FAST)
-    monkeypatch.undo()
+    assert time.monotonic() - started < 10
     time.sleep(0.3)
     assert not _alive(int(pid_file.read_text()))
 
@@ -302,3 +309,181 @@ def test_a_framework_builds_relaunch_binary_is_an_allowed_interpreter(tmp_path, 
     monkeypatch.setattr(sys, "base_prefix", str(tmp_path))
     allowed = sb.interpreters()
     assert app in allowed and Path(sys.executable) in allowed
+
+
+# ── 3b-5a: the child's lifetime ────────────────────────────────────────
+REPO = Path(__file__).resolve().parents[1]
+SLEEPER = ("import os, sys, time\n"
+           "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+           "time.sleep(120)\n")
+
+
+def _wait_for(path: Path, seconds: float = 20) -> None:
+    deadline = time.monotonic() + seconds
+    while not path.exists() or not path.read_text():
+        assert time.monotonic() < deadline, f"{path} never appeared"
+        time.sleep(0.05)
+
+
+def _gone(pid: int, seconds: float = 10) -> float | None:
+    """Seconds until *pid* is no longer alive, or None if it outlives *seconds*."""
+    started = time.monotonic()
+    while time.monotonic() - started < seconds:
+        if not _alive(pid):
+            return time.monotonic() - started
+        time.sleep(0.05)
+    return None
+
+
+def _parent(tmp_path: Path, pdf: Path, child_code: str) -> tuple[subprocess.Popen[bytes], Path]:
+    """A separate parent process that starts *child_code* from a
+    short-lived thread (which then exits: PDEATHSIG fires on the spawning
+    thread's exit, so the spawner thread must be sandbox's own) and then
+    just lives."""
+    pid_file = tmp_path / "child.pid"
+    script = tmp_path / "parent.py"
+    script.write_text(
+        "import sys, threading, time\n"
+        f"sys.path.insert(0, {str(REPO)!r})\n"
+        "from pathlib import Path\n"
+        "from redaction_verifier import sandbox as sb\n"
+        "held = []\n"
+        "def go():\n"
+        f"    held.append(sb.start({child_code!r}, Path({str(pdf)!r}),\n"
+        f"                         args=[{str(pid_file)!r}], limits=sb.Limits(wall_clock_s=120)))\n"
+        "t = threading.Thread(target=go)\n"
+        "t.start(); t.join()\n"
+        "print('started', flush=True)\n"
+        "time.sleep(120)\n")
+    parent = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE,
+                              start_new_session=True)
+    return parent, pid_file
+
+
+def test_the_child_outlives_the_spawning_thread_and_dies_with_the_parent(pdf, tmp_path):
+    parent, pid_file = _parent(tmp_path, pdf, SLEEPER)
+    try:
+        _wait_for(pid_file)
+        child = int(pid_file.read_text())
+        time.sleep(0.5)                       # the thread that called start() has exited
+        assert _alive(child), "the child died with the thread that started it"
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait()
+        delay = _gone(child)
+        assert delay is not None, "the child outlived its parent's SIGKILL"
+        # Its private directory: removed by the child (lifeline, kqueue) or,
+        # where PDEATHSIG killed it first, by the next sweep.
+        import tempfile
+        sb.sweep()
+        left = [p for p in Path(tempfile.gettempdir()).glob(f"prv-child-{parent.pid}-*")]
+        assert left == []
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait()
+
+
+def test_a_child_busy_in_c_dies_once_the_call_returns(pdf, tmp_path):
+    # A long C call holds the GIL: on macOS the lifeline and kqueue threads
+    # run only once it returns (accepted; the CPU rlimit bounds it); on
+    # Linux PDEATHSIG does not wait. The delay is measured, not bounded
+    # tighter than the call itself.
+    busy = ("import os, re, sys, time\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "re.match(r'(a+)+$', 'a' * 27 + 'b')\n"      # seconds in one C call
+            "time.sleep(120)\n")
+    parent, pid_file = _parent(tmp_path, pdf, busy)
+    try:
+        _wait_for(pid_file)
+        child = int(pid_file.read_text())
+        time.sleep(0.3)
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait()
+        delay = _gone(child, seconds=120)
+        assert delay is not None
+        print(f"\nchild death after a parent SIGKILL, mid C call: {delay:.2f} s")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait()
+
+
+def test_a_private_directory_a_dead_parent_left_is_swept(pdf, tmp_path):
+    root = tmp_path / "tmp"
+    root.mkdir()
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    stale = root / f"prv-child-{dead.pid}-abc123"
+    stale.mkdir()
+    (stale / "left.txt").write_text("child temp")
+    live = root / f"prv-child-{os.getppid()}-def456"
+    live.mkdir()
+    other = root / "prv-child-notapid-xyz"
+    other.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not ours to remove")
+    link = root / f"prv-child-{dead.pid}-lnk999"
+    link.symlink_to(outside, target_is_directory=True)
+    assert sb.sweep(root) == 1
+    assert not stale.exists()
+    assert live.exists() and other.exists() and link.is_symlink()
+    assert (outside / "keep.txt").exists()            # a link is never followed
+
+
+def test_start_and_wait_and_cancel(pdf, tmp_path):
+    pid_file = tmp_path / "pid"
+    child = sb.start(SLEEPER, pdf, args=[str(pid_file)], limits=FAST)
+    _wait_for(pid_file)
+    assert child.wait(timeout=0.2) is None            # still running
+    child.cancel()
+    result = child.wait(timeout=20)
+    assert result is not None and result.killed == "cancelled" and not result.ok
+    assert result.returncode is None and result.private_dir_removed
+    assert not _alive(int(pid_file.read_text()))
+    child.cancel()                                    # idempotent
+
+
+def test_cancel_kills_the_whole_group(pdf, tmp_path):
+    pid_file = tmp_path / "grandchild"
+    code = ("import os, subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "open(sys.argv[1], 'w').write(str(p.pid))\n"
+            "time.sleep(120)\n")
+    child = sb.start(code, pdf, args=[str(pid_file)], limits=FAST)
+    _wait_for(pid_file)
+    child.cancel()
+    assert child.wait(timeout=20) is not None
+    assert _gone(int(pid_file.read_text())) is not None
+
+
+def test_an_inherited_descriptor_is_read_with_pread_and_its_offset_never_moves(pdf, tmp_path):
+    code = ("import os\n"
+            "print(os.pread(INPUT_FD, 9, 0))\n")
+    with open(pdf, "rb") as f:
+        f.seek(5)
+        before = os.lseek(f.fileno(), 0, os.SEEK_CUR)
+        result = sb.start(code, input_fd=f.fileno(), limits=FAST).wait()
+        assert os.lseek(f.fileno(), 0, os.SEEK_CUR) == before == 5
+        assert f.read() == pdf.read_bytes()[5:]       # still open, still ours
+    assert result is not None and result.ok, result and result.stderr_tail
+    assert result.stdout.strip() == repr(pdf.read_bytes()[:9]).encode()
+
+
+def test_exactly_one_input(pdf):
+    with pytest.raises(ValueError):
+        sb.start("pass", pdf, input_fd=0)
+    with pytest.raises(ValueError):
+        sb.start("pass")
+
+
+def test_the_child_runs_below_the_parent_and_finds_its_package(pdf, tmp_path):
+    root = tmp_path / "pkgroot"
+    (root / "probe_pkg").mkdir(parents=True)
+    (root / "probe_pkg" / "__init__.py").write_text("NAME = 'found'\n")
+    code = ("import os, probe_pkg\n"
+            "print(os.nice(0), probe_pkg.NAME)\n")
+    result = sb.start(code, pdf, limits=FAST, package_root=root).wait()
+    assert result is not None and result.ok, result and result.stderr_tail
+    niceness, name = result.stdout.split()
+    assert int(niceness) >= os.nice(0) + sb.NICE and name == b"found"
