@@ -667,8 +667,8 @@ codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
 never reads, #133), are named with their pages as INCOMPLETE reasons,
 whatever their storage, and nothing of the page's content is shown; a
 code seen both on pages and with no page adds "and document-wide"), and the
-headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
-`--no-strict-classes`) is not a finding: the header names the
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012:
+the default; not under `--strict-classes`) is not a finding: the header names the
 informational rules (required; a header without them is refused), their
 matches in the scan's truth are never boxed, classified or listed as OCR
 finds, and each of the report's `notices` is listed under "Not counted in
@@ -968,8 +968,8 @@ the gap is stated rather than implied away.
   secret in them, `ssn` or `us-phone` raised a hard finding on 28.3%,
   mostly digit runs inside hex or alphanumeric ids
   (eval/spikes/RESULTS.md, "Phase 5 baseline"). So a class is not a
-  secret: with `--no-strict-classes` its matches are notices that never
-  change the exit code ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
+  secret: by default its matches are notices that never change the exit
+  code (`--strict-classes` counts them) ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
   `redaction_verifier/matching/policy.py` decides which rules are
   informational, and `ScanReport` routes their findings to its notices as
   they are recorded and their review warnings before the verdict).

@@ -19,6 +19,10 @@ Write the secrets you expect to be gone into a JSON file:
 ]
 ```
 
+(`"Any SSN"` is a built-in class: by default its matches are reported as
+notices that do not change the verdict; add `"strict": true` to make them
+count. See **Built-in classes** below.)
+
 Scan a document against it:
 
 ```bash
@@ -82,8 +86,8 @@ field is renamed or removed (2 since `notices`, below). `--version` (on its
 own) prints the tool version.
 
 **Built-in classes** (`ssn`, `credit-card`, `email`, `us-phone`) match any
-value of that shape, not a secret you listed. With `--no-strict-classes`
-their matches are reported in a separate section after the verdict, "Not
+value of that shape, not a secret you listed. By default their matches
+are reported in a separate section after the verdict, "Not
 counted in the verdict", and in the JSON report's `notices` array (`kind:
 "class-match"`; every field a finding or a warning has, null when it
 does not apply; `tier` `hard` or `review`; a review warning's own kind as
@@ -91,11 +95,13 @@ does not apply; `tier` `hard` or `review`; a review warning's own kind as
 none of the values you listed, and none of your own `pattern` rules, was
 found in any layer the tool read, and that nothing stopped it reading a
 layer -- it says nothing about other SSN-, card-, email- or phone-shaped
-values in the file, which the notices show. Strict mode
-(`--strict-classes`, the default for now; or `"strict": true` on a class
-rule) counts class matches like any rule, as before. The default changes
-to `--no-strict-classes` in a later release
-([ADR 0012](docs/adr/0012-pattern-classes-inform.md)).
+values in the file, which the notices show. If you rely on the classes as
+a net for secrets you did not list, use strict mode (`--strict-classes`,
+or `"strict": true` on a class rule): class matches then count like any
+rule, exactly as before ADR 0012
+([ADR 0012](docs/adr/0012-pattern-classes-inform.md)). A `"strict"` on a
+class rule that is not `true` or `false` is a rules error (exit `2`)
+unless `--strict-classes` is given.
 
 ## Visible map (`--visible-map`)
 
@@ -171,9 +177,9 @@ never reads, such as a tooltip shown on hover. A page's content stream
 and every other live object always do. Content stored outside the document (orphaned, unreferenced,
 superseded) and annotations flagged hidden (or "do not show" without
 "print") are only counted, under **Not visible**. Every finding is either
-boxed, listed, or listed as could not be positioned — none is dropped. With
-`--no-strict-classes`, a built-in class match that is only a notice (it
-does not count in the verdict) is never boxed: it is listed last, masked
+boxed, listed, or listed as could not be positioned — none is dropped. A
+built-in class match that is only a notice (the default; it does not count
+in the verdict) is never boxed: it is listed last, masked
 like any sample, under **Not counted in the verdict**, and sets no flag.
 
 **The headline** at the top of the summary is exactly one of:
@@ -186,7 +192,7 @@ like any sample, under **Not counted in the verdict**, and sets no flag.
 | LEAK, NOT VISIBLE — the file stores a secret no page shows | exit `1`, and nothing above |
 | Nothing visible found; uncertified (exit 2) for: *codes* | exit `2` only for content stored outside the document |
 | Nothing visible found — every check ran; JSON report not written (exit 2) | exit `2` only because `--json` could not be written |
-| Nothing visible found — every check ran (exit 0) | exit `0`, and nothing above; under `--no-strict-classes`, with *N* > 0 notices (the report lists one per place a match is found — layer, rule and location such as page or object — not one per distinct value) it ends "; *N* notice(s) not counted in the verdict" |
+| Nothing visible found — every check ran (exit 0) | exit `0`, and nothing above; by default (not under `--strict-classes`), with *N* > 0 notices (the report lists one per place a match is found — layer, rule and location such as page or object — not one per distinct value) it ends "; *N* notice(s) not counted in the verdict" |
 | NOT CERTIFIED (exit *N*): *codes* | anything else; unreachable by design (every warning code makes the map incomplete, marks a possible match, or is an "outside" code), kept as the fail-closed answer |
 
 When the `--json` report was not written every headline says so, and a
@@ -648,11 +654,11 @@ decompressed font tables, or an image's raw bytes, can raise
 coincidental Binary warnings (see Binary); a document `/ID` written as
 hex text whose digits happen to form an SSN, card or phone number is
 manual review under a pattern rule. Prefer longer, more specific values.
-The built-in classes raise hard findings on many clean files: on 488 real
-text-bearing PDFs with no secret in them, `ssn` or `us-phone` did on
-28.3%, mostly digit runs inside hex or alphanumeric ids (Phase 5 of
-docs/REDESIGN.md addresses this; eval/spikes/RESULTS.md, "Phase 5
-baseline").
+In strict mode (`--strict-classes`) the built-in classes raise hard
+findings on many clean files: on 488 real text-bearing PDFs with no secret
+in them, `ssn` or `us-phone` did on 28.3%, mostly digit runs inside hex or
+alphanumeric ids (eval/spikes/RESULTS.md, "Phase 5 baseline"). By default
+those matches are notices that do not change the verdict (ADR 0012).
 <!-- gap-cells: false-alarm.slug-beside-visible-line false-alarm.binary-value-collision false-alarm.generated-id-digits -->
 
 A rewrite that closes these gaps by accounting for every byte of the
@@ -702,10 +708,10 @@ Each entry has a `name` and exactly one of:
 
 - `"value"` — a known secret string, matched through normalization.
 - `"class"` — a built-in class: `ssn`, `credit-card`, `email`, `us-phone`.
-  Optional `"strict": true` keeps this class's matches in the verdict even
-  under `--no-strict-classes` (ADR 0012); a `"strict"` that is not `true`
-  or `false` is refused only then. On a `value` or `pattern` rule the key
-  is ignored, as any unknown key is.
+  Optional `"strict": true` keeps this class's matches in the verdict
+  (ADR 0012; by default they are notices); a `"strict"` that is not `true`
+  or `false` is a rules error unless `--strict-classes` is given. On a
+  `value` or `pattern` rule the key is ignored, as any unknown key is.
 - `"pattern"` — a custom regex (`re.MULTILINE`; names must be unique).
 
 ### Shared YAML config
@@ -714,7 +720,7 @@ Each entry has a `name` and exactly one of:
 | --- | --- |
 | `exact_values` | value rules (normalized matching) |
 | `patterns` | pattern rules, compiled `IGNORECASE` — the same flags the redactor uses |
-| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card`. Like any built-in class, their matches are informational notices under `--no-strict-classes`; `--strict-classes` makes the config's entity types count toward the verdict (a YAML config has no per-type `strict`) |
+| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card`. Like any built-in class, their matches are informational notices by default; `--strict-classes` makes the config's entity types count toward the verdict (a YAML config has no per-type `strict`) |
 | `backend`, `model`, `llm_url`, `ollama_url`, `scrub_metadata` | ignored |
 | any other key | warning (exit `2`) — a typo or a newer redactor key is surfaced, not skipped |
 
@@ -807,7 +813,7 @@ resolving or installing differently against the same lock file):
 uv sync --extra test --group dev          # Install test + lint/type-check tools
 uv run pytest                             # Run the test suite
 uv run ruff check .                       # Lint code
-uv run mypy                               # Type check (redaction_verifier -- strict on inventory/budget/ledger/sandbox -- eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
+uv run mypy                               # Type check (redaction_verifier -- strict on inventory/budget/ledger/sandbox/crypt -- eval/caselib, eval/scorecard, eval/gallery, eval/check_ratchets.py)
 uv run pytest tests/ --cov=verify --cov=caselib --cov=redaction_verifier  # Run tests with coverage report
 ```
 

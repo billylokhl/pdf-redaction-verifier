@@ -1,6 +1,6 @@
-"""ADR 0012's class policy, PR 3a: built-in class matches as informational
-notices under --no-strict-classes; strict mode (still the default here)
-unchanged. Every value is fabricated.
+"""ADR 0012's class policy: built-in class matches as informational
+notices by default (PR 3b; PR 3a made them opt-in); strict mode
+(--strict-classes) unchanged. Every value is fabricated.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def test_strict_key_is_ignored_on_other_rules_as_unknown_keys_always_were(tmp_pa
 
 
 def test_a_malformed_strict_on_a_class_rule_still_loads(tmp_path):
-    # Refused only under --no-strict-classes (verify.py), where it matters.
+    # Refused by default (not under --strict-classes; verify.py), where it matters.
     rs = _rules(tmp_path, [{"name": "S", "class": "ssn", "strict": "yes"}])
     assert rs.strict_invalid == frozenset({"S"}) and rs.strict_rules == frozenset()
 
@@ -136,10 +136,12 @@ SSN_CLASS = [{"name": "Any SSN", "class": "ssn"}]
 TEXT = "Applicant 234-56-7890 on file"
 
 
-def test_default_is_strict_today(tmp_path):
+def test_default_is_policy_1_and_strict_classes_restores_today(tmp_path):
     proc, data = _run(tmp_path, TEXT, SSN_CLASS)
-    assert proc.returncode == 1 and data["findings"] and data["notices"] == []
+    assert data["findings"] == [] and data["notices"]  # PR 3b: notices by default
     assert data["schema_version"] == 2
+    proc, data = _run(tmp_path, TEXT, SSN_CLASS, "--strict-classes")
+    assert proc.returncode == 1 and data["findings"] and data["notices"] == []
 
 
 def test_no_strict_classes_turns_class_matches_into_notices(tmp_path):
@@ -202,9 +204,9 @@ def test_fail_fast_reads_on_past_a_notice_to_a_listed_value(tmp_path):
 
 def test_a_malformed_strict_is_refused_only_when_classes_inform(tmp_path):
     rules = [{"name": "Any SSN", "class": "ssn", "strict": "yes"}]
-    proc, data = _run(tmp_path, TEXT, rules)
+    proc, data = _run(tmp_path, TEXT, rules, "--strict-classes")
     assert proc.returncode == 1  # strict mode: loads as before
-    proc, data = _run(tmp_path, TEXT, rules, "--no-strict-classes")
+    proc, data = _run(tmp_path, TEXT, rules)  # the default: classes inform
     assert proc.returncode == 2 and data["error"]["code"] == "RULES_INVALID"
 
 
@@ -227,8 +229,8 @@ def test_redactor_entity_types_are_informational_under_no_strict(tmp_path):
     assert effective_exit(data, normalization_have(available())) == 0
     assert data["findings"] == []
     assert {n["rule"] for n in data["notices"]} == {"entity_types:ssn"}
-    proc, _ = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n")
-    assert proc.returncode == 1  # strict (default): as before
+    proc, _ = _run(tmp_path, TEXT, "entity_types:\n  - ssn\n", "--strict-classes")
+    assert proc.returncode == 1  # strict: as before
 
 
 def test_a_warning_notice_keeps_every_warning_field():
