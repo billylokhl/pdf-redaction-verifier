@@ -228,7 +228,10 @@ each pass with its own budget. The first is structural
 stream data and object streams, with no reference graph. `crypt.py`
 locates each stream's stored bytes by it before decrypting. The second
 is the full build, with each revision's `Decryption`. The first pass
-costs about one parse of the file more, not a second full budget's
-worth. The decryption between the passes has its own caps (bytes read
-and xref entries visited: `crypt.decrypt`). An unencrypted file, where
-no trailer as we read it has a non-null `/Encrypt`, is built once.
+skips only the reference graph's stage, so it costs most of a full build
+(measured on a 3,000-page RC4 file: 72-80% of the full build's time and
+work), and the chain is read three times in all. The decryption between
+the passes has its own caps (bytes read and xref entries visited:
+`crypt.decrypt`). A file is built once only when no trailer or
+cross-reference stream dictionary holds an `/Encrypt` key at all, null
+or repeated ones included: a reader takes `/Encrypt` from nowhere else.

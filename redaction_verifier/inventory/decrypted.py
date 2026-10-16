@@ -83,9 +83,9 @@ def reuse_token(decryption: Decryption | None, revision: int) -> object:
     (two revisions with one identity decrypt every body alike); otherwise
     a token no other revision shares -- a flagged revision verified only
     some of its objects, so nothing it read is reused."""
-    if decryption is None or decryption.identity is None:
+    if decryption is None:
         return None
-    if decryption.flags:
+    if decryption.flags:                    # flagged, identity or not (#181 round 1)
         return ("revision", revision)
     return decryption.identity
 
@@ -93,8 +93,9 @@ def reuse_token(decryption: Decryption | None, revision: int) -> object:
 def reuse_tokens(decryptions: Sequence[Decryption | None] | None,
                  revisions: int) -> tuple[object, ...]:
     """Each revision's ``reuse_token`` (all None without decryptions)."""
-    if decryptions is None:
+    if not decryptions:
         return (None,) * revisions
-    return tuple(reuse_token(decryptions[r] if r < len(decryptions) else None, r)
-                 for r in range(revisions))
+    if len(decryptions) != revisions:
+        raise ValueError(f"{len(decryptions)} decryptions for {revisions} revisions")
+    return tuple(reuse_token(decryptions[r], r) for r in range(revisions))
 

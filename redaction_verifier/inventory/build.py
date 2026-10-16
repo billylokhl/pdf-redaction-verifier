@@ -105,7 +105,9 @@ def build_inventory(data: bytes, limits: Limits | None = None, *, budget: Budget
     (decrypted.reuse_token) keys every reuse in the reference graph's
     stage. *structure_only* stops before that stage: the units, spans,
     stream data and object streams crypt.py locates bytes by, with no
-    graph, pages, trees, annotations or labels (empty)."""
+    graph, pages, trees, annotations or labels (empty). A *decryption*
+    whose length is not the file's revision count is a caller's error
+    (ValueError), never guessed at."""
     return _Builder(data, limits if limits is not None else Limits(), budget,
                     decryption, structure_only).build()
 

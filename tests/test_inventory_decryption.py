@@ -59,7 +59,13 @@ def test_tokens() -> None:
     assert reuse_token(clean, 0) == _identity(b"a")
     assert reuse_token(flagged, 1) == ("revision", 1) != reuse_token(flagged, 2)
     assert reuse_tokens(None, 2) == (None, None)
-    assert reuse_tokens([clean], 2) == (_identity(b"a"), None)
+    assert reuse_tokens([clean, None], 2) == (_identity(b"a"), None)
+    with pytest.raises(ValueError):                   # a caller's bug, never guessed at
+        reuse_tokens([clean], 2)
+    # Flagged without an identity (a budget that ran out before the open):
+    # still a token of its own, never an unencrypted revision's None.
+    spent = Decryption(3, None, {}, {}, (Flag(FlagReason.BUDGET_EXHAUSTED),))
+    assert reuse_token(spent, 3) == ("revision", 3)
 
 
 def test_without_decryption_every_stage_reuses_the_earlier_reading() -> None:
@@ -84,8 +90,8 @@ def test_a_different_token_stops_every_reuse(second: tuple[bytes, bytes] | None)
     assert inv.pages[0][0] is not inv.pages[1][0]               # the Page records too
     assert inv.trees[0] is not inv.trees[1]
     assert inv.annotations[0] is not inv.annotations[1]
-    # Labels: their drawable sets are interned by value even when walked
-    # afresh, so the walk shows in the work charged, not in identity.
+    # The stage as a whole walks afresh (more work charged). This does not
+    # isolate labels, whose tokens are defensive (see the module docstring).
     same = _built(data, [Decryption(r, _identity(b"a"), {}, {}, ()) for r in (0, 1)])
     assert inv.graph_work > same.graph_work
 
@@ -166,3 +172,19 @@ def test_the_attribute_intern_keys_on_the_token() -> None:
     # /MediaBox (or the tree is flagged ATTRIBUTE_MISSING), and its record's
     # key holds their interned bytes. The record's own token is defensive.
     assert inv.pages[0][0] is not inv.pages[1][0]
+
+
+
+def test_any_encrypt_key_sends_a_file_through_decryption() -> None:
+    # The one-build shortcut is taken only when no trailer holds an /Encrypt
+    # key at all: a repeated key whose first value is null still reaches
+    # decrypt(), whose TRAILER_SPLIT check decides (#181 round 1).
+    h = Handler(3, b"owner", FILE_ID)
+    data = rawpdf.build({1: rawpdf.CATALOG, 2: rawpdf.PAGES, 3: rawpdf.page(),
+                         4: rawpdf.stream(b"", h.stream_data(4, CONTENT)), 6: rawpdf.HELVETICA,
+                         7: h.encrypt_dict()},
+                        trailer=b" /Encrypt null" + h.trailer(7))
+    inv = crypt.inventory(data)
+    assert len(inv.decryption) == 1
+    assert any(f.reason is FlagReason.DECRYPTION_UNVERIFIED and dict(f.params)["rule"] == 15
+               for f in inv.flags)

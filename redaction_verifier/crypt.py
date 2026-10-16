@@ -108,8 +108,11 @@ def decrypt(data: bytes, inventory: Inventory, chain: Chain, *,
 
 def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
     """The inventory of *data*, encrypted or not (3a-9b): the pipeline
-    3b's child runs. An unencrypted file (no revision's trailer, as we read
-    it, has a non-null /Encrypt) is built once. An encrypted one is built
+    3b's child runs. A file none of whose trailers or cross-reference
+    stream dictionaries holds an /Encrypt key at all -- null, repeated or
+    in any section, as we read them -- is built once: a reader takes
+    /Encrypt from those dictionaries alone. Any /Encrypt anywhere sends it
+    through decrypt(), whose checks (TRAILER_SPLIT among them) decide. An encrypted one is built
     twice: a structural pass (units, spans, stream data, object streams --
     no reference graph) that crypt.py locates bytes by, then decrypt(),
     then the full build with each revision's Decryption (its flags, and
@@ -117,7 +120,7 @@ def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
     costs about one parse more (ADR 0006's note)."""
     limits = limits if limits is not None else Limits()
     chain = read_chain(data, limits, budget=Budget(limits, file_size=len(data)))
-    if not any(_ours_encrypted(chain, r) for r in range(len(chain.revisions))):
+    if not _mentions_encrypt(chain):
         return build_inventory(data, limits, budget=Budget(limits, file_size=len(data)))
     first = build_inventory(data, limits, budget=Budget(limits, file_size=len(data)),
                             structure_only=True)
@@ -491,6 +494,18 @@ def _canonical(form: object) -> bool:
     return (all(c[0] == "name" and c[1] in names for c in chosen)
             and (eff is None or eff == d.get(b"StmF", ("name", b"Identity"))
                  or (eff[0] == "name" and eff[1] in names)))
+
+
+def _mentions_encrypt(chain: Chain) -> bool:
+    """Whether any section's trailer or cross-reference stream dictionary
+    holds an /Encrypt key, whatever its value, repeated or not: the
+    conservative test for skipping decryption (#181 round 1)."""
+    for section in chain.sections:
+        for part in (section, section.xref_stm):
+            trailer = part.trailer if part is not None else None
+            if trailer is not None and any(key.raw == b"Encrypt" for key, _ in trailer.entries):
+                return True
+    return False
 
 
 def _ours_encrypted(chain: Chain, revision: int) -> bool:
