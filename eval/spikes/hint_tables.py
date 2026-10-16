@@ -8,11 +8,17 @@ padding bit, every byte of the decoded stream, every key of the hint
 stream's and linearization dictionary's, is a value the layout fixes
 under a stated reading) or the list of what is not: each finding names a
 table, a field and a class, never a value's meaning. Nothing is
-tolerated: a known writer deviation is accepted only as an explicit rule
-(``RULES``) that fixes the value exactly, from qpdf's source notes
-(libqpdf/QPDF_linearization.cc, v12.4.1: ``checkHPageOffset``,
-``checkHSharedObject``, ``checkHOutlines``, implementation notes 123-131
-of the PDF Reference it cites).
+tolerated: a writer's deviation is accepted only as an explicit rule
+(``RULES``) that fixes the value exactly, and each rule is bound to one
+writer profile (qpdf's or Acrobat's), so a file must match one whole
+profile and no value can take the other's reading. A rule is
+"documented" (qpdf's source, libqpdf/QPDF_linearization.cc v12.4.1, or
+the PDF Reference implementation notes 123-131 it cites) or "observed"
+(an undocumented writer convention, derived on one half of the warned
+files and measured on the other: ``half``); the report separates them.
+Observed rules that read content (page 0's entries, later pages'
+numerators and order, form identifier order) use the page's decoded
+content streams and resources.
 
 The layout is computed without reading the tables: the base revision
 (the linearized pair, owner decision 7) is cut at its own end; object
@@ -44,7 +50,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import itertools
 import json
+import re
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -91,6 +99,7 @@ class Result:
     rules: Counter[str] = field(default_factory=Counter)
     tables: list[str] = field(default_factory=list)
     error: str | None = None
+    profile: str | None = None
 
     def bad(self, table: str, name: str, klass: str, detail: str = "") -> None:
         self.findings.append(Finding(table, name, klass, detail))
@@ -584,7 +593,7 @@ def decode_stream(lay: Layout, res: Result) -> Tables:
     if not lo <= end <= hi:
         res.bad("linearization dictionary", "/H length", "mismatch")
     elif end != hi:
-        res.rule("H-length-before-space")
+        res.bad("linearization dictionary", "/H length", "inside the whitespace after endobj")
 
     starts: dict[str, int] = {"P": 0}
     for key in sorted(TABLE_FORMAT.keys() | {b"S"}):
@@ -651,43 +660,79 @@ def _trailing_ws(data: bytes, end: int) -> int:
 # ── accounting ───────────────────────────────────────────────────────────
 #
 # Each value is accounted only when it equals what the layout fixes under
-# Annex F, or under one explicit rule below. A rule names the source that
-# documents the writer's deviation; it fixes the value exactly, never a
-# range. Rules found in the data but documented nowhere are marked
-# "observed": they are reported apart, and are owner questions.
+# Annex F, or under one explicit rule below that fixes it exactly, never a
+# range. Rules are bound to one writer profile: a file must match one whole
+# profile, so no value can take the other profile's reading (review #180,
+# b1). Each rule says where it comes from: "documented" (qpdf's source,
+# v12.4.1, or the PDF Reference implementation notes it cites) or
+# "observed" (an undocumented writer convention found in the corpus, derived
+# on one half of the warned files and measured on the other; an owner
+# question).
 
-RULES = {
-    # qpdf's source (v12.4.1), citing the PDF Reference's implementation notes.
-    "N126-content-offset-zero": "note 126: min_content_offset 0, delta_content_offset 0 (width 0)",
-    "N127-content-length": "note 127: min_content_length 0, its width = item 5's, each "
-                           "delta_content_length = delta_page_length",
-    "Q-content-length-as-page": "qpdf's writer: min_content_length = min_page_length, widths and "
-                                "deltas as the page length's",
-    "N128-nobjects-width-zero": "notes 125/128/130: one object per shared group, width 0",
-    "N131-no-part8-zero": "note 131: first_shared_obj/offset meaningless without part 8; "
-                          "accepted only as 0",
-    "QO-outline-next-offset": "checkHOutlines: Acrobat stores the next object's offset and the "
-                              "length from there",
-    "H-length-indirect": "readHintStream: /H[1] runs through an indirect /Length placed after "
-                         "the stream",
-    "H-length-before-space": "/H[1] ends before the whitespace after endobj (qpdf accepts the "
-                             "range)",
-    "Q-numerators-zero": "qpdf's writer: every numerator 0",
-    "QR-private-resource-in-part8": "checkHPageOffset: Acrobat puts a page's private resources "
-                                    "with the shared objects (part 8)",
-    "Q-identifier-width-total": "qpdf's writer: identifier width = nbits(nshared_total)",
-    # Observed in the warned files; documented nowhere (owner questions).
-    "A-first-page-section": "observed: the first-page section starts after the catalog and "
-                            "/OpenAction's objects, not at the page object; every object in it "
-                            "is a shared group",
-    "A-identifier-width-pages": "observed: identifier width = bits of the greatest identifier "
-                                "pages after the first use (0 for one page)",
-    "A-numerator-width-denominator": "observed: numerator width = nbits(denominator)",
-    "A-offset-unadjusted": "observed: an offset written as the file offset, not disregarding "
-                           "the hint stream as Annex F says",
-    "D-denominator-4":"qpdf's writer: shared_denominator 4 ('doesn't matter')",
-    "D-denominator-8": "observed (Acrobat): shared_denominator 8",
+PROFILES = ("qpdf", "acrobat")
+
+RULES: dict[str, tuple[str, str, str]] = {
+    # name: (profile, documented|observed, what it fixes)
+    "N126-content-offset-zero": ("both", "documented",
+                                 "note 126: min_content_offset 0, its width 0"),
+    "N128-nobjects-width-zero": ("both", "documented",
+                                 "notes 125/128/130: one object per shared group, width 0"),
+    "N131-no-part8-zero": ("both", "documented",
+                           "note 131: first_shared_obj/offset meaningless without part 8; "
+                           "accepted only as 0"),
+    "H-length-indirect": ("both", "documented",
+                          "readHintStream: /H[1] runs through an indirect /Length placed "
+                          "after the stream"),
+    "Q-first-page-at-page": ("qpdf", "documented",
+                             "Annex F item 2 (qpdf's writer): the first-page section starts "
+                             "at the first page's page object"),
+    "Q-content-length-as-page": ("qpdf", "documented",
+                                 "qpdf's writer: min_content_length = min_page_length, widths "
+                                 "and deltas as the page length's"),
+    "Q-identifier-width-total": ("qpdf", "documented",
+                                 "qpdf's writer: identifier width = nbits(nshared_total)"),
+    "Q-numerators-zero": ("qpdf", "documented", "qpdf's writer: every numerator 0, width 0"),
+    "Q-denominator-4": ("qpdf", "documented",
+                        "qpdf's writer: shared_denominator 4 ('doesn't matter')"),
+    "Q-no-page0-entries": ("qpdf", "documented", "Annex F, qpdf's writer: page 0 has none"),
+    "Q-identifiers-ascending": ("qpdf", "documented",
+                                "qpdf's writer: a page's identifiers ascending"),
+    "N127-content-length": ("acrobat", "documented",
+                            "note 127: min_content_length 0, its width = item 5's, each "
+                            "delta_content_length = delta_page_length"),
+    "QR-private-resource-in-part8": ("acrobat", "documented",
+                                     "checkHPageOffset: Acrobat puts a page's private "
+                                     "resources with the shared objects (part 8)"),
+    "A-first-page-section": ("acrobat", "observed",
+                             "the first-page section starts after the catalog, /OpenAction's "
+                             "objects and the hint stream's /Length; every object in it is "
+                             "a shared group"),
+    "A-identifier-width-pages": ("acrobat", "observed",
+                                 "identifier width = nbits(greatest identifier pages after "
+                                 "the first use); 0 for one page"),
+    "A-numerator-width-denominator": ("acrobat", "observed",
+                                      "numerator width = nbits(denominator)"),
+    "A-denominator-8": ("acrobat", "observed", "shared_denominator 8"),
+    "A-page0-entries": ("acrobat", "observed",
+                        "page 0's entries: the first-page section's objects page 0 reaches "
+                        "that something else reaches too, plus page 0's indirect /Font and "
+                        "/ColorSpace resources; numerator floor(first use x (d-1) / content "
+                        "length) for a resource (0 if unused), 0 for a widget annotation or "
+                        "a form named in an annotation's /AP, d otherwise; ascending"),
+    "A-later-numerators": ("acrobat", "observed",
+                           "a later page's numerator: the least floor(first use x (d-1) / "
+                           "content length) of the page's resources the group holds (or, for "
+                           "a part-8 group, that reach it); 0 if unused; d if none"),
+    "A-later-order": ("acrobat", "observed",
+                      "a later page's identifiers by numerator, ties in the order a "
+                      "depth-first walk of the page (written key order) first meets them"),
+    "A-form-order": ("acrobat", "observed",
+                     "/V and /C identifiers in the order a stack walk of the key's object "
+                     "discovers them (written key order)"),
 }
+
+NAME_END = rb"(?![^\x00\t\n\x0c\r ()<>\[\]{}/%])"
+_WALK_SKIP = (b"P", b"Parent", b"Pg")
 
 
 def _adj(lay: Layout, offset: int) -> int:
@@ -707,11 +752,202 @@ def _offset_hint(lay: Layout, raw: int, actual: int) -> str:
     return "names no object"
 
 
-def check(lay: Layout, t: Tables, res: Result) -> None:
+class Doc:
+    """The base revision's values, for the content-derived rules."""
+
+    def __init__(self, lay: Layout) -> None:
+        self.lay = lay
+        self.values = Values(lay.data, lay.chain.object_map(len(lay.chain.revisions) - 1),
+                             lay.objects)
+
+    def ref(self, num: int) -> PdfRef:
+        e = self.values.entries.get(num)
+        return PdfRef(0, 0, num, e.b if e is not None and e.kind == IN_USE else 0)
+
+    def get(self, v: PdfValue | None) -> PdfValue | None:
+        return self.values.get(v) if isinstance(v, PdfRef) else v
+
+    def stream(self, num: int) -> bytes:
+        o = self.lay.objects.get(num)
+        if o is None:
+            raise Stop("a content stream is compressed")
+        obj = self.values.parser.parse_indirect_at(o.offset, o.offset + o.extent)
+        if obj is None or obj.stream is None or not isinstance(obj.value, PdfDict):
+            raise Stop("a content stream is not a stream")
+        raw = self.lay.data[obj.stream.data.start:obj.stream.data.end]
+        f = obj.value.get(b"Filter")
+        if isinstance(f, PdfArray) and len(f.items) == 1:
+            f = f.items[0]
+        if f is None:
+            return raw
+        if isinstance(f, PdfName) and f.raw == b"FlateDecode" and obj.value.get(
+                b"DecodeParms") is None:
+            return flate_decode(raw, None, Budget()).data
+        raise Stop("a content stream filter the spike does not decode")
+
+    def content(self, page: int) -> bytes:
+        pd = self.get(self.ref(page))
+        c = pd.get(b"Contents") if isinstance(pd, PdfDict) else None
+        c2 = self.get(c)
+        refs = list(c2.items) if isinstance(c2, PdfArray) else [c] if c is not None else []
+        return b"".join(self.stream(r.num) for r in refs if isinstance(r, PdfRef))
+
+    def resources(self, page: int) -> list[tuple[bytes, bytes, PdfValue]]:
+        pd = self.get(self.ref(page))
+        res = self.get(pd.get(b"Resources")) if isinstance(pd, PdfDict) else None
+        out: list[tuple[bytes, bytes, PdfValue]] = []
+        if isinstance(res, PdfDict):
+            for cat, raw_sub in res.entries:
+                sub = self.get(raw_sub)
+                if isinstance(sub, PdfDict):
+                    out.extend((cat.raw, name.raw, v) for name, v in sub.entries)
+        return out
+
+    def kids(self, v: PdfValue | None) -> list[PdfValue]:
+        if isinstance(v, PdfArray):
+            return list(v.items)
+        if isinstance(v, PdfDict):
+            return [x for k, x in v.entries if k.raw not in _WALK_SKIP]
+        return []
+
+    def preorder(self, start: PdfValue) -> list[int]:
+        """Objects in the order a depth-first walk in written key order
+        first meets them, not into another page."""
+        seen: set[int] = set()
+        out: list[int] = []
+        stack: list[PdfValue | None] = [start]
+        while stack:
+            v = stack.pop()
+            if isinstance(v, PdfRef):
+                if v.num in seen:
+                    continue
+                seen.add(v.num)
+                out.append(v.num)
+                v = self.get(v)
+                if _type(v) == b"Page":
+                    continue
+            stack.extend(reversed(self.kids(v)))
+        return out
+
+    def discovery(self, start: PdfValue | None) -> list[int]:
+        """Objects in the order a stack walk discovers them: expanding a
+        value lists each unseen reference in written order and pushes it."""
+        seen: set[int] = set()
+        out: list[int] = []
+        stack: list[PdfValue | None] = [start]
+        if isinstance(start, PdfRef):
+            seen.add(start.num)
+            out.append(start.num)
+            stack = [self.get(start)]
+        while stack:
+            v = stack.pop()
+            if _type(v) == b"Page":
+                continue
+            for ch in self.kids(v):
+                if isinstance(ch, PdfRef):
+                    if ch.num not in seen:
+                        seen.add(ch.num)
+                        out.append(ch.num)
+                        stack.append(self.get(ch))
+                elif isinstance(ch, (PdfArray, PdfDict)):
+                    stack.append(ch)
+        return out
+
+    def reach(self, start: int) -> set[int]:
+        seen = {start}
+        stack: list[PdfValue | None] = [self.get(self.ref(start))]
+        while stack:
+            v = stack.pop()
+            if _type(v) == b"Page":
+                continue
+            for x in self.kids(v):
+                if isinstance(x, PdfRef):
+                    if x.num not in seen:
+                        seen.add(x.num)
+                        stack.append(self.get(x))
+                elif isinstance(x, (PdfArray, PdfDict)):
+                    stack.append(x)
+        return seen
+
+    def first_use(self, dec: bytes, name: bytes, d: int) -> int | None:
+        m = re.search(re.escape(b"/" + name) + NAME_END, dec)
+        return None if m is None or not dec else m.start() * (d - 1) // len(dec)
+
+    def ap_forms(self, page: int) -> set[int]:
+        out: set[int] = set()
+        pd = self.get(self.ref(page))
+        annots = self.get(pd.get(b"Annots")) if isinstance(pd, PdfDict) else None
+        for a in (annots.items if isinstance(annots, PdfArray) else ()):
+            ad = self.get(a)
+            ap = self.get(ad.get(b"AP")) if isinstance(ad, PdfDict) else None
+            if not isinstance(ap, PdfDict):
+                continue
+            for _, v in ap.entries:
+                vv = self.get(v)
+                if isinstance(v, PdfRef) and isinstance(vv, PdfDict) and vv.get(b"Length") \
+                        is not None:
+                    out.add(v.num)
+                elif isinstance(vv, PdfDict):
+                    out.update(x.num for _, x in vv.entries if isinstance(x, PdfRef))
+        return out
+
+    def is_widget(self, num: int) -> bool:
+        v = self.get(self.ref(num))
+        return isinstance(v, PdfDict) and _type(v) == b"Annot" and isinstance(
+            v.get(b"Subtype"), PdfName) and v.get(b"Subtype").raw == b"Widget"  # type: ignore[union-attr]
+
+
+def page0_entries(doc: Doc, sect0: list[int], d: int) -> list[int]:
+    """A-page0-entries: the numerators Acrobat's page 0 entries hold."""
+    lay = doc.lay
+    p0 = lay.pages[0]
+    shared = {o for o in lay.page_objects[0]
+              if o in set(sect0) and o != p0 and len(lay.users.get(o, ())) > 1}
+    dec = doc.content(p0)
+    res: dict[int, int | None] = {}
+    for cat, name, v in doc.resources(p0):
+        if cat in (b"Font", b"ColorSpace") and isinstance(v, PdfRef):
+            res[v.num] = doc.first_use(dec, name, d)
+    forms = doc.ap_forms(p0)
+    out = []
+    for o in shared | set(res):
+        if o in res:
+            out.append(res[o] or 0)
+        elif doc.is_widget(o) or o in forms:
+            out.append(0)
+        else:
+            out.append(d)
+    return sorted(out)
+
+
+def later_numerators(doc: Doc, i: int, first: set[int], d: int) -> dict[int, int | None]:
+    """A-later-numerators: group -> numerator source on page *i*."""
+    lay = doc.lay
+    dec = doc.content(lay.pages[i])
+    out: dict[int, int | None] = {}
+    for _, name, v in doc.resources(lay.pages[i]):
+        if not isinstance(v, PdfRef):
+            continue
+        n = doc.first_use(dec, name, d)
+        for num in doc.reach(v.num):
+            key = lay.compressed.get(num, num)
+            if num != v.num and key in first:
+                continue
+            old = out.get(key, -1)
+            if key not in out or (n is not None and (old is None or n < old)):
+                out[key] = n
+    return out
+
+
+def check(lay: Layout, t: Tables, res: Result, profile: str) -> None:
+    """Account for every value under one writer *profile*."""
+    def rule(name: str) -> None:
+        assert RULES[name][0] in (profile, "both"), name
+        res.rule(name)
+
+    acro = profile == "acrobat"
     objects, order = lay.objects, lay.order
     pos = {n: i for i, n in enumerate(order)}
-    # Users of compressed objects count for their object stream (qpdf's
-    # filterCompressedObjects).
     users: dict[int, set[tuple[str, Any]]] = {}
     for n, us in lay.users.items():
         users.setdefault(lay.compressed.get(n, n), set()).update(us)
@@ -724,37 +960,33 @@ def check(lay: Layout, t: Tables, res: Result) -> None:
     if any(p not in objects for p in lay.pages):
         res.bad("page offset", "pages", "a page object is compressed")
         return
-
-    # Page 0's section, two readings.
     listed = [n for n in order[1:] if n in lay.first_section]
     if not listed or any(pos[b] != pos[a] + 1 for a, b in zip(listed, listed[1:])):
         res.bad("layout", "first-page section", "not contiguous")
     first_run = [n for n in listed if n in first]
     p0 = lay.pages[0]
-    spec_p0 = first_run[first_run.index(p0):] if p0 in first_run else []
     length_obj = {n for n in objects if not users.get(n) and n in first}
 
     def part4(n: int) -> bool:
         us = users.get(n, set())
         return n == lay.root or n in length_obj or (
             bool(us) and all(u == ("root_key", b"OpenAction") for u in us))
-    i = 0
-    while i < len(first_run) and part4(first_run[i]):
-        i += 1
-    acro_p0 = first_run[i:]
-
-    page, pages, shared, groups = t.page, t.pages, t.shared, t.groups
-    fpo = _adj(lay, page["first_page_offset"])
-    if spec_p0 and fpo == objects[spec_p0[0]].offset:
-        sect0 = spec_p0
-    elif acro_p0 and fpo == objects[acro_p0[0]].offset:
-        sect0 = acro_p0
-        res.rule("A-first-page-section")
+    if acro:
+        i = 0
+        while i < len(first_run) and part4(first_run[i]):
+            i += 1
+        sect0 = first_run[i:]
+        rule("A-first-page-section")
     else:
-        res.bad("page offset", "first_page_offset", "matches no reading")
-        sect0 = spec_p0 or acro_p0
+        sect0 = first_run[first_run.index(p0):] if p0 in first_run else []
+        rule("Q-first-page-at-page")
+    page, pages, shared, groups = t.page, t.pages, t.shared, t.groups
+    if not sect0:
+        res.bad("page offset", "first-page section", "empty under this profile")
+        return
+    if _adj(lay, page["first_page_offset"]) != objects[sect0[0]].offset:
+        res.bad("page offset", "first_page_offset", "mismatch")
 
-    # Other pages' sections: the maximal run of objects only that page reaches.
     sections = [sect0]
     for i in range(1, npages):
         start = lay.pages[i]
@@ -766,8 +998,6 @@ def check(lay: Layout, t: Tables, res: Result) -> None:
         sections.append(run)
     counts = [len(s) for s in sections]
     lengths = [ext(s) for s in sections]
-
-    # Header items 1-5 and the per-page counts and lengths.
     if page["min_nobjects"] != min(counts):
         res.bad("page offset", "min_nobjects", "mismatch")
     if page["min_page_length"] != min(lengths):
@@ -782,21 +1012,19 @@ def check(lay: Layout, t: Tables, res: Result) -> None:
         if e["delta_page_length"] + page["min_page_length"] != lengths[i]:
             res.bad("page offset", f"page {'0' if i == 0 else 'N'} page_length", "mismatch")
 
-    # Items 6-9 and the per-page content entries (notes 126, 127).
-    if (page["min_content_offset"] == 0 and page["nbits_delta_content_offset"] == 0):
-        res.rule("N126-content-offset-zero")
+    if page["min_content_offset"] == 0 and page["nbits_delta_content_offset"] == 0:
+        rule("N126-content-offset-zero")
     else:
         res.bad("page offset", "content offset", "no rule fixes it")
-    same_width = page["nbits_delta_content_length"] == page["nbits_delta_page_length"]
-    same_deltas = all(e["delta_content_length"] == e["delta_page_length"] for e in pages)
-    if same_width and same_deltas and page["min_content_length"] == 0:
-        res.rule("N127-content-length")
-    elif same_width and same_deltas and page["min_content_length"] == page["min_page_length"]:
-        res.rule("Q-content-length-as-page")
+    same = (page["nbits_delta_content_length"] == page["nbits_delta_page_length"]
+            and all(e["delta_content_length"] == e["delta_page_length"] for e in pages))
+    want_min = 0 if acro else page["min_page_length"]
+    if same and page["min_content_length"] == want_min:
+        rule("N127-content-length" if acro else "Q-content-length-as-page")
     else:
-        res.bad("page offset", "content length", "no rule fixes it")
+        res.bad("page offset", "content length", "not this profile's reading")
 
-    # The shared object table: groups for the first-page section, then part 8.
+    # The shared object table.
     nfp, total = shared["nshared_first_page"], shared["nshared_total"]
     if nfp != len(sect0):
         res.bad("shared object", "nshared_first_page", "mismatch")
@@ -804,37 +1032,30 @@ def check(lay: Layout, t: Tables, res: Result) -> None:
     part8: list[int] = []
     j = pos[last] + 1
     while j < len(order):
-        us = users.get(order[j], set())
-        pg = {u[1] for u in us if u[0] == "page"}
-        # Part 8: objects later pages reach. One page alone reaching it is
-        # qpdf's documented Acrobat deviation (checkHPageOffset: "items
-        # under a page's /Resources ... in with shared objects even when
-        # they are private").
+        pg = {u[1] for u in users.get(order[j], set()) if u[0] == "page"}
         if not pg or 0 in pg:
             break
         if len(pg) == 1:
-            res.rule("QR-private-resource-in-part8")
+            if not acro:
+                break
+            rule("QR-private-resource-in-part8")
         part8.append(order[j])
         j += 1
     group_objs = sect0 + part8
     if total != len(group_objs):
         res.bad("shared object", "nshared_total", "mismatch")
     if shared["nbits_nobjects"] == 0:
-        res.rule("N128-nobjects-width-zero")
+        rule("N128-nobjects-width-zero")
     else:
         res.bad("shared object", "nbits_nobjects", "no rule fixes it")
     if part8:
         if shared["first_shared_obj"] != part8[0]:
             res.bad("shared object", "first_shared_obj", "mismatch")
-        if _adj(lay, shared["first_shared_offset"]) == objects[part8[0]].offset:
-            pass
-        elif shared["first_shared_offset"] == objects[part8[0]].offset:
-            res.rule("A-offset-unadjusted")
-        else:
+        if _adj(lay, shared["first_shared_offset"]) != objects[part8[0]].offset:
             res.bad("shared object", "first_shared_offset", "mismatch",
                     _offset_hint(lay, shared["first_shared_offset"], objects[part8[0]].offset))
     elif shared["first_shared_obj"] == 0 and shared["first_shared_offset"] == 0:
-        res.rule("N131-no-part8-zero")
+        rule("N131-no-part8-zero")
     else:
         res.bad("shared object", "first_shared_obj/offset", "no part 8, values not zero")
     glens = [objects[n].extent for n in group_objs]
@@ -848,64 +1069,102 @@ def check(lay: Layout, t: Tables, res: Result) -> None:
         if bad:
             res.bad("shared object", "group lengths", "mismatch", str(bad))
 
-    # Shared references per page.
+    # Shared references per page: widths, page 0, later pages.
+    width, denom = page["nbits_shared_numerator"], page["shared_denominator"]
+    if denom == (8 if acro else 4):
+        rule("A-denominator-8" if acro else "Q-denominator-4")
+    else:
+        res.bad("page offset", "shared_denominator", "not this profile's value")
+    nums = [x for e in pages for x in e["shared_numerators"]]
+    if acro:
+        if width == nbits(denom):
+            rule("A-numerator-width-denominator")
+        else:
+            res.bad("page offset", "nbits_shared_numerator", "not this profile's width")
+    elif width == 0 and not any(nums):
+        rule("Q-numerators-zero")
+    else:
+        res.bad("page offset", "numerators", "not this profile's (all 0, width 0)")
+    if any(x > denom for x in nums):
+        res.bad("page offset", "numerators", "numerator above the denominator")
     max_n = max(e["nshared_objects"] for e in pages)
     if page["nbits_nshared_objects"] != nbits(max_n):
         res.bad("page offset", "nbits_nshared_objects", "not minimal")
-    if pages[0]["nshared_objects"]:
-        # Spec: none. qpdf documents Acrobat writing them ("page 0 has
-        # shared identifier entries"), with garbage identifiers; it fixes
-        # neither their count nor their numerators.
-        res.bad("page offset", "page 0 nshared_objects", "page 0 entries: no rule fixes the count")
-        if any(pages[0]["shared_identifiers"]):
-            res.bad("page offset", "page 0 identifiers", "page 0 entries: non-zero identifiers")
-        if any(pages[0]["shared_numerators"]):
-            res.bad("page offset", "page 0 numerators", "page 0 entries: non-zero numerators")
-    idx_obj = dict(enumerate(group_objs))
     later_ids = [x for e in pages[1:] for x in e["shared_identifiers"]]
+    if acro:
+        if page["nbits_shared_identifier"] == nbits(max(later_ids, default=0)):
+            rule("A-identifier-width-pages")
+        else:
+            res.bad("page offset", "nbits_shared_identifier", "not this profile's width")
+    elif page["nbits_shared_identifier"] == nbits(total):
+        rule("Q-identifier-width-total")
+    else:
+        res.bad("page offset", "nbits_shared_identifier", "not this profile's width")
+
+    doc = Doc(lay)
+    e0 = pages[0]
+    if not acro:
+        if e0["nshared_objects"]:
+            res.bad("page offset", "page 0 entries", "present (qpdf profile: none)")
+        else:
+            rule("Q-no-page0-entries")
+    elif any(e0["shared_identifiers"]):
+        res.bad("page offset", "page 0 identifiers", "not zero")
+    else:
+        try:
+            if page0_entries(doc, sect0, denom) == e0["shared_numerators"]:
+                rule("A-page0-entries")
+            else:
+                res.bad("page offset", "page 0 entries", "not the observed rule's")
+        except Stop as err:
+            res.bad("page offset", "page 0 entries", str(err))
+
+    idx_obj = dict(enumerate(group_objs))
+    first_groups = set(group_objs[:nfp])
     for i in range(1, npages):
         e = pages[i]
-        hinted = {idx_obj.get(x, -1) for x in e["shared_identifiers"]}
-        if len(hinted) != len(e["shared_identifiers"]):
+        ids, enums = e["shared_identifiers"], e["shared_numerators"]
+        hinted = {idx_obj.get(x, -1) for x in ids}
+        if len(hinted) != len(ids):
             res.bad("page offset", "page N identifiers", "repeated identifier")
         reach = {n for n in (lay.compressed.get(m, m) for m in lay.page_objects[i])
                  if n in set(group_objs)}
         if -1 in hinted:
             res.bad("page offset", "page N identifiers", "identifier past the table")
-        if hinted - reach - {-1}:
+            continue
+        if hinted - reach:
             res.bad("page offset", "page N identifiers", "names an object the page does not reach")
         if reach - hinted:
             res.bad("page offset", "page N identifiers", "omits a shared object the page reaches")
-        if e["shared_identifiers"] != sorted(e["shared_identifiers"]):
-            res.bad("page offset", "page N identifiers", "order: no rule fixes it")
-        if any(e["shared_numerators"]):
-            res.bad("page offset", "page N numerators", "non-zero numerators: no layout rule")
-    if page["nbits_shared_identifier"] == nbits(total) and total:
-        res.rule("Q-identifier-width-total")
-    elif page["nbits_shared_identifier"] == nbits(max(later_ids, default=0)):
-        res.rule("A-identifier-width-pages")
-    else:
-        res.bad("page offset", "nbits_shared_identifier", "no rule fixes it")
-    nums = [x for e in pages for x in e["shared_numerators"]]
-    width, denom = page["nbits_shared_numerator"], page["shared_denominator"]
-    if width == nbits(max(nums, default=0)):
-        pass
-    elif width == nbits(denom):
-        res.rule("A-numerator-width-denominator")
-    else:
-        res.bad("page offset", "nbits_shared_numerator", "no rule fixes it")
-    if nums and any(x > denom for x in nums):
-        res.bad("page offset", "numerators", "numerator above the denominator")
-    if not any(nums):
-        res.rule("Q-numerators-zero")
-    if denom == 4:
-        res.rule("D-denominator-4")
-    elif denom == 8:
-        res.rule("D-denominator-8")
-    else:
-        res.bad("page offset", "shared_denominator", "no rule fixes it")
+        if not acro:
+            if ids == sorted(ids):
+                rule("Q-identifiers-ascending")
+            else:
+                res.bad("page offset", "page N identifiers", "order: not ascending")
+            continue
+        try:
+            src = later_numerators(doc, i, first_groups, denom)
+        except Stop as err:
+            res.bad("page offset", "page N numerators", str(err))
+            continue
+        pred = [(src[idx_obj[x]] or 0) if idx_obj[x] in src else denom for x in ids]
+        if pred == enums:
+            rule("A-later-numerators")
+        else:
+            res.bad("page offset", "page N numerators", "not the observed rule's")
+        pd = doc.get(doc.ref(lay.pages[i]))
+        top = PdfArray(0, 0, tuple(v for k, v in pd.entries if k.raw != b"Parent")) \
+            if isinstance(pd, PdfDict) else PdfArray(0, 0, ())
+        walk: dict[int, int] = {}
+        for k, n in enumerate(doc.preorder(top)):
+            walk.setdefault(lay.compressed.get(n, n), k)
+        want = sorted(ids, key=lambda x: (enums[ids.index(x)], walk.get(idx_obj[x], 1 << 30)))
+        if want == ids:
+            rule("A-later-order")
+        else:
+            res.bad("page offset", "page N identifiers", "order: not the observed rule's")
 
-    _check_generic(lay, t, res, users)
+    _check_generic(lay, t, res, users, doc, profile)
     _check_lindict(lay, sect0, res)
 
 
@@ -914,13 +1173,14 @@ _GENERIC_KEY = {"O": b"Outlines", "V": b"AcroForm", "L": b"PageLabels",
 
 
 def _check_generic(lay: Layout, t: Tables, res: Result,
-                   users: dict[int, set[tuple[str, Any]]]) -> None:
+                   users: dict[int, set[tuple[str, Any]]], doc: Doc, profile: str) -> None:
     """A generic table names a group of consecutive objects: every object
     in it reached by the table's key, every object the key reaches that is
     in no shared group in it, the offset its first object's, the length
     the group's. An extended table's identifiers must name exactly the
-    shared groups the key reaches, in ascending order (the only order a
-    rule fixes)."""
+    shared groups the key reaches (excluding groups only the key reaches),
+    in the profile's order: ascending (qpdf, which never writes these
+    tables) or the stack walk's discovery order (Acrobat, observed)."""
     objects, order = lay.objects, lay.order
     pos = {n: i for i, n in enumerate(order)}
     group_objs = _group_objects(lay, t)
@@ -950,38 +1210,36 @@ def _check_generic(lay: Layout, t: Tables, res: Result,
         if outside:
             res.bad(label, "nobjects", "the key reaches objects in neither the group nor a "
                     "shared group", str(len(outside)))
-        off = _adj(lay, g["first_object_offset"])
-        length = sum(objects[m].extent for m in run)
-        if off == objects[fo].offset and g["group_length"] == length:
-            pass
-        elif (name == "O" and pos[fo] + 1 < len(order)
-              and off == objects[order[pos[fo] + 1]].offset
-              and g["group_length"] == sum(objects[m].extent
-                                           for m in order[pos[fo] + 1:pos[fo] + 1 + n])):
-            res.rule("QO-outline-next-offset")
-        else:
-            if off == objects[fo].offset:
-                pass
-            elif g["first_object_offset"] == objects[fo].offset:
-                res.rule("A-offset-unadjusted")
-            else:
-                res.bad(label, "first_object_offset", "mismatch",
-                        _offset_hint(lay, g["first_object_offset"], objects[fo].offset))
-            if g["group_length"] != length:
-                res.bad(label, "group_length", "mismatch")
+        # qpdf's checkHOutlines records Acrobat writing the next object's
+        # offset in /O; no corpus file does, so neither profile takes it.
+        if _adj(lay, g["first_object_offset"]) != objects[fo].offset:
+            res.bad(label, "first_object_offset", "mismatch",
+                    _offset_hint(lay, g["first_object_offset"], objects[fo].offset))
+        if g["group_length"] != sum(objects[m].extent for m in run):
+            res.bad(label, "group_length", "mismatch")
         if "identifiers" in g:
             ids = g["identifiers"]
             if g["nbits_identifier"] != nbits(max(ids, default=0)):
                 res.bad(label, "nbits_identifier", "not minimal")
-            # Shared: groups the key reaches that something else reaches too.
             want = sorted(i for i, m in enumerate(group_objs)
                           if owner in users.get(m, ()) and len(users.get(m, ())) > 1)
             if any(x >= len(group_objs) for x in ids):
                 res.bad(label, "identifiers", "identifier past the table")
             elif sorted(ids) != want:
                 res.bad(label, "identifiers", "not the shared groups the key reaches")
-            elif ids != want:
-                res.bad(label, "identifiers", "order: no rule fixes it")
+            elif profile == "qpdf":
+                if ids != want:
+                    res.bad(label, "identifiers", "order: not ascending")
+            else:
+                gi = {m: i for i, m in enumerate(group_objs)}
+                root = doc.get(doc.ref(lay.root))
+                key = _GENERIC_KEY[name]
+                start = root.get(key) if isinstance(root, PdfDict) else None
+                found = [gi[m] for m in doc.discovery(start) if m in gi and gi[m] in set(ids)]
+                if found == ids:
+                    res.rule("A-form-order")
+                else:
+                    res.bad(label, "identifiers", "order: not the observed rule's")
 
 
 def _group_objects(lay: Layout, t: Tables) -> list[int]:
@@ -1055,18 +1313,32 @@ def _check_lindict(lay: Layout, sect0: list[int], res: Result) -> None:
 
 
 def account(data: bytes) -> Result:
-    """Decode and account for one file's hint stream."""
-    res = Result()
+    """Decode one file's hint stream and account for it under each writer
+    profile; the file is accounted when one whole profile accounts for
+    every value. The result is that profile's, else the profile with the
+    fewest findings (ties: Acrobat's, the corpus's writer)."""
+    base = Result()
     try:
         lay = build_layout(data)
-        tables = decode_stream(lay, res)
-        res.tables = sorted(tables.spans)
-        check(lay, tables, res)
+        tables = decode_stream(lay, base)
     except Stop as e:
-        res.error = str(e)
+        base.error = str(e)
+        return base
     except (IndexError, KeyError, ValueError, RecursionError) as e:
-        res.error = f"decoder error: {type(e).__name__}"
-    return res
+        base.error = f"decoder error: {type(e).__name__}"
+        return base
+    results = []
+    for profile in ("acrobat", "qpdf"):
+        res = Result(list(base.findings), Counter(base.rules), sorted(tables.spans))
+        res.profile = profile
+        try:
+            check(lay, tables, res, profile)
+        except Stop as e:
+            res.error = str(e)
+        except (IndexError, KeyError, ValueError, RecursionError) as e:
+            res.error = f"decoder error: {type(e).__name__}"
+        results.append(res)
+    return min(results, key=lambda r: (not r.accounted, r.error is not None, len(r.findings)))
 
 
 # ── fabricated fixtures ──────────────────────────────────────────────────
@@ -1155,6 +1427,28 @@ def mutations(data: bytes) -> dict[str, bytes]:
         o_bit = bit + 8 * t.spans["O"][0]
         out["field: outline group_length + 2"] = _set_bits(
             data, o_bit + 96, 32, t.generic["O"]["group_length"] + 2)
+    # The other profile's reading of single values (review #180, b1): each
+    # alone, and every combination, must fail, since a file matches one
+    # whole profile.
+    lay = build_layout(data)
+    alt: dict[str, tuple[int, int, int]] = {
+        "min_content_length 0 (Acrobat's, note 127)": (bit + 176, 32, 0),
+        "shared_denominator 8 (Acrobat's)": (bit + 272, 16, 8),
+    }
+    if t.shared["nshared_total"] > t.shared["nshared_first_page"]:
+        alt["first_shared_offset as a file offset"] = (
+            s_bit + 32, 32, t.shared["first_shared_offset"] + lay.hint_length)
+    if "O" in t.spans:
+        alt["/O first_object_offset as a file offset"] = (
+            bit + 8 * t.spans["O"][0] + 32, 32,
+            t.generic["O"]["first_object_offset"] + lay.hint_length)
+    names = sorted(alt)
+    for size in range(1, len(names) + 1):
+        for combo in itertools.combinations(names, size):
+            m = data
+            for name in combo:
+                m = _set_bits(m, *alt[name])
+            out["other profile: " + " + ".join(combo)] = m
     return out
 
 
@@ -1184,7 +1478,7 @@ def measure(path: str) -> dict[str, Any]:
     and class, the rules used, the tables present."""
     res = account(Path(path).read_bytes())
     return {"accounted": res.accounted, "error": res.error, "tables": res.tables,
-            "rules": sorted(res.rules),
+            "profile": res.profile, "rules": sorted(res.rules),
             "findings": sorted({(f.table, f.field, f.klass) for f in res.findings})}
 
 
@@ -1220,38 +1514,68 @@ def populations(records: Path, manifest: list[Any]) -> dict[str, list[str]]:
     return pops
 
 
+OBSERVED_CONTENT_RULES = {
+    "A-page0-entries": ("page offset: page 0 entries: not the observed rule's",),
+    "A-later-numerators": ("page offset: page N numerators: not the observed rule's",),
+    "A-later-order": ("page offset: page N identifiers: order: not the observed rule's",),
+    "A-form-order": ("/V table: identifiers: order: not the observed rule's",
+                     "/C table: identifiers: order: not the observed rule's"),
+}
+
+
+def half(key: str) -> str:
+    """The held-out split, fixed before any rule was derived: a distinct
+    file's SHA-256 prefix, even -> derive, odd -> held out."""
+    return "derive" if int(key, 16) % 2 == 0 else "held_out"
+
+
+def _classes(row: dict[str, Any]) -> set[str]:
+    return {f"{t}: {f}: {c}" for t, f, c in row["findings"]}
+
+
 def summarize(keys: list[str], rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
     present = [k for k in keys if k in rows]
     by_class: Counter[str] = Counter()
     rules: Counter[str] = Counter()
     for k in present:
         r = rows[k]
-        by_class.update({f"{t}: {f}: {c}" for t, f, c in r["findings"]})
+        by_class.update(_classes(r))
         if r["error"]:
-            by_class[f"error: {r['error']}"] += 1
+            by_class["error: " + r["error"]] += 1
         rules.update(r["rules"])
-    page0 = ("page offset: page 0 nshared_objects: page 0 entries: no rule fixes the count")
-    numer = {"page offset: page 0 numerators: page 0 entries: non-zero numerators",
-             "page offset: page N numerators: non-zero numerators: no layout rule"}
-    order = {"/V table: identifiers: order: no rule fixes it",
-             "/C table: identifiers: order: no rule fixes it",
-             "page offset: page N identifiers: order: no rule fixes it"}
 
-    def only(k: str, allowed: set[str]) -> bool:
-        found = {f"{t}: {f}: {c}" for t, f, c in rows[k]["findings"]}
-        return not rows[k]["error"] and bool(found) and found <= allowed
-    return {
+    def observed(k: str) -> bool:
+        return any(RULES[name][1] == "observed" for name in rows[k]["rules"])
+
+    acc = [k for k in present if rows[k]["accounted"]]
+    out: dict[str, Any] = {
         "files": len(present),
         "distinct": len(set(present)),
-        "accounted": sum(1 for k in present if rows[k]["accounted"]),
-        "not_accounted": sum(1 for k in present if not rows[k]["accounted"]),
+        "accounted": len(acc),
+        "accounted_documented_rules_only": sum(1 for k in acc if not observed(k)),
+        "accounted_with_observed_rules": sum(1 for k in acc if observed(k)),
+        "accounted_by_profile": dict(Counter(str(rows[k]["profile"]) for k in acc)),
+        "not_accounted": len(present) - len(acc),
         "errors": sum(1 for k in present if rows[k]["error"]),
-        "only_page0_entries": sum(1 for k in present if only(k, {page0} | numer)),
-        "only_page0_numerators_or_order": sum(1 for k in present
-                                              if only(k, {page0} | numer | order)),
         "findings_by_class": dict(by_class.most_common()),
         "rules_used": dict(rules.most_common()),
     }
+    # Held-out discipline, once per distinct file: each observed content
+    # rule's exact-match rate on the half it was derived on and the other.
+    split: dict[str, str] = {}
+    distinct = sorted(set(present))
+    for name, fails in OBSERVED_CONTENT_RULES.items():
+        for h in ("derive", "held_out"):
+            ks = [k for k in distinct if half(k) == h]
+            miss = [k for k in ks if _classes(rows[k]) & set(fails)]
+            hit = [k for k in ks if name in rows[k]["rules"] and k not in miss]
+            split[name + " " + h] = f"{len(hit)} of {len(hit) + len(miss)}"
+    for h in ("derive", "held_out"):
+        ks = [k for k in distinct if half(k) == h]
+        n = sum(1 for k in ks if rows[k]["accounted"])
+        split["fully accounted, distinct, " + h] = f"{n} of {len(ks)}"
+    out["held_out"] = split
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

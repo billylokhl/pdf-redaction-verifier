@@ -386,15 +386,17 @@ needed no separate decision beyond the ones recorded above.
 ## Note (2026-10-15): the hint stream
 
 Owner decision 2026-10-15: staged (a) -- a hint-table spike first, hint streams flagged until
-it shows whether one reading of Annex F accounts for every value. Outcome, the same day
-([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table spike"): **no-go**. None
-of the 101 warned text-bearing files qpdf warns on is fully accounted: every one carries
-entries for page 0's shared objects, which Annex F forbids and whose count and numerators no
-documented Acrobat deviation fixes (qpdf's source records only that Acrobat writes them);
-identifier order and later pages' numerators are unfixed in many too. The rejected candidate
-above stands: the hint-stream payload stays `UNREADABLE`, so `FLAGGED`, and this closed list
-gains no reason. The spike's decoder does fully account every file qpdf's check passes (154),
-so it is available if R6 (b) is ever taken.
+it shows whether the tables can be accounted for exactly. Outcome
+([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table spike", extended after
+review): under documented rules only (qpdf's source, the implementation notes it cites), **0 of
+the 101** warned text-bearing new files are fully accounted. Under a closed set of eight
+observed, undocumented Acrobat conventions -- bound to one writer profile so a file must match
+it whole, each fixing a value exactly, validated on a held-out half of the files -- **82 of the
+101** are (67 of 81 distinct; 39 of 46 held-out distinct files); multi-page files stay
+unaccounted. Whether such observed rules may justify a new reason is an open owner question.
+Until it is answered, the rejected candidate above stands: the hint-stream payload stays
+`UNREADABLE`, so `FLAGGED`, and this closed list gains no reason; a "yes" would bring the
+reason here with its own ADR, at this list's bar.
 
 ## Note (2026-10-15)
 
