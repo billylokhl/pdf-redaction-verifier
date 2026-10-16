@@ -63,9 +63,13 @@ jobs:
           "$bin" --version
           modules="$(brew --prefix openssl@3)/lib/ossl-modules"
           test -f "$modules/legacy.dylib"
+          # awk reads all its input (no early exit to SIGPIPE strings).
           builtin="$(strings "$(dirname "$bin")"/../lib/libqpdf.*.dylib \
-            | grep -m1 '^/.*/ossl-modules$')"
+            | awk '/^\/.*\/ossl-modules$/ && !f {print; f=1}')"
           echo "built-in modules directory: $builtin"
+          test -n "$builtin"
+          # This leaves a stub keg for that openssl@3 version in the
+          # Cellar; no later step runs brew.
           if [ ! -e "$builtin/legacy.dylib" ]; then
             mkdir -p "$(dirname "$builtin")"
             ln -sfn "$modules" "$builtin"

@@ -627,8 +627,8 @@ RC4-encrypted files (and AES-128 ones, whose password check uses RC4)
 only if it finds OpenSSL's legacy provider, in the modules directory it
 was built with; `verify.py` runs qpdf with a stripped environment, so
 `OPENSSL_MODULES` does not reach it there. CI links that built-in
-directory to Homebrew openssl@3's `lib/ossl-modules` (Homebrew's own
-qpdf needs nothing). Without the provider, qpdf exits 2 on those files:
+directory to Homebrew openssl@3's `lib/ossl-modules`; do the same
+locally, or use Homebrew's own qpdf, which needs nothing (#171). Without the provider, qpdf exits 2 on those files:
 the Binary layer is flagged as not scanned, and the gate reads a split
 on encryption. Without uv, `pip install -e '.[test]'`
 still works (from `pyproject.toml` directly, not the lock file).
