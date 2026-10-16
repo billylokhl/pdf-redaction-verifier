@@ -469,3 +469,55 @@ def test_an_encrypt_entry_naming_nothing_is_a_split_not_a_crash(target: bytes | 
     pdf = rawpdf.build(objects, trailer=b" /Encrypt 7 0 R")
     (revision,) = decrypt(pdf)
     assert rules(revision) == {("decryption_unverified", -1, CryptRule.TRAILER_SPLIT)}
+
+
+# ── Round 3 (#178): the packet check is not proof; its cost is bounded ──
+def test_ground_ciphertext_passes_as_a_packet_and_only_views_hold_the_secret() -> None:
+    # Any printable string can be ciphertext: grind the metadata object's
+    # number (its key) until "123-45-6789" encrypts to printable ASCII
+    # inside a well-formed packet. The check passes; MuPDF shows the secret,
+    # which views carries for the matcher (3a-9b and 4a must scan it).
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    head, secret, tail = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>", b"123-45-6789", b"</x:xmpmeta>"
+    for number in range(8, 200_000):
+        middle = h.stream_data(number, head + secret)[len(head):]
+        if all(32 <= b < 127 for b in middle):
+            break
+    else:
+        pytest.fail("no printable ciphertext found")
+    stored = head + middle + tail
+    plaintext = h.stream_data(number, stored)            # RC4: what MuPDF shows
+    assert secret in plaintext
+    pdf = hand_built(h, x1=b"<< /Type /Catalog /Pages 2 0 R /Metadata %d 0 R >>" % number,
+                     **{f"x{number}": rawpdf.stream(b"/Type /Metadata /Subtype /XML", stored)})
+    (revision,) = decrypt(pdf)
+    assert revision.flags == ()                          # passes as a packet: not proof
+    assert secret in revision.views[(number, 0)]
+
+
+@pytest.mark.parametrize("stored, extra", [
+    (SECRET_XMP + b"\0" * 40, b""),
+    (SECRET_XMP, b"/DecodeParms << >>"),
+    (__import__("zlib").compress(SECRET_XMP) + b"\r\n", b"/Filter /FlateDecode")],
+    ids=["nul-padded", "empty-parms", "flate-crlf"])
+def test_packets_real_producers_write_are_trusted(stored: bytes, extra: bytes) -> None:
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    (revision,) = decrypt(_metadata_file(h, stored, extra))
+    assert revision.flags == ()
+
+
+def test_the_packet_check_is_charged_and_done_once_per_body() -> None:
+    import zlib
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    big = zlib.compress(b"<x:xmpmeta>" + b" " * (900_000) + b"</x:xmpmeta>", 9)
+    pdf = _metadata_file(h, big, b"/Filter /FlateDecode")
+    for _ in range(3):
+        pdf = rawpdf.incremental_update(pdf, {5: b"<< /Title " + h.string(5, b"x") + b" >>"},
+                                        info=5)
+        j = pdf.rindex(b"/Prev")
+        pdf = pdf[:j] + h.trailer(7) + b" " + pdf[j:]
+    revisions = decrypt(pdf)
+    assert all(r.flags == () for r in revisions)
+    # The inflated 900 KB is charged (once: memoized), so a cap below it stops the read.
+    assert any(f.reason is FlagReason.BUDGET_EXHAUSTED
+               for r in decrypt(pdf, max_bytes=800_000) for f in r.flags)

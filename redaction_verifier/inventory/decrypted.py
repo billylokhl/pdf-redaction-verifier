@@ -51,7 +51,8 @@ class MismatchRule(IntEnum):
 @dataclass(frozen=True)
 class Decryption:
     """One revision's decryption. ``identity`` is None when the revision
-    is not encrypted; otherwise a digest of everything that decides how
+    is not encrypted; ``(b"", b"")`` when it is but pikepdf could not read
+    it so (a flag says why: never reused); otherwise a digest of everything that decides how
     it decrypts (its /Encrypt dictionary resolved, the file key and the
     stream, string and file methods) and its first /ID string: two
     revisions with one identity decrypt any body alike (but for the

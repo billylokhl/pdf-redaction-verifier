@@ -322,9 +322,19 @@ files are all in the set.
     packet: unfiltered or Flate alone, then text in one Unicode encoding
     throughout, holding `<?xpacket` or `<x:xmpmeta`. Anything else is
     flagged (rule `METADATA_CIPHER`).
-  - MuPDF's decryption of the stream is carried for the matcher to scan
-    as well (`Decryption.views`), so a secret it shows is found even
-    where the stored bytes pass as a packet.
+  - The packet rule is not proof: any printable string can be
+    ciphertext, and an object number or /ID can be ground until a
+    secret's ciphertext is printable (about 1 in 55,000 tries for 11
+    ASCII bytes under RC4; #178 round 3 pins such a file). So MuPDF's
+    decryption of the stream is carried as well (`Decryption.views`),
+    and a secret it shows will be found once the matcher scans it.
+    Nothing scans it yet: the Phase 3b plan records the obligation and
+    Phase 4a discharges it. Until then this is a known gap, in shadow
+    mode only.
+  - Latin-1 packets, other encodings and filters other than Flate alone
+    are not trusted (`METADATA_CIPHER`, fail-closed). Trailing NULs and
+    whitespace, empty `/DecodeParms`, and an end of line after the Flate
+    data are allowed.
 - **Our trailer and the readers must agree on whether a revision is
   encrypted.** An `/Encrypt` naming a null or missing object, or one only
   the readers see, is flagged (rule `TRAILER_SPLIT`).

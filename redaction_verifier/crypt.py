@@ -35,7 +35,7 @@ import hashlib
 import io
 import zlib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any
@@ -67,6 +67,8 @@ class _Shared:
     entries: int               # xref entries still to visit, over all revisions
     verified: _Verified        # only from revisions found trusted
     xref_streams: frozenset[int]   # the chain's cross-reference streams, by offset
+    # The plain-metadata check, by stored offset and identity: once per body.
+    packets: dict[tuple[int, tuple[bytes, bytes] | None], bool] = field(default_factory=dict)
 
 
 def cut(chain: Chain, data: bytes, revision: int) -> bytes:
@@ -147,8 +149,8 @@ class _Revision:
             self.spans = {u.ref: u.spans[0] for u in self.inv.units if u.spans}
         return self.spans.get(unit)
 
-    def charge(self, *parts: bytes, entries: int = 0) -> bool:
-        self.shared.left -= sum(len(p) for p in parts)
+    def charge(self, *parts: bytes, entries: int = 0, extra: int = 0) -> bool:
+        self.shared.left -= sum(len(p) for p in parts) + extra
         self.shared.entries -= entries
         if self.shared.left < 0 or self.shared.entries < 0:
             if not any(f.reason is FlagReason.BUDGET_EXHAUSTED for f in self.flags):
@@ -339,7 +341,16 @@ class _Revision:
             warned = pk_warned
             if theirs is not None and theirs != stored:
                 self.views[key] = theirs
-            if not _xmp_packet(stored, obj):
+            unit = self.inv.body(key[0], self.revision)
+            memo = None if unit is None else (unit.start, self.identity)
+            packet = self.shared.packets.get(memo) if memo is not None else None
+            if packet is None:
+                packet, read = _xmp_packet(stored, obj)
+                if not self.charge(b"", entries=0, extra=read):
+                    return False
+                if memo is not None:
+                    self.shared.packets[memo] = packet
+            if not packet:
                 self.unverified(CryptRule.METADATA_CIPHER, key)
                 return True
         if warned or ours is None or (theirs is None and not is_xref):
@@ -467,35 +478,44 @@ def _ours_encrypted(chain: Chain, revision: int) -> bool:
 _MARKERS = ("<?xpacket", "<x:xmpmeta")
 
 
-def _xmp_packet(stored: bytes, obj: Any) -> bool:
+_PACKET_CAP = 1 << 20      # real XMP packets run a few KB to ~100 KB
+
+
+def _xmp_packet(stored: bytes, obj: Any) -> tuple[bool, int]:
     """Whether the catalog's unencrypted /Metadata is, as stored, wholly an
-    XMP packet: unfiltered or Flate alone (inflated to a cap), then text in
-    one Unicode encoding throughout, holding an XMP marker. Anything else
-    may be ciphertext a reader shows decrypted: not trusted. (MuPDF's
-    decryption is carried for the matcher regardless: ``views``.)"""
+    XMP packet -- unfiltered or Flate alone (inflated to 1 MiB), then text
+    in one Unicode encoding throughout (trailing NULs and whitespace
+    allowed), holding an XMP marker -- and how many bytes that read. Not
+    proof: any printable string can be ciphertext, and an object number or
+    /ID can be ground until it is (#178, round 3); MuPDF's decryption is
+    carried in ``views`` for the matcher for that reason. Latin-1 packets
+    and other encodings are not trusted (fail closed)."""
     filters = obj.get("/Filter")
     names = list(filters) if isinstance(filters, pikepdf.Array) else \
         ([] if filters is None else [filters])
+    parms = obj.get("/DecodeParms")
+    parms_empty = parms is None or (isinstance(parms, pikepdf.Dictionary) and not len(parms)) \
+        or (isinstance(parms, pikepdf.Array) and all(p is None for p in parms))
     data = stored
-    if names == [pikepdf.Name.FlateDecode] and obj.get("/DecodeParms") is None:
+    if names == [pikepdf.Name.FlateDecode] and parms_empty:
         z = zlib.decompressobj()
         try:
-            data = z.decompress(stored, 1 << 24)
+            data = z.decompress(stored, _PACKET_CAP)
         except zlib.error:
-            return False
-        if not z.eof or z.unused_data or z.unconsumed_tail:
-            return False
+            return False, 0
+        if not z.eof or z.unconsumed_tail or z.unused_data.strip(b"\r\n \t\0"):
+            return False, len(data)
     elif names:
-        return False
+        return False, 0
     for encoding in ("utf-8", "utf-16", "utf-16-le", "utf-16-be", "utf-32"):
         try:
-            text = data.decode(encoding)
+            text = data.decode(encoding).rstrip("\0 \t\r\n")
         except UnicodeDecodeError:
             continue
         if any(m in text for m in _MARKERS) and all(
                 c.isprintable() or c.isspace() or c == "\ufeff" for c in text):
-            return True
-    return False
+            return True, len(data)
+    return False, len(data)
 
 
 def _plain_metadata(pdf: pikepdf.Pdf, encrypt: Any) -> Key | None:

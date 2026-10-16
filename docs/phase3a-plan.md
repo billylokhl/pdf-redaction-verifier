@@ -711,8 +711,13 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   3a-9a-1 `redaction_verifier/crypt.py` in shadow mode (outside the inventory package,
   ADR 0010 note): DECRYPTION_MISMATCH (MismatchRule) / DECRYPTION_UNVERIFIED (CryptRule:
   password, an authentication split, handler, open failure, MuPDF repair, /Perms, a reader
-  warning, a stream-level /Crypt filter, /EFF, stored bytes already plain, unlocated);
-  3a-9b-1 the inventory reads the decrypted values, the encryption identity joins pages/
+  warning, a stream-level /Crypt filter, /EFF, stored bytes already plain, unlocated, a
+  handler outside the closed set (NONCANONICAL), a stream calling itself /Type /XRef, plain
+  metadata that is no XMP packet, our trailer and the readers disagreeing);
+  3a-9b-1 the inventory reads the decrypted values (and carries `Decryption.views`: what
+  a reader shows beyond the agreed view, today MuPDF's decryption of plain metadata; the
+  matcher must scan it, decoded through the stream's filters -- 3b records the obligation,
+  4a discharges it), the encryption identity joins pages/
   trees/annotations/labels reuse, P4 lifted; 3a-9b-2 the gate lifts its encrypted
   exemptions and compares our decrypted values. (A separate 9a-2 for the gate was folded
   into 9b, coordinator 2026-10-15: until the inventory decrypts, the gate has nothing of
