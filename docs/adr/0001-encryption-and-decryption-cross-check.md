@@ -215,3 +215,109 @@ Owner decision: "approve all recommendations."
 - **Confirm in Phase 3a** that pikepdf's decrypted-but-unfiltered read
   actually exposes the stage this cross-check compares against; this is
   currently unconfirmed.
+
+## Phase 3a-8 (2026-10-15): pinned, fixture added, stage confirmed for encrypted streams
+
+- **Pinned.** `pikepdf` is a runtime dependency in `pyproject.toml`,
+  pinned like `pymupdf` (10.16.0 with libqpdf 12.4.2; 10.13.0.post1
+  with libqpdf 12.3.2 on Python 3.10). The shipped CLI still does not
+  import it until the redesign is wired in (tests/test_import_boundaries.py).
+- **Fixtures.** `eval/caselib/families/encrypted.py`, written by pikepdf:
+  one case per standard security handler (RC4-40 R2, RC4-128 R3,
+  AES-128 R4, AES-256 R6); AES-256 with object and cross-reference
+  streams; AES-128 with a plain-text XMP packet (`/EncryptMetadata
+  false`); and `revision.encrypted-different-handlers`, whose earlier
+  revision is encrypted with RC4-128 under its own `/ID` and whose
+  current one with AES-256 under a different owner password, so each
+  revision decrypts only with its own `/Encrypt` and `/ID`. Today's
+  verifier gives each its expected verdict.
+- **Confirmed, for every stream the handler encrypts.**
+  `tests/test_pikepdf_raw_stage.py`: pikepdf's `Stream.read_raw_bytes()`
+  equals MuPDF's `xref_stream_raw` byte for byte, for every such stream
+  of every encrypted case (the fitz-written `revision.encrypted-annotated`
+  included), on the file and on each earlier revision's prefix cut as
+  `verify.scan_earlier_revisions` makes it. Both reads are decrypted (the
+  fixtures' filler is absent from the file's bytes and present in both)
+  and still filtered (every file's Flate content stream is still
+  compressed in both).
+- **Not confirmed -- streams the handler does not encrypt.** For
+  cross-reference streams (never encrypted) and `/Metadata` under
+  `/EncryptMetadata false`, pikepdf returns the stored plaintext, as the
+  spec says, while MuPDF's `xref_stream_raw` decrypts them anyway
+  (garbage under RC4, nothing under AES). The test pins that divergence.
+  A per-stream cross-check that included them would flag nearly every
+  current encrypted file, most of which use cross-reference streams.
+
+## Amendment (2026-10-15): streams the handler does not encrypt
+
+Owner decision, 2026-10-15: approve the carve-out (option a).
+
+- The cross-check compares pikepdf's decrypted read against MuPDF's
+  `xref_stream_raw` **only for streams the standard security handler
+  encrypts**.
+- Streams it does not encrypt -- cross-reference streams, `/Metadata`
+  under `/EncryptMetadata false`, and streams under the `/Identity` crypt
+  filter -- are checked instead as pikepdf's plaintext against the
+  file's own stored bytes, which need no decryption.
+- MuPDF's divergence on those streams (it decrypts them anyway) is pinned
+  with explicit assertions in `tests/test_pikepdf_raw_stage.py` for
+  cross-reference streams and plain-text `/Metadata`, so a change in
+  either library is seen; no fixture has an `/Identity` crypt-filter
+  stream yet, so that one is not pinned. A stream under a named crypt
+  filter (e.g. `/StdCF`) is encrypted and stays in the cross-check.
+
+The decision otherwise stands: decryption by pikepdf, cross-checked
+against MuPDF, for every byte the handler actually encrypts.
+
+## Note (2026-10-15, coordinator decision; owner informed): the canonical form of decryption
+
+ADR 0010 item 6 asks for the canonical-form rules before 3a-9's code. Only
+this closed set of standard security handlers is trusted, with nothing
+left to a reader's default; anything else is `DECRYPTION_UNVERIFIED`
+(rule `NONCANONICAL`) for the whole revision, and nothing in it is
+trusted, however the two readers read it:
+
+| /V | /R | Key (/Length) | Crypt filters | Methods |
+|---|---|---|---|---|
+| 1 | 2 | 40 bits (absent or 40) | none | RC4 |
+| 2 | 3 | 40-128 bits, a multiple of 8, **written** | none | RC4 |
+| 4 | 4 | 128 bits (absent or 128; 16 or 128 in a filter) | /CF entries with /CFM /V2 or /AESV2 | RC4, AES-128 |
+| 5 | 6 | 256 bits (absent or 256; 32 or 256 in a filter) | /CF entries with /CFM /AESV3 | AES-256 |
+
+- **/Filter** is /Standard, with no /SubFilter. **/StmF** and **/StrF**
+  (V4, V5) are /Identity or a name in /CF (absent: /Identity).
+  **/EncryptMetadata** is a boolean, or absent (true).
+- **/EFF** is absent, /Identity, or a name in /CF. An /EFF other than
+  /StmF is flagged per embedded file (rule `EFF`): both readers ignore
+  /EFF and apply /StmF.
+- Outside the set: /R 5 (deprecated in ISO 32000-2), /V 3, a /CFM /None
+  filter, an /AuthEvent other than /DocOpen, and any key length its row
+  does not allow. A V2 handler without /Length is the case in point:
+  pikepdf reads 40 bits, MuPDF 128.
+- A stream-level `/Crypt` filter is flagged per stream (rule
+  `CRYPT_FILTER`): the readers read the single-name form differently.
+- Every value is read from the revision's /Encrypt with its indirect
+  parts resolved.
+
+Measured: no encrypted file in the real corpus (coordinator-measured,
+2026-10-15), so the rule flags none there; the case library's encrypted
+files are all in the set.
+
+## Note (2026-10-15, 3a-9a-1): what the cross-check cannot see
+
+- **Plaintext stored where ciphertext belongs.** When both readers apply
+  the same key to bytes that were never encrypted (a stream or string
+  written plain under a handler that encrypts it), they agree on the
+  same garbage, and the cross-check passes. For streams, `crypt.py`
+  flags an "encrypted" stream whose stored bytes already inflate as Flate
+  (rule `STORED_PLAIN`; coordinator decision, 2026-10-15): ciphertext
+  essentially never does. Stored plain strings remain a gap: the raw
+  matcher still sees their bytes, but the decrypted view does not.
+- **The revision identity.** `Decryption.identity` digests the resolved
+  /Encrypt, the file key, the stream, string and file methods, and
+  /ID[0] (/ID[1] does not affect decryption). Two revisions with one
+  identity decrypt any body alike, except the catalog's /Metadata under
+  /EncryptMetadata false, which stream that is being the revision's own.
+  Reuse keyed on the identity (3a-9b) is safe for every 3a consumer,
+  none of which reads stream data. Later decoders read each revision's
+  own `Decryption.streams`, not a reused one.
