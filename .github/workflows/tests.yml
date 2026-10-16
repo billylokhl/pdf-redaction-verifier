@@ -47,9 +47,13 @@ jobs:
         # runner image changes Homebrew's openssl@3, that directory can
         # vanish: qpdf then exits 2 on any RC4 file ("unable to load
         # openssl legacy provider"), which the gate reads as a split on
-        # encryption (macos-26-arm64 20261013, openssl@3 3.6.4 -> 3.6.5). So
-        # point OpenSSL at the installed openssl@3's modules, and fail this
-        # step, not a test, if qpdf still cannot write and read an RC4 file.
+        # encryption (macos-26-arm64 20261013, openssl@3 3.6.4 -> 3.6.5).
+        # verify.py runs qpdf with a stripped environment (PATH and locale
+        # only), so OPENSSL_MODULES cannot reach it there: qpdf exited 2 on
+        # every RC4-keyed file (R2-R4, AES-128 included). So the directory
+        # the binary was built to look in is linked to the installed
+        # openssl@3's modules, and this step, not a test, fails if qpdf
+        # cannot write and read an RC4 file with an empty environment.
         run: |
           curl -fsSL -o "$RUNNER_TEMP/qpdf.zip" \
             https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip
@@ -59,11 +63,20 @@ jobs:
           "$bin" --version
           modules="$(brew --prefix openssl@3)/lib/ossl-modules"
           test -f "$modules/legacy.dylib"
-          export OPENSSL_MODULES="$modules"
-          "$bin" --allow-weak-crypto --empty --encrypt --user-password= --owner-password=owner \
-            --bits=128 --use-aes=n -- "$RUNNER_TEMP/rc4.pdf"
-          "$bin" --is-encrypted "$RUNNER_TEMP/rc4.pdf"
-          echo "OPENSSL_MODULES=$modules" >> "$GITHUB_ENV"
+          # awk reads all its input (no early exit to SIGPIPE strings).
+          builtin="$(strings "$(dirname "$bin")"/../lib/libqpdf.*.dylib \
+            | awk '/^\/.*\/ossl-modules$/ && !f {print; f=1}')"
+          echo "built-in modules directory: $builtin"
+          test -n "$builtin"
+          # This leaves a stub keg for that openssl@3 version in the
+          # Cellar; no later step runs brew.
+          if [ ! -e "$builtin/legacy.dylib" ]; then
+            mkdir -p "$(dirname "$builtin")"
+            ln -sfn "$modules" "$builtin"
+          fi
+          env -i PATH="$PATH" "$bin" --allow-weak-crypto --empty --encrypt \
+            --user-password= --owner-password=owner --bits=128 --use-aes=n -- "$RUNNER_TEMP/rc4.pdf"
+          env -i PATH="$PATH" "$bin" --is-encrypted "$RUNNER_TEMP/rc4.pdf"
           dirname "$bin" >> "$GITHUB_PATH"
       - name: Install Python dependencies
         # --locked fails the build if uv.lock is out of date with pyproject.toml.

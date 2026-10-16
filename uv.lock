@@ -1059,6 +1059,8 @@ wheels = [
 name = "pdf-redaction-verifier"
 source = { editable = "." }
 dependencies = [
+    { name = "pikepdf", version = "10.13.0.post1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pikepdf", version = "10.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pymupdf" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
@@ -1074,8 +1076,6 @@ redactor-set = [
 test = [
     { name = "hypothesis" },
     { name = "pdfminer-six" },
-    { name = "pikepdf", version = "10.13.0.post1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pikepdf", version = "10.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -1091,8 +1091,8 @@ dev = [
 requires-dist = [
     { name = "hypothesis", marker = "extra == 'test'", specifier = "==6.168.5" },
     { name = "pdfminer-six", marker = "extra == 'test'", specifier = "==20260107" },
-    { name = "pikepdf", marker = "python_full_version >= '3.11' and extra == 'test'", specifier = "==10.16.0" },
-    { name = "pikepdf", marker = "python_full_version < '3.11' and extra == 'test'", specifier = "==10.13.0.post1" },
+    { name = "pikepdf", marker = "python_full_version < '3.11'", specifier = "==10.13.0.post1" },
+    { name = "pikepdf", marker = "python_full_version >= '3.11'", specifier = "==10.16.0" },
     { name = "pillow", marker = "extra == 'redactor-set'", specifier = "==12.3.0" },
     { name = "pymupdf", specifier = "==1.28.2" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = "==12.2.2" },
