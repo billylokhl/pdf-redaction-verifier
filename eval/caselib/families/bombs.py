@@ -1,9 +1,11 @@
 """Bomb and hang cases (Phase 3d's gate: hostile input exits 2, or answers
 correctly within its caps). Each file is small on disk and costs a reader
 time or memory: a decompression bomb, deep nesting, a page-tree cycle, an
-absurd page count, an oversized image, an operator flood. None holds a
-secret: they are clean files, so the correct verdict is a clean 0 where a
-reader can answer within its limits, and 2 where it cannot.
+absurd page count, an oversized image, an operator flood. All but the
+image are leaks: a page or stream holds the SSN, so the correct verdict is
+1 where a reader can find it within its limits, and 2 (flagged) where it
+cannot. The image is clean: its correct verdict is 2, a page whose detail
+the OCR render cannot resolve.
 
 They are never scanned in the test process (``Case.bomb``):
 tests/test_bomb_cases.py runs the CLI out of process through
@@ -19,6 +21,10 @@ import zlib
 from pathlib import Path
 
 from ..model import SSN, Bomb, KnownGap, case, expect
+
+# Today's tool finds the SSN in these but files a finding or warning under
+# the wrong storage (COVERAGE's ⚑ footnote): a legacy mislabel, pinned
+# exactly by Bomb.today, which the redesign's ledger fixes.
 
 GB = 1 << 30
 
@@ -65,11 +71,15 @@ READ_IT = ("Read the file with a tool that bounds its work (or decompress the st
 
 
 @case("page.bomb-flate-content", truth="leak", cells="hostile.flate-bomb", writer="raw",
-      # Read whole (2.4 GB at peak on the owner's Mac): found, with the
-      # object it could not also read flagged.
-      bomb=Bomb(wall_clock_s=180, memory_bytes=4 * GB),
+      # Read whole (2.4 GB at peak on the owner's Mac): found. The Objects
+      # layer's own read of the stream stops at its limit, and is flagged:
+      # the stream is the page's content, so live. Today that warning is
+      # filed as "orphaned" (pinned).
+      bomb=Bomb(wall_clock_s=180, memory_bytes=4 * GB,
+                today=expect(1, findings=(("SSN", "live"),),
+                             warnings=(("OBJECT_UNREADABLE", "orphaned"),))),
       expected=expect(1, findings=(("SSN", "live"),),
-                      warnings=(("OBJECT_UNREADABLE", "orphaned"),)),
+                      warnings=(("OBJECT_UNREADABLE", "live"),)),
       story="A page whose content stream is 256 MiB of spaces and then the SSN, compressed "
             "to a few hundred KB: a decompression bomb in live content.",
       mistake=BUSY, recovery=READ_IT)
@@ -90,14 +100,20 @@ def flate_orphan(path: Path) -> None:
 
 
 @case("file.bomb-deep-nesting", truth="leak", cells="hostile.deep-nesting", writer="raw",
-      requires=("qpdf",), bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB),
-      # The page dictionary does not parse (past MuPDF's nesting limit), so
-      # no reachability walk is trusted: the content stream's SSN is found
-      # as "unreferenced", and what could not be read is flagged. Deeper
+      # The page is live: poppler draws it with the SSN (PDFKit refuses
+      # the file, MuPDF passes its nesting limit), so the SSN is found on
+      # a live page. Today the page dictionary does not parse, no
+      # reachability walk is trusted, and the content stream's SSN and
+      # unreadable object are filed as "unreferenced" (pinned). Deeper
       # nesting costs exiftool quadratically (30,000 levels: its 120 s
       # timeout) without changing the verdict, so 2,000 keeps CI fast.
-      expected=expect(1, findings=(("SSN", "unreferenced"),), warnings=(
-          ("HIDDEN_ITEM_FAILED", "live"), ("OBJECT_UNREADABLE", "unreferenced"),
+      requires=("qpdf",),
+      bomb=Bomb(wall_clock_s=120, memory_bytes=3 * GB,
+                today=expect(1, findings=(("SSN", "unreferenced"),), warnings=(
+                    ("HIDDEN_ITEM_FAILED", "live"), ("OBJECT_UNREADABLE", "unreferenced"),
+                    ("TOOL_EXIT_NONZERO", None)))),
+      expected=expect(1, findings=(("SSN", "live"),), warnings=(
+          ("HIDDEN_ITEM_FAILED", "live"), ("OBJECT_UNREADABLE", "live"),
           ("TOOL_EXIT_NONZERO", None))),
       story="A page showing the SSN, whose dictionary also holds an array nested 2,000 "
             "levels deep.",
@@ -147,7 +163,9 @@ def huge_page_count(path: Path) -> None:
             "page's OCR render can resolve, read as if it were the render.",
       mistake=BUSY)
 def oversized_image(path: Path) -> None:
-    pixels = zlib.compress(b"\0" * (60000 // 8 * 60000), 9)
+    z = zlib.compressobj(9)                        # in rows: never 450 MB at once
+    row = b"\0" * (60000 // 8)
+    pixels = b"".join(z.compress(row * 1000) for _ in range(60)) + z.flush()
     path.write_bytes(_pdf(
         _page(b"/Resources << /XObject << /Im1 5 0 R >> >>")
         + [_stream(b"q 612 0 0 792 0 0 cm /Im1 Do Q"),

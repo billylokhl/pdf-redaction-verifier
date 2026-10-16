@@ -42,7 +42,10 @@ sys.exit(verify.main(["--target", pdf, "--secrets", rules, "--json", report]))
 
 @dataclass(frozen=True)
 class BombRun:
-    outcome: str | None          # "hang", "memory", "error:CODE", or None (it answered)
+    # "hang", "memory", "error:CODE", "error:no-report", "killed:WHY" (the
+    # sandbox's other kills: a stray process, a failed reader), or None (it
+    # answered)
+    outcome: str | None
     scan: Scan | None            # the answer, when there was one
     result: sandbox.Result
 
@@ -64,8 +67,10 @@ def run_bomb(case: Case, pdf: Path, workdir: Path, child: str = CHILD) -> BombRu
         return BombRun("hang", None, result)
     if result.killed == "memory":
         return BombRun("memory", None, result)
+    if result.killed is not None:                  # never judge an answer it could not vouch for
+        return BombRun(f"killed:{result.killed}", None, result)
     if not report.exists():
-        return BombRun(f"error:no-report (exit {result.returncode})", None, result)
+        return BombRun("error:no-report", None, result)
     data = json.loads(report.read_text())
     if data.get("error"):
         return BombRun(f"error:{data['error']['code']}", None, result)

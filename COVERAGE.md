@@ -173,9 +173,10 @@ runs them out of process, under per-case caps
 
 - ⚑ A value behind a decompression bomb (`hostile.flate-bomb`): in an
   orphaned stream, read only to its first 16 MiB and the rest flagged; in
-  live content, read whole (found), with the stream's object flagged.
-- ✓ A value in a file with deeply nested objects
-  (`hostile.deep-nesting`): found, with what could not be parsed flagged.
+  live content, read whole (found), with the stream's object flagged¹⁵.
+- ⚑ A value in a file with deeply nested objects
+  (`hostile.deep-nesting`): found, with what could not be parsed
+  flagged¹⁵.
 - ✓ A value on a page in a cyclic page tree (`hostile.page-tree-cycle`):
   the page is read once, the cycle flagged.
 - ⚑ A value in a file whose page tree claims an absurd page count
@@ -185,6 +186,12 @@ runs them out of process, under per-case caps
 
 ¹⁴ Exit `2` today comes from a caught internal error, not a flag: it
 fails closed, but names no reason. Phase 3d turns it into a limit flag.
+
+¹⁵ Found (exit `1`), filed under the wrong storage: the live flate bomb's
+unreadable object is reported as orphaned, and the deeply nested file's
+page — live, and drawn by other viewers — as unreferenced. The verdict is
+right, but the report misleads about where the value is. A legacy
+mislabel, pinned by each case; the redesign's ledger fixes it.
 
 ## Matching limits
 
