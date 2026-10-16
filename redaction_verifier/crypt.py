@@ -188,6 +188,9 @@ class _Revision:
         if encrypt is None or encrypt.get("/Filter") != pikepdf.Name.Standard:
             self.unverified(CryptRule.HANDLER)
             return self.done(identity, trusted=False)
+        if not _canonical(_resolved_form(encrypt)):
+            self.unverified(CryptRule.NONCANONICAL)
+            return self.done(identity, trusted=False)
         warnings = pdf.get_warnings()
         if any("/Perms" in w for w in warnings):
             self.unverified(CryptRule.PERMS)
@@ -351,6 +354,54 @@ def _resolved_form(obj: Any, depth: int = 0) -> object:
         return _dict_form((key.encode("utf-8", "surrogateescape")[1:],
                            _resolved_form(value, depth + 1)) for key, value in obj.items())
     return _pike_form(obj, top=True)
+
+
+def _canonical(form: object) -> bool:
+    """Whether a resolved /Encrypt form is in ADR 0001's closed set (its
+    canonical-form note): the standard handler's V1/R2, V2/R3 with its
+    /Length written, V4/R4 (V2 or AESV2 filters) and V5/R6 (AESV3), with
+    nothing left to a reader's default. Anything else is not trusted,
+    however the readers read it."""
+    if not (isinstance(form, tuple) and form[0] == "dict"):
+        return False
+    d = dict(form[1])
+    v, r, length = d.get(b"V"), d.get(b"R"), d.get(b"Length")
+    if d.get(b"Filter") != ("name", b"Standard") or b"SubFilter" in d:
+        return False
+    if d.get(b"EncryptMetadata", ("bool", True))[0] != "bool":
+        return False
+    if v == ("int", 1) and r == ("int", 2):
+        return length in (None, ("int", 40)) and not {b"CF", b"StmF", b"StrF", b"EFF"} & set(d)
+    if v == ("int", 2) and r == ("int", 3):
+        return (isinstance(length, tuple) and length[0] == "int" and 40 <= length[1] <= 128
+                and length[1] % 8 == 0 and not {b"CF", b"StmF", b"StrF", b"EFF"} & set(d))
+    if (v, r) == (("int", 4), ("int", 4)):
+        methods, bits = {b"V2", b"AESV2"}, (None, ("int", 128))
+    elif (v, r) == (("int", 5), ("int", 6)):
+        methods, bits = {b"AESV3"}, (None, ("int", 256))
+    else:
+        return False
+    if length not in bits:
+        return False
+    filters = d.get(b"CF", ("dict", ()))
+    if filters[0] != "dict":
+        return False
+    names = {b"Identity"}
+    for name, cf in filters[1]:
+        f = dict(cf[1]) if isinstance(cf, tuple) and cf[0] == "dict" else None
+        if f is None or f.get(b"CFM", ("name", None))[1] not in methods:
+            return False
+        if f.get(b"AuthEvent", ("name", b"DocOpen")) != ("name", b"DocOpen"):
+            return False
+        if f.get(b"Length") not in (None, ("int", 16 if v == ("int", 4) else 32),
+                                     ("int", 128 if v == ("int", 4) else 256)):
+            return False
+        names.add(name)
+    chosen = [d.get(key, ("name", b"Identity")) for key in (b"StmF", b"StrF")]
+    eff = d.get(b"EFF")
+    return (all(c[0] == "name" and c[1] in names for c in chosen)
+            and (eff is None or eff == d.get(b"StmF", ("name", b"Identity"))
+                 or (eff[0] == "name" and eff[1] in names)))
 
 
 def _plain_metadata(pdf: pikepdf.Pdf, encrypt: Any) -> Key | None:

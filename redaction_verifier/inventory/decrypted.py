@@ -34,6 +34,7 @@ class CryptRule(IntEnum):
     EFF = 9            # an embedded file under an /EFF other than /StmF
     STORED_PLAIN = 10  # an "encrypted" stream whose stored bytes inflate as they are
     UNLOCATED = 11     # the inventory holds no stored bytes for this stream
+    NONCANONICAL = 12  # a security handler outside the closed set (ADR 0001 note)
 
 
 class MismatchRule(IntEnum):

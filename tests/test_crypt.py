@@ -251,3 +251,55 @@ def test_members_of_an_encrypted_object_stream_are_read(tmp_path: Path) -> None:
     assert ("str", b"A title") in [v for form in revision.values.values()
                                     if isinstance(form, tuple) and form[0] == "dict"
                                     for _, v in form[1]]
+
+
+# ── The closed set (ADR 0001's canonical-form note) ───────────────────
+def _form(**entries: object) -> object:
+    return ("dict", tuple(sorted((k.encode(), v) for k, v in entries.items())))
+
+
+N = lambda name: ("name", name.encode())     # noqa: E731
+I = lambda value: ("int", value)              # noqa: E731
+STD = N("Standard")
+CF4 = _form(StdCF=_form(CFM=N("AESV2"), AuthEvent=N("DocOpen"), Length=I(16)))
+CF5 = _form(StdCF=_form(CFM=N("AESV3"), AuthEvent=N("DocOpen"), Length=I(32)))
+
+
+@pytest.mark.parametrize("form, ok", [
+    (_form(Filter=STD, V=I(1), R=I(2)), True),
+    (_form(Filter=STD, V=I(1), R=I(2), Length=I(40)), True),
+    (_form(Filter=STD, V=I(1), R=I(2), Length=I(128)), False),
+    (_form(Filter=STD, V=I(2), R=I(3), Length=I(128)), True),
+    (_form(Filter=STD, V=I(2), R=I(3), Length=I(56)), True),
+    (_form(Filter=STD, V=I(2), R=I(3)), False),                  # /Length left to the reader
+    (_form(Filter=STD, V=I(2), R=I(3), Length=I(44)), False),
+    (_form(Filter=STD, V=I(4), R=I(4), CF=CF4, StmF=N("StdCF"), StrF=N("StdCF")), True),
+    (_form(Filter=STD, V=I(4), R=I(4), CF=CF4, StmF=N("StdCF"), StrF=N("Identity"),
+           EncryptMetadata=("bool", False)), True),
+    (_form(Filter=STD, V=I(4), R=I(4), CF=CF4, StmF=N("Other"), StrF=N("StdCF")), False),
+    (_form(Filter=STD, V=I(4), R=I(4), CF=CF4, StmF=N("StdCF"), StrF=N("StdCF"),
+           EFF=N("Identity")), True),                            # flagged later: rule EFF
+    (_form(Filter=STD, V=I(4), R=I(4), StmF=N("StdCF"), StrF=N("StdCF"),
+           CF=_form(StdCF=_form(CFM=N("None")))), False),
+    (_form(Filter=STD, V=I(4), R=I(4), StmF=N("StdCF"), StrF=N("StdCF"),
+           CF=_form(StdCF=_form(CFM=N("V2"), AuthEvent=N("EFOpen")))), False),
+    (_form(Filter=STD, V=I(4), R=I(4), Length=I(64), CF=CF4), False),
+    (_form(Filter=STD, V=I(5), R=I(6), CF=CF5, StmF=N("StdCF"), StrF=N("StdCF")), True),
+    (_form(Filter=STD, V=I(5), R=I(5), CF=CF5, StmF=N("StdCF"), StrF=N("StdCF")), False),
+    (_form(Filter=STD, V=I(3), R=I(3), Length=I(128)), False),
+    (_form(Filter=N("Other"), V=I(2), R=I(3), Length=I(128)), False),
+    (_form(Filter=STD, SubFilter=N("adbe.x"), V=I(2), R=I(3), Length=I(128)), False),
+    (_form(Filter=STD, V=I(2), R=I(3), Length=I(128), EncryptMetadata=I(0)), False),
+], ids=lambda x: "" if isinstance(x, tuple) else str(x))
+def test_the_closed_set_of_handlers(form: object, ok: bool) -> None:
+    assert crypt._canonical(form) is ok
+
+
+def test_a_handler_outside_the_set_is_never_trusted() -> None:
+    # The readers agree (neither reads /AuthEvent for the empty password):
+    # the set, not their agreement, decides.
+    h = Handler(4, b"owner", FILE_ID)
+    pdf = hand_built(h, x7=h.encrypt_dict().replace(b"/AuthEvent /DocOpen", b"/AuthEvent /EFOpen"))
+    (revision,) = decrypt(pdf)
+    assert rules(revision) == {("decryption_unverified", -1, CryptRule.NONCANONICAL)}
+    assert revision.values == {} and revision.streams == {}
