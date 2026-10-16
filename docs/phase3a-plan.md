@@ -739,13 +739,16 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     them) and written by Adobe's linearizer (126 of the 129 naming a producer). R6 (b)'s
     condition alone takes 1 file out of exit 2 (153 together with R7 (b)).
   - Owner decision 2026-10-15: staged (a). Its spike (`eval/spikes/hint_tables.py`, RESULTS.md
-    "Hint-table spike", extended after #180's review): documented rules only, 0 of the 101
-    warned text-bearing new files fully accounted; with eight profile-bound observed Acrobat
-    rules (page 0's entries, later pages' numerators and order, form identifier order, widths,
-    denominator, first-page section), 82 of 101 (67 of 81 distinct; held-out half 39 of 46
-    distinct). Single-page files 67 of 73 distinct, multi-page 0 of 8. OWNER QUESTION: accept a
-    closed, profile-bound set of observed writer rules, each validated on held-out files? Yes:
-    the full decoder, about 5 PRs in 3c. No: (b) stands. Hint streams stay flagged until then.
+    "Hint-table spike", after two rounds of #180's review): documented rules only, 0 of the 101
+    warned text-bearing new files fully accounted; with six profile-bound observed Acrobat
+    rules (first-page section, identifier width, numerator width, denominator 8, page 0's
+    entries, /V and /C order), 82 of 101 (67 of 81 distinct; held-out half 39 of 46
+    distinct). Single-page files 67 of 73 distinct, multi-page 0 of 8 (the two later-page
+    rules are unvalidated research, outside the profile). OWNER QUESTION: accept a closed,
+    profile-bound set of observed writer rules, each validated on held-out files? Yes: the full
+    decoder, about 5 PRs in 3c; text-bearing review rate 47.6% -> 46.8% alone, 40.7% with 4a,
+    36.0% with a JavaScript decoder, 31.5% with XMP OCR too. No: (b) stands. Hint streams stay
+    flagged until then.
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 
@@ -802,6 +805,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    told apart.
 12. (2026-10-15, 3a-12's owner choice) The hint stream: staged (a) -- a hint-table spike, then
    the full decoder only if every value accounts. Outcome: 0 of 101 under documented rules, 82
-   of 101 under profile-bound observed rules (RESULTS.md "Hint-table spike"); the owner
-   question on observed rules is open, and hint streams stay flagged (ADR 0003, R6 (a)) until
-   it is answered.
+   of 101 under six profile-bound observed rules, the two later-page rules left as unvalidated
+   research (RESULTS.md "Hint-table spike"); the owner question on observed rules is open, and
+   hint streams stay flagged (ADR 0003, R6 (a)) until it is answered.

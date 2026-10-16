@@ -719,13 +719,17 @@ RULES: dict[str, tuple[str, str, str]] = {
                         "/ColorSpace resources; numerator floor(first use x (d-1) / content "
                         "length) for a resource (0 if unused), 0 for a widget annotation or "
                         "a form named in an annotation's /AP, d otherwise; ascending"),
-    "A-later-numerators": ("acrobat", "observed",
+    # Unvalidated research, excluded from every profile: measured, never
+    # accepted (they fit most pages but few whole files).
+    "R-later-applicable": ("research", "research", "a file with later-page entries"),
+    "R-later-numerators": ("research", "research",
                            "a later page's numerator: the least floor(first use x (d-1) / "
                            "content length) of the page's resources the group holds (or, for "
                            "a part-8 group, that reach it); 0 if unused; d if none"),
-    "A-later-order": ("acrobat", "observed",
+    "R-later-order": ("research", "research",
                       "a later page's identifiers by numerator, ties in the order a "
-                      "depth-first walk of the page (written key order) first meets them"),
+                      "depth-first walk of the page (written key order) first meets them; "
+                      "no match when the walk misses a hinted group"),
     "A-form-order": ("acrobat", "observed",
                      "/V and /C identifiers in the order a stack walk of the key's object "
                      "discovers them (written key order)"),
@@ -921,7 +925,7 @@ def page0_entries(doc: Doc, sect0: list[int], d: int) -> list[int]:
 
 
 def later_numerators(doc: Doc, i: int, first: set[int], d: int) -> dict[int, int | None]:
-    """A-later-numerators: group -> numerator source on page *i*."""
+    """R-later-numerators (research, outside every profile): group -> numerator on page *i*."""
     lay = doc.lay
     dec = doc.content(lay.pages[i])
     out: dict[int, int | None] = {}
@@ -939,11 +943,16 @@ def later_numerators(doc: Doc, i: int, first: set[int], d: int) -> dict[int, int
     return out
 
 
+def _rule(res: Result, name: str, profile: str) -> None:
+    """Record an accepted rule; it must belong to *profile* (or both)."""
+    assert RULES[name][0] in (profile, "both"), name
+    res.rule(name)
+
+
 def check(lay: Layout, t: Tables, res: Result, profile: str) -> None:
     """Account for every value under one writer *profile*."""
     def rule(name: str) -> None:
-        assert RULES[name][0] in (profile, "both"), name
-        res.rule(name)
+        _rule(res, name, profile)
 
     acro = profile == "acrobat"
     objects, order = lay.objects, lay.order
@@ -1121,6 +1130,8 @@ def check(lay: Layout, t: Tables, res: Result, profile: str) -> None:
 
     idx_obj = dict(enumerate(group_objs))
     first_groups = set(group_objs[:nfp])
+    later_pages = 0
+    later_num_ok = later_order_ok = True
     for i in range(1, npages):
         e = pages[i]
         ids, enums = e["shared_identifiers"], e["shared_numerators"]
@@ -1142,27 +1153,38 @@ def check(lay: Layout, t: Tables, res: Result, profile: str) -> None:
             else:
                 res.bad("page offset", "page N identifiers", "order: not ascending")
             continue
+        # No validated rule fixes a later page's numerators or order under
+        # the Acrobat profile (review #180 round 2): any entry there is
+        # unaccounted. The research rules are still measured, per file.
+        if ids:
+            res.bad("page offset", "page N entries", "no validated rule (Acrobat profile)")
+            later_pages += 1
         try:
             src = later_numerators(doc, i, first_groups, denom)
-        except Stop as err:
-            res.bad("page offset", "page N numerators", str(err))
+        except Stop:
+            later_num_ok = later_order_ok = False
             continue
         pred = [(src[idx_obj[x]] or 0) if idx_obj[x] in src else denom for x in ids]
-        if pred == enums:
-            rule("A-later-numerators")
-        else:
-            res.bad("page offset", "page N numerators", "not the observed rule's")
+        later_num_ok &= pred == enums
         pd = doc.get(doc.ref(lay.pages[i]))
         top = PdfArray(0, 0, tuple(v for k, v in pd.entries if k.raw != b"Parent")) \
             if isinstance(pd, PdfDict) else PdfArray(0, 0, ())
         walk: dict[int, int] = {}
         for k, n in enumerate(doc.preorder(top)):
             walk.setdefault(lay.compressed.get(n, n), k)
-        want = sorted(ids, key=lambda x: (enums[ids.index(x)], walk.get(idx_obj[x], 1 << 30)))
-        if want == ids:
-            rule("A-later-order")
-        else:
-            res.bad("page offset", "page N identifiers", "order: not the observed rule's")
+        # A group the walk never meets would keep the order the file wrote
+        # (the sort is stable): a free permutation, so no match.
+        if any(idx_obj[x] not in walk for x in ids):
+            later_order_ok = False
+            continue
+        want = sorted(ids, key=lambda x: (enums[ids.index(x)], walk[idx_obj[x]]))
+        later_order_ok &= want == ids
+    if acro and later_pages:
+        res.rule("R-later-applicable")
+        if later_num_ok:
+            res.rule("R-later-numerators")
+        if later_order_ok:
+            res.rule("R-later-order")
 
     _check_generic(lay, t, res, users, doc, profile)
     _check_lindict(lay, sect0, res)
@@ -1237,7 +1259,7 @@ def _check_generic(lay: Layout, t: Tables, res: Result,
                 start = root.get(key) if isinstance(root, PdfDict) else None
                 found = [gi[m] for m in doc.discovery(start) if m in gi and gi[m] in set(ids)]
                 if found == ids:
-                    res.rule("A-form-order")
+                    _rule(res, "A-form-order", profile)
                 else:
                     res.bad(label, "identifiers", "order: not the observed rule's")
 
@@ -1427,6 +1449,23 @@ def mutations(data: bytes) -> dict[str, bytes]:
         o_bit = bit + 8 * t.spans["O"][0]
         out["field: outline group_length + 2"] = _set_bits(
             data, o_bit + 96, 32, t.generic["O"]["group_length"] + 2)
+    # A later page's identifiers reordered (review #180 round 2: a
+    # permutation no rule fixes must fail): the first later page with two.
+    p = t.page
+    pos = 288
+    for w in (p["nbits_delta_nobjects"], p["nbits_delta_page_length"],
+              p["nbits_nshared_objects"]):
+        pos += len(t.pages) * w
+        pos += (-pos) % 8
+    wid = p["nbits_shared_identifier"]
+    for e in t.pages:
+        ids = e["shared_identifiers"]
+        if e is not t.pages[0] and len(ids) >= 2 and ids[0] != ids[1]:
+            m = _set_bits(data, bit + pos, wid, ids[1])
+            out["order: a later page's first two identifiers swapped"] = _set_bits(
+                m, bit + pos + wid, wid, ids[0])
+            break
+        pos += len(ids) * wid
     # The other profile's reading of single values (review #180, b1): each
     # alone, and every combination, must fail, since a file matches one
     # whole profile.
@@ -1516,8 +1555,6 @@ def populations(records: Path, manifest: list[Any]) -> dict[str, list[str]]:
 
 OBSERVED_CONTENT_RULES = {
     "A-page0-entries": ("page offset: page 0 entries: not the observed rule's",),
-    "A-later-numerators": ("page offset: page N numerators: not the observed rule's",),
-    "A-later-order": ("page offset: page N identifiers: order: not the observed rule's",),
     "A-form-order": ("/V table: identifiers: order: not the observed rule's",
                      "/C table: identifiers: order: not the observed rule's"),
 }
@@ -1570,6 +1607,11 @@ def summarize(keys: list[str], rows: dict[str, dict[str, Any]]) -> dict[str, Any
             miss = [k for k in ks if _classes(rows[k]) & set(fails)]
             hit = [k for k in ks if name in rows[k]["rules"] and k not in miss]
             split[name + " " + h] = f"{len(hit)} of {len(hit) + len(miss)}"
+    for name in ("R-later-numerators", "R-later-order"):
+        for h in ("derive", "held_out"):
+            ks = [k for k in distinct if half(k) == h and "R-later-applicable" in rows[k]["rules"]]
+            n_hit = sum(1 for k in ks if name in rows[k]["rules"])
+            split[name + " (research) " + h] = f"{n_hit} of {len(ks)}"
     for h in ("derive", "held_out"):
         ks = [k for k in distinct if half(k) == h]
         n = sum(1 for k in ks if rows[k]["accounted"])
