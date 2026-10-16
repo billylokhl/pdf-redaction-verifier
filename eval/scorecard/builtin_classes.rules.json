@@ -1,6 +1,6 @@
 [
-  {"name": "ssn", "class": "ssn"},
-  {"name": "credit-card", "class": "credit-card"},
-  {"name": "email", "class": "email"},
-  {"name": "us-phone", "class": "us-phone"}
+  {"name": "ssn", "class": "ssn", "strict": true},
+  {"name": "credit-card", "class": "credit-card", "strict": true},
+  {"name": "email", "class": "email", "strict": true},
+  {"name": "us-phone", "class": "us-phone", "strict": true}
 ]

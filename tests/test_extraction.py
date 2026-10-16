@@ -587,7 +587,7 @@ class TestReadingsAcrossTheVisibleEdge:
         page.insert_text((72, 300), "Invoice 123-45")
         page.insert_text((640, 300), "-6789 slug")             # past x=595
         rules = tmp_path / "rules.json"
-        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn", "strict": True}]))
         readings = extract_visual_text(page)
         assert readings[4] == readings[0] == "Invoice123-45", readings
         assert readings[3] == "-6789slug", readings
@@ -612,7 +612,7 @@ class TestReadingsAcrossTheVisibleEdge:
         for k in range(4):
             page.insert_text((banner_at[0], banner_at[1] + 40 * k), "ARCHIVE COPY", fontsize=30)
         rules = tmp_path / "rules.json"
-        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn", "strict": True}]))
         readings = extract_visual_text(page)
         assert readings[4] == readings[0], readings       # no visible line gains a glyph
         report = _scan(doc, patterns=load_rules(rules).patterns)
@@ -757,7 +757,7 @@ class TestTableRowBesideOffPageText:
         pdf = tmp_path / "row.pdf"
         table_row_beside_off_page(pdf, layout, rotate)
         rules = tmp_path / "rules.json"
-        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn", "strict": True}]))
         doc = fitz.open(pdf)
         readings = extract_visual_text(doc[0])
         assert "123\n45\n6789" in readings[4], readings
@@ -1054,7 +1054,7 @@ class TestOcrVerticalLines:
         return code, json.loads(out.read_text())
 
     @pytest.mark.parametrize("rule, code", [
-        ({"name": "Any SSN", "class": "ssn"}, "REVIEW_FUSED_PATTERN"),
+        ({"name": "Any SSN", "class": "ssn", "strict": True}, "REVIEW_FUSED_PATTERN"),
         ({"name": "SSN", "value": SSN}, "REVIEW_CROSS_LINE"),
     ])
     def test_an_unconfirmed_vertical_value_is_manual_review(
@@ -1068,7 +1068,7 @@ class TestOcrVerticalLines:
             (w["code"], w["layer"], w["rule"]) for w in data["warnings"]}
 
     @pytest.mark.parametrize("rule", [
-        {"name": "Any SSN", "class": "ssn"}, {"name": "SSN", "value": SSN}])
+        {"name": "Any SSN", "class": "ssn", "strict": True}, {"name": "SSN", "value": SSN}])
     def test_confirmed_rotated_text_is_a_hard_finding(self, tmp_path, monkeypatch, rule) -> None:
         exit_code, data = self._scan(tmp_path, monkeypatch, [ROTATED_90], rule,
                                      upright=ROTATED_90.text)
@@ -1096,7 +1096,7 @@ class TestOcrVerticalLines:
         # it; the cross-page scan reads Vision's raw line instead.
         exit_code, data = self._scan(
             tmp_path, monkeypatch, [_as(STACK, "123-45-"), _as(STACK, "6789")],
-            {"name": "Any SSN", "class": "ssn"}, upright="")
+            {"name": "Any SSN", "class": "ssn", "strict": True}, upright="")
         assert exit_code == 2
         assert data["findings"] == []
         assert ("REVIEW_FUSED_PATTERN", "OCR") in {

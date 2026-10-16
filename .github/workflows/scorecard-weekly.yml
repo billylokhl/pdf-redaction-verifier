@@ -57,7 +57,10 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --locked --extra test
       - name: Run the full case library, grids included, with OCR
-        run: uv run pytest tests/test_case_library.py -rs
+        # test_policy1_cases.py's scan-based check (every class-rule case
+        # outside the owner's sign-off list keeps its exit in default mode)
+        # needs OCR and the grids; full-macos runs `-m "not grid"`.
+        run: uv run pytest tests/test_case_library.py tests/test_policy1_cases.py -rs
       - name: Run the scorecard differential, grids included, with OCR
         run: >-
           PYTHONPATH=eval:. uv run python -m scorecard diff

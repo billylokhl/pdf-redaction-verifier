@@ -165,7 +165,7 @@ class TestHiddenLayer:
 
     def test_pattern_rules_apply_too(self, tmp_path) -> None:
         rules = tmp_path / "cls.json"
-        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn"}]))
+        rules.write_text(json.dumps([{"name": "Any SSN", "class": "ssn", "strict": True}]))
         doc = _doc_with_clean_page()
         doc.embfile_add("n.txt", f"attachment {SSN}".encode(), filename="n.txt")
         path = tmp_path / "att_pat.pdf"
@@ -215,7 +215,7 @@ class TestHiddenLayerRegressions:
         # widget's /Rect fused into a Luhn-valid digit run and hard-FAILed
         # every Acrobat form with a calculation script.
         rules = tmp_path / "card.json"
-        rules.write_text(json.dumps([{"name": "any-card", "class": "credit-card"}]))
+        rules.write_text(json.dumps([{"name": "any-card", "class": "credit-card", "strict": True}]))
         doc = _doc_with_clean_page()
         widget = fitz.Widget()
         widget.field_name = "total"
@@ -302,7 +302,7 @@ class TestHiddenLayerRegressions:
         import os
         import zlib
         rules = tmp_path / "mail.json"
-        rules.write_text(json.dumps([{"name": "any-email", "class": "email"}]))
+        rules.write_text(json.dumps([{"name": "any-email", "class": "email", "strict": True}]))
         doc = _doc_with_clean_page()
         doc.embfile_add("chart.png", zlib.compress(os.urandom(3 * 1024 * 1024), 6),
                         filename="chart.png")
@@ -315,7 +315,7 @@ class TestHiddenLayerRegressions:
         # Locations carried no identity, so Finding dedup silently
         # dropped every leak after the first on a page.
         rules = tmp_path / "anyssn.json"
-        rules.write_text(json.dumps([{"name": "any-ssn", "class": "ssn"}]))
+        rules.write_text(json.dumps([{"name": "any-ssn", "class": "ssn", "strict": True}]))
         doc = _doc_with_clean_page()
         for i, value in enumerate(("123-45-6789", "078-05-1120", "219-09-9999")):
             widget = fitz.Widget()
