@@ -560,8 +560,8 @@ secret can still be **not detected** (exit `0`). In short:
   data beyond an image's declared size (rows past its declared height
   are never drawn, K37). One picture cut into thin strips, each too
   small to read alone, is also missed when they are not drawn next to
-  each other, or when they are never drawn. (An image under a box, K12
-  and K38, is flagged and read from the images alone; see the OCR layer.)
+  each other, or when they are never drawn. (An image under a box is now
+  flagged and read from the images alone; see the OCR layer.)
   <!-- gap-cells: off-page.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
 - **Content no page shows:** font-coded text (K15), outlines (K6) or
   images in a switched-off optional-content layer, a hidden
