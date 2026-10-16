@@ -162,10 +162,13 @@ quarter of its area gets `IMAGE_COVERED` (⚑, exit `2`, with or without
 OCR), and with OCR the page is rebuilt from its images alone, each at
 its drawn place, and read again: a listed value there is a finding
 (exit `1`); strips drawn apart in one render rejoin as drawn. Limits:
-one fill's coverage counts (boxes adding up are not summed), a fill's
-bounding rectangle stands for its area, an image covered by another
-image, by text or by clipping is not a cover, and inline images and
-images over 35 Mpx are flagged but not rebuilt. A blank image under a
+one opaque area's coverage counts (boxes adding up are not summed), a
+fill's bounding rectangle stands for its area, an image painted over by
+another image, by text or by a stroke (however wide) is not a cover,
+and inline images and images over 35 Mpx are flagged but not rebuilt.
+Filled paths and shadings count; coverage is measured in the page's
+unrotated space and against any clip overlapping the image, so a box
+over a clipped image's visible window counts. A blank image under a
 box is flagged too (`page.box-over-blank-image`, review). Phase 4b's
 per-image evidence is to subsume this.
 

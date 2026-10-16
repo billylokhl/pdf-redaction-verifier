@@ -25,11 +25,14 @@ and images-only OCR of their 60 pages took 5.8 s and read no listed
 value.
 
 Limits, all on the side of reading less, never of passing a covered
-image: only one fill's coverage counts (several small boxes adding up
+image: only one area's coverage counts (several small boxes adding up
 are not summed); a fill's bounding rectangle stands for its area (a
 diagonal shape counts as its box); an image painted over by another
-image, by text or by a clipping path is not a cover; inline images and
-images over MAX_IMAGE_PIXELS are not rebuilt (still flagged).
+image, by text or by a stroke (however wide) is not a cover; inline
+images and images over MAX_IMAGE_PIXELS are not rebuilt (still flagged).
+Coverage is measured in the page's unrotated space, where the draw log
+reports, and against any clip path overlapping the image as well as the
+whole image, so a box over the visible window of a clipped image counts.
 """
 
 from __future__ import annotations
@@ -58,31 +61,73 @@ def _area(rect: fitz.Rect) -> float:
     return max(0.0, rect.width) * max(0.0, rect.height)
 
 
+def unrotated_rect(page: fitz.Page) -> fitz.Rect:
+    """*page*'s rectangle before its /Rotate: the space get_bboxlog,
+    get_drawings and get_image_info report in."""
+    return fitz.Rect(0, 0, page.cropbox.width, page.cropbox.height)
+
+
+def _finite(rect: fitz.Rect) -> bool:
+    """A real painted area: not empty, not MuPDF's infinite bbox of a
+    degenerate path (`10 10 m f` paints nothing)."""
+    return (not rect.is_empty and not rect.is_infinite
+            and all(abs(v) < 1e9 for v in (rect.x0, rect.y0, rect.x1, rect.y1)))
+
+
+def _covers(page: fitz.Page) -> list[tuple[int, fitz.Rect]]:
+    """Every opaque area painted on *page*, with its index in the
+    page's draw log: each filled path (`fill-path`) and shading
+    (`fill-shade`). A fill counts unless get_drawings shows it see-through;
+    the two are paired in order by rectangle, since get_drawings skips
+    paths the log keeps, so its sequence numbers are not log indices. A
+    fill with no exact partner counts as opaque."""
+    see = [(fitz.Rect(d["rect"]), d.get("fill_opacity"))
+           for d in sorted(page.get_drawings(), key=lambda d: d["seqno"])
+           if d.get("fill") is not None]
+    out: list[tuple[int, fitz.Rect]] = []
+    k = 0
+    for i, (kind, bbox) in enumerate(page.get_bboxlog()):
+        if kind not in ("fill-path", "fill-shade"):
+            continue
+        rect = fitz.Rect(bbox)
+        if not _finite(rect):
+            continue
+        opacity = None
+        if kind == "fill-path" and k < len(see) and _same(see[k][0], rect):
+            opacity = see[k][1]
+            k += 1
+        if opacity is None or opacity >= OPAQUE:
+            out.append((i, rect))
+    return out
+
+
+def _same(a: fitz.Rect, b: fitz.Rect) -> bool:
+    return all(abs(x - y) < 0.01 for x, y in zip(a, b))
+
+
 def covered_images(page: fitz.Page) -> list[CoveredImage]:
-    """Every image drawn on *page* (inside the page's rectangle) with the
-    largest fraction of its area that one opaque fill drawn after it
-    covers, in drawing order."""
-    log = page.get_bboxlog()
-    fills: dict[int, fitz.Rect] = {}
-    for drawing in page.get_drawings():
-        if drawing.get("fill") is None:
-            continue
-        opacity = drawing.get("fill_opacity")
-        if opacity is not None and opacity < OPAQUE:
-            continue
-        fills[drawing["seqno"]] = fitz.Rect(drawing["rect"])
+    """Every image drawn on *page* (inside the page) with the largest
+    fraction of it that one opaque area painted after it covers, in
+    drawing order. The fraction is of the image's area and, where a clip
+    path overlaps it, of the part of it inside that clip too (the log
+    gives an image's unclipped rectangle), whichever is larger."""
+    bounds = unrotated_rect(page)
+    covers = _covers(page)
+    clips = [fitz.Rect(d["scissor"]) for d in page.get_drawings(extended=True)
+             if d.get("type") == "clip" and d.get("scissor") is not None]
     out: list[CoveredImage] = []
-    for i, (kind, bbox) in enumerate(log):
+    for i, (kind, bbox) in enumerate(page.get_bboxlog()):
         if kind != "fill-image":
             continue
-        image = fitz.Rect(bbox) & page.rect
-        area = _area(image)
-        if area <= 0:
+        image = fitz.Rect(bbox) & bounds
+        if _area(image) <= 0:
             continue
+        windows = [image] + [w for w in (image & c for c in clips if _finite(c)) if _area(w) > 0]
         best = 0.0
-        for seqno, fill in fills.items():
+        for seqno, cover in covers:
             if seqno > i:
-                best = max(best, _area(image & fill) / area)
+                for window in windows:
+                    best = max(best, _area(window & cover) / _area(window))
         out.append(CoveredImage(image, best))
     return out
 
@@ -105,12 +150,13 @@ def images_only_page(page: fitz.Page) -> fitz.Document:
     turn. An image that cannot be decoded, is inline or is over
     MAX_IMAGE_PIXELS is left out. The caller closes it."""
     doc = page.parent
+    bounds = unrotated_rect(page)
     out = fitz.open()
     try:
-        new = out.new_page(width=page.rect.width, height=page.rect.height)
+        new = out.new_page(width=bounds.width, height=bounds.height)
         for info in page.get_image_info(xrefs=True):
             xref = info.get("xref") or 0
-            rect = fitz.Rect(info["bbox"]) & page.rect
+            rect = fitz.Rect(info["bbox"]) & bounds
             if xref <= 0 or rect.is_empty:
                 continue
             if info.get("width", 0) * info.get("height", 0) > MAX_IMAGE_PIXELS:
@@ -123,6 +169,7 @@ def images_only_page(page: fitz.Page) -> fitz.Document:
                                  keep_proportion=False)
             except Exception:
                 continue
+        new.set_rotation(page.rotation)   # read upright as the page is shown
     except BaseException:
         out.close()
         raise

@@ -65,6 +65,57 @@ def test_the_fraction_one_opaque_fill_covers(boxes, before, fraction) -> None:
     assert image.fraction == pytest.approx(fraction, abs=0.01)
 
 
+def _raw_page(content: bytes, rotation: int = 0) -> fitz.Document:
+    """One page drawing the image as /Img with *content*, in PDF space."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(0, 0, 10, 10), stream=_png("Quarterly report"))
+    name = page.get_images(full=True)[0][7]
+    doc.update_stream(page.get_contents()[0], content.replace(b"/Img", b"/" + name.encode()))
+    page.set_rotation(rotation)
+    return doc
+
+
+DRAW = b"q 300 0 0 60 72 582 cm /Img Do Q "
+BOX = b"0 0 0 rg 72 582 300 60 re f "
+
+
+@pytest.mark.parametrize("content, fraction", [
+    # Degenerate paths the log keeps and get_drawings skips (review B1).
+    (b"0 0 0 rg 10 10 m f 10 10 m f 10 10 m f " + DRAW + BOX, 1.0),
+    # A box over the whole visible window of a clipped image.
+    (b"q 72 582 60 60 re W n " + DRAW + b"Q 0 0 0 rg 72 582 60 60 re f ", 1.0),
+    # A wide stroke is not a cover (a documented limit).
+    (DRAW + b"0 0 0 RG 60 w 72 612 m 372 612 l S ", 0.0),
+])
+def test_the_fraction_in_the_draw_log(content, fraction) -> None:
+    doc = _raw_page(content)
+    [image] = covered_images(doc[0])
+    assert image.fraction == pytest.approx(fraction, abs=0.01)
+
+
+def test_a_see_through_box_after_degenerate_paths_stays_see_through() -> None:
+    doc = _raw_page(b"0 0 0 rg 10 10 m f 10 10 m f " + DRAW)
+    page = doc[0]
+    page.draw_rect(fitz.Rect(72, 200, 372, 260), color=None, fill=(0, 0, 0), fill_opacity=0.5)
+    [image] = covered_images(page)
+    assert image.fraction == 0.0
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_a_rotated_page_is_measured_and_rebuilt_unrotated(rotation) -> None:
+    """Review B2: the log reports in the unrotated page's space."""
+    doc = _raw_page(b"q 300 0 0 60 72 50 cm /Img Do Q 0 0 0 rg 72 50 300 60 re f ", rotation)
+    [image] = covered_images(doc[0])
+    assert image.fraction == pytest.approx(1.0)
+    rebuilt = images_only_page(doc[0])
+    try:
+        assert len(rebuilt[0].get_image_info()) == 1
+        assert rebuilt[0].rotation == rotation and rebuilt[0].rect == doc[0].rect
+    finally:
+        rebuilt.close()
+
+
 def test_the_threshold_is_the_owners_quarter() -> None:
     assert COVERED_FRACTION == 0.25
 
