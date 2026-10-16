@@ -32,9 +32,10 @@ jobs:
   full-macos:
     name: full-macos (shard ${{ matrix.shard }})
     runs-on: macos-latest
-    # Each shard takes about SHARD_MINUTES including setup (see CHANGELOG); 25
+    # Each shard takes about 11-13 minutes including setup (see CHANGELOG); 25
     # is about 2x that, so a runaway is cut early. Concurrency: a public repo
-    # gets 5 concurrent macOS jobs, and one PR run now uses 4 of them; the
+    # gets 5 concurrent macOS jobs, and one PR run now uses 4 of them (in practice a leg sometimes waited
+    # for a free runner, so a whole run can take longer than its slowest leg); the
     # weekly scorecard job (scorecard-weekly.yml, also macOS) queues behind
     # them, never dropped, for at most about one shard's duration.
     timeout-minutes: 25

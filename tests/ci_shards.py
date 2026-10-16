@@ -9,9 +9,9 @@ calling `python tests/ci_shards.py <a|b|c|d>` to get its pytest selection:
 So a new test file lands in shard d by default and can never go unrun; only
 the three lists are maintained by hand, to keep the legs balanced. The CI
 runner is 3-6x slower than a laptop on the OCR-heavy files, so the lists
-follow CI timings (PR #186, 2026-10-16: case library about 16 min alone,
-which bounds how small a shard can get; pattern baseline, visible-map CLI
-and the bomb cases about 8-10 min each).
+follow CI timings (PR #186, 2026-10-16: each shard about 10-13 minutes of
+tests; the case library alone is about 11 and bounds how small a shard can
+get).
 tests/test_ci_shards.py asserts that the shards' collections are disjoint
 and together equal the unsplit collection.
 """
@@ -26,6 +26,7 @@ SHARDS: dict[str, tuple[str, ...]] = {
         "tests/test_inventory_stage.py",
         "tests/test_inventory_pages.py",
         "tests/test_inventory_graph.py",
+        "tests/test_visible_map.py",
     ),
     "b": ("tests/test_case_library.py",),
     "c": (
