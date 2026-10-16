@@ -1043,8 +1043,19 @@ class TestNotices:
         line = headline.text(flags, exit_code=1, json_unwritten=False, codes=[],
                              outside_only=False, notices=3)
         assert line == "VISIBLE SECRETS FOUND"
-        assert "notice" in headline.text(headline.Flags(), exit_code=0, json_unwritten=False,
-                                         codes=[], outside_only=False, notices=1)
+        assert headline.text(headline.Flags(), exit_code=0, json_unwritten=False,
+                             codes=[], outside_only=False, notices=1) == (
+            "Nothing visible found — every check ran (exit 0); 1 notice not counted in the verdict")
+        for flags, code, codes, outside in [(headline.Flags(I=True), 0, [], False),
+                                            (headline.Flags(X=True), 0, [], False),
+                                            (headline.Flags(), 1, [], False),
+                                            (headline.Flags(), 2, ["ORPHANED"], True)]:
+            assert "notice" not in headline.text(flags, exit_code=code, json_unwritten=False,
+                                                 codes=codes, outside_only=outside, notices=3)
+        assert headline.text(headline.Flags(), exit_code=2, json_unwritten=True, codes=[],
+                             outside_only=False, notices=2) == (
+            "Nothing visible found — every check ran; JSON report not written (exit 2); "
+            "2 notices not counted in the verdict")
 
     def test_a_header_without_informational_is_refused(self, tmp_path, monkeypatch) -> None:
         pdf = self._pdf(tmp_path)

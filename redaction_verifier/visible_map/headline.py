@@ -79,9 +79,9 @@ def text(flags: Flags, *, exit_code: int, json_unwritten: bool, codes: Sequence[
          outside_only: bool, detail: str = "", notices: int = 0) -> str:
     """The row's text; *detail* (row 2 only) gives its reasons and how
     many items show on click, hover, print or open. *notices* is the
-    report's notice count (a number, never a value): on a "Nothing visible
-    found" row of a clean run (6, 7) it says how many matches the verdict
-    does not count."""
+    report's notice count (a number, never a value; the report lists one
+    notice per layer that holds a match): on a "Nothing visible found" row
+    of a clean run (6, 7) it says how many notices the verdict does not count."""
     n = row(flags, exit_code=exit_code, json_unwritten=json_unwritten, codes=codes,
             outside_only=outside_only)
     line = ROWS[n].format(codes=", ".join(sorted(set(codes))) or "no warning codes",

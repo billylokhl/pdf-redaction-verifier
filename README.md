@@ -185,7 +185,7 @@ like any sample, under **Not counted in the verdict**, and sets no flag.
 | LEAK, NOT VISIBLE — the file stores a secret no page shows | exit `1`, and nothing above |
 | Nothing visible found; uncertified (exit 2) for: *codes* | exit `2` only for content stored outside the document |
 | Nothing visible found — every check ran; JSON report not written (exit 2) | exit `2` only because `--json` could not be written |
-| Nothing visible found — every check ran (exit 0) | exit `0`, and nothing above; under `--no-strict-classes`, with *N* > 0 notices it ends "; *N* notice(s) not counted in the verdict" |
+| Nothing visible found — every check ran (exit 0) | exit `0`, and nothing above; under `--no-strict-classes`, with *N* > 0 notices (the report lists one per layer that holds a match) it ends "; *N* notice(s) not counted in the verdict" |
 | NOT CERTIFIED (exit *N*): *codes* | anything else; unreachable by design (every warning code makes the map incomplete, marks a possible match, or is an "outside" code), kept as the fail-closed answer |
 
 When the `--json` report was not written every headline says so, and a
