@@ -525,3 +525,17 @@ def test_the_packet_check_is_charged_and_done_once_per_body() -> None:
     # holds one inflate and every revision's cuts, not two inflates.
     cuts = 4 * len(pdf) * 2
     assert all(r.flags == () for r in decrypt(pdf, max_bytes=cuts + 1_500_000))
+
+
+
+def test_warnings_mupdf_holds_from_before_are_not_this_files() -> None:
+    # MuPDF's warning buffer is process-wide: one left by an unrelated read
+    # (here, a damaged file) must not flag a clean file opened next.
+    import pymupdf as fitz
+    try:
+        fitz.open(stream=b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<< >>\n", filetype="pdf")
+    except Exception:
+        pass
+    assert fitz.TOOLS.mupdf_warnings(reset=False)
+    (revision,) = decrypt(hand_built(Handler(3, b"owner", FILE_ID)))
+    assert revision.flags == ()
