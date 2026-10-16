@@ -561,6 +561,119 @@ of the two are still running and removes that scratch directory
 overwrite an already-decided, already-printed verdict), so neither
 survives as an orphan.
 
+## The visible map's engine
+
+The visible map (`redaction_verifier/visible_map/`) will draw where the
+findings are, as a picture of the scan, never a verdict. It is held to
+three rules: it never changes the verdict; it is never more complete
+than the scan; and it never implies "not visible" for content a reader
+could click, hover, print, open, uncrop or switch on. This first part is
+its engine: what the scan hands over, where each finding is, and what
+the map says about it (`plan.make_plan`, a `MapPlan` of boxes, lists,
+flags and one headline). Drawing the map, its self-check, and the
+command-line flag that runs it in a child process come in later changes;
+until then nothing on the command line reaches this code, and every scan
+passes no sink. A finding that cannot be located (a page the locator
+fails on) is listed "could not be positioned"; it never stops the plan.
+
+**Where it sits.** The scan hands the map its own truth and nothing
+else. `scan_page_layer` offers, per page and before its `--fail-fast`
+stop, the rule names in each tier (hard on a line, hard across the seam,
+pattern hard, pattern only when fused, value only when joined or
+reconstructed, crossing a page break); `scan_hidden_objects` offers each
+matching item's page, xref, kind, location and rule names (new plain
+fields on `HiddenItem`, filled on every run and never printed). Both do
+so only when given a sink (`sink=None` by default, and in every scan
+today). `offer` copies into plain lists inside its own
+`try/except Exception`, so a broken or hostile sink can cost the map its
+completeness — it then says so — but cannot raise into the scan or
+mutate what the scan still uses. Tests scan a case from every cell of
+the case library (every case with `RUN_MAP_IDENTITY=1`) with and
+without a sink and compare the exit code, every byte of stdout and of
+stderr, and the
+`--json` report.
+
+**Every finding is accounted for.** No box is drawn without a hard truth
+entry from the scan for that rule on that page, and a match is located
+with the scan's own matchers and tiers, on the scan's own readings: the
+engine reads each page through `views.text.visual_text_glyphs`, which
+runs the same code as `extract_visual_text` with each glyph tagged by its
+index and gives every reading's lines as the glyphs they were read from
+(a test checks its text equals `extract_visual_text`'s, reading for
+reading, on every page of the case library), and maps each match back to
+its glyphs. The genuine readings overlap, so one occurrence (one set of
+glyphs) is placed once. A match found only across the visible edge
+(readings 4-6) is boxed over its visible glyphs, marked part of a value,
+and its off-page part is listed as outside the crop; a match wholly off
+the page is only listed. A pattern match's label carries the same masked
+sample as the human report (`mask()`'s tail), even on a box over only
+its visible part. A hidden item the scan only reviews (an attachment's
+body, an annotation's attached file: `REVIEW_HIDDEN_TEXT`) is never
+boxed or classified; its warning lists it for review. Every occurrence is
+accounted for on its own, so a copy that cannot be boxed is listed even
+when another copy on the page was. PyMuPDF reports glyphs (and takes text
+clips) in an unrotated frame whose origin is the top-left of the
+*visible* area, the CropBox clipped to the MediaBox, while its
+`rotation_matrix` is built from the unclipped CropBox: on a rotated page
+whose CropBox reaches past its MediaBox the two disagree. The map
+therefore never converts glyph positions with `rotation_matrix`; it uses
+a display matrix built from the displayed size and the rotation alone.
+Every box is then checked: the page's glyphs under a text box, read in
+the scan's own geometric orders (not the content stream's, which may draw
+a value out of order), must hold the match — a check on the same glyph
+positions the box came from, in the same frame, so it catches a box
+built from the wrong glyphs, not a wrong frame; the frame is what the
+geometry tests check against the rendered page's ink, at every rotation,
+with shifted and overhanging CropBoxes. An annotation box (MuPDF's own
+annotation or link rectangle, displayed) must agree with the raw `/Rect`
+taken through the page's boxes into the glyph frame and displayed — two
+independent routes. An occurrence without a verified box is listed as
+"could not be positioned", which marks the map incomplete. Every --json finding is checked off against the boxes and
+lists, every warning code is classified (a ratchet test keeps the table
+complete; an unclassified code counts as document-level; the page
+codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
+never reads, #133), are named with their pages as INCOMPLETE reasons,
+whatever their storage, and nothing of the page's content is shown; a
+code seen both on pages and with no page adds "and document-wide"), and the
+headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012,
+`--no-strict-classes`) is not a finding: the header names the
+informational rules (required; a header without them is refused), their
+matches in the scan's truth are never boxed, classified or listed as OCR
+finds, and each of the report's `notices` is listed under "Not counted in
+the verdict", its sample masked as any --json sample, setting no flag
+(a page-less fused-pattern notice takes its pages from the scan's truth,
+as the same warning does in strict mode).
+Switched-off layers are counted from MuPDF's evaluation *and* the default
+configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`
+reports a group with a `/Usage` dictionary as on while MuPDF hides it.
+What no check reads also marks the map incomplete, so it can never say
+"Nothing visible found" over it: a switched-off layer, any layer rule
+(an OCMD, or any `/VE` expression), and any page whose MediaBox reaches
+past its CropBox on any side (the CropBox is clipped to the MediaBox in
+PDF space and every side compared, so a shifted CropBox counts).
+Live-content findings mark it incomplete (L) unless the object is the
+dictionary or appearance of an annotation, field or link the map has
+already *boxed* for that rule — every owner, when one appearance serves
+several widgets: that copy adds nothing a reader could not already see,
+and flagging it made nearly every map with an annotation "incomplete". A
+stored, hidden or password classification does not absorb it, because
+the Objects layer does not say which key matched: in a checkbox, it may
+be the tooltip, which a reader sees on hover. The map has no masking
+rule of its own: every sample it shows (a box's label, and a `--json`
+finding's sample) is `mask()`'s output with the same index of exact
+values the reports use (#66: only `****` when the sample contains an
+exact value or any revealed character, in either folding, is a character
+of one). The map then checks the tail once more as drawn: escaping a
+character outside Latin-1 adds hex digits (文 is drawn `\u{6587}`), so
+the tail is dropped when its drawn form holds any character of an exact
+value. A pattern match drawn on any glyph of an exact value's occurrence
+shows no tail at all.
+
+Every string the plan keeps from outside its own fixed wording (a rule's
+label, a masked sample, the target's name, an object's role) goes
+through a checker the caller supplies (`Rules.clean`); the map's own
+checker comes with its self-check.
+
 ## Sharing a config with the redactor
 
 `--secrets` also accepts a redactor's `redact_config.yaml`, so the file

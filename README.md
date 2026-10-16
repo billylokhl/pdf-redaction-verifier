@@ -750,7 +750,7 @@ and what the file stores.
 | **LLM** | Large language model — the AI the redactor uses to find names and addresses. |
 | **Luhn** | Checksum built into credit-card numbers; random 16-digit strings usually fail it. |
 | **Manual-review warning** | A possible match that needs a human to check it; exits `2`. |
-| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. If the shown tail would repeat two consecutive characters of one of your exact values, or the match overlaps one, only `****` is shown. |
+| **Masked** | The report shows only the tail of a match (`****6789`) so it doesn't leak the secret itself. If the match contains one of your exact values, or any character the tail would show is a character of one (case, accents and script-specific digits ignored), only `****` is shown; samples from the OCR layer always show only `****`. |
 | **Mutation testing** | Deliberately breaking a guard to prove the tests notice. |
 | **NANP** | North American Numbering Plan — the rules for valid US/Canada phone numbers. |
 | **NFKC** | Unicode step that folds look-alike characters (fullwidth digits, fancy dashes) to plain ones without splitting accents. |

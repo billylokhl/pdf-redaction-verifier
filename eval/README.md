@@ -622,6 +622,16 @@ PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
 ```
 
+The visible map's engine is checked the same way before it has a flag:
+`tests/test_visible_map.py` scans one case from every (family, row,
+truth) cell with and without a sink at the scan's hooks and compares
+exit code, stdout and the `--json` report (`RUN_MAP_IDENTITY=1`: every
+buildable case, grids included, `perf` cases excluded):
+
+```bash
+RUN_MAP_IDENTITY=1 pytest tests/test_visible_map.py -k case_library
+```
+
 `tests/test_views_text_readings.py` also builds every case (`perf` ones
 included) and checks, page by page, that `views.text.visual_text_glyphs`
 reads exactly what `extract_visual_text` reads.
