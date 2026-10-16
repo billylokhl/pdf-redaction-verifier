@@ -102,7 +102,7 @@ def _covers(page: fitz.Page) -> list[tuple[int, fitz.Rect]]:
 
 
 def _same(a: fitz.Rect, b: fitz.Rect) -> bool:
-    return all(abs(x - y) < 0.01 for x, y in zip(a, b))
+    return all(abs(x - y) < 0.01 for x, y in zip(tuple(a), tuple(b)))
 
 
 def covered_images(page: fitz.Page) -> list[CoveredImage]:
