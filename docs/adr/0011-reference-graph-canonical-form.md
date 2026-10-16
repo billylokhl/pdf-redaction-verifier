@@ -855,6 +855,14 @@ passes cleanly -- 154 of the 416 files would qualify (182 have
 hint-table lint, 80 are updated files whose linearization is stale).
 *Recommendation: (a) now*; (b) needs a decoder that does not exist, and
 can be decided with the decoders (3c/4), measured then.
+*Note (2026-10-15): owner decision 2026-10-15: staged (a)* -- a hint-table
+decoder, its spike first, hint streams flagged meanwhile. The spike
+([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table
+spike") is a no-go: 0 of the 101 warned text-bearing new files are fully
+accounted (page 0's shared entries, unfixed by any documented rule, in all
+101), so R6 (a) stands as decided. Its decoder accounts for all 154
+qpdf-clean files, which is (b)'s condition made fail-closed, should (b)
+ever be taken (reach today: 1 file alone).
 
 **R7. Images inside XMP packets** (thumbnails, K22). An image a packet
 holds is drawn by nothing, so decision D makes it unused and `FLAGGED`:

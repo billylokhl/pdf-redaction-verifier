@@ -383,6 +383,19 @@ Phase 4b measures a recall bound, one that covers small images), not an
 open decision -- the list itself (the four reasons, three rejected)
 needed no separate decision beyond the ones recorded above.
 
+## Note (2026-10-15): the hint stream
+
+Owner decision 2026-10-15: staged (a) -- a hint-table spike first, hint streams flagged until
+it shows whether one reading of Annex F accounts for every value. Outcome, the same day
+([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table spike"): **no-go**. None
+of the 101 warned text-bearing files qpdf warns on is fully accounted: every one carries
+entries for page 0's shared objects, which Annex F forbids and whose count and numerators no
+documented Acrobat deviation fixes (qpdf's source records only that Acrobat writes them);
+identifier order and later pages' numerators are unfixed in many too. The rejected candidate
+above stands: the hint-stream payload stays `UNREADABLE`, so `FLAGGED`, and this closed list
+gains no reason. The spike's decoder does fully account every file qpdf's check passes (154),
+so it is available if R6 (b) is ever taken.
+
 ## Note (2026-10-15)
 
 [ADR 0012](0012-pattern-classes-inform.md): in the default mode a built-in

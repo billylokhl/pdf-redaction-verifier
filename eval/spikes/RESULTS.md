@@ -1027,6 +1027,9 @@ If it does not, the spike's single PR is the whole cost and (b) stands, with the
 reason. The middle options either need the same decoder (so they are (a) with less reach) or
 do not fail closed.
 
+**Owner decision 2026-10-15: staged (a).** The spike ran the same day: no-go, 0 of the 101
+files fully accounted, so (b) stands ("Hint-table spike" below).
+
 **Plausibility.** Hint tables are written by whichever writer linearizes the saved file,
 which may be the redaction tool itself (Acrobat redacts and saves with Fast Web View; these
 files are Acrobat or Distiller output), computed from the saved layout rather than from page
@@ -1035,6 +1038,142 @@ mismatch the new offsets, which (a) flags. Their capacity is integers and bit fi
 page's entry holds several integer fields, enough together to encode an SSN's digits. So
 hiding a secret there takes a deliberately crafted writer, not a redaction mistake: a
 low-likelihood leak for this tool's threat model, but not an impossible one.
+
+## Hint-table spike -- eval/spikes/hint_tables.py
+
+**Owner decision 2026-10-15: staged (a).** This is its first stage: decode the hint tables of
+the 101 warned text-bearing new files against ISO 32000-1 Annex F and account exactly for
+every value against the file's own layout, failing closed on any mismatch and on any padding
+or unused bit that is not zero. If every value accounts, the full decoder follows; if not,
+option (b) stands with the measured reason.
+
+**Verdict: no-go. 0 of the 101 files are fully accounted. Option (b), hint streams stay
+flagged, stands.** Every one of the 101 has entries for page 0's shared objects, which Annex F
+says page 0 must not have. qpdf's source records that Acrobat writes them
+(`checkHPageOffset`, v12.4.1: "pdlin and Acrobat both do this even though the spec states
+clearly and unambiguously that they should not"; `calculateLinearizationData` calls their
+identifiers garbage). Neither source, nor the PDF Reference's implementation notes it
+cites (123-131), fixes how many entries there are or what their numerators hold. 92 of the
+101 have non-zero numerators there. So the documented deviation tells a reader that the
+entries exist, not what they must be, and accepting them would be tolerance, not a rule.
+
+Measured 2026-10-15 on the 3a-12 populations (`unit_budget.py`'s records), counted per
+manifest entry as 3a-12 counts them, and decoded once per file (`run`, then `report`):
+
+| Population | Files (distinct) | Fully accounted | Not accounted | Only page 0's entries unaccounted | Only page 0's entries, numerators and identifier order |
+| --- | --- | --- | --- | --- | --- |
+| **Go/no-go: warned, text-bearing, new** | **101 (81)** | **0** | **101** | 28 | 95 |
+| All hint-stream files (unflagged) | 400 (279) | 154 | 246 | 61 | 150 |
+| -- qpdf's check clean, single revision | 154 (78) | 154 | 0 | -- | -- |
+| -- qpdf warns | 170 (131) | 0 | 170 | 39 | 119 |
+| -- stale `/L` (updated), all | 76 (70) | 0 | 76 | -- | -- |
+| Stale `/L`, text-bearing, new (decoded against the base revision) | 6 (5) | 0 | 6 | 2 | 3 |
+
+The decoder agrees with qpdf exactly where qpdf is clean: all 154 files qpdf's check passes
+(78 distinct, 77 written by the Adobe PDF Library) are fully accounted, under the rules below,
+and no warned file is. The clean files are the same writer as most warned ones; what
+separates them is that they have no page 0 entries and no non-zero numerators.
+
+**Method.** The hint stream is found at `/H` in the accepted linearization dictionary
+(`xref.Chain.linearization`), its Flate data decoded (a decode that is not clean fails
+closed), and each table read bit by bit, most significant bit first: the page offset table
+(Table F.3's 13 header items and the per-page columns of F.4, each column padded to a byte),
+the shared object table (F.5, F.6), and every other table the stream dictionary names, at its
+`/S`, `/O`, `/V`, `/I`, `/L`, `/C`, `/B` offset. Every padding bit is read and must be 0;
+every decoded byte must belong to one table, with nothing between or after them; every key of
+the hint stream dictionary must be a table offset or a stream key; every key of the
+linearization dictionary is checked (`/L`, `/H`, `/O`, `/E`, `/N`, `/T`, `/P`). The layout is
+computed without reading the tables, on the base revision cut at its own `%%EOF` (the
+linearized pair, owner decision 7): offsets from its cross-reference sections, each checked to
+start a complete `N G obj ... endobj`; each object's extent to the end of the whitespace after
+`endobj` (qpdf's `end_after_space`); compressed objects standing for their object stream;
+pages and which objects each page and each catalog or trailer key
+reaches, from this repository's own parser, walked as qpdf's `updateObjectMaps` walks it (no
+crossing into another page, `/Thumb` apart, inherited attributes pushed down). Offsets in the
+tables disregard the hint stream itself (Annex F; qpdf's `adjusted_offset`).
+
+**Rules: each fixes a value exactly; nothing is tolerated.** From qpdf's source and the
+implementation notes it cites: note 126 (content offsets 0, width 0); note 127 (content
+length 0 with the page length's width and deltas -- or, qpdf's own writer, the page length);
+notes 125/128/130 (one object per shared group, width 0); note 131 (with no part 8,
+`first_shared_obj` and `first_shared_offset` are accepted only as 0); Acrobat's private
+resources placed with the shared objects (`checkHPageOffset`); `/H`'s length covering an
+indirect `/Length` placed after the stream (`readHintStream`); Acrobat's outline offset
+(`checkHOutlines`; no corpus file needed it); qpdf's writer's numerators (all 0) and
+identifier width (`nbits(nshared_total)`). Observed in the corpus and documented nowhere, so
+owner questions before any decoder could rely on them:
+- **The first-page section starts after the catalog and `/OpenAction`'s objects**, not at
+  the first page's page object (Annex F item 2), and every object in it is a shared group
+  (126 of 400 files; 85 of 101);
+- **the identifier width counts only the pages after the first** (0 for a one-page file);
+- **the numerator width is `nbits(denominator)`**, not the numerators' own;
+- **some offsets are written as file offsets**, not disregarding the hint stream (12 of 400
+  files; 5 of 101), within a file whose other offsets do disregard it;
+- **`shared_denominator` is a constant with no layout meaning**: 4 in qpdf's writer ("doesn't
+  matter"), 8 in Acrobat's (399 of 400 files). The spike accepts exactly these two, which
+  leaves one bit a writer could choose; a decoder would need the owner to pin it;
+- **the `/V` and `/C` tables are read as Annex F's extended generic tables** (generic items,
+  then a 32-bit reference count, a 16-bit width and the identifiers): every `/V` and `/C` table
+  in the corpus decodes that way with no padding or byte left over, and the identifier sets
+  match the shared groups the key reaches (excluding the key's own object), which supports
+  the reading, but the spike had no copy of the standard's table to confirm it.
+
+**What does not account** (go/no-go population, a file counted once per class):
+- **Page 0's shared entries** -- 101 of 101. Their count (a 4-5-bit field per page) is fixed by
+  no rule; their identifiers are 0 bits wide, so they name no object to check a numerator
+  against; their numerators (4 bits each, non-decreasing, 0 to 8 over a denominator of 8)
+  are non-zero in 92. Per file, 5 to 89 bits (median 27) are in values the layout does not
+  fix (100 files decoded; the 101st is the `/B` file below). A numerator is defined by where
+  in the page's content the shared object is first used; a probe on two files did not
+  reproduce them from the decoded content (neither `floor` nor `ceil` of the fraction of the
+  first use of each resource), and reverse-engineering Acrobat's computation would be
+  fitting, not a rule.
+- **Numerators on later pages** -- 9 (the multi-page files). Same reason; up to 4,640
+  numerator bits in one file.
+- **Identifier order** -- the `/V` table's identifiers in 65 files, later pages' in 9, `/C`'s in
+  3. The set is exactly right; the order follows no rule found (not ascending, which is also
+  the groups' file order); a permutation of *n* identifiers can carry log2 *n*! bits (median 4.6, max 1,659 per
+  file).
+- **Other mismatches**, each in 1-3 files: a first-page section, group count or page length
+  that no reading matches; a shared, `/I`, `/O`, `/V` or `/C` offset that names no object (in
+  one file every such offset is 4 bytes short of its object; the cause is not established); a
+  page omitting a shared object it
+  reaches (qpdf's note: Acrobat leaves out built-in fonts and procsets "in some cases", which
+  fixes no exact set); an identifier past the shared table; a `/B` table no reading decodes
+  (its group length sits at a nibble boundary; 1 file).
+
+No padding bit was non-zero, and no table left a byte unread, in any of the 400 files but one
+(a `/V` table with unread non-zero bytes, outside the go/no-go set).
+
+**Adversarial fixtures** (`fixtures`; fabricated, nothing from the corpus): qpdf (through
+pikepdf) linearizes a three-page document (a font every page shares, a font only the later
+pages share, so part 8 is not empty, a private graphics state per page, an outline, an
+`/Info`) and a one-page one, with the hint stream uncompressed so bits can be hidden in place
+without moving any offset. **Both clean files are fully accounted.** Every mutation is
+caught: one padding bit set after a page-offset column; `min_page_length` + 1 (a hint field);
+`min_content_offset` = 0x5a (unused, note 126); `shared_denominator` = 0x1234 (a value no
+layout fixes); `first_shared_obj` = 7 with no part 8 (unused, note 131) or
+`first_shared_offset` + 1 with one; the outline table's `group_length` + 2. Changing the
+denominator from 4 to 8 would **not** be caught: that is the one bit the accepted constants
+leave (above).
+
+**What a full decoder would need.** A rule fixing page 0's entries (their count and
+numerators) and every later page's numerators, which means reproducing Acrobat's content-
+position computation exactly from the page's content streams, for every Acrobat version; a
+rule for the order of `/V`, `/C` and page identifiers; the owner's acceptance of the five
+observed Acrobat readings above; and a reading of the `/B` and thumbnail (`/T`, 56 of 400
+files, none in the go/no-go set) tables. None of these is documented by qpdf or the
+implementation notes, and fitting them to 81 distinct files would fit the corpus, not a rule.
+
+**Revised estimate.** The full decoder (about 5 more PRs) is not started: it could clear
+only files that account, and in this corpus those are exactly the 154 qpdf-clean files R6
+(b)'s condition already names (153 of the 263 new; alone they take 1 file out of exit `2`,
+153 together with R7 (b); 1 text-bearing). If the owner later takes R6 (b), this spike's
+decoder is the part that makes that condition fail closed (qpdf's check reads neither
+numerators, padding, content entries nor the generic tables' identifiers): about 3 PRs
+(the decoder module from this spike, its registry hookup in 3b/3c, a differential against
+`qpdf --show-linearization`), the fixtures and corpus measure being here already. Not
+recommended now: its reach is 1 file alone.
 
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 

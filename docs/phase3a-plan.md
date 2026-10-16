@@ -738,6 +738,12 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     qpdf's linearization check warns on are all single-revision (no update drift explains
     them) and written by Adobe's linearizer (126 of the 129 naming a producer). R6 (b)'s
     condition alone takes 1 file out of exit 2 (153 together with R7 (b)).
+  - Owner decision 2026-10-15: staged (a). Its spike (`eval/spikes/hint_tables.py`, RESULTS.md
+    "Hint-table spike") is a NO-GO: 0 of the 101 warned text-bearing new files are fully
+    accounted -- all 101 carry page 0 shared entries whose count and numerators no documented
+    rule fixes, and many have unfixed identifier order or later-page numerators. (b) stands:
+    hint streams stay flagged; the full decoder (about 5 PRs in 3c) is not started. The
+    decoder accounts for all 154 qpdf-clean files and catches every fabricated mutation.
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 
@@ -792,3 +798,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
    from its stored /AP (the 3a-7d spike's method; ADR 0011 amendment of 2026-10-14);
    content differing only below 4x resolution (an image's samples, a glyph program) is not
    told apart.
+12. (2026-10-15, 3a-12's owner choice) The hint stream: staged (a) -- a hint-table spike, then
+   the full decoder only if every value accounts. Outcome: no-go (0 of 101; RESULTS.md
+   "Hint-table spike"), so (b): hint streams stay flagged (ADR 0003, R6 (a)).
