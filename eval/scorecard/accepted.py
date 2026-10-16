@@ -33,7 +33,7 @@ DEFAULT_PATH = Path(__file__).resolve().parents[1] / "accepted_diffs.yaml"
 # `caselib.run.available()` always reports exactly one of.
 ENVIRONMENTS = frozenset({"ocr", "no-ocr"})
 
-# This project's verdict severity order (README: "the severity order is
+# This project's verdict severity order (docs/reference.md: "The severity order is
 # 0 < 2 < 1" — clean, then cannot-certify, then confirmed leak).
 _SEVERITY: dict[int, int] = {0: 0, 2: 1, 1: 2}
 

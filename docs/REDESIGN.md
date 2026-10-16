@@ -670,7 +670,7 @@ artifact.
   `redaction_verifier` submodule that defines it, not via `verify.X` —
   so the re-export block's only remaining reason to exist is the CLI
   entry and external callers, not the tests; it retires along with them
-  once `verify.py` shrinks to a ~5-line CLI entry (the README and
+  once `verify.py` shrinks to a ~5-line CLI entry (docs/reference.md and
   `pyproject` use `verify.py`) in Phase 6. A ruff banned-import rule
   stops new internal imports.
 - **New path beside the old.** The ledger pipeline is built as a
@@ -714,8 +714,8 @@ artifact.
   - **H4.** The tool exposing secret material in its own output.
   - **H5.** A user-facing feature the owner requested.
 
-  Everything else is "pin and defer": a `known_gap` case, a README "Known
-  gaps" entry, a §8 row naming the closing phase (or an issue if no phase
+  Everything else is "pin and defer": a `known_gap` case, a COVERAGE.md
+  "Known gaps" entry, a §8 row naming the closing phase (or an issue if no phase
   covers it); deferring is also the owner's call and can be batched.
   **Any loosening**, accidental or not, needs a root cause,
   `weaker: true` in `accepted_diffs.yaml`, an explicit owner decision and
@@ -818,7 +818,7 @@ performance files the real corpus wants.
 
 ### Beside the plan: the visible map's later stages
 
-`--visible-map` (README, DESIGN "The visible map's engine" and "The `--visible-map` flag") is a
+`--visible-map` (docs/reference.md, DESIGN "The visible map's engine" and "The `--visible-map` flag") is a
 picture of the legacy scan, not part of this plan's verdict path, and
 changes no verdict. It reads page text only through the views' own
 interface (`views.text.visual_text_glyphs`, the readings with their
@@ -844,8 +844,8 @@ owner together with what it does not yet cover.
 
 **U, "usable, with listed gaps"** (legacy plus the 3a work):
 - **U1, case library.** Every leak case exits `1` or `2` except the pinned
-  `known_gap` cases; each appears in README "Known gaps" with its layout,
-  and CI fails if one is missing. K39 is listed in README "Known gaps" first (#33); the detection gap itself closes in 4b.
+  `known_gap` cases; each appears in COVERAGE.md's "Known gaps" (README's until 2026-10-16) with its layout,
+  and CI fails if one is missing. K39 is listed in "Known gaps" first (#33); the detection gap itself closes in 4b.
 - **U2, real-redactor recall.** On the real-redactor set below: 0 silent
   misses against an independent oracle. A miss blocks U until it is fixed
   or the owner accepts it as a listed gap (pinning alone does not count).
@@ -870,7 +870,7 @@ enforced; K3-K6 closed), 4b (image kinds; K21 and the strips cases exit
 answered by the owner: for the legacy tool, `IMAGE_COVERED` plus
 images-only OCR, 2026-10-15, ADR 0004's note, which 4b is to subsume) and Phase 5 (in default mode no built-in class
 match changes an exit code, ADR 0012). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
-phase is unspecified (e.g. K7); these stay listed in README until closed.
+phase is unspecified (e.g. K7); these stay listed in COVERAGE.md's Known gaps until closed.
 
 Estimates are rough and re-baselined at each phase close-out: U about
 3-4 weeks now that the real-redactor set is estimated at 10-14 days in its lane plan (assuming it finds
