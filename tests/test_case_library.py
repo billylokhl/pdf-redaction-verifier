@@ -23,7 +23,7 @@ from caselib.cells import COLUMNS, ROW_STORAGE, parts
 from caselib.families import redteam as redteam_loader
 from caselib.lock import LOCK, lockable
 from caselib.model import Case, KnownGap, OlderMacOS, expect
-from caselib.run import Scan, available, build, judge, scan, today_label
+from caselib.run import Scan, available, build, judge, scan_shared, today_label
 from check_ratchets import RATCHET_SETS, _frozenset_literal
 from redaction_verifier.matching import normalize_string
 
@@ -78,7 +78,7 @@ def test_case(case, tmp_path) -> None:
         assert hashlib.sha256(pdf.read_bytes()).hexdigest() == digest, (
             f"{case.id}: generator output changed — review it, then run "
             "`PYTHONPATH=eval:. python -m caselib.lock`")
-    result = scan(case, pdf, tmp_path)
+    result = scan_shared(case, pdf, tmp_path)
     label = today_label(case)     # known_gap, or this macOS's older_macos label
     if label is not None:
         cell = case.known_gap.cell if case.known_gap else case.cells[0]

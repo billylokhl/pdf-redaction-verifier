@@ -36,7 +36,8 @@ repo, path, pdf, rules, report = sys.argv[1:6]
 os.environ["PATH"] = path
 sys.path.insert(0, repo)
 import verify
-sys.exit(verify.main(["--target", pdf, "--secrets", rules, "--json", report]))
+extra = ["--visible-map", sys.argv[6]] if len(sys.argv) > 6 else []
+sys.exit(verify.main(["--target", pdf, "--secrets", rules, "--json", report] + extra))
 """
 
 
@@ -50,9 +51,11 @@ class BombRun:
     result: sandbox.Result
 
 
-def run_bomb(case: Case, pdf: Path, workdir: Path, child: str = CHILD) -> BombRun:
+def run_bomb(case: Case, pdf: Path, workdir: Path, child: str = CHILD,
+             visible_map: Path | None = None) -> BombRun:
     """Run the CLI on *pdf* for *case* under its caps; *child* is the
-    child's code (tests replace it to prove the caps hold)."""
+    child's code (tests replace it to prove the caps hold). With
+    *visible_map*, the run also asks for the visible map, written there."""
     assert case.bomb is not None, case.id
     rules = workdir / f"{case.id}.rules.json"
     rules.write_text(json.dumps(list(case.rules)))
@@ -62,7 +65,9 @@ def run_bomb(case: Case, pdf: Path, workdir: Path, child: str = CHILD) -> BombRu
                             memory_bytes=case.bomb.memory_bytes,
                             cpu_s=int(case.bomb.wall_clock_s) + 60)
     result = sandbox.run(child, pdf, args=[str(REPO), os.environ.get("PATH", ""), str(pdf),
-                                           str(rules), str(report)], limits=limits)
+                                           str(rules), str(report),
+                                           *([str(visible_map)] if visible_map else [])],
+                         limits=limits)
     if result.killed == "wall-clock":
         return BombRun("hang", None, result)
     if result.killed == "memory":

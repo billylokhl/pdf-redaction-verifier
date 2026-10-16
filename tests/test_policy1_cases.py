@@ -19,7 +19,7 @@ from caselib.policy1 import (
     SIGNED_OFF_OTHER_CLASSES,
     TWIN_SUFFIX,
 )
-from caselib.run import available, build, scan, today_label
+from caselib.run import available, build, scan, scan_shared, today_label
 from scorecard.differential import normalization_have
 from scorecard.keys import effective_exit
 
@@ -55,7 +55,7 @@ def test_a_twin_reports_its_class_match_as_a_notice(cid, tmp_path):
     if missing:
         pytest.skip(f"needs {', '.join(sorted(missing))}")
     pdf = build(twin, tmp_path / f"{twin.id}.pdf")
-    result = scan(twin, pdf, tmp_path)
+    result = scan_shared(twin, pdf, tmp_path)
     rules = {r["name"] for r in twin.rules}
     assert any(n["kind"] == "class-match" and n["rule"] in rules
                for n in result.report["notices"]), cid
