@@ -714,11 +714,15 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   warning, a stream-level /Crypt filter, /EFF, stored bytes already plain, unlocated, a
   handler outside the closed set (NONCANONICAL), a stream calling itself /Type /XRef, plain
   metadata that is no XMP packet, our trailer and the readers disagreeing);
-  3a-9b-1 the inventory reads the decrypted values (and carries `Decryption.views`: what
+  3a-9b-1a the contract (`build_inventory(decryption=...)`, crypt's flags passed through,
+  `structure_only`), the `crypt.inventory` pipeline and the reuse tokens; 3a-9b-1b the
+  inventory reads the decrypted values (and carries `Decryption.views`: what
   a reader shows beyond the agreed view, today MuPDF's decryption of plain metadata; the
   matcher must scan it, decoded through the stream's filters -- 3b records the obligation,
-  4a discharges it), the encryption identity joins pages/
-  trees/annotations/labels reuse, P4 lifted; 3a-9b-2 the gate lifts its encrypted
+  4a discharges it). Its caches keyed by unit alone -- the graph's edges and `by_target`,
+  `Graph.scopes`, `body_labels` -- hold whichever revision's value came first: once values
+  differ by decryption they key on the reuse token too, or read the ciphertext body. P4
+  lifted; 3a-9b-2 the gate lifts its encrypted
   exemptions and compares our decrypted values. (A separate 9a-2 for the gate was folded
   into 9b, coordinator 2026-10-15: until the inventory decrypts, the gate has nothing of
   ours to compare.)

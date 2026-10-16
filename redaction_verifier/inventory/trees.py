@@ -26,7 +26,7 @@ to the budget."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Final, Literal
@@ -71,7 +71,11 @@ def build_trees(revisions: int, changes: list[list[int]],
                 body_of: Callable[[int, int], Body | None],
                 home_of: Callable[[int, int], int | None],
                 trailers: list[PdfDict | None],
-                budget: Budget) -> tuple[tuple[Trees | None, ...], list[Flag]]:
+                budget: Budget, tokens: Sequence[object] | None = None,
+                ) -> tuple[tuple[Trees | None, ...], list[Flag]]:
+    """Each revision's trees, and the NAME_TREE flags. *tokens*: each
+    revision's reuse token (decrypted.reuse_tokens), part of the ident."""
+    tokens = tokens if tokens is not None else (None,) * revisions
     results: list[Trees | None] = [None] * revisions
     flags: list[Flag] = []
     seen: set[tuple[int, int]] = set()
@@ -86,7 +90,8 @@ def build_trees(revisions: int, changes: list[list[int]],
         held = _catalog_key(root, revision, body_of, home_of, budget)
         if held is _SPENT:
             return tuple(results), flags
-        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, encrypted, held)
+        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, encrypted,
+                 tokens[revision], held)
         if (previous is not None and previous[1] == ident
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]

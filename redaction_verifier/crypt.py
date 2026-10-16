@@ -47,8 +47,10 @@ from .inventory.objects import (
     ObjectParser, PdfArray, PdfBool, PdfDict, PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
     PdfString, PdfValue)
 from .inventory.decrypted import CryptRule, Decryption, Key, MismatchRule
+from .budget import Budget, Limits
+from .inventory.build import build_inventory
 from .inventory.types import Inventory
-from .inventory.xref import Chain
+from .inventory.xref import Chain, read_chain
 from .ledger import Flag, FlagReason, Span, UnitRef
 
 # PyMuPDF is untyped: every use goes through this one Any.
@@ -102,6 +104,29 @@ def decrypt(data: bytes, inventory: Inventory, chain: Chain, *,
                          for r in range(inventory.revisions))
     finally:
         pymupdf.TOOLS.mupdf_display_errors(shown)
+
+
+def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
+    """The inventory of *data*, encrypted or not (3a-9b): the pipeline
+    3b's child runs. A file none of whose trailers or cross-reference
+    stream dictionaries holds an /Encrypt key at all -- null, repeated or
+    in any section, as we read them -- is built once: a reader that follows
+    the chain takes /Encrypt from nowhere else (one that repairs finds a
+    chain we have already flagged). Any other file is built twice: a
+    structural pass (units, spans, stream data, object streams -- no
+    reference graph) that crypt.py locates bytes by, then decrypt() --
+    whose checks, TRAILER_SPLIT among them, decide -- then the full build
+    with each revision's Decryption (its flags, and the reuse tokens). Each
+    pass has its own budget (ADR 0006's note)."""
+    limits = limits if limits is not None else Limits()
+    chain = read_chain(data, limits, budget=Budget(limits, file_size=len(data)))
+    if not _mentions_encrypt(chain):
+        return build_inventory(data, limits, budget=Budget(limits, file_size=len(data)))
+    first = build_inventory(data, limits, budget=Budget(limits, file_size=len(data)),
+                            structure_only=True)
+    decryptions = decrypt(data, first, chain)
+    return build_inventory(data, limits, budget=Budget(limits, file_size=len(data)),
+                           decryption=decryptions)
 
 
 def _flag(reason: FlagReason, rule: int, revision: int, key: Key | None,
@@ -469,6 +494,18 @@ def _canonical(form: object) -> bool:
     return (all(c[0] == "name" and c[1] in names for c in chosen)
             and (eff is None or eff == d.get(b"StmF", ("name", b"Identity"))
                  or (eff[0] == "name" and eff[1] in names)))
+
+
+def _mentions_encrypt(chain: Chain) -> bool:
+    """Whether any section's trailer or cross-reference stream dictionary
+    holds an /Encrypt key, whatever its value, repeated or not: the
+    conservative test for skipping decryption (#181 round 1)."""
+    for section in chain.sections:
+        for part in (section, section.xref_stm):
+            trailer = part.trailer if part is not None else None
+            if trailer is not None and any(key.raw == b"Encrypt" for key, _ in trailer.entries):
+                return True
+    return False
 
 
 def _ours_encrypted(chain: Chain, revision: int) -> bool:

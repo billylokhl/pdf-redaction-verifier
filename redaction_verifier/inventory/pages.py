@@ -34,7 +34,7 @@ is iterative, never raises, and is charged to the budget."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Final
@@ -101,28 +101,33 @@ def build_pages(revisions: int, changes: list[list[int]],
                 body_of: Callable[[int, int], Body | None],
                 home_of: Callable[[int, int], int | None],
                 trailers: list[PdfDict | None],
-                budget: Budget) -> tuple[tuple[tuple[Page, ...] | None, ...], list[Flag]]:
+                budget: Budget, tokens: Sequence[object] | None = None,
+                ) -> tuple[tuple[tuple[Page, ...] | None, ...], list[Flag]]:
     """Each revision's page list (None where the tree is not canonical or
-    the budget ran out), and the PAGE_TREE flags."""
+    the budget ran out), and the PAGE_TREE flags. *tokens* are each
+    revision's reuse token (decrypted.reuse_tokens): a reading stands for
+    another revision's only under the same token."""
+    tokens = tokens if tokens is not None else (None,) * revisions
     results: list[tuple[Page, ...] | None] = [None] * revisions
     flags: list[Flag] = []
     seen: set[tuple[int, int]] = set()
-    previous: tuple[set[int], PdfValue | None, tuple[Page, ...] | None] | None = None
+    previous: tuple[set[int], PdfValue | None, tuple[Page, ...] | None, object] | None = None
     # A page read again unchanged is the same Page: retained memory grows
     # with the pages that change, not revisions x pages.
     kept: dict[tuple[object, ...], Page] = {}
     made: set[tuple[int, int]] = set()  # pages with a record already
     # Each attribute as written -- its bytes, its holder's generation and
     # whether it is read from the file or an object stream -- interned.
-    written: dict[tuple[bytes, int, UnitKind], int] = {}
+    written: dict[tuple[bytes, int, UnitKind, object], int] = {}
     for revision in reversed(range(revisions)):
         trailer = trailers[revision]
         root = trailer.get(b"Root") if trailer is not None else None
         if (previous is not None and _same_ref(previous[1], root)
+                and previous[3] == tokens[revision]
                 and not previous[0].intersection(changes[revision])):
             results[revision] = previous[2]
             continue
-        walk = _Walk(revision, body_of, home_of, budget, kept, made, written)
+        walk = _Walk(revision, body_of, home_of, budget, kept, made, written, tokens[revision])
         pages = walk.run(root)
         if walk.spent:
             return tuple(results), flags
@@ -132,7 +137,7 @@ def build_pages(revisions: int, changes: list[list[int]],
                 flags.append(Flag(FlagReason.PAGE_TREE, None, (
                     ("rule", int(rule)), ("object", number), ("revision", revision))))
         results[revision] = pages
-        previous = (walk.read, root, pages)
+        previous = (walk.read, root, pages, tokens[revision])
     return tuple(results), flags
 
 
@@ -210,10 +215,12 @@ class _Walk:
     def __init__(self, revision: int, body_of: Callable[[int, int], Body | None],
                  home_of: Callable[[int, int], int | None], budget: Budget,
                  kept: dict[tuple[object, ...], Page], made: set[tuple[int, int]],
-                 written: dict[tuple[bytes, int, UnitKind], int]) -> None:
+                 written: dict[tuple[bytes, int, UnitKind, object], int],
+                 token: object = None) -> None:
         self.revision, self.body_of, self.home_of, self.budget = (
             revision, body_of, home_of, budget)
         self.kept, self.made, self.written = kept, made, written
+        self.token = token  # the revision's reuse token: part of every interned key
         self.read: set[int] = set()
         self.flags: list[tuple[PageTreeRule, int]] = []
         self.spent = False
@@ -290,7 +297,7 @@ class _Walk:
                     # Equal bytes read alike only in the same place: an
                     # encrypted file's strings are decrypted by the holder's
                     # number and generation, and only outside object streams.
-                    where = (written, gen, body[0].kind)
+                    where = (written, gen, body[0].kind, self.token)
                     content = self.written.setdefault(where, len(self.written))
                     here[key] = Attribute(found, text, number, content)
             if kids is not None:  # a /Pages node
@@ -329,8 +336,8 @@ class _Walk:
             # The page's own body and each attribute as written (its bytes,
             # interned) name the reading: a rewritten ancestor whose
             # attributes read the same keeps every page's record.
-            ident = (number, gen, body[0], *((k, a.content, a.source)
-                                             for k, a in sorted(here.items())))
+            ident = (number, gen, body[0], self.token,
+                     *((k, a.content, a.source) for k, a in sorted(here.items())))
             if ident not in self.kept:
                 # A page's first record is as big as its own object in the
                 # file; one made again in a later revision (an ancestor or an

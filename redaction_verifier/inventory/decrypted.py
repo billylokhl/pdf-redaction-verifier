@@ -11,7 +11,7 @@ both sides name the same rules.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -74,3 +74,28 @@ class Decryption:
     streams: Mapping[Key, bytes]
     flags: tuple[Flag, ...]
     views: Mapping[Key, bytes] = field(default_factory=dict)
+
+
+def reuse_token(decryption: Decryption | None, revision: int) -> object:
+    """What a revision's reuse keys must agree on before one revision's
+    reading stands for another's (3a-9b; coordinator decision 2): None for
+    an unencrypted revision; the identity for one decrypted without a flag
+    (two revisions with one identity decrypt every body alike); otherwise
+    a token no other revision shares -- a flagged revision verified only
+    some of its objects, so nothing it read is reused."""
+    if decryption is None:
+        return None
+    if decryption.flags:                    # flagged, identity or not (#181 round 1)
+        return ("revision", revision)
+    return decryption.identity
+
+
+def reuse_tokens(decryptions: Sequence[Decryption | None] | None,
+                 revisions: int) -> tuple[object, ...]:
+    """Each revision's ``reuse_token`` (all None without decryptions)."""
+    if decryptions is None:
+        return (None,) * revisions
+    if len(decryptions) != revisions:
+        raise ValueError(f"{len(decryptions)} decryptions for {revisions} revisions")
+    return tuple(reuse_token(decryptions[r], r) for r in range(revisions))
+

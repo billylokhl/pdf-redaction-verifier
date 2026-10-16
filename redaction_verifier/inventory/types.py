@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final, TypeAlias
 
 from ..ledger import Flag, Span, Unit, UnitKind, UnitRef
 from .annotations import Annotations, Synthesized
+from .decrypted import Decryption
 from .graph import Graph
 from .labels import ORPHAN, BodyLabels, RevisionLabels
 from .pages import Page
@@ -120,6 +121,10 @@ class Inventory:
     labels: tuple[RevisionLabels | None, ...]
     graph_work: int
     body_labels: dict[UnitRef, BodyLabels]
+    # Each revision's cross-checked decryption (crypt.py, 3a-9) as it was
+    # given to build_inventory: () when none was (an unencrypted file, or
+    # the first, structural pass).
+    decryption: tuple[Decryption | None, ...] = field(default=())
 
     def entry(self, number: int, revision: int = 0) -> tuple[int, int, int] | None:
         """Object *number*'s xref entry (kind, a, b) in *revision*."""

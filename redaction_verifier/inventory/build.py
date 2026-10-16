@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final, NamedTuple
 
@@ -34,6 +34,7 @@ from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
 from .annotations import Annotations, Synthesized, build_annotations
+from .decrypted import Decryption, reuse_tokens
 from .graph import Body, Graph, build_graph
 from .labels import BodyLabels, RevisionLabels, build_body_labels, build_labels
 from .pages import Page, build_pages
@@ -91,12 +92,24 @@ class _Member:
     text: bytes  # the decoded stream it was read from (its spans' coordinates)
 
 
-def build_inventory(data: bytes, limits: Limits | None = None, *,
-                    budget: Budget) -> Inventory:
+def build_inventory(data: bytes, limits: Limits | None = None, *, budget: Budget,
+                    decryption: Sequence[Decryption | None] | None = None,
+                    structure_only: bool = False) -> Inventory:
     """The inventory of *data*. *budget* is required: every parse and
     scan here is charged to it, so a superlinear path is flagged
-    BUDGET_EXHAUSTED instead of hanging (ADR 0010). Never raises."""
-    return _Builder(data, limits if limits is not None else Limits(), budget).build()
+    BUDGET_EXHAUSTED instead of hanging (ADR 0010). Never raises on input.
+
+    *decryption*: each revision's cross-checked decryption, from
+    crypt.py's first pass over a *structure_only* inventory (3a-9b): its
+    flags are the inventory's, and each revision's reuse token
+    (decrypted.reuse_token) keys every reuse in the reference graph's
+    stage. *structure_only* stops before that stage: the units, spans,
+    stream data and object streams crypt.py locates bytes by, with no
+    graph, pages, trees, annotations or labels (empty). A *decryption*
+    whose length is not the file's revision count is a caller's error
+    (ValueError), never guessed at."""
+    return _Builder(data, limits if limits is not None else Limits(), budget,
+                    decryption, structure_only).build()
 
 
 class _Flags:
@@ -131,8 +144,13 @@ class _Flags:
 
 
 class _Builder:
-    def __init__(self, data: bytes, limits: Limits, budget: Budget) -> None:
+    def __init__(self, data: bytes, limits: Limits, budget: Budget,
+                 decryption: Sequence[Decryption | None] | None = None,
+                 structure_only: bool = False) -> None:
         self.data, self.limits, self.budget = data, limits, budget
+        self.given = tuple(decryption) if decryption is not None else None
+        self.decryption = self.given if self.given is not None else ()
+        self.structure_only = structure_only
         self.flags = _Flags(limits.max_flags_per_file)
         self.claims: list[tuple[UnitRef, Span]] = []
         self.units: list[Unit] = []
@@ -158,6 +176,9 @@ class _Builder:
         data = self.data
         chain = read_chain(data, self.limits, budget=self.budget)
         self.flags.extend(chain.flags)
+        # Decryption's flags come right after the chain's: the flag cap
+        # keeps them first.
+        self.flags.extend(f for d in self.decryption if d is not None for f in d.flags)
         self._history(chain)
         self._header()
         epilogues = self._epilogues(chain)
@@ -184,9 +205,10 @@ class _Builder:
                    and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)
                    and u.ref.start in self.stream_data]
         graph_start = self.budget.work
-        stage = _reference_graph(len(chain.revisions), self.changes, self._body_of,
-                                 self._home_number, trailers, self._xref_streams(chain),
-                                 self._hint_stream(chain), streams, self.budget)
+        tokens = reuse_tokens(self.given, len(chain.revisions))
+        stage = _EMPTY_STAGE if self.structure_only else _reference_graph(
+            len(chain.revisions), self.changes, self._body_of, self._home_number, trailers,
+            self._xref_streams(chain), self._hint_stream(chain), streams, self.budget, tokens)
         graph_work = self.budget.work - graph_start
         self.flags.extend(stage.flags)
         self.flags.extend(self.budget.flags())
@@ -200,7 +222,7 @@ class _Builder:
                          self.flags.result(), len(chain.revisions), self.stream_data,
                          self.objects, self.streams, entries, stage.graph, stage.pages,
                          stage.trees, stage.annotations, stage.synthesized, stage.labels,
-                         graph_work, stage.body_labels)
+                         graph_work, stage.body_labels, self.decryption)
 
     def _xref_streams(self, chain: Chain) -> list[list[UnitRef]]:
         """Each revision's own cross-reference streams (its sections', a
@@ -679,30 +701,36 @@ class _Stage(NamedTuple):
     flags: list[Flag]
 
 
+# A structural pass's stage (build_inventory(structure_only=True)): nothing.
+_EMPTY_STAGE: Final = _Stage(Graph({}, (), {}), (), (), (), (), (), {}, [])
+
+
 def _reference_graph(revisions: int, changes: list[list[int]],
                      body_of: Callable[[int, int], Body | None],
                      home_of: Callable[[int, int], int | None],
                      trailers: list[PdfDict | None], xref_streams: list[list[UnitRef]],
-                     hint: UnitRef | None, streams: list[UnitRef], budget: Budget) -> _Stage:
+                     hint: UnitRef | None, streams: list[UnitRef], budget: Budget,
+                     tokens: Sequence[object] | None = None) -> _Stage:
     """The reference graph's stage (ADR 0011 items 4, 5 and 7): the edges,
     the page lists, the name trees, the annotations and the labels, every
     revision of each in turn, all of it charged to *budget*. It runs before
     the budget's flags are gathered, so a stage the budget cuts short is
     never an unflagged inventory. One function, so the item-7 test
     (tests/test_inventory_stage.py) counts the whole stage's work and lines
-    through one seam (tests/steps.py)."""
+    through one seam (tests/steps.py). *tokens*: each revision's reuse
+    token (decrypted.reuse_tokens), passed to every stage that reuses."""
     flags: list[Flag] = []
     graph, found = build_graph(revisions, changes, body_of, home_of, trailers, budget)
     flags += found
-    pages, found = build_pages(revisions, changes, body_of, home_of, trailers, budget)
+    pages, found = build_pages(revisions, changes, body_of, home_of, trailers, budget, tokens)
     flags += found
-    trees, found = build_trees(revisions, changes, body_of, home_of, trailers, budget)
+    trees, found = build_trees(revisions, changes, body_of, home_of, trailers, budget, tokens)
     flags += found
     annotations, synthesized, found = build_annotations(revisions, changes, body_of, home_of,
-                                                        trailers, pages, budget)
+                                                        trailers, pages, budget, tokens)
     flags += found
     labels = build_labels(revisions, changes, body_of, home_of, graph.edges, graph.trailers,
-                          pages, annotations, xref_streams, hint, budget)
+                          pages, annotations, xref_streams, hint, budget, tokens)
     body_labels = build_body_labels(labels, streams, budget)
     return _Stage(graph, pages, trees, annotations, synthesized, labels, body_labels, flags)
 
