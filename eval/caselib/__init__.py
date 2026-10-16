@@ -23,7 +23,8 @@ __all__ = ["CELLS", "GALLERY_FIELDS_PENDING", "NEW_CELL_ALLOWLIST", "NONFITZ_PEN
 
 def load() -> dict[str, Case]:
     """Import every module under caselib.families (idempotent)."""
-    from . import families
+    from . import families, policy1
     for module in pkgutil.iter_modules(families.__path__):
         importlib.import_module(f"{families.__name__}.{module.name}")
+    policy1.apply(REGISTRY)  # ADR 0012: strict originals, default-mode twins
     return REGISTRY

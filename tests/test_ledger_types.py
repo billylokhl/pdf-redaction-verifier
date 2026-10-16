@@ -127,11 +127,37 @@ EMITTERS: dict[FlagReason, Callable[[], tuple[Flag, ...]]] = {
         _annotated(b"<< /Type /Annot /Subtype /Movie /Rect [0 0 9 9] >>")),
     FlagReason.COMMENT_LINE: lambda: _inventoried(
         classic().replace(b"%PDF-1.7\n", b"%PDF-1.7\n% 4 0 obj\n", 1)),
+    # Decryption, cross-checked (3a-9a; tests/test_crypt.py has every rule).
+    FlagReason.DECRYPTION_MISMATCH: lambda: _decrypted(  # a header generation the xref denies
+        _encrypted().replace(b"\n4 0 obj\n", b"\n4 1 obj\n")),
+    FlagReason.DECRYPTION_UNVERIFIED: lambda: _decrypted(  # a stream-level crypt filter
+        _encrypted(b"/Filter /Crypt")),
 }
 
 
 def _inventoried(data: bytes) -> tuple[Flag, ...]:
     return build_inventory(data, budget=Budget(file_size=len(data))).flags
+
+
+def _encrypted(stream_dict: bytes = b"") -> bytes:
+    from caselib import rawpdf
+    from caselib.rawcrypt import Handler
+
+    h = Handler(4, b"owner", bytes(16))
+    content = b"BT ET"
+    data = content if b"/Crypt" in stream_dict else h.stream_data(4, content)
+    return rawpdf.build({1: rawpdf.CATALOG, 2: rawpdf.PAGES, 3: rawpdf.page(),
+                         4: rawpdf.stream(stream_dict, data), 6: rawpdf.HELVETICA,
+                         7: h.encrypt_dict()}, trailer=h.trailer(7))
+
+
+def _decrypted(data: bytes) -> tuple[Flag, ...]:
+    from redaction_verifier.crypt import decrypt
+    from redaction_verifier.inventory.xref import read_chain
+
+    inventory = build_inventory(data, budget=Budget(file_size=len(data)))
+    chain = read_chain(data, budget=Budget(file_size=len(data)))
+    return tuple(f for r in decrypt(data, inventory, chain) for f in r.flags)
 
 
 def _duplicated_subsection() -> bytes:

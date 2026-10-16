@@ -151,9 +151,9 @@ class RuleSet:
     # verdict as before, even when the scan's default leaves classes
     # informational.
     strict_rules: frozenset[str] = field(default_factory=frozenset)
-    # Class rules whose "strict" is not true or false. Refused only when
-    # classes are informational (--no-strict-classes): before ADR 0012 the
-    # key was ignored, and strict mode must still load every file it did.
+    # Class rules whose "strict" is not true or false. Refused when classes
+    # are informational (the default, ADR 0012); under --strict-classes the
+    # key changes nothing, so strict mode still loads every file it did.
     strict_invalid: frozenset[str] = field(default_factory=frozenset)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:

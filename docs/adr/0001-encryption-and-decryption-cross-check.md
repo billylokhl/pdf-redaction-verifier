@@ -268,3 +268,93 @@ Owner decision, 2026-10-15: approve the carve-out (option a).
 
 The decision otherwise stands: decryption by pikepdf, cross-checked
 against MuPDF, for every byte the handler actually encrypts.
+
+## Note (2026-10-15, coordinator decision; owner informed): the canonical form of decryption
+
+ADR 0010 item 6 asks for the canonical-form rules before 3a-9's code. Only
+this closed set of standard security handlers is trusted, with nothing
+left to a reader's default; anything else is `DECRYPTION_UNVERIFIED`
+(rule `NONCANONICAL`) for the whole revision, and nothing in it is
+trusted, however the two readers read it:
+
+| /V | /R | Key (/Length) | Crypt filters | Methods |
+|---|---|---|---|---|
+| 1 | 2 | 40 bits (absent or 40) | none | RC4 |
+| 2 | 3 | 40-128 bits, a multiple of 8, **written** | none | RC4 |
+| 4 | 4 | 128 bits (absent or 128; 16 or 128 in a filter) | /CF entries with /CFM /V2 or /AESV2 | RC4, AES-128 |
+| 5 | 6 | 256 bits (absent or 256; 32 or 256 in a filter) | /CF entries with /CFM /AESV3 | AES-256 |
+
+- **/Filter** is /Standard, with no /SubFilter. **/StmF** and **/StrF**
+  (V4, V5) are /Identity or a name in /CF (absent: /Identity).
+  **/EncryptMetadata** is a boolean, or absent (true).
+- **/EFF** is absent, /Identity, or a name in /CF. An /EFF other than
+  /StmF is flagged per embedded file (rule `EFF`): both readers ignore
+  /EFF and apply /StmF.
+- Outside the set: /R 5 (deprecated in ISO 32000-2), /V 3, a /CFM /None
+  filter, an /AuthEvent other than /DocOpen, and any key length its row
+  does not allow. A V2 handler without /Length is the case in point:
+  pikepdf reads 40 bits, MuPDF 128.
+- A stream-level `/Crypt` filter is flagged per stream (rule
+  `CRYPT_FILTER`): the readers read the single-name form differently.
+- Every value is read from the revision's /Encrypt with its indirect
+  parts resolved.
+
+Measured: no encrypted file in the real corpus (coordinator-measured,
+2026-10-15), so the rule flags none there; the case library's encrypted
+files are all in the set.
+
+## Note (2026-10-15, 3a-9a-1): what the cross-check cannot see
+
+- **Which streams are unencrypted** is decided by the file's structure,
+  not a stream's word: a cross-reference stream is one the chain reads as
+  a cross-reference section. qpdf leaves any `/Type /XRef` stream
+  undecrypted while MuPDF decrypts and draws it, so any other stream so
+  labelled is flagged (rule `XREF_TYPE`). Under `/StmF /Identity` both
+  readers leave every stream as stored, and the three must agree.
+- **The amendment's metadata exemption has a hidden view.** Under
+  `/EncryptMetadata false` pikepdf returns the catalog's `/Metadata`
+  stream as stored and MuPDF decrypts it. When the stored bytes are
+  ciphertext, MuPDF shows the decrypted XMP and the raw matcher sees only
+  ciphertext. Guessing from MuPDF's output whether it "looks decrypted"
+  is not enough: one odd byte, UTF-16 or Latin-1 defeats any such guess.
+  So two things hold, without guessing:
+  - The stream is trusted only when its stored bytes are wholly an XMP
+    packet: unfiltered or Flate alone, then text in one Unicode encoding
+    throughout, holding `<?xpacket` or `<x:xmpmeta`. Anything else is
+    flagged (rule `METADATA_CIPHER`).
+  - The packet rule is not proof: any printable string can be
+    ciphertext, and an object number or /ID can be ground until a
+    secret's ciphertext is printable (about 1 in 55,000 tries for 11
+    ASCII bytes under RC4; #178 round 3 pins such a file). So MuPDF's
+    decryption of the stream is carried as well (`Decryption.views`),
+    and a secret it shows will be found once the matcher scans it.
+    Nothing scans it yet: the Phase 3b plan records the obligation and
+    Phase 4a discharges it. Until then this is a known gap, in shadow
+    mode only.
+  - Latin-1 packets, other encodings and filters other than Flate alone
+    are not trusted (`METADATA_CIPHER`, fail-closed). Trailing NULs and
+    whitespace, empty `/DecodeParms`, and an end of line after the Flate
+    data are allowed.
+- **Our trailer and the readers must agree on whether a revision is
+  encrypted.** An `/Encrypt` naming a null or missing object, or one only
+  the readers see, is flagged (rule `TRAILER_SPLIT`).
+- **`/EFF` other than `/StmF`** flags the whole revision (rule `EFF`).
+  Both readers ignore `/EFF`, and `/Type` is optional on an embedded-file
+  stream, so no single stream can be named.
+
+- **Plaintext stored where ciphertext belongs.** When both readers apply
+  the same key to bytes that were never encrypted (a stream or string
+  written plain under a handler that encrypts it), they agree on the
+  same garbage, and the cross-check passes. For streams, `crypt.py`
+  flags an "encrypted" stream whose stored bytes already inflate as Flate
+  (rule `STORED_PLAIN`; coordinator decision, 2026-10-15): ciphertext
+  essentially never does. Stored plain strings remain a gap: the raw
+  matcher still sees their bytes, but the decrypted view does not.
+- **The revision identity.** `Decryption.identity` digests the resolved
+  /Encrypt, the file key, the stream, string and file methods, and
+  /ID[0] (/ID[1] does not affect decryption). Two revisions with one
+  identity decrypt any body alike, except the catalog's /Metadata under
+  /EncryptMetadata false, which stream that is being the revision's own.
+  Reuse keyed on the identity (3a-9b) is safe for every 3a consumer,
+  none of which reads stream data. Later decoders read each revision's
+  own `Decryption.streams`, not a reused one.

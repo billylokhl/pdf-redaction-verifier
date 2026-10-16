@@ -60,6 +60,16 @@ def identity_clean(text: str, *neutral: str) -> str:
     return text
 
 
+def _strict_classes(extra: tuple[str, ...]) -> bool:
+    """As verify's `--[no-]strict-classes` (off by default, ADR 0012):
+    the last of the two flags wins."""
+    strict = False
+    for arg in extra:
+        if arg in ("--strict-classes", "--no-strict-classes"):
+            strict = arg == "--strict-classes"
+    return strict
+
+
 def _with_sink(scan: Any, sink: MapSink) -> Any:
     """*scan* with *sink* as its sink, whatever sink its caller passes."""
     @functools.wraps(scan)
@@ -106,7 +116,7 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
             # As verify.main sets report.informational.
             "informational": sorted(informational_rules(
                 {name: label.kind for name, label in rule_set.labels.items()},
-                strict="--no-strict-classes" not in extra, strict_rules=rule_set.strict_rules)),
+                strict=_strict_classes(extra), strict_rules=rule_set.strict_rules)),
             "sink": the_sink.to_header(),
             "report": report,
             "exit_code": code,
@@ -114,6 +124,11 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
             "target_name": target.name,
             "version": verify.__version__,
         }
+        # The mirror above must agree with what verify did: every notice's
+        # rule is informational and no finding's is.
+        informational = set(header["informational"])
+        assert {n["rule"] for n in report.get("notices", [])} <= informational, extra
+        assert not {f["rule"] for f in report.get("findings", [])} & informational, extra
     return Run(code, stdout.getvalue(), stderr.getvalue(), report, header)
 
 

@@ -98,11 +98,11 @@ class TestSelfCheck:
                                                                 monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "overlap.pdf")
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
-                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n')
+                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
         assert "built-in type: SSN ****" in {b.label for b in the_plan.boxes}
         _assert_absent(out, SSN, "6789")
         # With no exact value it would reveal, the masked tail stays.
-        run, the_plan, out = drawn(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n")
+        run, the_plan, out = drawn(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n", "--strict-classes")
         assert "built-in type: SSN ****6789" in {b.label for b in the_plan.boxes}
 
     def test_a_one_character_tail_on_a_value_is_hidden(self, tmp_path, monkeypatch) -> None:
@@ -176,7 +176,7 @@ class TestSelfCheck:
     def test_yaml_labels(self, tmp_path, monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "yaml.pdf")
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
-                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n')
+                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
         labels = {b.label for b in the_plan.boxes}
         assert "exact value #1 (exact_values[0])" in labels
         assert "built-in type: SSN ****" in labels      # tail dropped: part of the value

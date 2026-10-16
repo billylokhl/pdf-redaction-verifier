@@ -38,7 +38,7 @@ def ssn_rules(tmp_path: Path) -> Path:
     path = tmp_path / "rules.json"
     path.write_text(json.dumps([
         {"name": "Target SSN", "value": SSN},
-        {"name": "Any SSN", "class": "ssn"},
+        {"name": "Any SSN", "class": "ssn", "strict": True},
     ]))
     return path
 
