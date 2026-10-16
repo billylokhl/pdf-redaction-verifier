@@ -68,6 +68,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import bisect
 import contextlib
 import functools
 import io
@@ -3507,13 +3508,27 @@ class _PdfHeaderScan:
         self._by_number: dict[int, set[int]] | None = None
         self._streams: bool | None = None
         self._written: set[int] | None = None
+        self._eols: list[int] | None = None
+        self._calls = 0
+        # Readers take every offset relative to where '%PDF-' starts (it
+        # may follow junk, within the first 1024 bytes).
+        self.header_shifts = {0} | {m.start() for m in re.finditer(rb"%PDF-", data[:1024 + 5])}
 
     def _spend(self, n: int) -> None:
         self.work -= n + 1
         if self.work < 0:
             raise _QpdfCheckFailed("header scan budget")
-        if not self.work & 0xFFFF and time.monotonic() > self.deadline:
+        self._calls += 1
+        if not self._calls & 0xFFF and time.monotonic() > self.deadline:
             raise _QpdfCheckFailed("deadline")
+
+    def _line_start(self, eol: int) -> int:
+        """Start of the line that the end of line at *eol* closes."""
+        if self._eols is None:
+            self._spend(len(self.data))
+            self._eols = [m.start() for m in re.finditer(rb"[\r\n]", self.data)]
+        i = bisect.bisect_left(self._eols, eol)
+        return self._eols[i - 1] + 1 if i else 0
 
     def _gap_starts(self, end: int) -> set[int]:
         """Every e < end such that data[e:end] can be a non-empty run of
@@ -3535,7 +3550,7 @@ class _PdfHeaderScan:
             starts.add(j - 1)
             todo.append(j - 1)
             if c in (0x0A, 0x0D):
-                line = max(data.rfind(b"\n", 0, j - 1), data.rfind(b"\r", 0, j - 1)) + 1
+                line = self._line_start(j - 1)
                 self._spend(j - 1 - line)
                 k = data.find(b"%", line, j - 1)
                 while k != -1:
@@ -3583,8 +3598,11 @@ class _PdfHeaderScan:
                         for k in range(1, min(e2 - n, 12) + 1):
                             # A start inside the digit run is reachable
                             # only through an offset written somewhere in
-                            # the file (an xref entry, /Prev, startxref).
-                            if k == e2 - n or e2 - k in self.offsets_written:
+                            # the file (an xref entry, /Prev, startxref),
+                            # relative to any '%PDF-' a reader may take
+                            # as the file's start.
+                            if k == e2 - n or any(e2 - k - shift in self.offsets_written
+                                                  for shift in self.header_shifts):
                                 found.setdefault(int(data[e2 - k:e2]), set()).add(e2 - k)
             self._by_number = found
         return self._by_number

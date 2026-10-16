@@ -64,7 +64,7 @@ glyph.
 
 **qpdf's exit 3** (`families/qpdf_warnings.py`, `requires: qpdf`): since
 the owner decision of 2026-10-15 an exit 3 is judged warning by warning
-(COVERAGE.md footnote 14). Five leak cases are layouts where qpdf's
+(COVERAGE.md footnote 14). Six leak cases are layouts where qpdf's
 warning is the only signal of hidden content and must stay `2`
 (`unindexed.plain.qpdf-warned`); seven clean cases are the harmless
 layouts real files carry and now exit `0` (weaker `accepted_diffs.yaml`

@@ -74,6 +74,7 @@
   "file.missing-endobj-after-stream": "ff87ddb280402e0fa2026a0190337e81bb58f73ca1e9a865b789cb0a30004259",
   "file.offset-zero-entry-no-body": "093e5cec568f33a822e0426a84a867aa9d75770a5a15874065ccba96de1e4bc5",
   "file.offset-zero-entry-page-content": "b6085359ee4af37e9e2c18db22f3f4ae29f2f103ab3e0e5249316f060e570b3e",
+  "file.offset-zero-entry-shifted-earlier-body": "8e4a16fd1262e32e16ac5863674df790bad2af13de92816e4d8a67536750124d",
   "file.offset-zero-entry-stored-body": "dd50ef836569702e6caf307b3439b8e1848b52428acd1336e6569af746a8c57d",
   "file.qpdf-null-reference": "68e19b6bb2eeabc54ca7af99c87f2ec7c0e89b2eda8bd388c17427daebda1ffa",
   "file.quartz-offset-zero-duplicate-key-endobj": "a75b78d4e50db9e5e43c1e2e03cdf3ddca9b0e1190e24d25fdf70d0592bf6583",

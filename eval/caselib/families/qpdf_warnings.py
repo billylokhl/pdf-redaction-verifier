@@ -105,6 +105,36 @@ def offset_zero_page_content(path: Path) -> None:
     path.write_bytes(_build(objects, entries=OFFSET_ZERO))
 
 
+@leak("file.offset-zero-entry-shifted-earlier-body",
+      "Junk precedes '%PDF-', so every offset counts from the header. The first revision "
+      "stores object 6 (the SSN) as '96 0 obj', its xref entry pointing at the '6'; an "
+      "incremental update sets object 6 to offset 0. qpdf warns only 'object has offset 0', "
+      "and the earlier body, reachable through the first revision's table, keeps that "
+      "warning counting (exit 2).",
+      mistake="A tool that zeroed an object's entry in an update instead of removing its body.",
+      recovery="Read each revision's xref table, add the header's offset, and read every body.")
+def offset_zero_shifted_earlier_body(path: Path) -> None:
+    out = bytearray(b"%PDF-1.7\n")
+    offsets: dict[int, int] = {}
+    for number, body in ((1, b"<< /Type /Catalog /Pages 2 0 R /Foo 6 0 R >>"), (2, PAGES),
+                         (3, page(contents=b"4 0 R", resources=b"<< >>")), (4, CONTENT)):
+        offsets[number] = len(out)
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    out += b"9"
+    offsets[6] = len(out)
+    out += b"6 0 obj (" + SECRET + b") endobj\n"
+    first = len(out)
+    out += b"xref\n0 7\n0000000000 65535 f \n"
+    for number in range(1, 7):
+        out += (b"%010d 00000 n \n" % offsets[number] if number in offsets
+                else b"0000000000 00001 f \n")
+    out += b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % first
+    second = len(out)
+    out += (b"xref\n6 1\n0000000000 00000 n \ntrailer\n<< /Size 7 /Root 1 0 R /Prev %d >>\n"
+            b"startxref\n%d\n%%%%EOF\n" % (first, second))
+    path.write_bytes(b"JUNK\n" + bytes(out))
+
+
 @leak("file.stray-bytes-before-endobj",
       "A string holding the SSN sits between object 5's dictionary and its endobj: no reader "
       "keeps it, and qpdf warns 'expected endobj'. Bytes other than whitespace there keep the "

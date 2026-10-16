@@ -209,7 +209,7 @@ against the file's own bytes passes:
    comments between the parts starting at any `%` on their line, headers
    inside comments or streams, and the number as a suffix of a longer
    digit run when the file spells that suffix's offset somewhere, as an
-   xref entry could), **and** no name in the file decodes to `/ObjStm` or
+   xref entry could, counting from any `%PDF-` in the first 1024 bytes), **and** no name in the file decodes to `/ObjStm` or
    `/XRef`. This closes the ObjStm gap the 2026-09-27 decision accepted:
    with no object or xref stream at all, no body can hide in one.
 3. `dictionary has duplicated key` (rule 2 above): every duplicated key

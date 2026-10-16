@@ -180,6 +180,14 @@ class TestOffsetZero:
         pdf = base(b"%95 0 obj (x) endobj\n", b"%% xref entry %010d 00000 n\n" % five)
         assert check(offset0(), pdf.data) is not None
 
+    def test_a_written_offset_counts_from_a_shifted_header(self) -> None:
+        # Junk before '%PDF-': readers add its length to every offset.
+        pdf = base(b"%95 0 obj (x) endobj\n")
+        five = pdf.at(b"%95 0 obj") + 2
+        shifted = b"JUNK\n" + pdf.data + b"%% xref entry %010d 00000 n\n" % five
+        assert check(offset0(), shifted) is not None
+        assert check(offset0(), b"JUNK\n" + pdf.data) is None
+
     def test_a_number_merely_containing_n_is_not_a_body(self) -> None:
         assert check(offset0(), base((51, b"(x)")).data) is None
 
@@ -210,6 +218,13 @@ class TestBounded:
         start = time.monotonic()
         check(stderr, pdf.data)
         assert time.monotonic() - start < 10
+
+    def test_long_lines_without_cr(self) -> None:
+        import time
+        pdf = base((7, stream(b"", b"\nobj" * 100_000)))
+        start = time.monotonic()
+        check(offset0(), pdf.data)
+        assert time.monotonic() - start < 5
 
     def test_many_offset_zero_lines_scan_once(self) -> None:
         import time

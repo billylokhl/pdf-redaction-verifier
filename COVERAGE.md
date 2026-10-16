@@ -167,7 +167,7 @@ no object or xref stream in the file); a duplicated key whose values are identic
 not an object stream (an xref stream only when every declared row
 decodes). Any other warning, an unparseable line or a check that cannot
 decide keeps the flag (`file.offset-zero-entry-stored-body`,
-`file.offset-zero-entry-page-content`, `file.stray-bytes-before-endobj`,
+`file.offset-zero-entry-page-content`, `file.offset-zero-entry-shifted-earlier-body`, `file.stray-bytes-before-endobj`,
 `file.damaged-xref-earlier-body`, `file.duplicated-filter-first-wins`).
 The same bytes behind a *free* entry, after `%%EOF` or in a comment give
 qpdf no warning and stay ✗.
