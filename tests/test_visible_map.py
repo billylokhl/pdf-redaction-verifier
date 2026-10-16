@@ -1031,8 +1031,20 @@ class TestNotices:
         assert not [i for i in the_plan.listed if i.section != "notices"
                     and i.section != "unpositioned" and i.section != "not_scanned"]
 
+    def test_the_default_lists_notices_as_no_strict_classes_does(self, tmp_path,
+                                                                 monkeypatch) -> None:
+        # ADR 0012 policy 1: notices are the default, with no flag at all.
+        pdf = self._pdf(tmp_path)
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES)
+        assert run.header is not None and run.header["informational"] == ["Any SSN"]
+        assert not run.report["findings"] and run.report["notices"]
+        assert not the_plan.boxes and sections(the_plan, "notices")
+        _run, explicit = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
+        assert the_plan == explicit
+
     def test_strict_classes_still_box_the_match(self, tmp_path, monkeypatch) -> None:
-        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES)
+        run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES,
+                               "--strict-classes")
         assert run.header is not None and run.header["informational"] == []
         assert run.report["findings"] and not run.report["notices"]
         assert boxes(the_plan, plan.SOLID) and not sections(the_plan, "notices")
@@ -1123,7 +1135,7 @@ class TestTiers:
         for i, ch in enumerate(SSN.replace("-", "")):  # one character per line
             page.insert_text((400, 200 + 14 * i), ch)
         pdf = _save(doc, tmp_path / "tiers.pdf")
-        rules = [{"name": "any ssn", "class": "ssn"}, {"name": "ssn", "value": SSN}]
+        rules = [{"name": "any ssn", "class": "ssn", "strict": True}, {"name": "ssn", "value": SSN}]
         run, the_plan = mapped(monkeypatch, tmp_path, pdf, rules)
         codes = {w["code"] for w in run.report["warnings"]}
         assert {"REVIEW_FUSED_PATTERN", "REVIEW_CROSS_LINE"} <= codes
@@ -1325,12 +1337,12 @@ class TestMaskedLabels:
                                                                 monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "overlap.pdf")
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
-                                f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n')
+                                f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
         labels = {b.label for b in the_plan.boxes}
         assert "built-in type: SSN ****" in labels
         assert "exact value #1 (exact_values[0])" in labels and not the_plan.legend
         # With no exact value it would reveal, the masked tail stays.
-        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n")
+        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n", "--strict-classes")
         assert "built-in type: SSN ****6789" in {b.label for b in the_plan.boxes}
 
     def test_a_one_character_tail_on_a_value_is_hidden(self, tmp_path, monkeypatch) -> None:

@@ -537,7 +537,8 @@ class TestStructuredFields:
         pdf = _pdf(tmp_path / "wrapped.pdf", "Account ref 123-45-", "6789 continues")
         rules = tmp_path / "rules.yaml"
         rules.write_text("entity_types:\n  - person_name\n  - ssn\n")
-        code, data = _run(pdf, rules, tmp_path)
+        # Strict: a YAML config's entity types are classes, notices by default.
+        code, data = _run(pdf, rules, tmp_path, "--strict-classes")
         assert code == 2
         review = [w for w in data["warnings"] if w["code"] == "REVIEW_FUSED_PATTERN"]
         assert review and all(
@@ -704,7 +705,7 @@ class TestNothingSecretLeaks:
 
     def test_pattern_sample_is_masked(self, tmp_path) -> None:
         pdf = _pdf(tmp_path / "ssn.pdf", f"SSN {SSN}")
-        rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn"}])
+        rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn", "strict": True}])
         code, data = _run(pdf, rules, tmp_path)
         assert code == 1
         # OCR samples are always fully masked; other layers keep the tail.
@@ -714,7 +715,7 @@ class TestNothingSecretLeaks:
 
     def test_review_samples_are_masked(self, tmp_path) -> None:
         pdf = _pdf(tmp_path / "wrapped.pdf", "Account ref 123-45-", "6789 continues")
-        rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn"}])
+        rules = _rules(tmp_path / "r.json", [{"name": "any ssn", "class": "ssn", "strict": True}])
         _, data = _run(pdf, rules, tmp_path)
         assert any("****" in w["message"] for w in data["warnings"])
         assert not self.DIGITS.search(json.dumps(data))
@@ -780,7 +781,7 @@ class TestMaskedTailNeverShowsAnExactValue:
         # Before the fix this showed "****6789" (the value's own tail).
         samples = self._samples(tmp_path, f"SSN {SSN}", [
             {"name": "the value", "value": SSN},
-            {"name": "any ssn", "class": "ssn"},
+            {"name": "any ssn", "class": "ssn", "strict": True},
         ])
         assert samples == {"", "****"}
 
@@ -890,7 +891,7 @@ def test_value_the_matcher_normalizes_differently_is_still_masked(tmp_path) -> N
     pdf = _pdf(tmp_path / "doc.pdf", "SSN 555-55-6712")
     rules = _rules(tmp_path / "r.json", [
         {"name": "v", "value": "1Ø2"},
-        {"name": "any ssn", "class": "ssn"},
+        {"name": "any ssn", "class": "ssn", "strict": True},
     ])
     _, data = _run(pdf, rules, tmp_path)
     assert {f["sample"] for f in data["findings"]} == {"", "****"}

@@ -65,7 +65,7 @@ class TestLoader:
             load_rules(path)
 
     def test_unknown_class_rejected_with_valid_list(self, tmp_path) -> None:
-        path = _rules_file(tmp_path, [{"name": "x", "class": "passport"}])
+        path = _rules_file(tmp_path, [{"name": "x", "class": "passport", "strict": True}])
         with pytest.raises(VerifyError, match="ssn"):
             load_rules(path)
 
@@ -83,8 +83,8 @@ class TestLoader:
         # Regression: same-named rules silently overwrote each other's
         # hits and suppressed cross-page value findings.
         path = _rules_file(tmp_path, [
-            {"name": "PII", "class": "ssn"},
-            {"name": "PII", "class": "credit-card"},
+            {"name": "PII", "class": "ssn", "strict": True},
+            {"name": "PII", "class": "credit-card", "strict": True},
         ])
         with pytest.raises(VerifyError, match="duplicate rule name"):
             load_rules(path)
@@ -92,7 +92,7 @@ class TestLoader:
     def test_mixed_rules_load(self, tmp_path) -> None:
         path = _rules_file(tmp_path, [
             {"name": "known", "value": "123-45-6789"},
-            {"name": "any ssn", "class": "ssn"},
+            {"name": "any ssn", "class": "ssn", "strict": True},
             {"name": "case id", "pattern": r"CASE-\d{4}"},
         ])
         rules = load_rules(path)
@@ -147,33 +147,33 @@ class TestMatchSemantics:
         # Regression: fonts embedded by some producers (PyMuPDF with Arial)
         # extract '-' as U+00AD, which NFKC keeps, so the ssn class missed
         # 'SSN 123-45-6789' drawn in such a font — exit 0 on a leak.
-        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn", "strict": True}])
         assert match_patterns("SSN 123­45­6789", patterns) == {
             "ssn": "123-45-6789"}
 
     def test_greedy_rejection_retries_embedded_match(self, tmp_path) -> None:
         # Regression: validator-rejected greedy superspan swallowed the
         # embedded valid card and finditer never retried inside it.
-        patterns = self._patterns(tmp_path, [{"name": "card", "class": "credit-card"}])
+        patterns = self._patterns(tmp_path, [{"name": "card", "class": "credit-card", "strict": True}])
         hits = match_patterns(f"Gate 7 {VALID_CARD}", patterns)
         assert "card" in hits
 
     def test_unicode_dashes_folded(self, tmp_path) -> None:
         # Regression: en-dash SSNs evaded the ASCII separator class.
-        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn", "strict": True}])
         assert "ssn" in match_patterns("SSN: 123–45–6789", patterns)
 
     def test_fullwidth_digits_folded_and_validated(self, tmp_path) -> None:
         # Regression: fullwidth digits matched \d but bypassed the ASCII
         # comparisons in _valid_ssn (area-9xx passed as a finding).
-        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn", "strict": True}])
         assert match_patterns("９８７６５４３２１", patterns) == {}
         assert "ssn" in match_patterns("５２９１２４５６７", patterns)
 
     def test_zip_plus_four_and_decimals_not_ssn(self, tmp_path) -> None:
         # Regression: ZIP+4 regrouped into an SSN; decimal fractions
         # matched because '.' was not excluded by the leading guard.
-        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        patterns = self._patterns(tmp_path, [{"name": "ssn", "class": "ssn", "strict": True}])
         assert match_patterns("Anytown, NY 12345-6789", patterns) == {}
         assert match_patterns("ratio 1.123456789 observed", patterns) == {}
 
@@ -197,7 +197,7 @@ class TestMatchSemantics:
 class TestPatternDetection:
     def test_ssn_class_found_and_masked(self, tmp_path) -> None:
         pdf = _pdf_with_text(tmp_path, f"Applicant SSN: {VALID_SSN}")
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1
         assert "Text" in report_layers(result.stdout)
@@ -206,7 +206,7 @@ class TestPatternDetection:
         assert "6789" in result.stdout
 
     def test_luhn_invalid_card_not_flagged_valid_card_is(self, tmp_path) -> None:
-        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
+        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card", "strict": True}])
         pdf = _pdf_with_text(tmp_path, f"Card: {VALID_CARD}")
         assert run_verify(pdf, rules).returncode == 1
 
@@ -233,7 +233,7 @@ class TestPatternDetection:
         doc.set_metadata({"subject": f"applicant {VALID_SSN}"})
         doc.save(path)
         doc.close()
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(path, rules)
         assert result.returncode == 1
         assert report_layers(result.stdout) & {"Metadata", "Binary"}
@@ -250,7 +250,7 @@ class TestTiering:
             page.insert_text((300, 100 + i * 20), digit)
         doc.save(path)
         doc.close()
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(path, rules)
         assert result.returncode != 1, result.stdout
         # The possible fusion is surfaced for review, not silenced.
@@ -261,7 +261,7 @@ class TestTiering:
         # separator chars and matched nowhere; the soft tier must at
         # least refuse to certify (exit 2 with a manual-review warning).
         pdf = _pdf_with_text(tmp_path, "SSN on file: 123-45-", "6789 (continued)")
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(pdf, rules)
         assert result.returncode != 0, result.stdout
         assert "manual review" in result.stdout or report_lines(result.stdout)
@@ -278,7 +278,7 @@ class TestTiering:
         page.insert_text((330, 130), "6789")
         doc.save(path)
         doc.close()
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(path, rules)
         assert result.returncode != 1, result.stdout
         assert "manual review" in result.stdout  # surfaced, not silenced
@@ -293,7 +293,7 @@ class TestTiering:
             page.insert_text((72 + i * 30, 140), digit, fontsize=14)
         doc.save(path)
         doc.close()
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(path, rules)
         assert result.returncode == 1, result.stdout
         assert "Text" in report_layers(result.stdout)
@@ -302,7 +302,7 @@ class TestTiering:
         # Guard against over-fencing: ordinary word spaces are narrower
         # than a character and must not break the run.
         pdf = _pdf_with_text(tmp_path, "Applicant SSN 123 45 6789 on file")
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(pdf, rules)
         assert result.returncode == 1, result.stdout
         assert "Text" in report_layers(result.stdout)
@@ -317,7 +317,7 @@ class TestTiering:
         doc.set_metadata({"author": "4111 1111 1111", "subject": "1111 batch note"})
         doc.save(path)
         doc.close()
-        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
+        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card", "strict": True}])
         result = run_verify(path, rules)
         assert result.returncode != 1, result.stdout
 
@@ -325,7 +325,7 @@ class TestTiering:
         # Regression: tier was chosen by variant index, so a leak read
         # cleanly only by the correction-OFF Vision pass (variants[1] —
         # the more digit-accurate read) could never be a hard finding.
-        rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "ssn", "class": "ssn", "strict": True}])
         patterns = load_rules(rules).patterns
         doc = fitz.open()
         doc.new_page()
@@ -345,7 +345,7 @@ class TestTiering:
         # Regression: '\n' satisfied the \s separator slot, fusing digits
         # from unrelated lines into hard findings.
         pdf = _pdf_with_text(tmp_path, "Conference room 123", "45 6789 Main Street")
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(pdf, rules)
         assert result.returncode != 1, result.stdout
 
@@ -355,14 +355,14 @@ class TestPatternCleanPass:
     def test_clean_pdf_with_ssn_class_certified(self, clean_pdf, tmp_path) -> None:
         # clean_pdf contains "555-00-0000", which is SSN-shaped but has
         # group 00 and serial 0000 — the validator must reject it.
-        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn"}])
+        rules = _rules_file(tmp_path, [{"name": "Any SSN", "class": "ssn", "strict": True}])
         result = run_verify(clean_pdf, rules)
         assert result.returncode == 0, result.stdout
 
     def test_clean_pdf_with_card_class_ignores_dates(self, clean_pdf, tmp_path) -> None:
         # Regression: PDF CreationDate/ModDate literals passed Luhn and
         # hard-failed ~1 in 5 clean PDFs under the credit-card class.
-        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card"}])
+        rules = _rules_file(tmp_path, [{"name": "Any card", "class": "credit-card", "strict": True}])
         result = run_verify(clean_pdf, rules)
         assert result.returncode == 0, result.stdout
 

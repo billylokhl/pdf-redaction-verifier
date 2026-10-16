@@ -1932,7 +1932,8 @@ def test_only_the_dense_sideways_scan_has_its_own_timeout():
 
     load()
     own = {i: c.scan_timeout for i, c in REGISTRY.items() if c.scan_timeout is not None}
-    assert own == {"page.dense-sideways-scan": 300}
+    # ADR 0012's default-mode twin scans the same file, so it needs the same time.
+    assert own == {"page.dense-sideways-scan": 300, "page.dense-sideways-scan-default-mode": 300}
 
 # ── `metrics` / `corpus run` exit codes: an unmeasured file fails the run ──
 
