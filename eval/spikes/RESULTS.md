@@ -728,7 +728,7 @@ so the `/Metadata` holder allowlist costs nothing today.
 707 files have at least one class; 144 have only an XMP image, 63 only a hint stream, 6 only an
 orphan. Orphans, hint streams and XMP images alone cover all 707, so decoding synthesized
 annotations (4a) and JavaScript does not lower the count. Counting orphans in the current
-revision's sense instead moves the total by 2 files (709).
+revision's sense instead moves the total by 2 files (709). The full overlap with today's CLI exit `2` is 3a-12's measurement (ADR 0007; "Phase 3a-12" below: 288 of the 707 already exit `2`, 419 are new).
 
 **At least 194 of the 707 already exit `2` today; labels add at most 513 new exit-`2` files
 among the unflagged (26.7%).** Today's CLI marks every page carrying a `/Thumb` (#133,
@@ -797,6 +797,244 @@ anchors, the child protocol and completion sentinel, witnesses, the verdict func
 orphan mapping and its test), shadow and enforced verdicts with worst-of shipping, `--explain`
 -- so about 7 to 9 PRs with its plan. Lane A merged five 3a-7 PRs on 2026-10-15, reviews
 included; the coordinator re-baselines from PRs per day.
+
+## Phase 3a-12: the unit budget and the orphan overlap -- eval/spikes/unit_budget.py
+
+Measured 2026-10-15 on the scorecard's SHA-pinned corpus manifest: 2,073 files (counted per
+manifest entry, as the inventory gate counts them), 489 text-bearing by the manifest's probe
+(the ADR 0007 pass had 484 of 2,031). Every file built; 153 are flagged by the inventory, and
+the 3a-7e classes on the other 1,920 reproduce the 3a-7e briefing exactly (orphans per body
+242, current revision 294, hint streams 400, XMP images 516, JavaScript 86, synthesized 130,
+output intents 0, any of them 707). Today's CLI was run at b8aa29c (main's later
+`verify.py` changes, #152's, are opt-in only), once per file with one fabricated,
+non-sequential value rule (no pattern class), OCR available: no crash, no timeout, no exit
+`1`; 1,473 exit `0` and 600 exit `2`. The 2,073 manifest entries hold 1,571 distinct contents
+(390 of them text-bearing; a file under two paths counts twice, as in the gate). Once per
+distinct content, the text-bearing review rate goes from 25.9% (qpdf exit 3 removed) to 49.5%
+with the 7e classes and 60.0% with the inventory's flags too, against 24.5%, 47.6% and 56.2%
+per entry below.
+
+### Units per file -- docs/adr/0006 (amendment)
+
+| Units per file (2,073 files) | p50 | p90 | p99 | max |
+| --- | --- | --- | --- | --- |
+| The tiling's units (every `UnitKind`) | 16 | 86 | 269 | 32,976 |
+| -- objects | 12 | 71 | 195 | 32,971 |
+| -- object-stream members | 0 | 0 | 38 | 816 |
+| -- dead bodies | 0 | 0 | 93 | 328 |
+| SYNTHESIZED units, every revision | 0 | 0 | 4 | 16 |
+| Units today (tiling + SYNTHESIZED) | 16 | 86 | 269 | 32,976 |
+| + page views, current revision (3b) | 17 | 90 | 281 | 36,852 |
+| + DRAWABLE streams summed over revisions (proxy for 4a) | 19 | 114 | 293 | 44,066 |
+| The last row, unflagged files only (1,920) | 18 | 113 | 293 | 2,106 |
+| The last row per KiB of the file | 1.69 | 5.03 | 13.44 | 13.94 |
+
+The budget is charged today only for SYNTHESIZED units (at most 16 in a file). Header,
+cross-reference and epilogue units are 1 to 9 a file; object-stream headers at most 18;
+unindexed ranges at most 6; no corpus file has stream slack. The maximum is one 20 MB file:
+one revision, 32,971 objects, 3,876 pages, flagged by the inventory (`REF_DANGLING`); the
+largest unflagged file has 2,106 units. Not countable yet: the children a decoder uncovers
+(each form per context, Type3 glyphs, images and masks, `RESIDUE`, unwrapped attachments),
+4a's and 4b's -- the DRAWABLE proxy counts a stream once per revision, not per context. The
+cap is now 500,000 (11.3x the largest file, 237x the largest unflagged one): ADR 0006's
+amendment, a coordinator decision of 2026-10-15 under owner decision 1.
+
+### The 3a-7e classes against today's exit 2 -- docs/adr/0007
+
+"Already" exits `2` today for some reason; "new" exits `0` today. No file in any class exits
+`1` today. Reasons for the "already" files, a file once per warning code it carries.
+
+| Class (unflagged files) | Files | Already exit 2 | New | Text-bearing: files / already / new |
+| --- | --- | --- | --- | --- |
+| Orphan, per body (R3) | 242 | 213 | 29 | 64 / 51 / 13 |
+| Orphan, current revision | 294 | 260 | 34 | 116 / 98 / 18 |
+| Hint stream (R6) | 400 | 137 | 263 | 212 / 104 / 108 |
+| XMP image or binary (R7; every one an image) | 516 | 181 | 335 | 70 / 41 / 29 |
+| JavaScript | 86 | 35 | 51 | 86 / 35 / 51 |
+| Synthesized (until 4a) | 130 | 44 | 86 | 130 / 44 / 86 |
+| Output intent | 0 | 0 | 0 | 0 / 0 / 0 |
+| **Any of them** | **707** | **288** | **419** | **228 / 115 / 113** |
+| Inventory flags (3a-7) | 153 | 90 | 63 | |
+| **Any, with the inventory's flags** | **860** | **378** | **482** | |
+
+Why the orphan files already exit `2`: 194 of the 213 carry `PAGE_THUMBNAIL` (#133) -- the
+thumbnail orphans themselves, 143 with no other reason; then `UNTERMINATED_STRING` 34,
+qpdf exit 3 22, `LEFTOVER_UNDECODABLE_TEXT` 10, `OBJECT_UNREADABLE` 8, `PAGE_FAILED` 2 (the
+last four are today's Objects-layer handling of orphaned objects, besides qpdf). No orphan
+file exits `2` on qpdf exit 3 alone. So ADR 0007's rule adds 29 files (1.4% of all files),
+13 text-bearing (2.7% of 489) -- against its gross 242 (64 text-bearing, 13.1%). Over the
+707, the already-exit-2 reasons are `PAGE_THUMBNAIL` 194, `PAGE_FAILED` 50,
+`LEFTOVER_UNDECODABLE_TEXT` 47, `UNTERMINATED_STRING` 34, qpdf exit 3 22,
+`OBJECT_UNREADABLE` 19 (none on qpdf exit 3 alone); over the inventory's 153, qpdf exit 3
+alone is the only reason for 34.
+
+**Today's exit `2`, by reason** (600 files; a file once per code): `PAGE_THUMBNAIL` 244,
+qpdf exit 3 187, `PAGE_FAILED` 144, `LEFTOVER_UNDECODABLE_TEXT` 49, `UNTERMINATED_STRING`
+42, `OBJECT_UNREADABLE` 20. 163 files exit `2` on qpdf exit 3 alone, 161 of them
+text-bearing -- 32.9 of the text-bearing rate's 57.5 points.
+
+### The net change in review rate (for the briefing)
+
+Review rate = files exiting `2`. "After" = today's exit-2 files joined with the 7e classes
+(and the inventory's flags) once they gate; "without qpdf 3" takes today's qpdf exit-3
+warnings out first (a file whose only reason they are exits `0`).
+
+| Population | Scenario | Today | + 7e classes (707) | + 7e and inventory flags (860) |
+| --- | --- | --- | --- | --- |
+| All 2,073 files | today's qpdf exit 3 | 600 (28.9%) | 1,019 (49.2%; +20.2 pts, 419 new) | 1,082 (52.2%; +23.3 pts, 482 new) |
+| All 2,073 files | qpdf exit 3 removed | 437 (21.1%) | 856 (41.3%; +20.2 pts, 419 new) | 953 (46.0%; +24.9 pts, 516 new) |
+| Text-bearing (489) | today's qpdf exit 3 | 281 (57.5%) | 394 (80.6%; +23.1 pts, 113 new) | 402 (82.2%; +24.7 pts, 121 new) |
+| Text-bearing (489) | qpdf exit 3 removed | 120 (24.5%) | 233 (47.6%; +23.1 pts, 113 new) | 275 (56.2%; +31.7 pts, 155 new) |
+
+The 7e classes add the same 419 files (113 text-bearing) in both scenarios: none of the 707
+exits `2` today on qpdf exit 3 alone. The inventory's flags add 34 more files once qpdf
+exit 3 is gone (all 34 text-bearing). By class, hint streams (263 new), XMP images (335) and
+synthesized annotations (86) drive the increase; orphans add 29.
+
+### Levers (for the briefing)
+
+**Headline: the redesign roughly doubles the text-bearing review rate** -- 24.5% today once
+qpdf exit 3 is fixed, 47.6% with the 7e classes, 56.2% with the inventory's flags too. Of
+the 113 text-bearing files that newly exit `2`, 108 have a hint stream, 86 a synthesized
+annotation, 51 JavaScript, 29 an XMP image and 13 an orphan; only 5 have an XMP image alone.
+Across all files, 141 of the 419 new ones have an XMP image alone and 161 a hint stream and
+an XMP image; text-bearing files are mostly hint streams with synthesized annotations or
+JavaScript. A file clears only when every class it has clears, so the levers combine.
+
+Measured by `unit_budget.py levers` on the unflagged files in each class: for hint
+streams `qpdf --check-linearization` (qpdf 12.4.1; its exit status and its messages, numbers
+normalised), a stale `/L`, and the file's producer as a fixed label (the raw `/Producer` is
+discarded); each image an XMP packet holds, decoded, its size and the distinct tokens of
+Apple Vision's first reading of it (the shipped OCR path, the image enlarged to a page;
+checked on fabricated text thumbnails of 128 and 256 px); each synthesized annotation's shown
+inputs (`/FT`, `/V` through `/Parent`, `/RC`, `/RV`, `/DS`, `/Contents`).
+
+| Class (new files: all / text-bearing) | (a) Which phase clears it, how | (b) What it would clear, measured | (c) A cheaper rule that still fails closed | Decision to change |
+| --- | --- | --- | --- | --- |
+| Hint stream (263 / 108) | 3c or 4: a hint-table decoder in 3b's registry reads every bit of the page-offset and shared-object tables, and each value is checked against the file's actual layout; then `DECODED` | R6 (b)'s condition (qpdf's check clean, `/L` not stale) holds for 154 of 400 files: 153 of the 263 new meet it, but **alone it takes 1 file out of exit `2`** (161 of the 263 also have an XMP image); 153 together with R7 (b). Of the 108 text-bearing, 1 meets it (170 of 400 have linearization warnings, 76 a stale `/L`). If every hint stream cleared outright: 14 new files alone (all text-bearing), 49 with 4a, 77 with a JavaScript decoder too (assumes a JavaScript decoder clears every JavaScript stream) | Validating only against the linearization dictionary (`/H`, `/L`, `/O`, `/E`, `/N`, `/T`) does not fail closed: the payload is integers a writer chooses, so content can sit in values no layout check reads. Accepting tables qpdf lints is the same gap. Fail-closed needs each value checked against the layout, which is what qpdf's warnings report on | ADR 0003 (its closed `NOT_APPLICABLE` list keeps the payload `UNREADABLE`) and owner decision R6, option (a) now; (b) is R6's own named option |
+| XMP image (335 / 29) | 4b: decode and OCR each packet's images like drawn ones, under 4b's recall bound | 529 images in 516 files, all decode, all thumbnails (every one 256 px on its long side), within ADR 0004's envelope in 507 files (9 have an XMP body only in an older revision, not read); OCR's first reading has at least one token in 91 images (79 files), at least three in 63. Clears **141 new files** (5 text-bearing) whose only class it is, once 4b certifies a clean thumbnail; 294 (6 text-bearing) with 4a, the hint lever at its condition and a JavaScript decoder too (assumes it clears every JavaScript stream) | Comparing the thumbnail with the page it depicts rendered at the same size: the same picture shows only what the page shows, which the page's own views check; anything else stays `FLAGGED`. Not measured here | Owner decision D (an unused image is always `FLAGGED`), as R7 (a) applies it; R7 (b) is the option. ADR 0004: image OCR stays `FLAGGED`-only until 4b's recall bound, which must cover a 256 px thumbnail enlarged |
+| Synthesized annotation (86 / 86) | 4a: decode from MuPDF's per-annotation trace against its shown inputs (`/V`, `/RV`, `/RC`, `/Contents`); `DECODED` when every character shows and no rich text draws an image | 373 annotations in 130 files: 349 text fields and 24 unsigned signature fields; **none has a `/V`, `/RC` or `/RV`** (blank forms), so the trace check is vacuous and none could draw an image: all 130 files meet the condition. But no new file has this class alone: it clears none by itself, 49 with hint streams cleared, 77 with JavaScript too (assumes a JavaScript decoder clears every JavaScript stream) | None needed: 4a's rule is already the planned decoder; an empty field draws no text to compare | None: ADR 0011 R2 (a) is this |
+| JavaScript (51 / 51; not asked, but it gates the above) | 3b/3c: a script decoder in the registry -- the stream's filter chain decoded and the text searched, `DECODED` when it is text throughout | Not measured; every one of the 51 new files also has a hint stream | The decoder is the cheap rule | None: ADR 0011 leaves it `UNEXAMINED` "until a decoder exists" |
+| Orphan (29 / 13) | None: always `FLAGGED` | -- | -- | ADR 0007, R3 |
+
+**Review rate with the levers** (unflagged files, qpdf exit 3 removed; today 21.1% of all
+files, 24.5% of text-bearing):
+
+| Levers taken | All files (2,073) | Text-bearing (489) |
+| --- | --- | --- |
+| None (the 7e classes as decided) | 856 (41.3%) | 233 (47.6%) |
+| XMP images OCR'd (R7 (b), 4b) | 715 (34.5%) | 228 (46.6%) |
+| 4a's synthesized + hint streams at R6 (b)'s condition + XMP (b) + a JavaScript decoder (assumed to clear every JavaScript stream) | 562 (27.1%) | 227 (46.4%) |
+| The same, every hint stream clearing outright (no qpdf condition; JavaScript as above) | 466 (22.5%) | 133 (27.2%) |
+| Hint streams outright + 4a + JavaScript (assumed to clear every JavaScript stream), XMP as decided | 779 (37.6%) | 156 (31.9%) |
+
+So the text-bearing rate depends on the hint stream: with R6 (b) as written (qpdf's check
+clean), almost no text-bearing file clears, because nearly every one carries hint-table
+warnings. Whether those warnings could be accepted without leaving room for hidden values
+is the question a hint-table decoder would have to answer.
+
+#### Owner choice: the linearization hint stream
+
+What qpdf's linearization check says about the 400 hint-stream files (the `levers`
+step: `qpdf --check-linearization` once per file, qpdf 12.4.1, its messages with numbers
+normalised, a file counted once per message; the report's `levers.hint_stream`):
+
+- **230 pass with no warning**: 154 single-revision files, plus 76 files with an incremental
+  update. For those 76, qpdf reports the file "is not linearized" (its `/L` no longer matches
+  the file's length) and checks nothing, which is why the lever above counts them as stale.
+- **170 have warnings, and all 170 are single-revision files**: the tables disagree with
+  qpdf's computed layout in files no update touched. Every one carries "page N has shared
+  identifier entries" and "shared object N: in hint table but not computed list". Most also
+  carry object-count (149), page-length, first-page-offset and shared-object-length (120 each)
+  mismatches. **They were written by Adobe's linearizer**: of the 129 that name a producer,
+  126 are Adobe (Adobe PDF Library 66, Acrobat Distiller 42, Acrobat Security Envelope 9, Adobe
+  XD 8, Photoshop 1) and 3 Quartz; 41 name none. Of the 101 warned text-bearing new files: 64
+  Adobe, 3 Quartz, 34 none. One writer family and the same two messages everywhere support
+  the hypothesis that Adobe reads Annex F differently from qpdf, rather than damage. qpdf's
+  own source records such Acrobat deviations (its `QPDF_linearization.cc`, v12.4.1: in
+  `checkHPageOffset`, at the "page 0 has shared identifier entries" warning all 170 files
+  carry, "pdlin and Acrobat both do this even though the spec states clearly and
+  unambiguously that they should not"; that function and `checkHSharedObject` cite the PDF
+  Reference's implementation notes 125-131); qpdf's manual has no such section.
+- **The 108 text-bearing new files** are 101 of those warned files, 6 updated files (stale),
+  and 1 clean file.
+
+So offset drift from a later update explains none of the warned files.
+
+**(a) A full hint-table decoder.**
+- **What it does.** It reads the page-offset and shared-object hint tables, and any others
+  present (outlines, thumbnails and the rest of ISO 32000 Annex F), and checks every bit
+  against the file's actual layout: object offsets, lengths, per-page object counts,
+  shared-object references.
+- **How it fails closed.** On any mismatch; on any unused or padding bit that is not zero;
+  on any entry that accounts for no real object. A file qpdf's check warns on is accepted
+  only when the decode proves every value accounted for, under a stated reading of Annex F.
+  For an updated file, it decodes against the base revision: the linearized pair, owner
+  decision 7.
+- **Decisions it reopens.** ADR 0003's closed `NOT_APPLICABLE` list (a new reason, with its
+  own ADR at the list's bar) and R6 (a), moving to R6's own option (b), with the qpdf-clean
+  condition widened to "the decode accounts for every value".
+- **Cost: 6 PRs, 2-4 days at the agents' current pace; review rounds vary** (Lane A merged
+  five 3a-7 PRs on 2026-10-15):
+  1. a spike decoding the 101 warned text-bearing files, to see whether one reading of
+     Annex F accounts for their values exactly -- starting from the Acrobat deviations qpdf's
+     source documents (`checkHPageOffset`'s comment on page 0's shared identifier entries,
+     and `checkHSharedObject`; implementation notes 125-131);
+  2. the decoder module;
+  3. its registry hookup in 3b;
+  4. a differential against qpdf's own hint parsing (`qpdf --show-linearization` dumps the
+     tables);
+  5. adversarial fixtures that hide bytes in hint fields, padding and unused entries;
+  6. the corpus measure.
+- **Where it slots in.** After 3b's registry exists, in 3c, before hint streams are
+  enforced (R6 deferred this "with the decoders (3c/4)").
+- **What it would clear.** Measured: 153 of the 263 new files meet R6 (b)'s condition
+  already; alone that takes 1 file out of exit `2`, 153 together with R7 (b). Estimated: up
+  to the 101 warned text-bearing files and 6 updated ones, depending on what the spike finds.
+  The uniformity of the warnings (the same two messages on all 170, essentially one writer
+  family) suggests a reading of the tables that differs from qpdf's, not damage, but that is
+  a guess until the spike decodes them. If all 108 cleared, the "hint outright" rows above
+  apply: text-bearing 31.9% with 4a and a JavaScript decoder, 27.2% with every lever.
+
+**(b) Keep hint streams flagged** (ADR 0003 and R6 (a) as decided). No cost. The text-bearing
+rate stays at 46.4-47.6%, whatever the other levers do (the table above): 108 of its 113 new
+files have a hint stream.
+
+**(c) Options in between**, judged:
+
+- **qpdf clean and an exact decode.** Fails closed. 153 of the 263 new files meet it, but
+  alone it takes 1 file out of exit `2` (153 together with R7 (b)), and 1 of the 108
+  text-bearing ones meets it; it needs the same decoder as (a). Option (a) includes it.
+- **Decode, and accept mismatches a later incremental update explains.** This is sound only
+  as a decode against the base revision, the linearized pair (decision 7): an appended update
+  moves no byte of that pair, so the decode is still exact. It is part of (a). Alone it
+  reaches at most the 76 updated files, 6 of them new and all 6 text-bearing. It explains
+  none of the 170 warned files.
+- **Validate against the linearization dictionary only** (`/H`, `/L`, `/O`, `/E`, `/N`,
+  `/T`). Does not fail closed: it never reads the tables' values.
+- **Accept qpdf's warnings as known lint, or accept a mismatch whose values are few or
+  small.** Neither fails closed: any value the check does not account for can carry a
+  writer's chosen bits.
+- **An allowlist of writers** (say, Adobe's, since the warned files are Adobe's). Not
+  sound: the producer name is part of the file, and an allowlist would accept the values
+  unread.
+
+**Recommendation: (a), staged, starting with its spike, with (b) in force until then.** Hint
+streams stay flagged, as decided, until the spike shows whether one reading of Annex F
+accounts for every value in the warned files. If it does, the decoder clears what it proves,
+fails closed on the rest, and lowers the text-bearing rate as far as the other levers allow.
+If it does not, the spike's single PR is the whole cost and (b) stands, with the measured
+reason. The middle options either need the same decoder (so they are (a) with less reach) or
+do not fail closed.
+
+**Plausibility.** Hint tables are written by whichever writer linearizes the saved file,
+which may be the redaction tool itself (Acrobat redacts and saves with Fast Web View; these
+files are Acrobat or Distiller output), computed from the saved layout rather than from page
+content. Not checked here: whether any tool copies old tables through; copied tables would
+mismatch the new offsets, which (a) flags. Their capacity is integers and bit fields: each
+page's entry holds several integer fields, enough together to encode an SSN's digits. So
+hiding a secret there takes a deliberately crafted writer, not a redaction mistake: a
+low-likelihood leak for this tool's threat model, but not an impossible one.
 
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 

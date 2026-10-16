@@ -302,8 +302,10 @@ class TestProcessBoundary:
 
     def test_cli_never_loads_the_inventory_or_pikepdf(self) -> None:
         # The sandbox (3b/3d) is a prototype, not wired in yet: the CLI
-        # must not run anything through it until it is.
-        watched = ("redaction_verifier.inventory", "pikepdf", "redaction_verifier.sandbox")
+        # must not run anything through it until it is. Nor does it read the
+        # budget (its unit cap is the shadow inventory's, ADR 0006).
+        watched = ("redaction_verifier.inventory", "pikepdf", "redaction_verifier.sandbox",
+                   "redaction_verifier.budget")
         assert self._loaded_after("verify", *watched) == []
         # ...and the probe does see the package when something loads it.
         assert "redaction_verifier.inventory" in self._loaded_after(

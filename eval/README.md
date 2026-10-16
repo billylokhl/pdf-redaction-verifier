@@ -78,6 +78,17 @@ a leak case that is caught, reported in that cell's storage class; every
 (which may only shrink); and `cells.py` matches COVERAGE.md glyph for
 glyph.
 
+**qpdf's exit 3** (`families/qpdf_warnings.py`, `requires: qpdf`): since
+the owner decision of 2026-10-15 an exit 3 is judged warning by warning
+(COVERAGE.md footnote 16). Six leak cases are layouts where qpdf's
+warning is the only signal of hidden content and must stay `2`
+(`unindexed.plain.qpdf-warned`); seven clean cases are the harmless
+layouts real files carry and now exit `0` (weaker `accepted_diffs.yaml`
+entries, since `eval-ref-0` exits `2` on them). Three of those entries
+are scoped `env: ocr`: their qpdf warnings depend on qpdf's version, and
+only the weekly macOS job runs qpdf 12.4 (Linux `scorecard-diff` installs
+Ubuntu's 11.9, where the two sides agree).
+
 **Grids** (`grid=`, `params=`) are parameterised families: `carriers`
 (six carrier surfaces × four producer layouts) and `page-text` (27 page
 layouts × three rule sets × with or without the SSN pattern rule, plus the
@@ -122,6 +133,16 @@ a place the two disagree (docs/REDESIGN.md §5's same-author-bias guard).
 - **`build_objstm`** — a PDF 1.5 file instead: the non-stream objects
   packed into one `/ObjStm`, and the cross-reference itself written as an
   `/XRef` stream rather than a table.
+- **`build(..., trailer=...)`** with **`caselib/rawcrypt.py`** — an
+  encrypted file by hand: `Handler` is the standard security handler,
+  RC4 only (revisions 2-4, the empty user password; revision 4 through a
+  crypt filter, optionally with `/EncryptMetadata false`), written with
+  the stdlib alone, so the ledger's tests need no pikepdf for an
+  encrypted file. It encrypts each string and stream for its object
+  (`string`, `stream_data`), and can use a key the file's `/U` does not
+  authenticate. `flip_last_block` and `replace_stream_data` make an AES
+  file pikepdf wrote decrypt differently in the two readers (an
+  inconsistent padding), with no key: Phase 3a-9's cross-check fixture.
 
 `caselib.NONFITZ_PENDING` (`cells.py`) lists claimed (✓/⚑) cells that
 still have no *caught leak case from a non-fitz writer* — a leak, no
@@ -1296,7 +1317,8 @@ What each part of the output means:
     `exit_2_files_marked_today`: those that already exit `2` today for a
     page thumbnail (`page_thumb_legacy`: #133's `PAGE_THUMBNAIL`, or its
     check failing, read without importing verify.py) -- a lower bound on
-    the overlap with today's exit `2`, which 3a-12 measures in full;
+    the overlap with today's exit `2`, which 3a-12 measures in full
+    (`eval/spikes/unit_budget.py`; RESULTS.md, "Phase 3a-12");
     `exit_2_files_but_thumbnails_marked_today` leaves out only the files
     whose sole class is page-thumbnail orphans so marked;
   - `orphan_files_current` beside the per-body count, and

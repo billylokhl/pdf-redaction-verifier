@@ -33,6 +33,22 @@ match is plausible but might be coincidence — the answer is `2`, never
 is worse than no scanner, because it converts an unknown into a false
 assurance.
 
+qpdf's own exit 3 ("succeeded with warnings") is the one place this rule
+is applied per warning rather than per exit code (owner decision
+2026-10-15, ADR 0002's note). Most real-world exit 3s are a Quartz file's
+empty cross-reference entry, so treating every one as `2` flagged over
+half of all text-bearing files. The Binary layer reads qpdf's stderr and
+accepts exit 3 only when every line is one of five known kinds *and* the
+file's own bytes prove that kind harmless here: an offset-0 entry only
+when no body of that object is stored anywhere, a duplicated key only
+when the values are identical, a missing `endobj` only when nothing but
+whitespace follows the object, a truncated Flate stream only when it is
+not an object stream (an xref stream only when all its rows decode). The
+check is a small front-to-back walk in `verify.py` (the inventory parser
+stays out of the CLI), bounded by budgets proportional to the file's
+size and a deadline, and anything it cannot place,
+any other warning, or any cap exceeded keeps the answer at `2`.
+
 The same rule governs the tool's own crashes, not just the document's
 content: an exception that escapes every per-layer guard — a bug in the
 report writer, say — must never be certified `0`, and must never read as
@@ -657,7 +673,8 @@ informational rules (required; a header without them is refused), their
 matches in the scan's truth are never boxed, classified or listed as OCR
 finds, and each of the report's `notices` is listed under "Not counted in
 the verdict", its sample masked as any --json sample, setting no flag
-(a page-less fused-pattern notice takes its pages from the scan's truth,
+(when a run is otherwise clean, the headline gains "; N notice(s) not counted
+in the verdict", a count only; a page-less fused-pattern notice takes its pages from the scan's truth,
 as the same warning does in strict mode).
 Switched-off layers are counted from MuPDF's evaluation *and* the default
 configuration's `/OFF` and `/BaseState`, because `Document.get_ocgs`

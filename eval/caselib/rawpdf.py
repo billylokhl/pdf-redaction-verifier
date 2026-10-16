@@ -49,7 +49,9 @@ def one_page(contents: bytes, **objects: bytes) -> dict[int, bytes]:
 
 
 def build(objects: dict[int, bytes], root: int = 1, after_eof: bytes = b"",
-          info: int | None = None) -> bytes:
+          info: int | None = None, trailer: bytes = b"") -> bytes:
+    """A one-revision file; *trailer* holds extra trailer entries (an
+    encrypted file's /Encrypt and /ID: rawcrypt.Handler.trailer)."""
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets: dict[int, int] = {}
     for number in sorted(objects):
@@ -62,8 +64,8 @@ def build(objects: dict[int, bytes], root: int = 1, after_eof: bytes = b"",
         out += (b"%010d 00000 n \n" % offsets[number] if number in offsets
                 else b"0000000000 65535 f \n")
     extra = b" /Info %d 0 R" % info if info is not None else b""
-    out += b"trailer\n<< /Size %d /Root %d 0 R%s >>\nstartxref\n%d\n%%%%EOF\n" % (
-        size, root, extra, xref)
+    out += b"trailer\n<< /Size %d /Root %d 0 R%s%s >>\nstartxref\n%d\n%%%%EOF\n" % (
+        size, root, extra, trailer, xref)
     return bytes(out) + after_eof
 
 

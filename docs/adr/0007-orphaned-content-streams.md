@@ -104,6 +104,36 @@ above) would show.
   decision, but the owner should know the true rate could be higher
   still.
 
+## Note: the overlap with today's exit `2`, measured (2026-10-15, 3a-12; not an amendment)
+
+The owner's decision below asked Phase 3a to measure the overlap. The
+rule is unchanged; the numbers are in
+[RESULTS.md](../../eval/spikes/RESULTS.md), "Phase 3a-12", from
+`eval/spikes/unit_budget.py` on the 2,073-file corpus (489 text-bearing),
+today's CLI run once per file.
+
+- **Orphans as 3b will flag them** (ADR 0011 item 5, per body, the 1,920
+  files the inventory does not flag): 242 files, 64 text-bearing. 213
+  already exit `2` today (51 text-bearing), so the rule **adds 29 files,
+  13 text-bearing: 1.4% of all files, 2.7% of text-bearing ones** --
+  inside this ADR's 0-11.4% range. In the current revision's sense: 294
+  files, 260 already, 34 new (18 of 116 text-bearing).
+- **Why they already exit `2`:** 194 carry today's `PAGE_THUMBNAIL`
+  warning (#133) -- the thumbnail orphans themselves, 143 with no other
+  reason; the rest today's Objects-layer handling of orphaned objects
+  (`UNTERMINATED_STRING` 34, `LEFTOVER_UNDECODABLE_TEXT` 10,
+  `OBJECT_UNREADABLE` 8), qpdf exit 3 (22, never alone) and `PAGE_FAILED`
+  (2). A file counts once per reason.
+- The first version's two gaps are closed by the inventory: a paint-only
+  orphan counts (item 5 labels a stream, whatever it draws), and so does
+  a dead body.
+- With every 3a-7e class (orphans, hint streams, XMP images, JavaScript,
+  synthesized annotations), 707 unflagged files, 288 already exit `2`
+  and 419 are new; the review rate goes from 28.9% to 49.2% of all files
+  and from 57.5% to 80.6% of text-bearing ones (from 24.5% to 47.6% with
+  today's qpdf exit-3 warnings removed). Hint streams, XMP images and
+  synthesized annotations, not orphans, make that increase.
+
 ## Owner decision (2026-09-27)
 
 Owner decision: "approve all recommendations."

@@ -55,7 +55,7 @@ cells).
 | `annot-fields` | **Annotation text, form fields, link targets, layer names** | ✓ Hidden, Objects | — | — | — |
 | `javascript` | **JavaScript** | ✓ Hidden (catalog `/OpenAction`, named scripts), Objects (scripts stored as strings), Binary (scripts stored as streams: known values only, manual review) · ✗ pattern rules on scripts stored as streams on links, fields or pages | — | — | — |
 | `private-data` | **Private application data** (`/PieceInfo`) | live: ✓ Binary known values only · ✗ pattern rules; leftover: ✓ Objects (manual review) | — | — | — |
-| `unindexed` | **Unindexed bytes** — after the final `%%EOF`, in comments, or in an object whose table entry is marked free | ✗ | ✗ | ✗ | ✗ |
+| `unindexed` | **Unindexed bytes** — after the final `%%EOF`, in comments, or in an object whose table entry is marked free | ✗ · ⚑ Binary when qpdf warns about the bytes¹⁶ | ✗ | ✗ | ✗ |
 
 ¹ Fonts whose codes are not the characters shown: CID fonts with
 Identity-H encoding (Word, Chrome and embedded TrueType fonts commonly use
@@ -153,6 +153,27 @@ a clean document with thumbnails cannot certify as `0` until it is. A
 thumbnail only an earlier revision still holds is covered as that
 revision's superseded or orphaned image (⁵: flagged if big enough to
 hold text, ✗ below the size gate).
+
+¹⁶ Some unindexed bytes make qpdf exit 3 ("succeeded with warnings"):
+an in-use cross-reference entry at offset 0 while that object's body is
+still stored in the file, tokens between an object's value and a missing
+`endobj`, or an earlier body of an object that a damaged cross-reference
+table's rebuild passes over. No layer reads those bytes, but the Binary
+layer's `TOOL_EXIT_NONZERO` flags the file (exit `2`). Since the owner
+decision of 2026-10-15 (ADR 0002's note), exit 3 flags only when some
+qpdf warning is not one of five kinds or fails its check against the
+file's own bytes: a `(0 0 R)` reference; offset 0 with no stored body of
+that object anywhere (no possible `N G obj` header, read generously, and
+no object or xref stream in the file); a duplicated key whose values are identical; a missing
+`endobj` followed by nothing but whitespace and then the next object,
+`xref` or `startxref`; and a Flate stream without its end marker that is
+not an object stream (an xref stream only when every declared row
+decodes). Any other warning, an unparseable line or a check that cannot
+decide keeps the flag (`file.offset-zero-entry-stored-body`,
+`file.offset-zero-entry-page-content`, `file.offset-zero-entry-shifted-earlier-body`, `file.stray-bytes-before-endobj`,
+`file.damaged-xref-earlier-body`, `file.duplicated-filter-first-wins`).
+The same bytes behind a *free* entry, after `%%EOF` or in a comment give
+qpdf no warning and stay ✗.
 
 The ✗ parts of mixed cells and the gaps above have their own ids and,
 where one exists, a case pinning today's wrong answer (`known_gap` in the
