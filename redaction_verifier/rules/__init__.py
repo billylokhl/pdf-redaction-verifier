@@ -102,8 +102,9 @@ def _make_class_rule(
 @dataclass(frozen=True)
 class RuleLabel:
     """How the human report names a rule: *kind* is the rule's source
-    section ("exact_values", "patterns" in the redactor's config; "value", "pattern", "class" in this tool's own format) and
-    *text* the plain label shown for it. Never holds any part of a value
+    section ("exact_values" or "patterns" in the redactor's config;
+    "value", "pattern" or "class" in this tool's own format) and *text*
+    the plain label shown for it. Never holds any part of a value
     or a pattern: the report must not reveal more than the masked samples
     it already shows."""
 

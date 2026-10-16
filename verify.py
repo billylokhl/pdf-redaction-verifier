@@ -214,7 +214,6 @@ try:
     from redaction_verifier.report import write_json_report as write_json_report
     from redaction_verifier.rules import UPSTREAM_CONFIG_KEYS as UPSTREAM_CONFIG_KEYS
     from redaction_verifier.rules import UPSTREAM_ENTITY_TYPES as UPSTREAM_ENTITY_TYPES
-    from redaction_verifier.rules import entity_types_info as entity_types_info
     from redaction_verifier.rules import RuleSet as RuleSet
     from redaction_verifier.rules import _load_rules_json as _load_rules_json
     from redaction_verifier.rules import _load_rules_yaml as _load_rules_yaml
@@ -224,6 +223,7 @@ try:
     from redaction_verifier.rules import _yaml_coercion_kind as _yaml_coercion_kind
     from redaction_verifier.rules import _yaml_section as _yaml_section
     from redaction_verifier.rules import load_rules as load_rules
+    from redaction_verifier.rules import entity_types_info as entity_types_info
     from redaction_verifier.views import MAX_LINE_TOLERANCE_PT as MAX_LINE_TOLERANCE_PT
     from redaction_verifier.views import MIN_LINE_TOLERANCE_PT as MIN_LINE_TOLERANCE_PT
     from redaction_verifier.views import OCR_DPI as OCR_DPI

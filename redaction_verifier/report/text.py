@@ -239,7 +239,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     elif report.degraded or json_unwritten:
         print(f"  [NOT CERTIFIED]  No secret was confirmed in: {name}")
         why = ("But the checks below did not finish, need a person to review them, or your "
-               "rules ask for something this tool cannot check" if report.degraded
+               "rules file has a problem that may change what is searched for" if report.degraded
                else "But the JSON report could not be written")
         for line in _wrap(f"{why} -- so this is NOT a certified clean result (exit code 2). "
                           "Resolve this first.", "                   "):
