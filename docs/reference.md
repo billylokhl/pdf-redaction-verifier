@@ -76,8 +76,13 @@ in plain words.
   `form field`, `link`, `attachment`, `script`, `layer name`).
 - A **"What this means"** section after the findings explains, once each,
   every kind that occurred, with the usual fix.
-- Built-in class matches that do not count are listed last, masked, under
-  **`ℹ NOT COUNTED IN THE VERDICT`**.
+- Built-in class matches that do not count are listed after the findings
+  and warnings, masked, under **`ℹ NOT COUNTED IN THE VERDICT`**.
+- Information about the run that is not a finding, a warning or a notice
+  is printed last, under **`ℹ FOR YOUR INFORMATION (does not change the
+  result above)`**. It never changes the exit code. Today it has one use:
+  saying that a YAML config's `entity_types` were not checked (see
+  [Shared YAML config](#shared-yaml-config)).
 
 `--version` (on its own) prints the tool version.
 
@@ -223,18 +228,31 @@ and patterns.
 **`entity_types` are not checked** (owner decision, 2026-10-16). They ask
 the redaction tool to find *any* SSN, name, address and so on; this tool
 proves that the values and patterns you listed are gone, and does not
-judge whole categories. They produce no rule, no match, no notice and no
-warning, and never change the result; `--strict-classes` does not change
-that. The report says once which entity types were not checked. A config
-that leaves out `entity_types` is read by the redaction tool as all ten
-types, and the report says so. An entry that is not one of the redaction
-tool's ten type names (`person_name`, `ssn`, `email`, `phone`, `address`,
-`date_of_birth`, `account_number`, `credit_card`, `drivers_license`,
-`passport`) is a rules error (exit `2`), and the entry is not echoed,
-since a value pasted under the wrong key may be a secret. A config with
-no `exact_values` and no `patterns` is a rules error too: there is nothing
-to verify. To have specific names and numbers checked, list them under
-`exact_values`.
+detect whole categories. So `ssn`, `email`, `phone`, `credit_card`, and
+the types a redaction tool finds by LLM judgement (`person_name`,
+`address`, `date_of_birth`, `account_number`, `drivers_license`,
+`passport`) produce no rule, no match, no notice and no warning, with or
+without `--strict-classes`. Instead the report ends with one line, for
+example:
+
+```text
+  ℹ FOR YOUR INFORMATION (does not change the result above)
+    Entity types in your config (person_name, ssn) are not checked; only
+    your listed exact_values and patterns are. List specific names or
+    numbers under exact_values to have them verified.
+```
+
+It is shown when the config lists `entity_types`, and when it leaves the
+key out (a redaction tool then removes all ten, and the line names them);
+an empty list (`entity_types: []`) shows nothing. In `--json` it is an
+[`info`](#fields) entry. An entity type outside the redaction tool's ten
+is a rules error (exit `2`), and the entry is not echoed, since it is
+usually a value pasted under the wrong key. A config with no
+`exact_values` and no `patterns` has nothing to verify and is a rules
+error too (exit `2`), never a pass. To have specific names and numbers
+checked, list them under `exact_values`; to check SSN-, card-, email- or
+phone-shaped values you did not list, use a JSON rules file's built-in
+`class` rules.
 
 A pattern with a capturing group warns (`RULES_CAPTURING_GROUP`, exit
 `2`): the redaction tool removes only the captured part, so the rest of
@@ -283,6 +301,7 @@ command line appear only as base names.
 | `findings` | hard findings |
 | `warnings` | everything that blocks a Clean result |
 | `notices` | built-in class matches that do not count |
+| `info` | information that never changes the result; empty when there is none |
 
 **A finding** has `layer`, `rule`, `tier` (`hard`), `storage`, `object`,
 `revision`, `page`, `location` and a masked `sample`.
@@ -304,6 +323,11 @@ a code would appear as `UNCODED`, kind `coverage`.
 warning has, null when it does not apply; `tier` `hard` or `review`; and
 a review warning's own kind as `warning_kind`.
 
+**An info entry** has a `code`, `entity_types`, `by_default` and the
+`message`. Its one code today is `ENTITY_TYPES_NOT_CHECKED`: a YAML config
+lists `entity_types` (`by_default` false), or leaves the key out, which a
+redaction tool reads as all ten (`by_default` true).
+
 An internal crash is reported the way any other operational failure is,
 as `error: {"code": "INTERNAL_ERROR", "message": ...}` alongside whatever
 findings and warnings were already recorded. The message text is never
@@ -314,7 +338,9 @@ document content.
 
 A warning's `kind` says why it blocks certification: `review` (a possible
 match a human must judge), `coverage` (something not fully read) or
-`scope` (the rules ask for something the tool cannot check). Every
+`scope` (a problem in the rules file, such as an unrecognized key or an
+unquoted value, that may make it search for something other than what you
+meant). Every
 warning makes the run exit `2` unless a finding makes it `1`.
 
 | Code | Kind | Raised when |
