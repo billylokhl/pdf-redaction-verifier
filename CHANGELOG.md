@@ -139,6 +139,8 @@ Blanking is narrow by design: only a trailer of qpdf's exact shape at the very e
 - a match split by the hold boundary is still found.
 
 ### Changed
+**CI: the weekly macOS+OCR run also runs `tests/test_policy1_cases.py`** (`.github/workflows/scorecard-weekly.yml`): its scan-based check that no class-rule case outside the owner's policy-1 sign-off list changes exit in default mode (#160) needs OCR and the grid cases, which per-PR CI skips. No test or verdict change.
+
 
 **REDESIGN §4: where decryption runs** (`docs/REDESIGN.md`, 2026-10-15): `redaction_verifier/crypt.py` (3a-9) decrypts with pikepdf, cross-checks against MuPDF (ADR 0001 with its 2026-10-15 amendment) and hands the inventory plain `Decryption` data per revision; it runs in the 3b child beside the decoders, since it reads the hostile file. `DecodeContext.crypt` becomes `Decryption | None`. Coordinator decision; docs only.
 
