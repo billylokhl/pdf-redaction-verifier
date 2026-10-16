@@ -20,9 +20,11 @@ them. Two checks, both on the page as drawn:
 
 Measured before the owner's decision (Lane G spike, 2026-10-15): on the
 case library the 25% threshold flags exactly K12 and K38 and no clean
-case; on the 2,073-file local corpus it flags 10 files (1 text-bearing),
-and images-only OCR of their 60 pages took 5.8 s and read no listed
-value.
+case. On the 2,073-file local corpus the spike counted 10 files, an
+undercount (its matching had the empty-path and rotation bugs fixed
+here); as shipped, 34 files are flagged (25 text-bearing), of which 10
+move from exit 0 to 2 (3 text-bearing) and 24 already exit 2, with no
+listed value read (real verify.py, main against this change, OCR on).
 
 Limits, all on the side of reading less, never of passing a covered
 image: only one area's coverage counts (several small boxes adding up

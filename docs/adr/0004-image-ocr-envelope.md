@@ -411,9 +411,15 @@ spike's numbers, shipped as a legacy hotfix:
 Measured before the decision: on the case library the 25% threshold
 flags exactly K12 and K38 and no clean case, and images-only OCR reads
 no listed value in any clean case; on the 2,073-file local corpus it
-flags 10 files (1 text-bearing), and images-only OCR of their 60 pages
+counted 10 files (1 text-bearing), and images-only OCR of their 60 pages
 took 5.8 s and read no listed value (OCR of every image page instead:
-673 pages, 78 s). Stricter only: no case moves toward `0`; a blank or
+673 pages, 78 s). That count was low: the spike's matching of fills to
+the draw log missed covers after empty paths and on rotated pages,
+which review found and the hotfix fixes. As shipped, with the decided
+25% threshold, 34 files are flagged (25 text-bearing); 24 of them
+already exit `2` for other reasons, so 10 move from `0` to `2` (3
+text-bearing), and no listed value is read (today's `verify.py` against
+the hotfix, OCR on, one fabricated value rule). Stricter only: no case moves toward `0`; a blank or
 harmless image under a box is now review (`page.box-over-blank-image`).
 
 This does not change the decisions above for the new design: a covered
