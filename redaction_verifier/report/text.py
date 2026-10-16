@@ -126,17 +126,27 @@ _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
 _KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
 
 
-def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = None) -> str:
-    label = rules.labels.get(finding.secret_name) if rules is not None else None
-    text = repr(finding.secret_name) if label is None else label.text
+def rule_label(name: str, rules: RuleSet | None, sample: str = "",
+               exact: MaskIndex | None = None, *, full: bool = False) -> str:
+    """The plain label for rule *name*, with *sample* masked (mask() with
+    the rules' exact values *exact*; *full* for an OCR sample): the human
+    report's, and the visible map's for every rule a shared config names
+    (the map numbers legacy JSON rules instead, whose names are the
+    user's own words)."""
+    label = rules.labels.get(name) if rules is not None else None
+    text = repr(name) if label is None else label.text
     text = _sanitize_report_text(text)
     if len(text) > _NAME_CAP:
         text = text[:_NAME_CAP - 1] + "…"
-    if finding.sample:
-        full = finding.layer == "OCR"
-        text += f" {mask(finding.sample, exact if exact is not None else (), full=full)}"
+    if sample:
+        text += f" {mask(sample, exact if exact is not None else (), full=full)}"
     # "|" separates the columns; neither a rule name nor a sample may fake one.
     return _sanitize_report_text(text).replace("|", "¦")
+
+
+def _label(finding: Finding, rules: RuleSet | None, exact: MaskIndex | None = None) -> str:
+    return rule_label(finding.secret_name, rules, finding.sample, exact,
+                      full=finding.layer == "OCR")
 
 
 def _counts(report: ScanReport, rules: RuleSet) -> str:

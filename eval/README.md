@@ -49,6 +49,20 @@ def redacted_no_gc(path):
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
   `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
+- **`bomb`** (`Bomb(wall_clock_s, memory_bytes, today=None)`): a bomb or
+  hang case (`families/bombs.py`, Phase 3d). It is never scanned in the
+  test process -- `test_case_library`, the gallery, the scorecard and its
+  differential skip it -- and `tests/test_bomb_cases.py` judges it out of
+  process through `redaction_verifier.sandbox` (`caselib/bombrun.py`),
+  its whole process group killed at its caps -- on macOS, on Linux's
+  Python 3.13 CI leg, or with `RUN_BOMBS=1` (once per platform per CI run;
+  nothing in it depends on the Python version). `today` pins how today's
+  tool fails to answer, where it does not (`"hang"`, `"memory"`,
+  `"error:CODE"`, exit 2), or, as an `Expect`, the exact answer it gives
+  when it finds the value but files it under the wrong storage (COVERAGE's
+  footnote ¹⁵); the test fails once that changes, as a closed known gap
+  does. Each bomb's built bytes are checked against `cases.lock.json`
+  there too. The cells are COVERAGE.md's `hostile.*` ("Hostile input").
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
   needs to be judged is missing — or, with `no-ocr`, where OCR is present
@@ -64,7 +78,7 @@ glyph.
 
 **qpdf's exit 3** (`families/qpdf_warnings.py`, `requires: qpdf`): since
 the owner decision of 2026-10-15 an exit 3 is judged warning by warning
-(COVERAGE.md footnote 14). Six leak cases are layouts where qpdf's
+(COVERAGE.md footnote 16). Six leak cases are layouts where qpdf's
 warning is the only signal of hidden content and must stay `2`
 (`unindexed.plain.qpdf-warned`); seven clean cases are the harmless
 layouts real files carry and now exit `0` (weaker `accepted_diffs.yaml`
@@ -631,6 +645,18 @@ Build and judge cases outside pytest, keeping the PDFs and reports:
 ```bash
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
+```
+
+The case library is also how `--visible-map` proves it changes no
+verdict: `tests/test_visible_map_cli.py` runs one case from every
+(family, row, truth) cell with the flag off and on and compares exit
+code, stdout and the `--json` report, and `tests/test_visible_map.py`
+does the same in-process with and without a sink at the scan's hooks.
+`RUN_MAP_IDENTITY=1` runs every buildable case instead (grids included;
+`perf` cases stay excluded):
+
+```bash
+RUN_MAP_IDENTITY=1 pytest tests/test_visible_map_cli.py tests/test_visible_map.py -k case_library
 ```
 
 `tests/test_views_text_readings.py` also builds every case (`perf` ones
