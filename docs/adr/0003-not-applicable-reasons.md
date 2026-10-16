@@ -383,6 +383,26 @@ Phase 4b measures a recall bound, one that covers small images), not an
 open decision -- the list itself (the four reasons, three rejected)
 needed no separate decision beyond the ones recorded above.
 
+## Note (2026-10-15): the hint stream
+
+Owner decision 2026-10-15: staged (a) -- a hint-table spike first, hint streams flagged until
+it shows whether the tables can be accounted for exactly. Outcome
+([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table spike", extended over two
+review rounds): under documented rules only (qpdf's source, the implementation notes it cites),
+**0 of the 101** warned text-bearing new files are fully accounted. Under six observed,
+undocumented Acrobat conventions -- bound to one writer profile so a file must match it whole,
+each a deterministic function of layout and content with no free parameter, validated on a
+held-out half -- **82 of the 101** are (67 of 81 distinct; 39 of 46 held-out distinct files).
+Within a profile every value is then fixed; the only free choice is the profile, 1 bit per
+file. Two later-page rules stay unvalidated research, outside the profile, so multi-page
+files stay unaccounted. Whether such observed rules may justify a new reason is an open owner
+question. Until it is answered, the rejected candidate above stands: the hint-stream payload
+stays `UNREADABLE`, so `FLAGGED`, and this closed list gains no reason; a "yes" would bring the
+reason here with its own ADR, at this list's bar.
+
+**Answer (2026-10-15):** owner decision 2026-10-15: yes. The six profile-bound observed rules are accepted; files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs). The new reason comes here with its own ADR, at this list's bar, with the decoder;
+until it ships, hint streams stay `FLAGGED`.
+
 ## Note (2026-10-15)
 
 [ADR 0012](0012-pattern-classes-inform.md): in the default mode a built-in

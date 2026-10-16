@@ -855,6 +855,18 @@ passes cleanly -- 154 of the 416 files would qualify (182 have
 hint-table lint, 80 are updated files whose linearization is stale).
 *Recommendation: (a) now*; (b) needs a decoder that does not exist, and
 can be decided with the decoders (3c/4), measured then.
+*Note (2026-10-15): owner decision 2026-10-15: staged (a)* -- a hint-table
+decoder, its spike first, hint streams flagged meanwhile. The spike
+([eval/spikes/RESULTS.md](../../eval/spikes/RESULTS.md), "Hint-table
+spike", after two review rounds): 0 of the 101 warned text-bearing new
+files are fully accounted under documented rules only; 82 (67 of 81
+distinct) under six profile-bound observed Acrobat rules, measured on a
+held-out half; two later-page rules remain unvalidated research, outside
+the profile. R6 (a) stands until the owner answers whether such observed
+rules may be accepted; a "yes" makes R6 (b) the decoder's condition (about
+5 PRs in 3c; text-bearing review rate 47.6% -> 46.8% alone, 31.5% with
+every lever), with the 19 files it cannot account for still flagged.
+*Answer: owner decision 2026-10-15: yes. The six profile-bound observed rules are accepted; files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs).*
 
 **R7. Images inside XMP packets** (thumbnails, K22). An image a packet
 holds is drawn by nothing, so decision D makes it unused and `FLAGGED`:
