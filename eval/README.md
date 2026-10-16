@@ -102,6 +102,16 @@ a place the two disagree (docs/REDESIGN.md §5's same-author-bias guard).
 - **`build_objstm`** — a PDF 1.5 file instead: the non-stream objects
   packed into one `/ObjStm`, and the cross-reference itself written as an
   `/XRef` stream rather than a table.
+- **`build(..., trailer=...)`** with **`caselib/rawcrypt.py`** — an
+  encrypted file by hand: `Handler` is the standard security handler,
+  RC4 only (revisions 2-4, the empty user password; revision 4 through a
+  crypt filter, optionally with `/EncryptMetadata false`), written with
+  the stdlib alone, so the ledger's tests need no pikepdf for an
+  encrypted file. It encrypts each string and stream for its object
+  (`string`, `stream_data`), and can use a key the file's `/U` does not
+  authenticate. `flip_last_block` and `replace_stream_data` make an AES
+  file pikepdf wrote decrypt differently in the two readers (an
+  inconsistent padding), with no key: Phase 3a-9's cross-check fixture.
 
 `caselib.NONFITZ_PENDING` (`cells.py`) lists claimed (✓/⚑) cells that
 still have no *caught leak case from a non-fitz writer* — a leak, no
