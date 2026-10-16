@@ -8,12 +8,12 @@ clock. Exhaustion is not an exception and not a special exit rule: the
 a BUDGET_EXHAUSTED flag (Principle 1 then keeps the file from exiting 0).
 Nothing here ever raises.
 
-The numbers are ADR 0006's accepted *placeholders*, not measurements. In
-particular ``max_units`` is re-derived from Phase 3a's own measurements
-of real unit counts (object-stream members and decoder-discovered
-children included), with generous headroom, and re-checked in 4c/4d;
-hitting the cap means the file cannot exit 0 (FLAGGED; a confirmed hard
-finding still exits 1) (owner decision, 2026-09-27).
+The numbers are ADR 0006's accepted *placeholders*, not measurements,
+except ``max_units``: re-derived from Phase 3a's own measurement of real
+unit counts (3a-12, object-stream members included; decoder-discovered
+children only by proxy), with generous headroom, and re-checked in
+4c/4d; hitting the cap means the file cannot exit 0 (FLAGGED; a
+confirmed hard finding still exits 1) (owner decision, 2026-09-27).
 
 OCR (for Phase 4b): the page count a Budget is built with must come from
 enumerating the page tree's leaves (qpdf's anchored count, §4), never
@@ -38,8 +38,10 @@ class Limits:
     # Decoding recursion only: a form Do, a Type3 glyph, a nested PDF or
     # container entry. Reference-graph walks are iterative instead.
     max_depth: int = 25
-    # Units decoded per run. Placeholder: re-derived in Phase 3a (above).
-    max_units: int = 200_000
+    # Units decoded per run: 3a-12's measurement with generous headroom
+    # (ADR 0006 amendment, coordinator decision 2026-10-15): 11.3x the
+    # corpus's largest file (44,066 units counted), re-derived at 4c/4d.
+    max_units: int = 500_000
     # Bytes we inflate ourselves, cumulative over the run.
     max_inflated_bytes: int = 2 * GIB
     # Stored-image OCR pixels per page; the run cap is this times the
