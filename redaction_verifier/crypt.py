@@ -47,8 +47,10 @@ from .inventory.objects import (
     ObjectParser, PdfArray, PdfBool, PdfDict, PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
     PdfString, PdfValue)
 from .inventory.decrypted import CryptRule, Decryption, Key, MismatchRule
+from .budget import Budget, Limits
+from .inventory.build import build_inventory
 from .inventory.types import Inventory
-from .inventory.xref import Chain
+from .inventory.xref import Chain, read_chain
 from .ledger import Flag, FlagReason, Span, UnitRef
 
 # PyMuPDF is untyped: every use goes through this one Any.
@@ -102,6 +104,26 @@ def decrypt(data: bytes, inventory: Inventory, chain: Chain, *,
                          for r in range(inventory.revisions))
     finally:
         pymupdf.TOOLS.mupdf_display_errors(shown)
+
+
+def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
+    """The inventory of *data*, encrypted or not (3a-9b): the pipeline
+    3b's child runs. An unencrypted file (no revision's trailer, as we read
+    it, has a non-null /Encrypt) is built once. An encrypted one is built
+    twice: a structural pass (units, spans, stream data, object streams --
+    no reference graph) that crypt.py locates bytes by, then decrypt(),
+    then the full build with each revision's Decryption (its flags, and
+    the reuse tokens). Each pass has its own budget: the structural pass
+    costs about one parse more (ADR 0006's note)."""
+    limits = limits if limits is not None else Limits()
+    chain = read_chain(data, limits, budget=Budget(limits, file_size=len(data)))
+    if not any(_ours_encrypted(chain, r) for r in range(len(chain.revisions))):
+        return build_inventory(data, limits, budget=Budget(limits, file_size=len(data)))
+    first = build_inventory(data, limits, budget=Budget(limits, file_size=len(data)),
+                            structure_only=True)
+    decryptions = decrypt(data, first, chain)
+    return build_inventory(data, limits, budget=Budget(limits, file_size=len(data)),
+                           decryption=decryptions)
 
 
 def _flag(reason: FlagReason, rule: int, revision: int, key: Key | None,

@@ -52,7 +52,7 @@ raises, charged to the budget."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Final
@@ -163,11 +163,14 @@ def build_annotations(
         home_of: Callable[[int, int], int | None],
         trailers: list[PdfDict | None],
         pages: tuple[tuple[Page, ...] | None, ...],
-        budget: Budget) -> tuple[tuple[Annotations | None, ...],
-                                 tuple[tuple[Synthesized, ...], ...], list[Flag]]:
+        budget: Budget, tokens: Sequence[object] | None = None,
+        ) -> tuple[tuple[Annotations | None, ...],
+                   tuple[tuple[Synthesized, ...], ...], list[Flag]]:
     """Each revision's annotations (None where its page list is, or the
     budget ran out), its SYNTHESIZED units, and the FIELD_TREE and
-    APPEARANCE_UNSUPPORTED flags."""
+    APPEARANCE_UNSUPPORTED flags. *tokens*: each revision's reuse token
+    (decrypted.reuse_tokens), part of the ident."""
+    tokens = tokens if tokens is not None else (None,) * revisions
     results: list[Annotations | None] = [None] * revisions
     units: list[tuple[Synthesized, ...]] = [() for _ in range(revisions)]
     flags: list[Flag] = []
@@ -186,7 +189,8 @@ def build_annotations(
         held = acroform_key(root, revision, body_of, budget)
         if held is SPENT:
             break
-        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None, held)
+        ident = ((root.num, root.gen) if isinstance(root, PdfRef) else None,
+                 tokens[revision], held)
         if not budget.charge_work(len(listed) + 1):
             break
         if (previous is not None and previous[1] == ident and _same_pages(previous[2], listed)

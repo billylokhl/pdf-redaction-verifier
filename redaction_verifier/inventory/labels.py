@@ -83,7 +83,7 @@ revision and every newer one None, and the budget's flag stands."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
@@ -264,13 +264,16 @@ def build_labels(revisions: int, changes: list[list[int]],
                  annotations: tuple[Annotations | None, ...],
                  xref_streams: list[list[UnitRef]],
                  hint: UnitRef | None,
-                 budget: Budget) -> tuple[RevisionLabels | None, ...]:
+                 budget: Budget, tokens: Sequence[object] | None = None,
+                 ) -> tuple[RevisionLabels | None, ...]:
     """Each revision's labels (None where it has no page list, or the
     budget ran out). *edges* and *trailers* are the graph's (graph.py);
     *pages* each revision's page list and *annotations* its annotations
     (pages.py, annotations.py); *xref_streams[r]* the cross-reference
     streams of revision r's own sections; *hint* the hint stream's unit,
-    if any. No flags."""
+    if any; *tokens* each revision's reuse token (decrypted.reuse_tokens),
+    part of both reuse idents. No flags."""
+    tokens = tokens if tokens is not None else (None,) * revisions
     results: list[RevisionLabels | None] = [None] * revisions
     # The chain's structural streams, kept as the revisions go: the
     # cross-reference streams so far (one list, shared by every revision's
@@ -316,7 +319,7 @@ def build_labels(revisions: int, changes: list[list[int]],
         trailer = trailers[revision]
         if not budget.charge_work(len(trailer) + 1):
             break
-        ident = tuple((e.num, e.gen, e.path) for e in trailer)
+        ident = (tokens[revision], *((e.num, e.gen, e.path) for e in trailer))
         walk = _Walk(revision, body_of, home_of, edges, budget)
         if chain is None:
             units = walk.object_streams(members)
@@ -351,7 +354,7 @@ def build_labels(revisions: int, changes: list[list[int]],
                 by_key = last.labels.by_key
         drawn = _drawable(revision, changed, body_of, home_of, edges, trailer, listed,
                           annotations[revision] if revision < len(annotations) else None,
-                          last, budget)
+                          last, budget, tokens[revision])
         if drawn is None:
             break
         drawable, drawn_last = drawn
@@ -386,7 +389,7 @@ def _drawable(revision: int, changed: set[int], body_of: Callable[[int, int], Bo
               home_of: Callable[[int, int], int | None],
               edges: dict[UnitRef, tuple[Edge, ...]], trailer: tuple[Edge, ...],
               listed: tuple[Page, ...], found: Annotations | None, last: _Last | None,
-              budget: Budget) -> tuple[frozenset[UnitRef], _Drawn] | None:
+              budget: Budget, token: object = None) -> tuple[frozenset[UnitRef], _Drawn] | None:
     """The revision's DRAWABLE streams (drawable.py), and what the walk
     read; None when the budget is spent. The last walk's set is kept, by
     identity, when its starts are the same (each page and the ancestor
@@ -405,7 +408,7 @@ def _drawable(revision: int, changed: set[int], body_of: Callable[[int, int], Bo
     held = acroform_key(root, revision, body_of, budget) if synthesized else None
     if held is SPENT:
         return None
-    ident = ((root.num, root.gen) if root is not None else None, synthesized, held)
+    ident = ((root.num, root.gen) if root is not None else None, token, synthesized, held)
     starts: list[Start] = []
     for page in listed:
         starts.append((page.number, page.gen, PAGE, True))
