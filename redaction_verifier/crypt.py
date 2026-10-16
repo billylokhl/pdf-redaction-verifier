@@ -110,14 +110,14 @@ def inventory(data: bytes, limits: Limits | None = None) -> Inventory:
     """The inventory of *data*, encrypted or not (3a-9b): the pipeline
     3b's child runs. A file none of whose trailers or cross-reference
     stream dictionaries holds an /Encrypt key at all -- null, repeated or
-    in any section, as we read them -- is built once: a reader takes
-    /Encrypt from those dictionaries alone. Any /Encrypt anywhere sends it
-    through decrypt(), whose checks (TRAILER_SPLIT among them) decide. An encrypted one is built
-    twice: a structural pass (units, spans, stream data, object streams --
-    no reference graph) that crypt.py locates bytes by, then decrypt(),
-    then the full build with each revision's Decryption (its flags, and
-    the reuse tokens). Each pass has its own budget: the structural pass
-    costs about one parse more (ADR 0006's note)."""
+    in any section, as we read them -- is built once: a reader that follows
+    the chain takes /Encrypt from nowhere else (one that repairs finds a
+    chain we have already flagged). Any other file is built twice: a
+    structural pass (units, spans, stream data, object streams -- no
+    reference graph) that crypt.py locates bytes by, then decrypt() --
+    whose checks, TRAILER_SPLIT among them, decide -- then the full build
+    with each revision's Decryption (its flags, and the reuse tokens). Each
+    pass has its own budget (ADR 0006's note)."""
     limits = limits if limits is not None else Limits()
     chain = read_chain(data, limits, budget=Budget(limits, file_size=len(data)))
     if not _mentions_encrypt(chain):

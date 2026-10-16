@@ -234,4 +234,6 @@ work), and the chain is read three times in all. The decryption between
 the passes has its own caps (bytes read and xref entries visited:
 `crypt.decrypt`). A file is built once only when no trailer or
 cross-reference stream dictionary holds an `/Encrypt` key at all, null
-or repeated ones included: a reader takes `/Encrypt` from nowhere else.
+or repeated ones included: a reader that follows the chain takes
+`/Encrypt` from nowhere else, and one that repairs finds a chain we have
+already flagged.

@@ -93,7 +93,7 @@ def reuse_token(decryption: Decryption | None, revision: int) -> object:
 def reuse_tokens(decryptions: Sequence[Decryption | None] | None,
                  revisions: int) -> tuple[object, ...]:
     """Each revision's ``reuse_token`` (all None without decryptions)."""
-    if not decryptions:
+    if decryptions is None:
         return (None,) * revisions
     if len(decryptions) != revisions:
         raise ValueError(f"{len(decryptions)} decryptions for {revisions} revisions")

@@ -62,6 +62,8 @@ def test_tokens() -> None:
     assert reuse_tokens([clean, None], 2) == (_identity(b"a"), None)
     with pytest.raises(ValueError):                   # a caller's bug, never guessed at
         reuse_tokens([clean], 2)
+    with pytest.raises(ValueError):
+        reuse_tokens([], 2)
     # Flagged without an identity (a budget that ran out before the open):
     # still a token of its own, never an unencrypted revision's None.
     spent = Decryption(3, None, {}, {}, (Flag(FlagReason.BUDGET_EXHAUSTED),))

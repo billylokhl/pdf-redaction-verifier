@@ -97,7 +97,7 @@ def build_inventory(data: bytes, limits: Limits | None = None, *, budget: Budget
                     structure_only: bool = False) -> Inventory:
     """The inventory of *data*. *budget* is required: every parse and
     scan here is charged to it, so a superlinear path is flagged
-    BUDGET_EXHAUSTED instead of hanging (ADR 0010). Never raises.
+    BUDGET_EXHAUSTED instead of hanging (ADR 0010). Never raises on input.
 
     *decryption*: each revision's cross-checked decryption, from
     crypt.py's first pass over a *structure_only* inventory (3a-9b): its
@@ -148,7 +148,8 @@ class _Builder:
                  decryption: Sequence[Decryption | None] | None = None,
                  structure_only: bool = False) -> None:
         self.data, self.limits, self.budget = data, limits, budget
-        self.decryption = tuple(decryption) if decryption is not None else ()
+        self.given = tuple(decryption) if decryption is not None else None
+        self.decryption = self.given if self.given is not None else ()
         self.structure_only = structure_only
         self.flags = _Flags(limits.max_flags_per_file)
         self.claims: list[tuple[UnitRef, Span]] = []
@@ -204,7 +205,7 @@ class _Builder:
                    and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)
                    and u.ref.start in self.stream_data]
         graph_start = self.budget.work
-        tokens = reuse_tokens(self.decryption or None, len(chain.revisions))
+        tokens = reuse_tokens(self.given, len(chain.revisions))
         stage = _EMPTY_STAGE if self.structure_only else _reference_graph(
             len(chain.revisions), self.changes, self._body_of, self._home_number, trailers,
             self._xref_streams(chain), self._hint_stream(chain), streams, self.budget, tokens)
