@@ -132,7 +132,7 @@ Blanking is narrow by design: only a trailer of qpdf's exact shape at the very e
 
 ### Changed
 
-**REDESIGN §4: where decryption runs** (`docs/REDESIGN.md`, 2026-10-15): `redaction_verifier/crypt.py` (3a-9) decrypts with pikepdf, cross-checks against MuPDF and hands the inventory plain `Decryption` data per revision; it runs in the 3b child beside the decoders, since it reads the hostile file. `DecodeContext.crypt` becomes `Decryption | None`. Coordinator decision; docs only.
+**REDESIGN §4: where decryption runs** (`docs/REDESIGN.md`, 2026-10-15): `redaction_verifier/crypt.py` (3a-9) decrypts with pikepdf, cross-checks against MuPDF (ADR 0001 with its 2026-10-15 amendment) and hands the inventory plain `Decryption` data per revision; it runs in the 3b child beside the decoders, since it reads the hostile file. `DecodeContext.crypt` becomes `Decryption | None`. Coordinator decision; docs only.
 
 **CI: partial-linux limit 25 → 40 minutes, full-macos 35 → 50** (`.github/workflows/tests.yml`, H3): the 3.12 leg, which runs under coverage, took 24 minutes on main against its 25-minute limit and was cancelled on runner variance (#157, #152); full-macos takes 25-28 minutes on main and one branch run (#152) was cancelled at 35. The limits are a stopgap until the 3.12 coverage leg's slowness is explained. No test or verdict change.
 
