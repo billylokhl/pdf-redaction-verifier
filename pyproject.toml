@@ -27,22 +27,26 @@ dependencies = [
     "pyobjc-framework-Vision==12.2.2; sys_platform == 'darwin'",
     "pyobjc-framework-Quartz==12.2.2; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'",
+    # pikepdf is libqpdf in-process: the decryption surface the redesign's
+    # inventory uses (ADR 0001, pinned here by 3a-8 as pymupdf is; 3a-8
+    # confirmed its decrypted, still-filtered stream read is MuPDF's
+    # xref_stream_raw stage) and the 3a-6b agreement gate's reader of
+    # qpdf's own values (ADR 0010 item 2 as amended). Its bundled libqpdf
+    # must share a major.minor version with the qpdf CLI -- the gate
+    # refuses otherwise -- so CI installs the qpdf release matching each
+    # pin. Python 3.10 needs an older pikepdf (10.14 dropped 3.10). The
+    # shipped CLI never imports it (tests/test_import_boundaries.py).
+    "pikepdf==10.16.0; python_version >= '3.11'",          # libqpdf 12.4.2
+    "pikepdf==10.13.0.post1; python_version < '3.11'",     # libqpdf 12.3.2 (3.10)
 ]
 
 [project.optional-dependencies]
 # Hypothesis drives the inventory's property tests (docs/REDESIGN.md
 # Phase 3a); tests/conftest.py registers its deterministic `ci` profile.
-# pikepdf is libqpdf in-process: the 3a-6b agreement gate reads qpdf's own
-# values through it (exact string bytes and numbers; ADR 0010 item 2 as
-# amended). Its bundled libqpdf must share a major.minor version with the
-# qpdf CLI -- the gate refuses otherwise -- so CI installs the qpdf release
-# that matches each pin. Python 3.10 needs an older pikepdf (10.14 dropped
-# 3.10). Test and eval only until 3a-8 makes it a runtime dependency.
 # pytest-timeout fails a hung test run (see [tool.pytest.ini_options]).
+# pikepdf, which the tests also use, is a runtime dependency (above).
 test = ["pytest==9.1.1", "pytest-cov==7.1.0", "hypothesis==6.168.5",
         "pytest-timeout==2.4.0",
-        "pikepdf==10.16.0; python_version >= '3.11'",          # libqpdf 12.4.2
-        "pikepdf==10.13.0.post1; python_version < '3.11'",     # libqpdf 12.3.2 (3.10)
         # pdfminer.six: the real-redactor set's text locator (eval only, pure
         # Python), here so its planting checks run in CI.
         "pdfminer.six==20260107"]

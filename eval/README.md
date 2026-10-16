@@ -47,8 +47,10 @@ def redacted_no_gc(path):
   `expected` holds there). `before` must be 27, so it never changes a
   label on the owner's macOS.
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
-  `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
-  (committed real-tool output under `caselib/real/`, `origin="redactor"`).
+  `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, `pikepdf`
+  (libqpdf in-process: the encrypted family, `families/encrypted.py`), or
+  `file` (committed real-tool output under `caselib/real/`,
+  `origin="redactor"`).
 - **`bomb`** (`Bomb(wall_clock_s, memory_bytes, today=None)`): a bomb or
   hang case (`families/bombs.py`, Phase 3d). It is never scanned in the
   test process -- `test_case_library`, the gallery, the scorecard and its
