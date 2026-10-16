@@ -185,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args[0]); out.mkdir(parents=True, exist_ok=True)
     # Perf cases are large on purpose (eval/README.md); a bare invocation
     # with no case ids must not build all of them by surprise.
-    ids = args[1:] or sorted(cid for cid, c in REGISTRY.items() if not c.perf)
+    # Bomb cases run only out of process (tests/test_bomb_cases.py).
+    ids = [cid for cid in args[1:] or sorted(cid for cid, c in REGISTRY.items() if not c.perf)
+           if REGISTRY[cid].bomb is None]
     have = available()
     failed = 0
     for case_id in ids:

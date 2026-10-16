@@ -229,7 +229,11 @@ def select_cases(case_ids: Iterable[str] | None = None, *, have: frozenset[str] 
         ids = sorted(i for i in REGISTRY if not getattr(REGISTRY[i], "perf", False))
     else:
         ids = sorted(case_ids)
-    return [REGISTRY[i] for i in ids if not (REGISTRY[i].requires - have)]
+    # A bomb case is never run here, named or not: it is made to cost a
+    # reader time or memory, so the differential's per-file timeout would
+    # only measure that. tests/test_bomb_cases.py judges it under its caps.
+    return [REGISTRY[i] for i in ids if not (REGISTRY[i].requires - have)
+            and getattr(REGISTRY[i], "bomb", None) is None]
 
 
 def case_timeout(case: Any, timeout: float) -> float:

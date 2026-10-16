@@ -49,6 +49,20 @@ def redacted_no_gc(path):
 - **`writer`**: `fitz` (PyMuPDF — also what the verifier reads with),
   `raw` (hand-assembled bytes, `caselib/rawpdf.py`), `qpdf`, or `file`
   (committed real-tool output under `caselib/real/`, `origin="redactor"`).
+- **`bomb`** (`Bomb(wall_clock_s, memory_bytes, today=None)`): a bomb or
+  hang case (`families/bombs.py`, Phase 3d). It is never scanned in the
+  test process -- `test_case_library`, the gallery, the scorecard and its
+  differential skip it -- and `tests/test_bomb_cases.py` judges it out of
+  process through `redaction_verifier.sandbox` (`caselib/bombrun.py`),
+  its whole process group killed at its caps -- on macOS, on Linux's
+  Python 3.13 CI leg, or with `RUN_BOMBS=1` (once per platform per CI run;
+  nothing in it depends on the Python version). `today` pins how today's
+  tool fails to answer, where it does not (`"hang"`, `"memory"`,
+  `"error:CODE"`, exit 2), or, as an `Expect`, the exact answer it gives
+  when it finds the value but files it under the wrong storage (COVERAGE's
+  footnote ¹⁵); the test fails once that changes, as a closed known gap
+  does. Each bomb's built bytes are checked against `cases.lock.json`
+  there too. The cells are COVERAGE.md's `hostile.*` ("Hostile input").
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
   needs to be judged is missing — or, with `no-ocr`, where OCR is present

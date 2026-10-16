@@ -589,6 +589,12 @@ secret can still be **not detected** (exit `0`). In short:
   horizontal, or where Vision reports no vertical line, can still pass as
   clean ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
   <!-- gap-cells: live.pixels.ocr-dropped-line -->
+- **An oversized image:** OCR reads each page as a render at its usual
+  resolution, so an image with far more detail than that render (60,000
+  pixels across a page, say) is read only at the render's resolution,
+  and small text inside it can pass as clean. Phase 4b bounds the image
+  sizes it reads in full.
+  <!-- gap-cells: live.pixels.oversized-image -->
 - **Split values:** a value split around other text into more than three
   pieces, or with its pieces more than five lines apart (a page-break
   split with a header, footer or page number between its halves, a value
