@@ -281,9 +281,10 @@ them yourself, or use `--strict-classes` to count them.
 
 These can still give a Clean result although a secret is in the file:
 
-- Some pictures with something drawn over them. A box over a picture is
-  flagged, but not, for example, several small boxes, or one picture drawn
-  over another: the picture check only sees what is on top.
+- Some pictures with something drawn over them. A box over a large part
+  of a picture is flagged, but not a small box, several small boxes, or
+  one picture drawn over another: the picture check only sees what is on
+  top.
 - Pictures it doesn't read: images placed off the page, previews stored in
   metadata or inside a photo, and small print in very detailed images.
 - Forms of a secret you didn't list, such as a reordered name, or a first name
@@ -334,8 +335,8 @@ read, what is only flagged, and what is missed; its
 
 ## How it works
 
-The sections above show how to use the tool. This part explains the ideas behind it,
-so you can judge what a result does and doesn't promise. The exact rules
+The sections above show how to use the tool. This part explains the
+ideas behind it, so you can judge what a result does and doesn't promise. The exact rules
 are in [docs/reference.md](docs/reference.md).
 
 ### Why "Needs review" exists
@@ -518,8 +519,9 @@ report, and the finished map is checked for your values before it is
 saved. It also never changes the result. It's built after the report, as
 a separate step, and if anything goes wrong you get no map, never a
 different verdict. (The one exception comes before checking starts: if
-the map's file name is taken by something that isn't one of its own
-maps, the tool stops there with Needs review rather than overwrite it.) To keep your files safe, it only ever creates a new
+the map can't be written safely, for example because its file name is
+taken by something that isn't one of its own maps, the tool stops there
+with Needs review.) To keep your files safe, it only ever creates a new
 file or replaces a map it wrote itself.
 
 The map draws what the checks found, not what the eye sees: a solid box
