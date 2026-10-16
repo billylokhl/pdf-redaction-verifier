@@ -414,7 +414,7 @@ def _annotated(annotation: bytes) -> bytes:
     (Reading, ["TEXT", "OCR"]),
     (Tool, ["QPDF"]),
     (Stage, ["STORED", "XREF_FIELDS", "OBJSTM_PAYLOAD", "STRING_TAGGED", "STRING_UNTAGGED",
-             "READER_VIEW"]),
+             "STRING_BINARY", "READER_VIEW"]),
     (FileScope, ["FILE"]),
     (Check, ["CHILD_COMPLETE", "FILE_IDENTITY", "TILING", "PAGE_COUNT", "OBJECT_SET",
              "INVENTORY_FILE_FLAGS", "PARSER_AGREEMENT", "RAW_MATCH"]),
@@ -491,6 +491,8 @@ def test_3b_records_are_frozen(record: Any) -> None:
 def test_no_3b_record_has_a_bytes_or_text_field() -> None:
     # Everything crossing the pipe is plain integers or enum members: no
     # field's annotation may name a type that can carry document bytes.
+    # The protocol's one exception, `hello`'s SHA-256 digest, is a 3b-2
+    # frame and no ledger record, so no record here is exempt.
     import dataclasses
     assert {type(r) for r in _RECORDS} == set(_RECORD_TYPES)
     carriers = re.compile(r"\b(bytes|bytearray|memoryview|str|object|Any|float)\b")
@@ -627,6 +629,20 @@ def test_an_empty_witness_span_is_invalid() -> None:
 def test_a_witness_balances_only_when_its_spans_tile_the_stage(
         spans: list[tuple[int, int]], length: int, balances: bool) -> None:
     assert Witness(tuple(Span(a, b) for a, b in spans), length).balances() is balances
+
+
+def test_a_stored_unit_witness_tiles_its_claims_concatenated() -> None:
+    # §3, B5: a unit with several claims (an XREF_EPILOGUE, say, here
+    # claiming [0, 9) and [40, 56) of the file) is witnessed in its
+    # claims' concatenated coordinates, one span per claim.
+    claims = [Span(0, 9), Span(40, 56)]
+    total = sum(len(c) for c in claims)
+    spans, pos = [], 0
+    for claim in claims:
+        spans.append(Span(pos, pos + len(claim)))
+        pos += len(claim)
+    assert Witness(tuple(spans), total).balances()
+    assert not Witness(tuple(claims), total).balances()  # file offsets are not its coordinates
 
 
 @given(st.lists(st.tuples(st.integers(0, 12), st.integers(1, 6)), max_size=6),

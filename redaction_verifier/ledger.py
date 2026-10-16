@@ -241,7 +241,8 @@ class Unit:
 # One appended block, so other lanes' additions above rebase trivially.
 # Every record here crosses the child→parent pipe or is built by the
 # parent from what did: closed enums and plain integers only, never
-# document bytes or text.
+# document bytes or text. (The protocol's one exception, `hello`'s
+# SHA-256 digest of the file, is a frame of 3b-2's, not a ledger record.)
 
 # PDF white-space characters (ISO 32000-1 §7.2.2, Table 1). Here, not in
 # inventory/tiling.py (which re-exports it), so the parent re-checks a
@@ -361,13 +362,16 @@ class Tool(Enum):
 
 class Stage(Enum):
     """A byte stage the raw matcher scans (§3, Q11 (iii)): the parent's
-    own STORED bytes, and the decoded stages the child sends."""
+    own STORED bytes, and the decoded stages the child sends. Text
+    strings are matched as text, binary strings as bytes, each in its
+    own stage."""
 
     STORED = "stored"                    # [0, size) of the parent's descriptor; never sent
     XREF_FIELDS = "xref_fields"          # a cross-reference stream's field data, free entries too
     OBJSTM_PAYLOAD = "objstm_payload"    # an object stream's decoded payload
-    STRING_TAGGED = "string_tagged"      # string tokens, language tags kept (UTF-8, text)
-    STRING_UNTAGGED = "string_untagged"  # string tokens, language tags stripped (UTF-8, text)
+    STRING_TAGGED = "string_tagged"      # text strings, language tags kept (UTF-8, text)
+    STRING_UNTAGGED = "string_untagged"  # text strings, language tags stripped (UTF-8, text)
+    STRING_BINARY = "string_binary"      # non-text strings' bytes as written (bytes)
     READER_VIEW = "reader_view"          # a Decryption.views entry (ADR 0001's 3a-9a-1 note)
 
 
@@ -506,10 +510,14 @@ _OBLIGATION_REFS: Final = (UnitRef, SynthesizedRef, ViewRef, ToolRef, RuleScopeR
 
 @dataclass(frozen=True)
 class Witness:
-    """What a decoder consumed (Principle 2, ADR 0008): byte spans in
-    its stage's decoded coordinates, and the stage's length they must
-    tile. An empty span is invalid (a protocol error, settling 3a-1's
-    note). ``code_count`` and ``glyph_count`` are reserved for 4a's
+    """What a decoder consumed (Principle 2, ADR 0008): byte spans, and
+    the length they must tile. For a decoded stage, the spans are in its
+    decoded coordinates and ``length`` is the stage's. For a stored unit
+    (§3, B5), the coordinates are its claims concatenated in order, one
+    span per claim, and ``length`` is their total; that the span count
+    equals the claim count is checked where the claims are known (the
+    protocol's validator), not here. An empty span is invalid (a
+    protocol error, settling 3a-1's note). ``code_count`` and ``glyph_count`` are reserved for 4a's
     consumption witness (ADR 0008) and not checked before it."""
 
     spans: tuple[Span, ...]
