@@ -78,6 +78,17 @@ a leak case that is caught, reported in that cell's storage class; every
 (which may only shrink); and `cells.py` matches COVERAGE.md glyph for
 glyph.
 
+**qpdf's exit 3** (`families/qpdf_warnings.py`, `requires: qpdf`): since
+the owner decision of 2026-10-15 an exit 3 is judged warning by warning
+(COVERAGE.md footnote 16). Six leak cases are layouts where qpdf's
+warning is the only signal of hidden content and must stay `2`
+(`unindexed.plain.qpdf-warned`); seven clean cases are the harmless
+layouts real files carry and now exit `0` (weaker `accepted_diffs.yaml`
+entries, since `eval-ref-0` exits `2` on them). Three of those entries
+are scoped `env: ocr`: their qpdf warnings depend on qpdf's version, and
+only the weekly macOS job runs qpdf 12.4 (Linux `scorecard-diff` installs
+Ubuntu's 11.9, where the two sides agree).
+
 **Grids** (`grid=`, `params=`) are parameterised families: `carriers`
 (six carrier surfaces × four producer layouts) and `page-text` (27 page
 layouts × three rule sets × with or without the SSN pattern rule, plus the
