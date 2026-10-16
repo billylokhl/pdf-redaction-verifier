@@ -1031,6 +1031,17 @@ class TestNotices:
         assert not [i for i in the_plan.listed if i.section != "notices"
                     and i.section != "unpositioned" and i.section != "not_scanned"]
 
+    def test_the_default_lists_notices_as_no_strict_classes_does(self, tmp_path,
+                                                                 monkeypatch) -> None:
+        # ADR 0012 policy 1: notices are the default, with no flag at all.
+        pdf = self._pdf(tmp_path)
+        run, the_plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES)
+        assert run.header is not None and run.header["informational"] == ["Any SSN"]
+        assert not run.report["findings"] and run.report["notices"]
+        assert not the_plan.boxes and sections(the_plan, "notices")
+        _run, explicit = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
+        assert the_plan == explicit
+
     def test_strict_classes_still_box_the_match(self, tmp_path, monkeypatch) -> None:
         run, the_plan = mapped(monkeypatch, tmp_path, self._pdf(tmp_path), NOTICE_RULES,
                                "--strict-classes")
