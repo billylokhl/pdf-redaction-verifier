@@ -1084,7 +1084,13 @@ fix every value exactly, each validated on held-out files -- yes or no?*
   | + a JavaScript decoder | 36.0% (-11.7 pts) | 31.9% |
   | + XMP images OCR'd (R7 (b)) | 31.5% | 27.2% |
 
+  The XMP row assumes 4b certifies the thumbnails, as 3a-12's levers table does.
+
 - **Cost if yes:** the full decoder in about 5 PRs in 3c (below).
+
+**Answer (owner decision 2026-10-15): yes.** The six profile-bound observed rules are accepted;
+files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs).
+Hint streams stay flagged until it ships.
 
 | Population | Files (distinct) | Documented rules only | With the six observed rules | Not accounted |
 | --- | --- | --- | --- | --- |

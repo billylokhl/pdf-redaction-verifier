@@ -400,6 +400,9 @@ question. Until it is answered, the rejected candidate above stands: the hint-st
 stays `UNREADABLE`, so `FLAGGED`, and this closed list gains no reason; a "yes" would bring the
 reason here with its own ADR, at this list's bar.
 
+**Answer (2026-10-15):** owner decision 2026-10-15: yes. The six profile-bound observed rules are accepted; files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs). The new reason comes here with its own ADR, at this list's bar, with the decoder;
+until it ships, hint streams stay `FLAGGED`.
+
 ## Note (2026-10-15)
 
 [ADR 0012](0012-pattern-classes-inform.md): in the default mode a built-in

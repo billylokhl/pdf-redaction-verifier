@@ -747,8 +747,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     rules are unvalidated research, outside the profile). OWNER QUESTION: accept a closed,
     profile-bound set of observed writer rules, each validated on held-out files? Yes: the full
     decoder, about 5 PRs in 3c; text-bearing review rate 47.6% -> 46.8% alone, 40.7% with 4a,
-    36.0% with a JavaScript decoder, 31.5% with XMP OCR too. No: (b) stands. Hint streams stay
-    flagged until then.
+    36.0% with a JavaScript decoder, 31.5% with XMP OCR too (assuming 4b certifies the
+    thumbnails). OWNER DECISION 2026-10-15: YES -- the six rules are accepted, files they
+    don't fully account for stay flagged; decoder in 3c (about 5 PRs). Hint streams stay
+    flagged until it ships.
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 
@@ -806,5 +808,6 @@ OWNER DECISIONS (2026-09-27), all as recommended:
 12. (2026-10-15, 3a-12's owner choice) The hint stream: staged (a) -- a hint-table spike, then
    the full decoder only if every value accounts. Outcome: 0 of 101 under documented rules, 82
    of 101 under six profile-bound observed rules, the two later-page rules left as unvalidated
-   research (RESULTS.md "Hint-table spike"); the owner question on observed rules is open, and
-   hint streams stay flagged (ADR 0003, R6 (a)) until it is answered.
+   research (RESULTS.md "Hint-table spike"). Owner decision 2026-10-15 on observed rules:
+   yes -- the six profile-bound rules are accepted, files they don't fully account for stay
+   flagged; decoder in 3c (about 5 PRs). Hint streams stay flagged until it ships.

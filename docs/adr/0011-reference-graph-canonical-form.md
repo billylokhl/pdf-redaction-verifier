@@ -866,6 +866,7 @@ the profile. R6 (a) stands until the owner answers whether such observed
 rules may be accepted; a "yes" makes R6 (b) the decoder's condition (about
 5 PRs in 3c; text-bearing review rate 47.6% -> 46.8% alone, 31.5% with
 every lever), with the 19 files it cannot account for still flagged.
+*Answer: owner decision 2026-10-15: yes. The six profile-bound observed rules are accepted; files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs).*
 
 **R7. Images inside XMP packets** (thumbnails, K22). An image a packet
 holds is drawn by nothing, so decision D makes it unused and `FLAGGED`:
