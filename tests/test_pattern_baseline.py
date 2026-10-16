@@ -18,7 +18,7 @@ import pymupdf as fitz
 import pytest
 
 from caselib import REGISTRY, load
-from caselib.run import available, build, scan
+from caselib.run import available, build, scan, scan_shared
 from scorecard.match_shapes import OUT_ENV, SALT_ENV, SHAPES, classify, record_key
 from scorecard.pattern_baseline import (
     BUILTIN_RULES,
@@ -375,7 +375,7 @@ def _pattern_cases():
 @pytest.mark.parametrize("case", list(_pattern_cases()))
 def test_recorder_leaves_the_report_unchanged(case, tmp_path):
     pdf = build(case, tmp_path / f"{case.id}.pdf")
-    plain = scan(case, pdf, tmp_path)
+    plain = scan_shared(case, pdf, tmp_path)
     recorder = Recorder("s")
     recorder.install()
     try:

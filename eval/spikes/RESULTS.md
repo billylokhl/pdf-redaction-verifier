@@ -926,6 +926,7 @@ files, 24.5% of text-bearing):
 | XMP images OCR'd (R7 (b), 4b) | 715 (34.5%) | 228 (46.6%) |
 | 4a's synthesized + hint streams at R6 (b)'s condition + XMP (b) + a JavaScript decoder (assumed to clear every JavaScript stream) | 562 (27.1%) | 227 (46.4%) |
 | The same, every hint stream clearing outright (no qpdf condition; JavaScript as above) | 466 (22.5%) | 133 (27.2%) |
+| The same, hint streams as the hint-table spike's decoder accounts for them (six observed rules; "Hint-table spike" below) | -- | 31.5% |
 | Hint streams outright + 4a + JavaScript (assumed to clear every JavaScript stream), XMP as decided | 779 (37.6%) | 156 (31.9%) |
 
 So the text-bearing rate depends on the hint stream: with R6 (b) as written (qpdf's check
@@ -1027,6 +1028,12 @@ If it does not, the spike's single PR is the whole cost and (b) stands, with the
 reason. The middle options either need the same decoder (so they are (a) with less reach) or
 do not fail closed.
 
+**Owner decision 2026-10-15: staged (a).** The spike ("Hint-table spike" below): under
+documented rules only, 0 of the 101 files are fully accounted; under six profile-bound observed
+Acrobat rules, validated on a held-out half, 82 are. Accepting such rules is the owner question
+it ends on (with its review-rate effect: text-bearing 47.6% -> 46.8% for the hint lever alone,
+31.5% with every lever); hint streams stay flagged until it is answered.
+
 **Plausibility.** Hint tables are written by whichever writer linearizes the saved file,
 which may be the redaction tool itself (Acrobat redacts and saves with Fast Web View; these
 files are Acrobat or Distiller output), computed from the saved layout rather than from page
@@ -1035,6 +1042,194 @@ mismatch the new offsets, which (a) flags. Their capacity is integers and bit fi
 page's entry holds several integer fields, enough together to encode an SSN's digits. So
 hiding a secret there takes a deliberately crafted writer, not a redaction mistake: a
 low-likelihood leak for this tool's threat model, but not an impossible one.
+
+## Hint-table spike -- eval/spikes/hint_tables.py
+
+**Owner decision 2026-10-15: staged (a).** This is its first stage: decode the hint tables of
+the 101 warned text-bearing new files against ISO 32000-1 Annex F and account exactly for
+every value against the file's own layout, failing closed on any mismatch and on any padding
+or unused bit that is not zero. If every value is accounted for, the full decoder follows; if
+not, option (b) stands with the measured reason. #180's first review round refuted this
+section's first verdict (0 of 101, "no-go"): page 0's entries, which it called unfixed, are
+derivable, and the decoder accepted four values in either of two readings. The second round
+removed two rules that had not been validated and closed a free ordering they allowed. This is
+the extended stage 1.
+
+**Verdict: under documented rules only, 0 of the 101 files are fully accounted. Under six
+observed Acrobat rules, bound to one writer profile, 82 of the 101 (67 of 81 distinct) are.**
+The search reaches most single-page files (67 of 73 distinct) and stalls on multi-page ones
+(0 of 8). Whether to accept such rules is one owner question; until it is answered, hint
+streams stay flagged.
+
+**The owner question.** *Accept a closed, profile-bound set of six observed writer rules that
+fix every value exactly, each validated on held-out files -- yes or no?*
+- **What makes the rules safe** is that each is a deterministic function of the file's layout
+  and content with no free parameter: given the file, each value has exactly one accepted
+  reading, so a table can only match or fail, and nothing can be hidden in a value the rule
+  accepts. Held-out accuracy does not make them safe; it only estimates how many files they
+  reach.
+- **No:** only documented rules count. 0 of the 101 are accounted, and option (b) stands for
+  every warned file. The decoder would clear only qpdf-written files (1 corpus file).
+- **Yes:** 82 of the 101 are accounted (67 of 81 distinct); the other 19 stay flagged, failing
+  closed. Across the 108 text-bearing new hint files, 85 are accounted. Taking their hint class
+  out of exit `2` clears 4 files alone, 34 with 4a's synthesized units, and 57 with a
+  JavaScript decoder too (assumed to clear every JavaScript stream), against 14, 49 and 77 if
+  every hint stream cleared outright. On the 489 text-bearing files (review rate 47.6% with
+  the 7e classes, qpdf exit 3 removed; 3a-12's levers table):
+
+  | Levers taken | With this decoder (yes) | Every hint stream clearing outright (ceiling) |
+  | --- | --- | --- |
+  | Hint streams alone | 46.8% (-0.8 pts) | 44.8% |
+  | + 4a's synthesized units | 40.7% (-7.0 pts) | 37.6% |
+  | + a JavaScript decoder | 36.0% (-11.7 pts) | 31.9% |
+  | + XMP images OCR'd (R7 (b)) | 31.5% | 27.2% |
+
+  The XMP row assumes 4b certifies the thumbnails, as 3a-12's levers table does.
+
+- **Cost if yes:** the full decoder in about 5 PRs in 3c (below).
+
+**Answer (owner decision 2026-10-15): yes.** The six profile-bound observed rules are accepted;
+files they don't fully account for stay flagged; the decoder is scheduled for 3c (about 5 PRs).
+Hint streams stay flagged until it ships.
+
+| Population | Files (distinct) | Documented rules only | With the six observed rules | Not accounted |
+| --- | --- | --- | --- | --- |
+| **Go/no-go: warned, text-bearing, new** | **101 (81)** | **0** | **82 (67)** | **19 (14)** |
+| -- derive half (distinct) | (35) | 0 | (28) | (7) |
+| -- held-out half (distinct) | (46) | 0 | (39) | (7) |
+| All hint-stream files (unflagged) | 400 (279) | 1 | 281 | 119 |
+| -- derive half (distinct) | (132) | | (89) | |
+| -- held-out half (distinct) | (147) | | (88) | |
+| -- qpdf's check clean, single revision | 154 (78) | 1 | 154 (78) | 0 |
+| -- qpdf warns | 170 (131) | 0 | 100 (74) | 70 (57) |
+| -- stale `/L` (updated), decoded against the base revision | 76 (70) | 0 | 27 (25) | 49 (45) |
+| Stale `/L`, text-bearing, new | 6 (5) | 0 | 2 (2) | 4 (3) |
+
+"Documented" rules come from qpdf's source (v12.4.1) or the PDF Reference implementation notes
+it cites, including qpdf's own writer's conventions; the one file they account for is the only
+qpdf-written one. Every Acrobat-written file needs at least one observed rule: even the 154
+files qpdf's check passes use a denominator of 8 and a numerator width no source documents.
+Across all hint-stream files the held-out half is accounted less often (88 of 147, 60%) than
+the derive half (89 of 132, 67%); in the go/no-go set it is the other way round (39 of 46
+against 28 of 35).
+
+**Method.** Unchanged from the first round for the tables and the layout: the hint stream at
+`/H` (Flate decoded; a decode that is not clean fails closed), each table read bit by bit (the
+page offset table's 13 header items and per-page columns, each padded to a byte; the shared
+object table; `/O`, `/I`, `/L` as generic tables; `/V`, `/C` as extended generic tables), every
+padding bit 0, every decoded byte in one table, every key of the hint stream and
+linearization dictionaries checked. The layout comes from the base revision cut at its own
+`%%EOF` (owner decision 7), with this repository's parser: offsets, extents to the end of the
+whitespace after `endobj`, compressed objects standing for their object stream, pages and
+what each page and each catalog or trailer key reaches. New since the first round:
+
+- **Writer profiles.** Every rule is bound to one profile, qpdf's or Acrobat's, and a file is
+  accounted only when one whole profile accounts for every value; the two never both match a
+  file (their `min_content_length` and denominator always differ). The four values the first
+  round accepted in either reading (`first_shared_offset` and `/O`'s offset raw or adjusted,
+  `min_content_length` 0 or the page length, denominator 4 or 8) are fixed per profile, and
+  the "raw offset" reading is gone from both.
+- **Content-reading rules.** The observed rule for page 0's entries reads page 0's decoded
+  content streams (Flate only; any other filter fails closed) and resources.
+- **No rule for later pages under the Acrobat profile.** A later page's numerators and
+  identifier order have no validated rule (below), so under the Acrobat profile any later
+  page with shared entries is unaccounted. Under the qpdf profile its numerators must be 0
+  and its identifiers ascending (qpdf's writer).
+- **Held-out discipline.** Each distinct file is assigned to a half by its SHA-256 prefix
+  (even: derive, odd: held out), fixed before any rule was derived; the rules were derived or
+  adjusted on the derive half of the 131 distinct warned files, and are reported on both.
+  The discipline was not complete:
+  - the reviewer's first-round probes behind the page-0 rule's starting point (widgets, plus
+    `/Font` and `/ColorSpace` resources by first use) and behind the "numerator first" order
+    for later pages looked at held-out files, and that starting rule was fitted on all 101
+    go/no-go files;
+  - the screen of traversal orders for `/V` ran on all 81 distinct go/no-go files before the
+    split was applied;
+  - the keys of the reviewer's single-file probes were not recorded, so which other files
+    they read is unknown;
+  - this spike's own refinements (which shared objects count, forms named by `/AP` at 0,
+    everything else at `d`, the stack walk for `/V` and `/C`) were derived on the derive half;
+    its single-file probes were derive files. Held-out misses were printed and read only after
+    each rule was fixed, and no rule was changed after that.
+
+**The six observed rules** (the Acrobat profile; each fixes a value exactly; none is
+documented):
+
+| Rule | What it fixes | Held out (distinct files where it applies) | Derive half |
+| --- | --- | --- | --- |
+| First-page section | starts after the catalog, `/OpenAction`'s objects and the hint stream's indirect `/Length`; every object in it is a shared group | (structural, every Acrobat file) | |
+| Identifier width | `nbits` of the greatest identifier pages after the first use (0 for one page) | (every Acrobat file) | |
+| Numerator width | `nbits(denominator)` | (every Acrobat file) | |
+| Denominator | 8 | (every Acrobat file) | |
+| Page 0's entries | the first-page section's objects page 0 reaches that something else reaches too, plus page 0's indirect `/Font` and `/ColorSpace` resources; numerator `floor(first use x (d - 1) / content length)` for a resource (0 if unused), 0 for a widget annotation or a form an annotation's `/AP` names, `d` otherwise; listed ascending | go/no-go 39 of 46; warned 43 of 59; all 100 of 136 | go/no-go 29 of 34; warned 44 of 57; all 99 of 125 |
+| `/V`, `/C` identifier order | the order a stack walk of the key's object discovers them (each value expanded in written key order, each new reference listed as found) | go/no-go 38 of 42; warned 40 of 44; all 48 of 52 | go/no-go 30 of 32; warned 40 of 42; all 45 of 47 |
+
+**Unvalidated research, excluded from every profile.** Two later-page rules were tried and are
+measured but never accepted:
+
+| Rule (research) | What it would fix | Held out (warned files where it applies) | Derive half |
+| --- | --- | --- | --- |
+| Later pages' numerators | the least `floor(first use x (d - 1) / content length)` of the page's resources the group holds (or, for a part-8 group, the resources that reach it); 0 if unused; `d` if none | 3 of 10 files | 0 of 6 files; pages 253 of 285 |
+| Later pages' identifier order | by numerator, ties in the order a depth-first walk of the page (written key order) first meets them; no match when the walk misses a hinted group | 3 of 10 files | 0 of 6 files; pages 256 of 285 |
+
+They fit most pages but few whole files, and as first written the order rule left a free
+permutation: a hinted group the page walk never meets (the walk skips `/P`, `/Parent` and
+`/Pg`; the reachability walk follows `/Parent`) kept, at an equal numerator, whatever order the
+file wrote (review: 62 such pages in 16 of the 48 multi-page files). The rule now fails such a
+page, and both rules are out of the profile. Excluding them changed no accounted count: no
+accounted file in any population relied on them. Only the page-0 rule's derive-half counts
+moved, by one file each (one multi-page file is now best matched by the other profile).
+
+**What remains in the go/no-go set** (19 files, 14 distinct):
+- **Multi-page files: 0 of 8 distinct (9 files) accounted.** Every one has later-page entries
+  (no validated rule) and fails page 0's rule too. 7 also have an offset that does not match:
+  4 write some offsets as plain file offsets, not disregarding the hint stream (Annex F), mixed
+  with adjusted ones in the same file; 2 have offsets that name no object (in one, each is 4
+  bytes short of its object); 1 has a first-page offset no reading matches. The raw-offset mix
+  occurs only in files with cross-reference streams (6 of the 18 warned such files), and the
+  corpus shows no layout fact that decides which fields are raw, so no rule can bind it.
+- **Single-page files: 6 of 73 distinct (10 files) not accounted.** Two have one page-0
+  numerator off by one (5 against the formula's 4); two, each with eight content streams, have
+  one entry of `d` where the rule gives 0; one has page-0 resources placed outside the
+  first-page section (the rule counts three fonts that the table does not) and its `/C` order;
+  one has only its `/V` order unexplained.
+- In the wider population, also: thumbnail tables (36 warned files; not decoded), a `/B` table
+  no reading decodes (1 file), and files whose tables match neither profile.
+
+No padding bit was non-zero, and no table left a byte unread, in any of the 400 files but one.
+
+**Choosable bits left under the profiles.** Within a profile every value is fixed: each
+accepted value has one reading given the layout and content, and later pages' entries, the
+one place a free order was found, are no longer accepted under the Acrobat profile. The only
+free choice is the profile itself: 1 bit per file (a writer can emit qpdf-style or
+Acrobat-style tables for the same layout). Not counted here: the encoding of the Flate data
+itself (many encodings decode to the same bytes), which is true of every Flate stream and is
+the inventory's raw-byte question, not the hint table's.
+
+**Adversarial fixtures** (`fixtures`; fabricated, nothing from the corpus): qpdf (through
+pikepdf) linearizes a three-page document (a font every page shares, a font only the later
+pages share, so part 8 is not empty, a private graphics state per page, an outline, an
+`/Info`) and a one-page one, the hint stream uncompressed so bits can be hidden in place.
+**Both clean files are fully accounted** (qpdf profile). **All 30 mutations are caught**: a
+padding bit; `min_page_length` + 1; `min_content_offset` set (unused, note 126);
+`shared_denominator` = 0x1234; `first_shared_obj` with no part 8 (note 131) or
+`first_shared_offset` + 1; the outline's `group_length` + 2; a later page's first two
+identifiers swapped (a reordering no rule fixes); and the other profile's reading of
+`min_content_length`, the denominator, `first_shared_offset` and `/O`'s offset, each alone and
+in every combination (15 on the three-page file, 3 on the one-page file).
+
+Other readings an owner may want to confirm: the extended generic format for `/V` and `/C` is
+inferred from the data (every such table in the corpus decodes that way with nothing left
+over, and their identifier sets match the shared groups the key reaches) without a copy of the
+standard's table at hand; and qpdf's documented Acrobat outline offset (`checkHOutlines`) is
+in neither profile, since no corpus file needs it.
+
+**Revised estimate.** If yes: the full decoder in about 5 PRs in 3c -- the decoder module
+with the profiles and the page-0 rule, its registry hookup, a differential against
+`qpdf --show-linearization`, re-validation of the observed rules on files outside this corpus
+(or new fabricated Acrobat-style fixtures), and the corpus measure. Multi-page files (later
+pages' rules, the raw-offset mix) would need further spikes with no promise of a rule. If no:
+(b) stands and nothing further is built.
 
 ## Phase 5 baseline: built-in pattern classes, full CLI -- eval/scorecard/pattern_baseline.py
 
