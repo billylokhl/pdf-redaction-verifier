@@ -80,7 +80,8 @@ def test_bomb_case(cid, tmp_path):
         assert verdict.ok, f"{cid}: {'; '.join(verdict.problems)}"
     # The visible map re-reads the target: asked for, it must move no
     # verdict (whether or not a map comes out: a map that cannot be made
-    # costs only the map). (The map's identity tests in test_visible_map*.py skip
+    # costs only the map). A bomb whose `today` is a string returns above and
+    # is not covered here (nothing answers to compare). (The map's identity tests in test_visible_map*.py skip
     # bombs, which they would otherwise scan in this process.)
     mapped_dir = tmp_path / "mapped"
     mapped_dir.mkdir()
