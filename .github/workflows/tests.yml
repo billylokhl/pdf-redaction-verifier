@@ -131,8 +131,9 @@ jobs:
         # (sys.settrace) made this leg ~3x slower than the same run without
         # coverage (measured locally: 37.6 min vs 11.2 min); the sys.monitoring
         # core (PEP 669; line coverage only, which is all we measure) takes
-        # 13.1 min. Totals match (sysmon sees a few more lines, where tests set their own settrace). Branch
-        # coverage would need Python 3.14 under sysmon; do not enable it here.
+        # 13.1 min. Totals match (sysmon sees a few more lines, where tests
+        # set their own settrace). Branch coverage would need Python 3.14
+        # under sysmon; do not enable it here.
         env:
           COVERAGE_CORE: ${{ matrix.python-version == '3.12' && 'sysmon' || '' }}
         run: >-
