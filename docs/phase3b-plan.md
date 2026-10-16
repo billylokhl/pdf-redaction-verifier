@@ -5,9 +5,7 @@ for 3a.
 
 - **History:** drafted 2026-10-15 (Pacific); revised the same day after review rounds 1 and 2
   of #179 and the owner's and coordinator's decisions (§7).
-- **Decided:** Q1-Q12.
-- **Pending:** one owner question, Q13 (a hard raw tier). Its recommendation is "no", so the
-  plan does not depend on it.
+- **Decided:** Q1-Q13 (§7). Nothing is pending.
 - **Verdict changes:** nothing here changes a verdict.
 
 Read with:
@@ -203,10 +201,13 @@ touches code the shipped CLI runs.
   - It returns a `ChildReport`, or a closed `ProtocolError` that makes `CHILD_COMPLETE`
     `FAILED`.
   - Stage frames are in, per Q11 (iii).
-  - Caps: a frame past a cap the child must honour is a protocol error. Those caps are the
-    structural cap (§3) and `max_stage_bytes` per stage. An over-cap stage is never sent:
-    the child truncates it and flags it (3b-6).
-- **Files:** `protocol.py`, `tests/test_protocol.py`, and the guard entry (`json`, `struct`).
+  - Caps: a frame past a bound the child must honour is a protocol error. Those bounds are the
+    core bound, `max_messages`, the 512-byte frame limit, and `max_stage_bytes` per stage
+    (§3). An over-cap stage is never sent: the child truncates it and flags it (3b-6).
+  - The encoder sends the core first and whole, and charges detail to
+    `Limits.max_messages`, which this PR adds.
+- **Files:** `protocol.py`, `budget.py` (`max_messages`), `tests/test_protocol.py`, and the
+  guard entry (`json`, `struct`).
 - **Depends on:** 3b-1.
 - **Tests (Hypothesis):**
   - round-trip;
@@ -217,7 +218,11 @@ touches code the shipped CLI runs.
     rejected;
   - a non-integer where an integer belongs is rejected, and so is a name outside its enum;
   - a region list that does not tile is rejected;
-  - a stage frame larger than its declared length is rejected.
+  - a stage frame larger than its declared length is rejected;
+  - the largest frame of each type, built with worst-case values, fits in 512 bytes;
+  - a report exhausted at `max_messages` still validates, with its core whole, and yields
+    `BUDGET_EXHAUSTED`;
+  - a file with many revisions sends more `label` frames, never a longer one.
 - **Gate:** the suite and mypy strict.
 - **Verdict path:** none.
 
@@ -295,22 +300,26 @@ touches code the shipped CLI runs.
     since a niced child may get little CPU while legacy runs. The CPU rlimit still bounds it
     from its start.
     - After legacy ends, the parent waits at most `post_legacy_wait_s` for the child. That
-      defaults to 20 s, and Q12's measurement sets it.
+      defaults to 20 s, a dated refinement of Q3 (§7), and 3b-9's measurement may revise it.
     - Then it cancels the child (outcome `killed_wall_clock`).
     - **The bound:** the CLI's added time after legacy is at most `post_legacy_wait_s` plus the
       matcher's own pass. That pass is linear in the file and its stages, measured in §6 gate
       5. The CLI therefore stays inside the scorecard's 60 s per file whenever legacy plus
       that bound does, and gate 5 checks it.
+    - **Consequence:** a case whose legacy run takes more than about 40 s can now time out
+      against the scorecard's 60 s, if its child is still running when legacy ends. §6 gate 1
+      reports the child's time after legacy's end, per platform and with OCR off, so such
+      cases are named before the hook lands.
   - **An `input_fd` variant:** the child gets the parent's already-open descriptor. Both sides
     read with `os.pread` and never `read`/`seek`, because they share one open file
     description and its offset.
   - **Parent death:** a lifeline pipe whose write end only the parent holds. The child's
     preamble watches its read end and `_exit`s on EOF. Beside it:
     - on Linux, `PR_SET_PDEATHSIG` (`SIGKILL`). It fires when the *thread* that spawned the
-      child exits, not the process, so `start()` must spawn from a thread that outlives the
-      child. That is the parent's main thread, or a dedicated long-lived spawner thread, never a
-      short-lived worker. A test spawns from a thread that then exits, and checks the child
-      survives until the parent ends. The preamble also re-checks `getppid()` after setting
+      child exits, not the process. So `start()` always hands the spawn to one long-lived
+      spawner thread that `sandbox` owns, whatever thread calls it. The test calls `start()`
+      from a short-lived thread that then exits, and checks the child survives until the parent
+      ends. The preamble also re-checks `getppid()` after setting
       it, since the parent may already be gone;
     - on macOS, a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` watch on the parent's pid. After
       registering it, the preamble re-checks `getppid()`: a parent that died before the
@@ -342,6 +351,10 @@ touches code the shipped CLI runs.
   its process group. That counts the inner child against the outer memory cap and kills it with
   the CLI. A bomb test shows an inner child over the outer cap is counted and killed. (Bounding
   the inner `Limits` by the outer caps instead would need a CLI argument; not chosen.)
+  - **Cost:** on macOS, finding descendants means a full process listing every poll (50 ms).
+    3b-5 measures that overhead and may sample the tree less often than the footprint.
+  - **Not covered:** a double-forked escapee re-parented away from the tree is not found. It
+    is left to the lifeline, and to the OS sandbox in 3d.
 - **Files:** also `eval/caselib/bombrun.py` if its own polling needs the same change.
 - **Gate:** the suite on both platforms; the bomb harness still green.
 - **Verdict path:** none (unwired).
@@ -394,9 +407,10 @@ touches code the shipped CLI runs.
   1. `pread`s the descriptor, hashing as it goes;
   2. runs `crypt.decrypt` and `build_inventory` with the decryptions, per 3a-9b-1's interface;
   3. runs the registry and the stage extraction;
-  4. charges every structural message it sends to `max_units` (§3, "Sizing"). Tiling units are
-     not charged today; past the cap the child reports `BUDGET_EXHAUSTED`, still in a complete
-     report;
+  4. sends the core whole, and charges detail messages to `Limits.max_messages` (§3,
+     "Sizing"). `max_units` is unchanged: SYNTHESIZED units are charged to it as today, tiling
+     units are not. Past `max_messages`, the child drops the remaining detail and reports
+     `BUDGET_EXHAUSTED`, still in a complete report;
   5. writes the protocol to its dedicated descriptor. fd 1 points at `/dev/null` before
      `pymupdf` or `pikepdf` load.
 - **Files:** `child.py`, `tests/test_child.py`, and the guard (entry-point exemption).
@@ -571,8 +585,11 @@ touches code the shipped CLI runs.
 - **Deliverable:**
   - the §6 measurements re-run on main;
   - the REDESIGN 3b row;
-  - an ADR 0010 note on item 5 as built: `python -I <file>` through `sandbox.py` rather than
-    `-m`, and a parent-side memory watchdog rather than a memory rlimit (macOS ignores it);
+  - an ADR 0010 note on item 5 as built:
+    - `python -I <file>` through `sandbox.py` rather than `-m`;
+    - a parent-side memory watchdog rather than a memory rlimit (macOS ignores it);
+    - the matcher's split by stage, (iii)+M (Q11). From 4a, a stage's `RAW_MATCH` never
+      discharges on the child's word alone;
   - an ADR 0011 item-5 note on the verdict's mapping as built;
   - CHANGELOG.
 - **Files:** docs only.
@@ -612,16 +629,20 @@ touches code the shipped CLI runs.
   never sent.
 
 The order is strict. An unknown key, a missing key, a duplicate or a reordering is a protocol
-error.
+error. **Every frame is fixed-shape.** No message holds a list that grows with the file, its
+revisions or its units. The one list allowed is a region's owners, which the inventory caps at
+16. Anything with more items becomes one frame per item.
+
+Messages 1-7 and 11 are the **core**, which a report always contains, exhausted or not (see
+"Sizing"). Messages 8-10 are **detail**.
 
 1. **`hello`:** `{"v": 1, "size", "sha256"}`, about the bytes the child read.
-2. **`unit`:** one per unit.
-   - `{"i", "kind", "object", "generation", "revision", "within", "claims": [[start, end],
-     ...]}`.
-   - `within` is a container unit's index, or null.
-   - `claims` lists every span the unit claimed in `tile()`, so a unit may have several.
-     They are in the container's coordinates: raw for `STREAM_SLACK`, decoded for
-     object-stream members and headers.
+2. **`unit`**, one per unit, and **`claim`**, one per claimed span.
+   - A unit is `{"i", "kind", "object", "generation", "revision", "within"}`, where `within`
+     is a container unit's index, or null.
+   - A claim is `{"unit", "start", "end"}`, one frame for each span the unit claimed in
+     `tile()`; a unit may have several. Claims are in the container's coordinates: raw for
+     `STREAM_SLACK`, decoded for object-stream members and headers.
    - SYNTHESIZED units are `{"i", "synth": [body, revision]}`.
 3. **`decoded`:** `{"unit", "length"}`, the decoded length of each container whose nested
    units are tiled (each object stream).
@@ -639,9 +660,12 @@ error.
      the OBJECT or OBJSTM_MEMBER unit it lands on. Free entries are not units and are not
      listed.
    - This is for `OBJECT_SET`, against `qpdf --show-xref`.
-8. **`label`:** per stream body, its labels across revisions, each STRUCTURAL record with its
-   kind.
-9. **`result`:** per (unit, label), the registry's status, reason and witness.
+8. **`label`:** one frame per (stream body, revision, label), `{"unit", "revision", "label",
+   "kind"}`, with `kind` the STRUCTURAL record's kind or null. A heavily updated file sends
+   more frames, never a longer one.
+9. **`result`:** one frame per (unit, label): the registry's status, reason and a witness of at
+   most one span. A structural decoder's witness is a single span; 4a's multi-span witnesses
+   will need their own frames.
 10. **`stage`:** stage frames, under Q11 (iii).
 11. **`end`:** the completion sentinel, which must come last. It carries:
     - the count of each message type;
@@ -658,39 +682,70 @@ error.
 - every owner index is a declared unit;
 - an owned region lies within one of its owner's claims;
 - every `xref` entry names a declared unit of matching number and generation;
-- structural messages are at most `max_units` (below);
+- the core frames are within the core bound, and the detail frames within `max_messages`
+  (below);
 - flags are at most `max_flags_per_file` plus one `FLAGS_TRUNCATED`;
 - each stage frame is at most `max_stage_bytes`, and all stage frames together at most
   `max_stage_total` (Q12);
 - every structural frame is at most 512 bytes;
 - `Child` ended ok: exit 0, not killed, not cancelled, the private directory removed.
 
-**Sizing, so that a complete report within the budget always fits.**
+**Sizing, so that every report a correct child can send fits.**
 
-- **The child's side.** The child charges every structural message it sends to the unit budget
-  (`max_units`, 500,000). That covers units, claims, regions, labels, results, pages, xref
-  entries and decoded lengths.
-  - Past the budget it stops adding detail and sends a `BUDGET_EXHAUSTED` flag. That is still a
-    complete, valid report: a shadow-only flag, never a failure.
-- **The encoder's side.** It bounds every structural frame at 512 bytes by construction:
-  integers of at most 20 digits, at most 16 owners per region, at most one witness span per
-  structural result. A test builds the largest frame of each type.
-- **The structural cap** is then 500,000 × 512 bytes plus `hello` and `end`, about 245 MB.
-  The validator enforces it as a 256 MiB cap. A report within budget always fits.
+- **Frame size.** The encoder bounds every structural frame at 512 bytes by construction. Every
+  frame is fixed-shape (above): integers of at most 20 digits, at most 16 owners per region, a
+  closed set of named parameters per flag reason, and at most one witness span. A test builds
+  the largest frame of each type with worst-case values: 20-digit integers, 16 owners, every
+  parameter of the widest flag reason, and the longest enum names. It asserts each fits.
+- **The core is always sent, and is never cut.** It is `hello`, every `unit` and `claim`,
+  every `decoded` length, every `region` (top-level regions tiling `[0, size)`, and each
+  container's), every `xref` entry, every `page`, every `flag`, and `end`. With all of it,
+  `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING` and the anchors validate, so an exhausted report
+  still validates.
+  - **The core is bounded by the file's structure, not by a budget.** Every claim covers at
+    least one byte. Top-level claims lie in `[0, size)` and nested ones in the containers'
+    decoded lengths `D`, which the child reports and `max_inflated_bytes` (2 GiB) bounds. So:
+    - claims are at most `size + D`;
+    - units with a claim are at most `size + D`, and SYNTHESIZED units at most `max_units`
+      (charged, as today);
+    - regions are at most 2 × claims + 1 per tiling;
+    - `xref` entries and pages are at most the units;
+    - flags are at most 10,001.
+  - **The core bound** is therefore `5 × (size + D) + max_units + max_flags_per_file + 4`
+    frames. The parent computes it from its own `size` and the reported `D`, after checking
+    `D` against `max_inflated_bytes`. Core frames past it are a protocol violation. A correct
+    child never sends that many: each counted item is real.
+- **Detail is budgeted, by its own counter.** Labels, results and stage headers are charged to
+  a new `Limits.max_messages`. It lives in `budget.py`, is added by 3b-2 (which owns the
+  encoder), and is sized like Q12's caps: the corpus maximum with 10x headroom, measured by
+  3b-9, with 1,000,000 as the placeholder until then.
+  - Past it, the child drops the remaining detail and sends a file-level `BUDGET_EXHAUSTED`
+    flag in the core. That is a complete, valid report: `INVENTORY_FILE_FLAGS` is `FLAGGED`
+    (shadow-only), and any unit left without a result stays `UNEXAMINED`.
+- **`max_units` keeps ADR 0006's meaning,** and its 11.3x headroom: units, charged as today
+  (SYNTHESIZED units; tiling units are not charged). Protocol messages never touch it.
+- **The structural cap** is `512 × (core bound + max_messages)` bytes, computed per file. At
+  the placeholder `max_messages`, the detail part is 512,000,000 bytes, about 488 MiB (512 MB).
+  The core part grows with the file. A report a correct child can send therefore always fits.
 - **The corpus is far below it.** The largest file (32,976 tiling units, 3,876 pages) is about
-  150,000 messages, roughly 10-15 MB.
-- **Spooling and memory.** Structural and stage frames are spooled to the unlinked file
-  (3b-5). The parent keeps only index sets in memory: a few integers per unit.
+  150,000 frames, roughly 10-15 MB. 3b-9 reports the maxima of core and detail frames.
+- **Spooling and memory.** Frames are spooled to the unlinked file (3b-5). The parent keeps
+  only index sets in memory: a few integers per unit, the same order as the child's own
+  inventory.
 
 **Which caps fail, and which flag.**
 
 - **`FAILED`** is kept for real protocol violations: a malformed or truncated frame, or a frame
-  past a cap the child itself must honour (more than 500,000 structural messages, a frame over
-  512 bytes, a stage frame over `max_stage_bytes`, stages over `max_stage_total`). A child that
-  honours the caps never meets these.
-- **Content over a cap is never `FAILED`.** It is flagged by the child: `BUDGET_EXHAUSTED`, or
-  `STAGE_TRUNCATED`, which leaves that stage's `RAW_MATCH` `FLAGGED`. Both are shadow-only, so
-  no legitimate large file can move to exit 2 at 3b-11.
+  past a bound the child itself must honour:
+  - more core frames than the core bound;
+  - more detail frames than `max_messages`;
+  - a frame over 512 bytes;
+  - a stage frame over `max_stage_bytes`, or stages over `max_stage_total`.
+
+  A correct child never meets these, however large or heavily updated the file.
+- **Content over a budget is never `FAILED`.** The child flags it instead: `BUDGET_EXHAUSTED`
+  for detail, or `STAGE_TRUNCATED`, which leaves that stage's `RAW_MATCH` `FLAGGED`. Both are
+  shadow-only, so no legitimate large file can move to exit 2 at 3b-11.
 
 **Failure semantics.** Any of these makes `CHILD_COMPLETE` `FAILED`, with a closed outcome:
 
@@ -785,8 +840,8 @@ then applies, in order:
   - over a truncated stage, `FLAGGED` (`STAGE_TRUNCATED`);
   - for a stage named but never sent, `UNEXAMINED`.
 - **No exit 1 from a raw match.** In 3b nothing gives the shadow verdict an exit 1. Hard
-  findings need decoded evidence, which is 4a's. A hard raw tier would be an owner question; it
-  is not recommended (Q13).
+  findings need decoded evidence, which is 4a's. There is no hard raw tier in 3b (Q13,
+  decided); it is to be revisited at 4a/4d if evidence shows a need.
 
 **Exits.**
 
@@ -842,8 +897,10 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
   Contested files' regions tile like any other. These are exactly what 3b-11 enforces.
 - The qpdf anchors (`PAGE_COUNT`, `OBJECT_SET`) must hold on every inventory-unflagged file;
   mismatches on flagged files are counted by reason, not gated.
-- The maxima of structural bytes, stage bytes, units, regions and child wall time are
-  reported against each cap.
+- The maxima of core frames, detail frames (against `max_messages`), structural bytes, stage
+  bytes, units, regions and child wall time are reported against each cap.
+- The child's time after legacy's end is reported per platform and with OCR off, against
+  `post_legacy_wait_s`. Cases whose legacy run exceeds about 40 s are named (3b-5).
 
 **2. The ledger reproduces 3a-12** (3b-9).
 
@@ -904,8 +961,9 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
   (xref field data, object-stream payloads, string tokens, `Decryption.views`).
 - **Gate:** for every such legacy Binary-layer review match (`REVIEW_BINARY`) on the case
   library, the shadow matcher has a review match in the same stage. Every legacy hard finding
-  from the Objects layer whose value lies in a string token also has a shadow review match in
-  a string stage.
+  from the Objects layer whose value lies in a dictionary or object-stream member's string
+  token also has a shadow review match in a string stage. Strings inside content streams are
+  excluded: they are 4a's.
 - Any difference in scope is root-caused.
 - **Out of 3b's scope, and listed as 4a's:**
   - Binary-layer matches in Flate-decoded streams that 3b does not stage. Legacy scans
@@ -949,6 +1007,9 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
     nice +10, the parent only spooling during legacy, and gate 5's zero drift under load.
   - If gate 5 fails, the question goes back to the owner.
 - **Q3, decided by the coordinator on 2026-10-15:** `sandbox.Limits`' defaults until 3d.
+  - **Refined 2026-10-15 (#179 review rounds 2-3, coordinator):** the child's wall clock
+    counts from legacy's end. The parent waits at most `post_legacy_wait_s` (20 s) and then
+    cancels the child. The CPU and memory limits are unchanged (3b-5).
 - **Q4, decided by the coordinator on 2026-10-15, and superseded for stage bytes by the owner's
   Q11 the same day.** Structural messages carry no document bytes or text. Decoded stage bytes
   cross for matching only (Q11). 4a's evidence channel still gets its own review.
@@ -1028,17 +1089,16 @@ The matcher needs the secrets, which only the parent holds. No rules value may r
   same.
 - An over-cap stage is flagged (fail-closed), never failed (§3, "Which caps fail, and which
   flag").
-- The structural cap is not set by measurement. It is fixed by the budget, at 500,000 frames
-  of 512 bytes (§3, "Sizing").
+- The detail-message budget, `Limits.max_messages`, is sized the same way (3b-9 measures it;
+  1,000,000 until then). `max_units` keeps ADR 0006's meaning and headroom.
+- The structural cap is not a measured number. It is computed per file, as 512 bytes times the
+  core bound (fixed by the file's structure) plus `max_messages` (§3, "Sizing").
 
-**Q13 (owner, not recommended): a hard raw tier.**
+**Q13, decided by the coordinator on 2026-10-15 (owner informed): no hard raw tier in 3b.**
 
-- **The question:** should some raw matches be hard (exit 1), for example an exact value in a
-  string stage?
-- **Today:** legacy makes every raw match review tier. Hard findings come from its structural
-  pass, which the ledger gains with 4a's decoders.
-- **Recommendation: no.** Keep every raw match review tier in 3b, and leave hard findings to
-  decoded evidence (4a).
+- Every raw match is review tier, matching legacy: the Binary layer is always review tier, and
+  hard findings come from its structural pass, which the ledger gains with 4a's decoders.
+- To be revisited at 4a/4d if evidence shows a need.
 
 **Possible new question:** if §6 gate 5 shows exit drift or timeouts under load, the concurrency
 options go to the owner:
@@ -1084,8 +1144,8 @@ second root-causing round.
 - 3b-10 also waits on #160's place in the `verify.py` queue.
 - Off the path: 3b-1 to 3b-4, 3b-6 and 3b-8.
 
-**Owner input still needed:** only Q13, and its recommendation is "no". Q1, Q8, Q10 and Q11
-are decided.
+**Owner input still needed:** none. Q1-Q13 are decided. A new concurrency question arises only
+if §6 gate 5 fails.
 
 **REDESIGN's 3b row** is updated by 3b-13's close-out for the matcher and the protocol as
 built. Until then it points here.
