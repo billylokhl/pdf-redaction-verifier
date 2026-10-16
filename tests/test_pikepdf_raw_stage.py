@@ -40,6 +40,7 @@ import verify  # noqa: E402
 from caselib import REGISTRY, load  # noqa: E402
 from caselib.families.encrypted import FILLER  # noqa: E402
 from caselib.run import build  # noqa: E402
+from redaction_verifier.crypt import _plain_metadata  # noqa: E402
 
 load()
 ENCRYPTED = sorted(cid for cid, c in REGISTRY.items()
@@ -59,9 +60,11 @@ def _handler_encrypts(pdf: pikepdf.Pdf, stream: pikepdf.Stream) -> bool:
     """Whether the standard security handler encrypts *stream*."""
     if stream.get("/Type") == "/XRef":
         return False
+    # Only the catalog's /Metadata goes unencrypted under /EncryptMetadata
+    # false (ISO 32000-1 7.6.1; qpdf) -- not any /Type /Metadata stream:
+    # crypt.py's own rule, shared.
     encrypt = pdf.trailer.get("/Encrypt")
-    if (stream.get("/Type") == "/Metadata" and encrypt is not None
-            and encrypt.get("/EncryptMetadata") is False):
+    if encrypt is not None and tuple(stream.objgen) == _plain_metadata(pdf, encrypt):
         return False
     # A stream's own /Crypt filter decides only when it names /Identity
     # (or no name, which means /Identity: ISO 32000-1 §7.4.10); under a
