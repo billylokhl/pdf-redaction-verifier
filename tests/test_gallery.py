@@ -25,7 +25,7 @@ load()
 # false-alarm case (clean, but with its own known_gap — never a "miss":
 # truth is "clean").
 _SUBSET = (
-    "page.pixels-under-box",       # leak, known_gap, today's tool misses it (exit 0)
+    "page.overprinted-embedded-font",        # leak, known_gap, today's tool misses it (exit 0)
     "page.box-over-text",          # leak, caught today, secret drawn on the page
     "document.xmp-thumbnail",      # leak, known_gap, secret in XMP metadata (not on the page)
     "page.raw-minimal",            # clean, no known_gap
@@ -271,22 +271,22 @@ def test_measured_result_can_surface_an_undocumented_miss(tmp_path) -> None:
     assert "NEW MISS (not a known gap)" in section
     assert "MISSES IT TODAY" not in section    # that badge is for known gaps only
     # This new undocumented miss, plus the subset's two unmeasured known
-    # gaps (page.pixels-under-box, document.xmp-thumbnail) falling back to
+    # gaps (page.overprinted-embedded-font, document.xmp-thumbnail) falling back to
     # their pinned labels.
     assert result.misses == 3
 
 
 def test_measured_result_can_show_a_known_gap_as_closed(tmp_path) -> None:
-    # page.pixels-under-box's label says exit 0 (a known, pinned miss);
+    # page.overprinted-embedded-font's label says exit 0 (a known, pinned miss);
     # a measured exit 1 this run means it was actually caught — the badge
     # must follow the measurement, not the stale label, and the page
     # should say the two disagree.
     results = tmp_path / "results.json"
-    _write_results(results, {"page.pixels-under-box": 1})
+    _write_results(results, {"page.overprinted-embedded-font": 1})
     out = tmp_path / "gallery"
     result = build(out, results_path=results, case_ids=_SUBSET)
     html = (out / "index.html").read_text()
-    section = _section(html, "page.pixels-under-box")
+    section = _section(html, "page.overprinted-embedded-font")
     assert "MISSES IT TODAY" not in section
     assert "NEW MISS" not in section
     assert "measured verdict caught it instead" in section
@@ -296,22 +296,22 @@ def test_measured_result_can_show_a_known_gap_as_closed(tmp_path) -> None:
 
 def test_measured_result_agreeing_with_a_known_gap_still_shows_the_badge(tmp_path) -> None:
     results = tmp_path / "results.json"
-    _write_results(results, {"page.pixels-under-box": 0})
+    _write_results(results, {"page.overprinted-embedded-font": 0})
     out = tmp_path / "gallery"
     build(out, results_path=results, case_ids=_SUBSET)
     html = (out / "index.html").read_text()
-    section = _section(html, "page.pixels-under-box")
+    section = _section(html, "page.overprinted-embedded-font")
     assert "MISSES IT TODAY" in section
     assert "measured this run" in section
 
 
 def test_crashed_result_is_never_a_miss(tmp_path) -> None:
     results = tmp_path / "results.json"
-    _write_results(results, {"page.pixels-under-box": None})
+    _write_results(results, {"page.overprinted-embedded-font": None})
     out = tmp_path / "gallery"
     result = build(out, results_path=results, case_ids=_SUBSET)
     html = (out / "index.html").read_text()
-    section = _section(html, "page.pixels-under-box")
+    section = _section(html, "page.overprinted-embedded-font")
     assert "MISSES IT TODAY" not in section
     assert "NEW MISS" not in section
     assert "crashed" in section
@@ -396,5 +396,5 @@ def test_every_k_numbered_case_id_is_a_real_known_gap() -> None:
 
 def test_k_number_renders_in_its_case_section(built) -> None:
     _out, _result, html = built
-    section = _section(html, "page.pixels-under-box")
-    assert "K12" in section
+    section = _section(html, "page.overprinted-embedded-font")
+    assert "K36" in section

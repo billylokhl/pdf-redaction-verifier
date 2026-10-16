@@ -22,6 +22,10 @@ from .raw_cells import attachment_objects, coded, differences_font
 SECRET = f"SSN {SSN}"
 PAGE = stream(b"", text("Quarterly report"))
 LIVE_SSN = expect(1, findings=(("SSN", "live"),))
+# An image painted over (K12): flagged, and with OCR read from the images alone.
+COVERED_LIVE = expect(2, warnings=(("IMAGE_COVERED", "live"),))
+LIVE_SSN_OCR_COVERED = expect(1, findings=(("SSN", "live"),), warnings=(("IMAGE_COVERED", "live"),),
+                              layers=(("SSN", "OCR"),))
 ORPHAN_SSN = expect(1, findings=(("SSN", "orphaned"),))
 REVIEW_BINARY_LIVE = expect(2, warnings=(("REVIEW_BINARY", "live"),))
 LEFTOVER_IMAGE_LIVE = expect(2, warnings=(("LEFTOVER_IMAGE", "live"),))
@@ -59,14 +63,25 @@ def _inline_gray(width: int, height: int, samples: bytes, x: int = 0, y: int = 0
 # ── live.pixels.under-box ───────────────────────────────────────────────
 
 @leak_fitz(
-    "page.pixels-under-box", "live.pixels.under-box",
-    "A scanned image of the SSN with a black box drawn over it on the same page: "
-    "the pixels are still in the file, but OCR only ever sees the rendered, "
-    "composited page — the box, not what is under it.",
-    expected=LIVE_SSN,
-    known_gap=KnownGap("live.pixels.under-box", expect(0)),
+    "page.pixels-under-box-no-ocr", "live.pixels.under-box",
+    "K12 without OCR: the box over the scanned image is seen (IMAGE_COVERED: the image is "
+    "covered by an opaque fill drawn after it), so the file is never certified, though "
+    "nothing can read what is under the box.",
+    expected=COVERED_LIVE,
+    requires=("no-ocr",),
     mistake="Drawing a box over a scanned image instead of removing or replacing it.",
-    recovery="Extract the image object directly and OCR it, ignoring what is drawn over it.",
+    recovery="Remove the image, or replace it with a redacted one.",
+)
+@leak_fitz(
+    "page.pixels-under-box", "live.pixels.under-box",
+    "K12, closed by the legacy hotfix (owner decision 2026-10-15): a scanned image of the "
+    "SSN with a black box drawn over it on the same page. OCR of the rendered page sees "
+    "only the box; the page is flagged (IMAGE_COVERED) and rebuilt from its images alone, "
+    "where OCR reads the SSN.",
+    expected=LIVE_SSN_OCR_COVERED,
+    requires=("ocr",),
+    mistake="Drawing a box over a scanned image instead of removing or replacing it.",
+    recovery="Remove the image, or replace it with a redacted one.",
 )
 def pixels_under_box(path: Path) -> None:
     doc = fitz.open()

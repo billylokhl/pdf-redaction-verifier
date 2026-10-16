@@ -156,6 +156,7 @@ WARNING_CODES: dict[str, str] = {
     "ATTACHMENT_EMPTY": "coverage",
     "ATTACHMENT_NOT_TEXT": "coverage",
     "PAGE_THUMBNAIL": "coverage",
+    "IMAGE_COVERED": "coverage",
     # scope
     "RULES_UNKNOWN_KEY": "scope",
     "RULES_UNQUOTED_VALUE": "scope",

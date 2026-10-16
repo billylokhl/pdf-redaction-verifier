@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import json
 import os
 import platform
@@ -106,6 +108,26 @@ def scan(case: Case, pdf: Path, workdir: Path) -> Scan:
     report.unlink(missing_ok=True)          # never judge an earlier run's report
     code = verify.main(["--target", str(pdf), "--secrets", str(rules), "--json", str(report)])
     return Scan(json.loads(report.read_text()), code)
+
+
+_SHARED: dict[tuple[str, str, str], Scan] = {}
+
+
+def scan_shared(case: Case, pdf: Path, workdir: Path) -> Scan:
+    """``scan``, once per (case, rules, PDF bytes) for the life of the
+    process: for tests that judge the *same* plain scan from a different
+    angle (the case library's own test, the pattern baseline's "the
+    recorder changes nothing" against a plain scan, the policy-1 notice
+    test on a twin) and so need not pay for it again. A hit returns a deep
+    copy, so no test can change what another reads. Only for a scan under
+    no patch of the scanner: a test that rebinds part of ``verify`` calls
+    ``scan`` itself."""
+    key = (case.id, json.dumps(list(case.rules), sort_keys=True),
+           hashlib.sha256(pdf.read_bytes()).hexdigest())
+    hit = _SHARED.get(key)
+    if hit is None:
+        hit = _SHARED[key] = scan(case, pdf, workdir)
+    return copy.deepcopy(hit)
 
 
 @dataclass(frozen=True)

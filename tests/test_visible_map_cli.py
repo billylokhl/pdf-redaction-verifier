@@ -94,6 +94,8 @@ def _identity_cases() -> list[str]:
     have = available()
     picked: dict[tuple[str, str, str], str] = {}
     for case_id, case in sorted(REGISTRY.items()):
+        if case.bomb is not None:
+            continue            # never scanned in this process: test_bomb_cases.py
         if case.perf or case.requires - have or (case.grid and not RUN_ALL):
             continue
         if RUN_ALL:

@@ -279,3 +279,67 @@ def digit_column(path: Path) -> None:
     for i, digit in enumerate("987654321"):
         page.insert_text((100, 80 + 8 * 1.27 * i), digit, fontsize=8)
     save(doc, path)
+
+
+# ── Images and boxes (the IMAGE_COVERED controls; K12/K38 hotfix) ──────
+# An image is flagged only when one opaque fill drawn after it covers at
+# least a quarter of it (redaction_verifier/views/covered.py).
+
+def _report_image(page: fitz.Page, rect: fitz.Rect) -> None:
+    page.insert_text((72, 72), "Quarterly report")
+    page.insert_image(rect, stream=png_of("Quarterly report"))
+
+
+_IMAGE = fitz.Rect(72, 200, 372, 260)
+
+
+@clean("page.box-over-image-margin", "live.pixels.under-box",
+       "A black box over the blank right edge of a scanned image, 15% of its area: under "
+       "the quarter that flags an image as painted over.")
+def box_over_image_margin(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    _report_image(page, _IMAGE)
+    page.draw_rect(fitz.Rect(327, 200, 372, 260), color=(0, 0, 0), fill=(0, 0, 0))
+    save(doc, path)
+
+
+@clean("page.box-beside-image", "live.pixels.under-box",
+       "A black box drawn beside a scanned image, touching none of it.")
+def box_beside_image(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    _report_image(page, _IMAGE)
+    page.draw_rect(fitz.Rect(400, 200, 500, 260), color=(0, 0, 0), fill=(0, 0, 0))
+    save(doc, path)
+
+
+@clean("page.image-over-box", "live.pixels.under-box",
+       "A scanned image drawn over a filled box (a panel behind it): the box comes first, "
+       "so it hides nothing of the image.")
+def image_over_box(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    page.draw_rect(fitz.Rect(62, 190, 382, 270), color=(0.8, 0.8, 0.8), fill=(0.9, 0.9, 0.9))
+    _report_image(page, _IMAGE)
+    save(doc, path)
+
+
+@clean("page.translucent-box-over-image", "live.pixels.under-box",
+       "A half-transparent tint drawn over a whole scanned image: the image shows through, "
+       "so it is not painted over.")
+def translucent_box_over_image(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    _report_image(page, _IMAGE)
+    page.draw_rect(_IMAGE, color=None, fill=(1, 1, 0), fill_opacity=0.5)
+    save(doc, path)
+
+
+@clean("page.box-over-blank-image", "live.pixels.under-box",
+       "A black box over the whole of a blank image: nothing is under it, but the tool "
+       "cannot know that without reading it, so the page is flagged (IMAGE_COVERED) for "
+       "review; images-only OCR reads nothing there.",
+       expected=expect(2, warnings=(("IMAGE_COVERED", "live"),)))
+def box_over_blank_image(path: Path) -> None:
+    doc = fitz.open(); page = doc.new_page()
+    page.insert_text((72, 72), "Quarterly report")
+    page.insert_image(_IMAGE, stream=png_of(""))
+    page.draw_rect(_IMAGE, color=(0, 0, 0), fill=(0, 0, 0))
+    save(doc, path)

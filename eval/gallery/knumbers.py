@@ -76,7 +76,7 @@ CASE_TO_K: dict[str, int] = {
     # is now a caught leak case, no longer a known gap.
     "leftover.single-glyph-show-runs": 10,
     "leftover.untyped-text-operator-words": 11,
-    "page.pixels-under-box": 12,
+    # K12: fixed (§8, Lane G hotfix); page.pixels-under-box is now a caught case.
     "page.off-page-no-unicode-font": 13,
     "page.pixels-off-page": 14,
     "page.hidden-layer-font-coded": 15,
@@ -102,7 +102,7 @@ CASE_TO_K: dict[str, int] = {
     "page.extreme-coordinates": 35,
     "page.overprinted-embedded-font": 36,
     "page.image-extra-rows": 37,
-    "page.ssn-strips-under-box": 38,
+    # K38: fixed with K12 (§8); page.ssn-strips-under-box is now a caught case.
     "page.jpeg-exif-thumbnail": 39,
     "page.dense-sideways-scan": 43,
 }
@@ -110,7 +110,7 @@ CASE_TO_K: dict[str, int] = {
 
 def documented_k_numbers(redesign_text: str) -> set[int]:
     """Every K-number §8 documents as a still-open gap (excludes the ones
-    §8 itself says were fixed: K8, K9, K34) — the source of truth
+    §8 itself says were fixed: K8, K9, K12, K24, K34, K38, ...) — the source of truth
     ``CASE_TO_K``'s values are checked against."""
     try:
         start = redesign_text.index(_SECTION_START)
