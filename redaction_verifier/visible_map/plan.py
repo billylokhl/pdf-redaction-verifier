@@ -885,7 +885,8 @@ class Planner:
                                 outside_only=outside_only)
         plan.headline = headline.text(plan.flags, exit_code=plan.exit_code,
                                       json_unwritten=plan.json_unwritten, codes=codes,
-                                      outside_only=outside_only, detail=self._row_2_detail())
+                                      outside_only=outside_only, detail=self._row_2_detail(),
+                                      notices=len(self.report.get("notices") or []))
         plan.legend = self.rules.legend()
 
 
