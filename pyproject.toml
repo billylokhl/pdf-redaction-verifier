@@ -156,6 +156,7 @@ module = [
     "redaction_verifier.inventory", "redaction_verifier.inventory.*",
     "redaction_verifier.budget", "redaction_verifier.ledger",
     "redaction_verifier.sandbox",
+    "redaction_verifier.crypt",
 ]
 disallow_any_generics = true
 disallow_subclassing_any = true

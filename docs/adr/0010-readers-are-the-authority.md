@@ -143,3 +143,15 @@ drops or keeps references differently across versions. Owner decision
   the gate's written allowlist covers it.
 - **qpdf `--check` ERROR lines are gated** like WARNING lines (3a-6 had
   counted them only).
+
+## Note (2026-10-15, 3a-9a): where decryption lives
+
+`redaction_verifier/crypt.py` decrypts each encrypted revision with
+pikepdf and cross-checks it against MuPDF (ADR 0001). It needs both
+readers, so it sits outside `redaction_verifier/inventory`, and the
+child-side import guard above is unchanged (coordinator decision,
+2026-10-15; not an amendment). It reads the inventory (each stream's stored
+span, each object stream's capped decode) and hands plain data back:
+the decrypted values both readers agree on, for the inventory in 3a-9b.
+The legacy CLI never loads it (`tests/test_import_boundaries.py`).
+

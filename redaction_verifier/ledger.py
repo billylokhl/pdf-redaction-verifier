@@ -104,6 +104,9 @@ class FlagReason(Enum):
     RESOURCE_SCOPE = "resource_scope"  # a form, pattern, Type3 font or appearance without /Resources
     FIELD_TREE = "field_tree"          # a /Parent cycle among form fields (owner decision P5)
     APPEARANCE_UNSUPPORTED = "appearance_unsupported"  # MuPDF would synthesize it but cannot (#106)
+    # Decryption, cross-checked (3a-9, ADR 0001; crypt.CryptRule, MismatchRule).
+    DECRYPTION_MISMATCH = "decryption_mismatch"  # pikepdf's and MuPDF's decryptions differ
+    DECRYPTION_UNVERIFIED = "decryption_unverified"  # no second decryption vouches for it
 
 
 Reason: TypeAlias = NAReason | FlagReason

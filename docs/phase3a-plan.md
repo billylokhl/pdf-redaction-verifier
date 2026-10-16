@@ -658,6 +658,14 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
   pages.py's reuse (the whole-result reuse when no read object changed, and page records
   keyed on attributes as written) does not see -- 3a-9 adds the revision's encryption
   identity to both, or flags any change of /Encrypt across revisions.
+  Split (2026-10-15, coordinator): 3a-9a-0 hand-built encrypted fixtures (rawcrypt, #174);
+  3a-9a-1 `redaction_verifier/crypt.py` in shadow mode (outside the inventory package,
+  ADR 0010 note): DECRYPTION_MISMATCH (MismatchRule) / DECRYPTION_UNVERIFIED (CryptRule:
+  password, an authentication split, handler, open failure, MuPDF repair, /Perms, a reader
+  warning, a stream-level /Crypt filter, /EFF, stored bytes already plain, unlocated);
+  3a-9a-2 the scorecard's encrypted exemptions and the gate (after #165); 3a-9b the
+  inventory reads the decrypted values, the encryption identity joins pages/trees/
+  annotations/labels reuse, P4 lifted.
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
   — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
