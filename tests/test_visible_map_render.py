@@ -30,6 +30,10 @@ from .visible_map_support import (
     write_rules,
 )
 
+# A listed pattern for an SSN (a redactor config's entity_types are not
+# checked: owner decision 2026-10-16).
+SSN_PATTERN = "'\\d{3}-\\d{2}-\\d{4}'"
+
 
 def _save(doc: fitz.Document, path: Path) -> Path:
     doc.save(path)
@@ -131,12 +135,12 @@ class TestSelfCheck:
                                                                 monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "overlap.pdf")
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
-                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
-        assert "built-in type: SSN ****" in {b.label for b in the_plan.boxes}
+                               f'exact_values:\n  - "{SSN}"\npatterns:\n  - {SSN_PATTERN}\n')
+        assert "pattern #1 (patterns[0]) ****" in {b.label for b in the_plan.boxes}
         _assert_absent(out, SSN, "6789")
         # With no exact value it would reveal, the masked tail stays.
-        run, the_plan, out = drawn(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n", "--strict-classes")
-        assert "built-in type: SSN ****6789" in {b.label for b in the_plan.boxes}
+        run, the_plan, out = drawn(monkeypatch, tmp_path, pdf, f"patterns:\n  - {SSN_PATTERN}\n")
+        assert "pattern #1 (patterns[0]) ****6789" in {b.label for b in the_plan.boxes}
 
     def test_a_one_character_tail_on_a_value_is_hidden(self, tmp_path, monkeypatch) -> None:
         # \d\d matches 12, 34, 67, 89 inside the value; mask() of each shows
@@ -209,10 +213,10 @@ class TestSelfCheck:
     def test_yaml_labels(self, tmp_path, monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "yaml.pdf")
         run, the_plan, out = drawn(monkeypatch, tmp_path, pdf,
-                               f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
+                               f'exact_values:\n  - "{SSN}"\npatterns:\n  - {SSN_PATTERN}\n')
         labels = {b.label for b in the_plan.boxes}
         assert "exact value #1 (exact_values[0])" in labels
-        assert "built-in type: SSN ****" in labels      # tail dropped: part of the value
+        assert "pattern #1 (patterns[0]) ****" in labels      # tail dropped: part of the value
         assert not the_plan.legend
         _assert_absent(out, SSN, "6789")
 

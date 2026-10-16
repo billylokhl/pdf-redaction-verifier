@@ -48,7 +48,8 @@ from redaction_verifier.report.text import _sanitize_report_text
 # Bumped when a field of the --json report is renamed, removed or changes
 # meaning; adding a field does not bump it. 2: `notices` (ADR 0012) -- with
 # built-in classes informational, a class match no longer appears in
-# `findings` or `warnings`, which changes what those mean.
+# `findings` or `warnings`, which changes what those mean. `info` (owner
+# decision 2026-10-16) is an added field, so it does not bump it.
 JSON_SCHEMA_VERSION: int = 2
 
 
@@ -133,6 +134,11 @@ def build_json_report(
     findings = ordered([finding_entry(f) for f in report.findings])
     warnings = ordered([warning_entry(w) for w in report.warnings])
     notices = ordered([notice_entry(n) for n in report.notices])
+    # Information that is not a finding, a warning or a notice and never
+    # changes the verdict (model.Info): today only ENTITY_TYPES_NOT_CHECKED.
+    info = ordered([{"code": i.code, "entity_types": list(i.entity_types),
+                     "by_default": i.by_default, "message": text(i.message)}
+                    for i in report.info])
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "tool": {"name": "pdf-redaction-verifier", "version": tool_version},
@@ -149,6 +155,7 @@ def build_json_report(
         "findings": findings,
         "warnings": warnings,
         "notices": notices,
+        "info": info,
     }
 
 

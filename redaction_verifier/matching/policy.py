@@ -19,8 +19,10 @@ from __future__ import annotations
 from typing import Collection, Mapping
 
 # The rule kinds that are built-in classes: "class" in this tool's own
-# rules format, "entity_types" in a redactor's config.
-CLASS_KINDS: frozenset[str] = frozenset({"class", "entity_types"})
+# rules format. A redactor config's entity_types are not rules at all
+# (owner decision 2026-10-16): they are never read as classes, so neither
+# this policy nor --strict-classes ever applies to them.
+CLASS_KINDS: frozenset[str] = frozenset({"class"})
 
 
 def informational_rules(

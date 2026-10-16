@@ -91,7 +91,8 @@ discharged and nothing matched. Obligations start `UNEXAMINED`:
   every child a decoder uncovers, every unindexed byte range);
 - one per *view* (each page's text readings, each page's OCR);
 - one per *external tool* (qpdf, exiftool, OCR engine) and per rules
-  scope (e.g. entity types the tool cannot verify);
+  scope problem (e.g. an unrecognized config key; a redactor config's
+  entity types are not checked at all, owner decision 2026-10-16);
 - one per *cross-check* (parser agreement).
 
 A unit's obligation is discharged only when its decoder **consumed** it

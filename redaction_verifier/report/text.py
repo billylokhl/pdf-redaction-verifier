@@ -121,9 +121,8 @@ _WHERE_EXPLAINED: dict[str, tuple[str, str]] = {
 
 # ── Which rule matched: the plain label, and how the kinds are named ───────
 _KIND_NAMES = {"exact_values": "exact values", "patterns": "patterns",
-               "entity_types": "built-in types", "value": "values", "pattern": "patterns",
-               "class": "built-in types"}
-_KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "entity_types", "class")
+               "value": "values", "pattern": "patterns", "class": "built-in types"}
+_KIND_ORDER = ("exact_values", "value", "patterns", "pattern", "class")
 
 
 def rule_label(name: str, rules: RuleSet | None, sample: str = "",
@@ -165,9 +164,7 @@ def _counts(report: ScanReport, rules: RuleSet) -> str:
         if kind not in totals:
             continue
         n, total = len(found.get(kind, ())), totals[kind]
-        if kind == "entity_types" and rules.entity_types_by_default:
-            parts.append(f"{n} of the {total} built-in types checked by default")
-        elif kind in ("entity_types", "class"):
+        if kind == "class":
             parts.append(f"{n} of your {total} built-in types")
         else:
             parts.append(f"{n} of your {total} {_KIND_NAMES[kind]}")
@@ -194,13 +191,6 @@ def _found_explained(report: ScanReport, rules: RuleSet | None) -> list[str]:
     if "pattern" in kinds:
         out.append(("'name' (a pattern)", "Text matching a pattern from your rules file, by the "
                     "name you gave it. Only the last characters of the match are shown."))
-    if "entity_types" in kinds:
-        why = ("They are checked by default because your secrets file does not list "
-               "entity_types." if rules.entity_types_by_default
-               else "Your secrets file lists them under entity_types.")
-        out.append(("built-in type", "Text that looks like the kind of data named (for "
-                    "example an SSN or an email address). " + why + " Only the last "
-                    "characters of the match are shown."))
     if "class" in kinds:
         out.append(("'name' (a built-in type)", "Text that looks like the kind of data the "
                     "rule's class names (for example an SSN). Only the last characters of the "
@@ -249,7 +239,7 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
     elif report.degraded or json_unwritten:
         print(f"  [NOT CERTIFIED]  No secret was confirmed in: {name}")
         why = ("But the checks below did not finish, need a person to review them, or your "
-               "rules ask for something this tool cannot check" if report.degraded
+               "rules file has a problem that may change what is searched for" if report.degraded
                else "But the JSON report could not be written")
         for line in _wrap(f"{why} -- so this is NOT a certified clean result (exit code 2). "
                           "Resolve this first.", "                   "):
@@ -268,7 +258,19 @@ def print_report(report: ScanReport, pdf_path: Path, *, rules: RuleSet | None = 
             print(_sanitize_report_text(f"    - {w}"))
     if report.notices:
         _print_notices(report, rules, exact)
+    if report.info:
+        _print_info(report)
     print()
+
+
+def _print_info(report: ScanReport) -> None:
+    """Plain information about the run (model.Info): after the verdict,
+    the warnings and the notices, never mistakable for a finding, and
+    never part of the result."""
+    print("\n  ℹ FOR YOUR INFORMATION (does not change the result above)")
+    for info in report.info:
+        for line in _wrap(info.message, "    "):
+            print(_sanitize_report_text(line))
 
 
 def _print_notices(report: ScanReport, rules: RuleSet | None, exact: MaskIndex) -> None:
