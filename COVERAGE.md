@@ -10,7 +10,8 @@ clean.
 **Legend**
 
 - ✓ **Read** — the content is searched; a match is a finding or a
-  manual-review warning, per the reading layer's tier (see the README).
+  manual-review warning, per the reading layer's tier (see
+  [Tiers](docs/reference.md#tiers)).
 - ⚑ **Flagged** — the tool finds the content but cannot read it, and says
   so: a manual-review warning, so the run exits `2`, never `0`. (Under
   Hostile input, ⚑ also marks a value found, exit `1`, but filed under
@@ -249,7 +250,7 @@ matcher sees it whole. Each is ✗:
   rule is matched whole after normalization (case, punctuation, spacing);
   the tool generates no reorderings and does not look for parts of a
   listed value. Not detected unless each form is listed as its own value
-  (see README, Rules file).
+  (see the README's [Writing your secrets file](README.md#writing-your-secrets-file)).
 - A letter-spaced value in fine print that the page's reading breaks into
   one-character lines around other text — more than three pieces
   (`match.letter-spaced-stack`).
@@ -336,6 +337,139 @@ wholly above the next page's top edge (`REVIEW_CROSS_PAGE`; both
 pinned by `page.raw-font-coded-carried-off-page-*`). The same joins
 flag, by design, the odd clean page whose visible text and an off-page
 slug happen to form a value: review-tier noise, 3 of 6,000 files of a fabricated fuzz of clean off-page layouts (0.05%) and none of a 2,072-file corpus of real PDFs, read by the Text layer alone.
+
+## Known gaps
+
+Every place a leaking document can still be certified clean (exit `0`),
+in short: the ✗ cells and matching limits above, then the known false
+positives. Each entry lists the case-library cells it covers in a hidden
+HTML `gap-cells` comment, and names its K-number in `docs/REDESIGN.md` §8
+where it has one.
+`tests/test_known_gaps_coverage.py` checks this section both ways: every
+pinned known gap (`known_gap` in the case library) must be listed here,
+and every listed cell must still be one; each K-number must name a row of
+§8 that is not marked fixed.
+
+- **Pixels the tool does not OCR:** off the page (K14), in XMP thumbnails (K22, K23),
+  in embedded files other than listed attachments (K27), and in image
+  data beyond an image's declared size (rows past its declared height
+  are never drawn, K37). One picture cut into thin strips, each too
+  small to read alone, is also missed when they are not drawn next to
+  each other, or when they are never drawn. (An image under a box is now
+  flagged and read from the images alone; see footnote ¹⁷.)
+  <!-- gap-cells: off-page.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
+- **Content no page shows:** font-coded text (K15), outlines (K6) or
+  images in a switched-off optional-content layer, a hidden
+  annotation's appearance (K16, K17), or a page resource that is never
+  drawn (K18, K19; plain text there *is* read).
+  <!-- gap-cells: oc-off.font oc-off.pixels annot-appearance.font annot-appearance.pixels unused-resource.font unused-resource.pixels -->
+- **Unindexed bytes:** anything after the final `%%EOF` (plain text K7,
+  font-coded text K31, pixels K32, a container K33), in comments, or in
+  an object whose table entry is marked free.
+  <!-- gap-cells: unindexed.plain unindexed.font unindexed.pixels unindexed.container -->
+- **Streams and leftovers nothing reads or flags:** text after a
+  stream's compression end marker, in a live page (K1) or a leftover
+  stream (K2); leftover plain text labelled as a font program or a 1×1
+  image (K3, K4); leftover text converted to outlines (K5); a leftover
+  image just under the 8×32 size gate, whether it is a picture still
+  readable when enlarged, one picture cut into strips (K21), or raw
+  sample bytes holding the value literally (a known value there is
+  found only when the image is drawn); leftover font-coded text shown one character per string
+  (K10); and a removed attachment whose text holds three words that are
+  also content operators, so it is taken for page content (K11).
+  <!-- gap-cells: live.plain.after-stream-end orphaned.plain.after-stream-end orphaned.plain.mislabelled orphaned.pixels.outlines orphaned.pixels.small orphaned.font.single-glyph-strings orphaned-attachment.plain.operator-words -->
+- **Leftover text in a font that maps ordinary-looking codes to other
+  glyphs** (K20), **containers encoded as text** (a base64 email part, an
+  HTML `data:` URI; K25), and a zip container in an embedded file other
+  than a listed attachment (K28).
+  <!-- gap-cells: orphaned.font.ordinary-codes attachment.container.text-encoded embedded-other.container -->
+- **Font-coded text no reading recovers:** off the page in an embedded
+  font whose `/ToUnicode` map was stripped (K13), and text drawn from the
+  same starting point as other text, so the two interleave glyph by
+  glyph (K36).
+  <!-- gap-cells: off-page.font.no-unicode live.font.overprinted -->
+- **Pattern rules** on embedded files other than attachments (K26), on
+  scripts stored as streams on links, fields or pages (K29), on an
+  editor's private data, `/PieceInfo` (K30), and on a drawn image's own
+  raw sample or codec bytes (known values are still found there, as
+  manual review — a known value hidden in a drawn image's raw samples, or
+  in a JPEG comment segment, is a Binary-layer manual-review warning
+  today, but the same secret found only by a pattern rule is not).
+  <!-- gap-cells: embedded-other.plain.pattern-rules javascript.plain.pattern-rules-in-streams private-data.plain.pattern-rules live.pixels.hidden-samples.pattern-rules -->
+- **Image data beyond the main picture:** a JPEG's own EXIF (or other)
+  thumbnail can hold a second, fully decodable image the tool never
+  looks at — only the main picture is ever drawn or OCR'd (K39).
+  <!-- gap-cells: live.pixels.exif-thumbnail -->
+- **A dense sideways scan on macOS 27:** on a scanned page of 40 small
+  lines turned 90°, Vision reports success but leaves some lines out,
+  and nothing compares its reading with the ink on the page. OCR now
+  also reads such a page turned, which finds the value, but only as
+  manual review (exit `2`), not a finding (K43; on macOS 26 Vision reads
+  the line and the page exits `1`). A page whose dropped lines are
+  horizontal, or where Vision reports no vertical line, can still pass as
+  clean ([#82](https://github.com/billylokhl/pdf-redaction-verifier/issues/82)).
+  <!-- gap-cells: live.pixels.ocr-dropped-line -->
+- **An oversized image:** OCR reads each page as a render at its usual
+  resolution, so an image with far more detail than that render (60,000
+  pixels across a page, say) is read only at the render's resolution,
+  and small text inside it can pass as clean. Phase 4b bounds the image
+  sizes it reads in full.
+  <!-- gap-cells: live.pixels.oversized-image -->
+- **Split values:** a value split around other text into more than three
+  pieces, or with its pieces more than five lines apart (a page-break
+  split with a header, footer or page number between its halves, a value
+  wrapped inside one column of a multi-column page, or halves in reverse
+  order are manual review, exit `2`); a letter-spaced value in fine print
+  that the page's reading breaks into one-character lines around other
+  text; a value wrapped over two fine-print lines closer together than
+  the line tolerance, which merges them into one interleaved line; a
+  page-break split whose halves are written in different directions (one
+  horizontal, one vertical);
+  dash-less pattern numbers wrapped at a line or page break; a value
+  that only a pattern rule looks for, split at a page break where the
+  split needs more than the last line before the break, runs over four
+  pages, is rotated, sits in form boxes or is written one digit per line
+  (a plain page-break split under a pattern rule is manual review, exit
+  `2`); text at extreme coordinates (K35).
+  <!-- gap-cells: match.letter-spaced-stack match.tight-fine-print match.mixed-direction-split match.undashed-wrap match.pattern-split match.extreme-coordinates -->
+- **Name forms not listed:** a reordered name on one line ("TESTPERSON,
+  JORDAN Q" in the document, "Jordan Q. Testperson" in the rules) and a fragment
+  of a listed name (the first name inside an email address, when only
+  the full name is listed). The tool matches the exact values you list,
+  after normalization, and does not generate reorderings or search for
+  parts of a name; list each form as its own value (see the README's
+  [Writing your secrets file](README.md#writing-your-secrets-file)).
+  <!-- gap-cells:  -->
+
+Other leftover images, other leftover text in non-plain font codes,
+attachments that are not text, and page thumbnails (`/Thumb` preview
+images on any page) are **flagged** (exit `2`) rather than read: a
+clean document containing them cannot certify as `0` until the tool
+learns to read them.
+
+Known false positives: a short value such as a 5-digit ZIP can be
+assembled as a hard finding at a page seam (a page number followed by the
+next page's first line), and so can a print slug just past the page's
+edge beside the page number, joined with the next page's first line; a
+value assembled down a vertical column or through several
+page-number-only pages is only ever manual review; and
+decompressed font tables, or an image's raw bytes, can raise
+coincidental Binary warnings (see the
+[Binary layer](docs/reference.md#binary-layer)); a document `/ID` written as
+hex text whose digits happen to form an SSN, card or phone number is
+manual review under a pattern rule. Prefer longer, more specific values.
+In strict mode (`--strict-classes`) the built-in classes raise hard
+findings on many clean files: on 488 real text-bearing PDFs with no secret
+in them, `ssn` or `us-phone` did on 28.3%, mostly digit runs inside hex or
+alphanumeric ids (eval/spikes/RESULTS.md, "Phase 5 baseline"). By default
+those matches are notices that do not change the verdict (ADR 0012).
+<!-- gap-cells: false-alarm.slug-beside-visible-line false-alarm.binary-value-collision false-alarm.generated-id-digits -->
+
+A rewrite that closes these gaps by accounting for every byte of the
+file, rather than searching the places this tool knows about, is planned
+in [docs/REDESIGN.md](docs/REDESIGN.md); its Phase 1 design questions
+are decided in [docs/adr/](docs/adr/) -- nine accepted decisions, each
+backed by a measurement in [eval/spikes/](eval/spikes/).
 
 ## What ⚑ costs, and what comes next
 

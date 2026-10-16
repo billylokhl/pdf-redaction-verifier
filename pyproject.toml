@@ -85,7 +85,7 @@ version = {attr = "verify.__version__"}
 required-version = ">=0.12.3,<0.13"
 # requires-python is an open-ended ">=3.10"; without a cap uv's universal
 # resolver would also have to solve for not-yet-released interpreters.
-# The lock only needs to cover what CI and the README actually promise
+# The lock only needs to cover what CI and docs/reference.md actually promise
 # (3.10 through 3.14).
 required-environments = [
     "python_version >= '3.10' and python_version < '3.15' and sys_platform == 'darwin'",

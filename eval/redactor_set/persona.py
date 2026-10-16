@@ -77,8 +77,8 @@ def _yaml_str(value: str) -> str:
 def redactor_config_yaml() -> str:
     """The fabricated redactor config: the same keys and structure as a
     real one (exact values, patterns, entity types), LLM detection off.
-    It is also the verifier's --secrets file (README, "Shared YAML
-    config"), so one file drives both."""
+    It is also the verifier's --secrets file (docs/reference.md, "Shared
+    YAML config"), so one file drives both."""
     lines = [
         "# Fabricated values only (eval/redactor_set/persona.py).",
         "entity_types: []",

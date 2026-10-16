@@ -396,7 +396,7 @@ only ever manual review, for values and patterns alike. Two stack
 *every* visible glyph into vertical columns: the only way to read a
 value written one character per line, but on an ordinary page a column
 stacks one glyph from each of many lines — a ledger's last digits, a
-numbered list's numbers — which assembled the README's own example
+numbered list's numbers — which assembled the docs' own example
 value out of a clean numbered list. The third reads all the horizontal
 text, visible or not, so a value formed by visible and off-page parts —
 a column break apart on one line, wrapped onto an off-page line, or
@@ -976,7 +976,7 @@ no `patterns` is refused (exit 2) rather than passed with nothing checked.
   embedded file; and the matching limits — page-break splits with
   something between the halves, pattern-rule page-break splits in
   layouts no reading joins, multi-column wraps, dash-less pattern wraps,
-  extreme coordinates. README's Known gaps lists each, with its K-number where it has one;
+  extreme coordinates. COVERAGE.md's Known gaps lists each, with its K-number where it has one;
   a dense sideways scan on macOS 27 is manual review only (K43).
 - **Flags cost certainty.** Leftover images, leftover text in non-plain
   font codes, attachments that are not text, and page thumbnails
