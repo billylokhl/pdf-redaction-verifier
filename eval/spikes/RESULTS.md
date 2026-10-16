@@ -946,14 +946,16 @@ normalised, a file counted once per message; the report's `levers.hint_stream`):
   qpdf's computed layout in files no update touched. Every one carries "page N has shared
   identifier entries" and "shared object N: in hint table but not computed list". Most also
   carry object-count (149), page-length, first-page-offset and shared-object-length (120 each)
-  mismatches. **They are essentially Adobe's linearizer**: of the 129 that name a producer,
-  126 are Adobe (Adobe PDF Library 66, Acrobat Distiller 42, Adobe Security Envelope 9, Adobe
+  mismatches. **They were written by Adobe's linearizer**: of the 129 that name a producer,
+  126 are Adobe (Adobe PDF Library 66, Acrobat Distiller 42, Acrobat Security Envelope 9, Adobe
   XD 8, Photoshop 1) and 3 Quartz; 41 name none. Of the 101 warned text-bearing new files: 64
   Adobe, 3 Quartz, 34 none. One writer family and the same two messages everywhere support
   the hypothesis that Adobe reads Annex F differently from qpdf, rather than damage. qpdf's
-  own source records such Acrobat deviations (its `QPDF_linearization.cc`, the comments in
-  `checkHPageOffset` and `checkHSharedObject`, citing the PDF Reference's implementation
-  notes 126-131 on how Acrobat fills those tables); qpdf's manual has no such section.
+  own source records such Acrobat deviations (its `QPDF_linearization.cc`, v12.4.1: in
+  `checkHPageOffset`, at the "page 0 has shared identifier entries" warning all 170 files
+  carry, "pdlin and Acrobat both do this even though the spec states clearly and
+  unambiguously that they should not"; that function and `checkHSharedObject` cite the PDF
+  Reference's implementation notes 125-131); qpdf's manual has no such section.
 - **The 108 text-bearing new files** are 101 of those warned files, 6 updated files (stale),
   and 1 clean file.
 
@@ -976,8 +978,8 @@ So offset drift from a later update explains none of the warned files.
   five 3a-7 PRs on 2026-10-15):
   1. a spike decoding the 101 warned text-bearing files, to see whether one reading of
      Annex F accounts for their values exactly -- starting from the Acrobat deviations qpdf's
-     source documents (`checkHPageOffset`, `checkHSharedObject`, implementation notes
-     126-131);
+     source documents (`checkHPageOffset`'s comment on page 0's shared identifier entries,
+     and `checkHSharedObject`; implementation notes 125-131);
   2. the decoder module;
   3. its registry hookup in 3b;
   4. a differential against qpdf's own hint parsing (`qpdf --show-linearization` dumps the

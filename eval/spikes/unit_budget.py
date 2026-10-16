@@ -250,7 +250,7 @@ def _qpdf_version(qpdf: str) -> str:
 _PRODUCERS = (
     ("Adobe PDF Library", "adobe pdf library"),
     ("Acrobat Distiller", "distiller"),
-    ("Adobe Security Envelope", "security envelope"),
+    ("Acrobat Security Envelope", "security envelope"),
     ("Adobe XD", "adobe xd"),
     ("Adobe Photoshop", "photoshop"),
     ("Adobe, other", "adobe"),
