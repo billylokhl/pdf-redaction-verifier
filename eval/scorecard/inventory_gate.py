@@ -340,6 +340,7 @@ def _pending(results: Sequence[FileResult]) -> dict[str, Any]:
             "dead_bodies": total("dead_bodies"),
         },
         "labels": _labels([r for r in measured if r.verdict == AGREE]),
+        "labels_cost": _labels_cost([r for r in measured if r.verdict == AGREE]),
     }
 
 
@@ -360,6 +361,80 @@ def _labels(agree: Sequence[FileResult]) -> dict[str, Any]:
         "files_missing_labels": sum(1 for r in agree if r.measures.get("labels_missing")),
         "graph_work": _percentiles(work, 0),
         "drawing": _drawing(agree),
+    }
+
+
+# 3a-7e-3: what would exit 2 once labels gate (3b's verdict, 4a's decoders),
+# by class, over the unflagged files (ADR 0011's "What it costs" table):
+# each class names the measure that puts a file in it.
+_EXIT_2_CLASSES: Final = (
+    ("orphan", "bodies_orphaned"),                  # R3, per body (item 5's definition)
+    ("hint_stream", "structural_hint_stream"),      # R6, ADR 0003
+    ("xmp_image", "xmp_flag_bodies"),               # R7, decision D: an image or binary
+    ("javascript", "structural_javascript"),        # no decoder yet
+    ("synthesized", "synthesized_current"),         # until 4a decodes it
+    ("output_intent", "structural_output_intent"),  # no decoder yet
+)
+
+
+def _exit_2_classes(measures: dict[str, int]) -> list[str]:
+    return [name for name, key in _EXIT_2_CLASSES if measures.get(key, 0) > 0]
+
+
+def _thumbnails_only(measures: dict[str, int]) -> bool:
+    """Every exit-2 reason of the file is a page thumbnail's orphan, and
+    today's CLI already marks a page thumbnail (#133)."""
+    return (bool(measures.get("page_thumb_legacy"))
+            and _exit_2_classes(measures) == ["orphan"]
+            and measures.get("bodies_orphaned", 0)
+            == measures.get("orphan_body_class_thumbnail", 0))
+
+
+def _files_and_total(agree: Sequence[FileResult], key: str) -> dict[str, int]:
+    return {"files": sum(1 for r in agree if r.measures.get(key, 0) > 0),
+            "total": sum(r.measures.get(key, 0) for r in agree)}
+
+
+def _labels_cost(agree: Sequence[FileResult]) -> dict[str, Any]:
+    """3a-7e-3 (ADR 0011 items 5 and 7; R3, R6, R7), over the unflagged
+    files: files in each exit-2 class and in any (each file once), and in
+    one class only; the orphan classes per body; the thumbnail orphans
+    whose pages today's CLI already marks (#133); XMP packets holding an
+    image or binary (scanned in eval); and the graph's work against item
+    7's sum."""
+    classes = {name: sum(1 for r in agree if r.measures.get(key, 0) > 0)
+               for name, key in _EXIT_2_CLASSES}
+    hit = [r for r in agree if _exit_2_classes(r.measures)]
+    only = Counter(found[0] for r in hit if len(found := _exit_2_classes(r.measures)) == 1)
+    body = sorted({key for r in agree for key in r.measures
+                   if key.startswith("orphan_body_class_")})
+    work = sorted((r.measures.get("graph_work", 0), r.measures.get("graph_sum", 0))
+                  for r in agree)
+    return {
+        "files": len(agree),
+        "exit_2_files": len(hit),
+        "exit_2_by_class": classes,
+        "exit_2_only_class": dict(sorted(only.items())),
+        "exit_2_files_but_thumbnails_marked_today": sum(
+            1 for r in hit if not _thumbnails_only(r.measures)),
+        # Already exit 2 today for a page thumbnail (#133); the full overlap
+        # with today's exit 2 is 3a-12's to measure.
+        "exit_2_files_marked_today": sum(1 for r in hit if r.measures.get("page_thumb_legacy")),
+        "orphan_files_current": sum(1 for r in agree if r.measures.get("orphaned_current", 0)),
+        "orphan_body_classes": {key[len("orphan_body_class_"):]: _files_and_total(agree, key)
+                                for key in body},
+        "page_thumb_legacy_files": sum(1 for r in agree if r.measures.get("page_thumb_legacy")),
+        "thumbnail_orphan_files_marked_today": sum(
+            1 for r in agree if r.measures.get("orphan_body_class_thumbnail", 0) > 0
+            and r.measures.get("page_thumb_legacy")),
+        "xmp": {key: _files_and_total(agree, key)
+                for key in ("xmp_bodies", "xmp_flag_bodies", "xmp_image_bodies", "xmp_image_current",
+                            "xmp_binary_bodies", "xmp_binary_current", "xmp_undecoded_bodies")},
+        "graph_work": _percentiles((w for w, _ in work), 0),
+        "graph_sum": _percentiles((s for _, s in work), 0),
+        "graph_sum_of_largest_work": work[-1][1] if work else 0,
+        "graph_work_per_sum": _percentiles((w / s for w, s in work if s > 0), 1),
+        "measure_errors": sum(1 for r in agree if r.measures.get("page_thumb_legacy_error")),
     }
 
 
@@ -457,6 +532,13 @@ def aggregate(results: Sequence[FileResult], config: dict[str, Any] | None = Non
             # The REACHABLE check's share of the oracle's time (3a-7e-1).
             "reachable_seconds": _percentiles(r.agreement.reachable_ms / 1000
                                               for r in agree if r.agreement),
+            # ... per file, and over the run (3a-7e-3's cost briefing).
+            "reachable_share": _percentiles(
+                (r.agreement.reachable_ms / 1000 / r.oracle.elapsed for r in agree
+                 if r.agreement and r.oracle is not None and r.oracle.elapsed > 0), 3),
+            "reachable_share_total": round(
+                sum(r.agreement.reachable_ms / 1000 for r in agree if r.agreement)
+                / max(sum(r.oracle.elapsed for r in agree if r.oracle is not None), 1e-9), 4),
             "work_per_byte": _percentiles(work, 2),
         },
         "pending_decisions": _pending(results),

@@ -51,6 +51,20 @@ def redacted_no_gc(path):
   (libqpdf in-process: the encrypted family, `families/encrypted.py`), or
   `file` (committed real-tool output under `caselib/real/`,
   `origin="redactor"`).
+- **`bomb`** (`Bomb(wall_clock_s, memory_bytes, today=None)`): a bomb or
+  hang case (`families/bombs.py`, Phase 3d). It is never scanned in the
+  test process -- `test_case_library`, the gallery, the scorecard and its
+  differential skip it -- and `tests/test_bomb_cases.py` judges it out of
+  process through `redaction_verifier.sandbox` (`caselib/bombrun.py`),
+  its whole process group killed at its caps -- on macOS, on Linux's
+  Python 3.13 CI leg, or with `RUN_BOMBS=1` (once per platform per CI run;
+  nothing in it depends on the Python version). `today` pins how today's
+  tool fails to answer, where it does not (`"hang"`, `"memory"`,
+  `"error:CODE"`, exit 2), or, as an `Expect`, the exact answer it gives
+  when it finds the value but files it under the wrong storage (COVERAGE's
+  footnote ¹⁵); the test fails once that changes, as a closed known gap
+  does. Each bomb's built bytes are checked against `cases.lock.json`
+  there too. The cells are COVERAGE.md's `hostile.*` ("Hostile input").
 - **`rules`** default to `SSN` = 123-45-6789 and `Code` = BLUEHERON.
   **`requires`** (`ocr`, `qpdf`, `exiftool`) skips a case where a tool it
   needs to be judged is missing — or, with `no-ocr`, where OCR is present
@@ -622,6 +636,18 @@ Build and judge cases outside pytest, keeping the PDFs and reports:
 ```bash
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases              # all
 PYTHONPATH=eval:. python -m caselib.run /tmp/cases page.visible  # some
+```
+
+The case library is also how `--visible-map` proves it changes no
+verdict: `tests/test_visible_map_cli.py` runs one case from every
+(family, row, truth) cell with the flag off and on and compares exit
+code, stdout and the `--json` report, and `tests/test_visible_map.py`
+does the same in-process with and without a sink at the scan's hooks.
+`RUN_MAP_IDENTITY=1` runs every buildable case instead (grids included;
+`perf` cases stay excluded):
+
+```bash
+RUN_MAP_IDENTITY=1 pytest tests/test_visible_map_cli.py tests/test_visible_map.py -k case_library
 ```
 
 `tests/test_views_text_readings.py` also builds every case (`perf` ones
@@ -1229,7 +1255,9 @@ What each part of the output means:
     kind of the path that first reaches each from the trailer (thumbnail,
     piece_info, appearance, properties, ...), `unreachable_source`,
     `unreferenced`, `objstm` (home to no live entry), and the verdict's
-    `dead_body` and `older_body`;
+    `dead_body` and `older_body`; and the same classes over the verdict's
+    orphans only, per body (`orphan_body_class_*`, since 3a-7e-3: an
+    orphan of the current revision labelled in an older one is left out);
   - `/Metadata` streams orphaned on an annotation or an ICC profile
     (`orphan_metadata_*`, for 3a-7e-3's briefing);
   - the closure gap, measured and never gated: streams MuPDF lists on the
@@ -1238,6 +1266,42 @@ What each part of the output means:
     `_xobjects` and `_annotations` (`pdf_annot_ap`)), out of
     `mupdf_listed`. Any gap goes to an ADR 0011 note, never into the
     lists.
+
+  `labels_cost` (since 3a-7e-3; `scorecard.inventory.cost_measures`;
+  the owner's cost briefing, eval/spikes/RESULTS.md), over the unflagged
+  files:
+  - `exit_2_files`: files that would exit `2` once labels gate (3b's
+    verdict; 4a's decoders), each counted once, and `exit_2_by_class`
+    (`orphan` per body, `hint_stream`, `xmp_image` -- an image or
+    binary --, `javascript`, `synthesized`, `output_intent`) and
+    `exit_2_only_class` (files with one class only);
+    `exit_2_files_marked_today`: those that already exit `2` today for a
+    page thumbnail (`page_thumb_legacy`: #133's `PAGE_THUMBNAIL`, or its
+    check failing, read without importing verify.py) -- a lower bound on
+    the overlap with today's exit `2`, which 3a-12 measures in full;
+    `exit_2_files_but_thumbnails_marked_today` leaves out only the files
+    whose sole class is page-thumbnail orphans so marked;
+  - `orphan_files_current` beside the per-body count, and
+    `orphan_body_classes` (files and streams per class);
+  - `xmp`: the XMP packets labelled `STRUCTURAL`, per body across
+    revisions, holding an image (`xmp_image_bodies`; `xmp_image_current`
+    in the current revision) or binary nothing accounts for
+    (`xmp_binary_*`), either (`xmp_flag_bodies`, the `xmp_image` class),
+    or that the scan does not decode -- a filter other than Flate, or a
+    run that does not decode (`xmp_undecoded_bodies`). The scan is eval's,
+    not the inventory's: every XML numeric character reference
+    (`&#xA;` and the like) is removed, then every base64, hex, ASCII85 or
+    quoted-printable run of at least 48 decoded bytes is looked at for an image
+    signature (JPEG, PNG, GIF, TIFF, BMP, JPEG 2000, JBIG2, WebP), else
+    for bytes that are not text (ADR 0011 item 5's XMP bullet; R7);
+  - `graph_work` against `graph_sum`, item 7's own sum over revisions of
+    live objects and their edges (every revision, one whose results are
+    reused included): percentiles of each, the sum of the file with the
+    largest work, and work per unit of sum.
+
+  `timing.reachable_share` (since 3a-7e-3): the `reachable` check's
+  share of each agreeing file's oracle time, and over the run
+  (`reachable_share_total`).
 - `config`: provenance -- the git commit and whether the tree had local
   changes, the qpdf CLI, libqpdf, pikepdf, PyMuPDF, MuPDF and Python
   versions, the platform

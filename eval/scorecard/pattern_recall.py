@@ -327,7 +327,7 @@ def select_cases(registry: Mapping[str, Any], have: frozenset[str], *,
     can build (*any_requires*: whatever they require). The A/B/C options
     are judged on the leak cases only."""
     return [c for _, c in sorted(registry.items())
-            if (any_requires or not (c.requires - have)) and not c.perf
+            if (any_requires or not (c.requires - have)) and not c.perf and c.bomb is None
             and any(r.get("class") in CLASSES for r in c.rules)]
 
 

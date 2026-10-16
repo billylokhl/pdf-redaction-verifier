@@ -57,6 +57,8 @@ def _params():
 
 def _iter_params():
     for case_id, case in sorted(REGISTRY.items()):
+        if case.bomb is not None:
+            continue                    # judged out of process: tests/test_bomb_cases.py
         missing = case.requires - HAVE
         marks = [pytest.mark.skip(reason=f"needs {', '.join(sorted(missing))}")] if missing else []
         if case.grid:

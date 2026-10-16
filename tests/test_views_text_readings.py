@@ -36,7 +36,8 @@ def _library_cases() -> list[str]:
     from caselib import REGISTRY, load
 
     load()
-    return sorted(case_id for case_id in REGISTRY)
+    # Bomb cases are never opened in the test process (tests/test_bomb_cases.py).
+    return sorted(case_id for case_id, case in REGISTRY.items() if case.bomb is None)
 
 
 @pytest.mark.parametrize("case_id", _library_cases())

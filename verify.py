@@ -76,6 +76,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -238,6 +239,8 @@ try:
     from redaction_verifier.views import extract_ocr_text as extract_ocr_text
     from redaction_verifier.views import extract_visual_text as extract_visual_text
     from redaction_verifier.views import ocr_page_too_large as ocr_page_too_large
+    from redaction_verifier.visible_map.sink import MapSink as MapSink
+    from redaction_verifier.visible_map.sink import offer as _offer
 except BaseException as exc:  # pragma: no cover
     _fatal_import("redaction_verifier", exc)
 
@@ -343,6 +346,7 @@ def scan_page_layer(
     scatter_window: int = 5,
     fail_fast: bool = False,
     incomplete: Callable[[fitz.Page], str | None] | None = None,
+    sink: MapSink | None = None,
 ) -> None:
     """Run a per-page text extractor over the document and match secrets.
 
@@ -399,6 +403,10 @@ def scan_page_layer(
 
     When *fail_fast* is True the scan stops after the first page that
     produces a finding, so the tool exits quickly on large documents.
+
+    *sink* (--visible-map only) receives a copy of each scanned page's
+    truth — rule names per tier — before the fail-fast stop, so the
+    stopping page keeps its own.
     """
     keep = max(matcher.max_len - 1, 0)   # enough of one side to straddle a join
     # Per reading: the last `keep` characters read so far (the tail a match
@@ -585,6 +593,9 @@ def scan_page_layer(
         if patterns:
             cross_page_patterns.feed(
                 "\n" + (variants[cross_page_reading] if len(variants) > cross_page_reading else ""))
+        if sink is not None:
+            _offer(sink, "page", layer, page_no, hard_here, seam_here, page_hard, page_soft,
+                   page_warned, crossing_warned)
         # A hit of an informational class rule (ADR 0012) is a notice: it
         # must not end the scan, or a listed value on a later page goes
         # unread and the run certifies.
@@ -810,11 +821,19 @@ class HiddenItem:
     decoded as text is mojibake that can synthesize matches. Those get
     the manual-review tier the rest of the tool uses for fusion-prone
     surfaces.
+
+    *page* (0-based), *xref* and *kind* ("annotation:content",
+    "field:value", "link:uri", ...) say the same as *location* in plain
+    values, for the --visible-map; they are filled on every run and never
+    printed.
     """
 
     location: str
     text: str
     hard: bool = True
+    page: int | None = None
+    xref: int | None = None
+    kind: str | None = None
 
 
 def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
@@ -849,7 +868,8 @@ def _js_sources(doc: fitz.Document) -> Iterator[HiddenItem]:
                     "OpenAction/JS", "A/A/JS"):
             body = script_text(xref, key)
             if body:
-                yield HiddenItem(f"JavaScript in object {xref} (/{key})", body)
+                yield HiddenItem(f"JavaScript in object {xref} (/{key})", body,
+                                 xref=xref, kind="javascript")
 
     try:
         catalog = doc.pdf_catalog()
@@ -960,7 +980,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
         for key in ("filename", "ufilename", "description"):
             value = info.get(key)
             if value:
-                yield HiddenItem(f"{where} ({key})", str(value))
+                yield HiddenItem(f"{where} ({key})", str(value), kind=f"attachment:{key}")
         # 'size' is the uncompressed length; 'length' is the compressed
         # stream, so only 'size' bounds what reading will allocate.
         declared = info.get("size") or 0
@@ -1025,6 +1045,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 f"{where} (content)",
                 content.decode("utf-8", errors="replace"),
                 hard=False,
+                kind="attachment:content",
             )
 
     thumb_memo: dict[int, bool | None] = {}
@@ -1094,7 +1115,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 value = info.get(key)
                 if value:
                     yield HiddenItem(
-                        f"annotation {xref} on page {human_page} ({key})", str(value)
+                        f"annotation {xref} on page {human_page} ({key})", str(value),
+                        page=page_index, xref=xref, kind=f"annotation:{key}",
                     )
             # A /FileAttachment annotation carries its payload on the
             # page, outside the document-level EmbeddedFiles tree.
@@ -1131,6 +1153,7 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                     f"file attached to annotation {xref} on page {human_page}",
                     payload.decode("utf-8", errors="replace"),
                     hard=False,
+                    page=page_index, xref=xref, kind="annotation:file",
                 )
         try:
             widgets = list(page.widgets())
@@ -1157,7 +1180,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
             for label, value in pairs:
                 if value:
                     yield HiddenItem(
-                        f"form field {xref} on page {human_page} ({label})", str(value)
+                        f"form field {xref} on page {human_page} ({label})", str(value),
+                        page=page_index, xref=xref, kind=f"field:{label}",
                     )
         try:
             links = page.get_links()
@@ -1174,7 +1198,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
                 value = link.get(key)
                 if value:
                     yield HiddenItem(
-                        f"link #{n} on page {human_page} ({key})", str(value)
+                        f"link #{n} on page {human_page} ({key})", str(value),
+                        page=page_index, xref=link.get("xref"), kind=f"link:{key}",
                     )
 
     try:
@@ -1200,7 +1225,8 @@ def _hidden_objects(doc: fitz.Document) -> Iterator[HiddenItem | str]:
     for xref, ocg in ocgs.items():
         name = ocg.get("name") if isinstance(ocg, dict) else None
         if name:
-            yield HiddenItem(f"optional-content group {xref}", str(name))
+            yield HiddenItem(f"optional-content group {xref}", str(name), xref=xref,
+                             kind="layer:name")
 
 
 def scan_hidden_objects(
@@ -1208,6 +1234,7 @@ def scan_hidden_objects(
     matcher: SecretMatcher,
     patterns: Sequence[PatternRule],
     report: ScanReport,
+    sink: MapSink | None = None,
 ) -> None:
     """Scan attachments, annotations, form fields, links, scripts and
     layer names — content no page renders.
@@ -1217,6 +1244,9 @@ def scan_hidden_objects(
     field values are hard findings; attachment bodies are fusion-prone
     runs of text and are demoted to manual-review warnings, like every
     other fusion-prone surface in the tool.
+
+    *sink* (--visible-map only) receives each matching item's page, xref,
+    kind, location, tier and rule names.
     """
     items = _hidden_objects(doc)
     while True:
@@ -1242,6 +1272,9 @@ def scan_hidden_objects(
             continue
         hits = [s.name for s in matcher.search(normalize_string(item.text))]
         samples = match_patterns(item.text, patterns)
+        if sink is not None and (hits or samples):
+            _offer(sink, "hidden", item.page, item.xref, item.kind, item.location, item.hard,
+                   [*hits, *samples])
         if item.hard:
             for name in hits:
                 report.record("Hidden", name, item.location)
@@ -3452,6 +3485,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "codes, masked samples); the exit code is unchanged, except that a "
         "clean result becomes 2 if FILE cannot be written",
     )
+    parser.add_argument(
+        "--visible-map",
+        type=Path,
+        metavar="OUT.pdf",
+        help="also write a masked map of where each finding is to OUT.pdf, a new file (an "
+        "existing OUT.pdf is replaced only if this tool wrote it); built after the report, it "
+        "never changes the verdict or the exit code, except exit 2 before scanning if OUT.pdf "
+        "is unsafe to write (MAP_PATH_CONFLICT, MAP_PATH_UNWRITABLE)",
+    )
     # --version works only on its own. As an argparse "version" action it
     # would also fire alongside --target (or abbreviated, as --v) and exit
     # 0 without scanning: the certified-clean code for a scan never run.
@@ -3459,11 +3501,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if raw_args == ["--version"]:
         print(f"{parser.prog} {__version__}")
         return 0
+    # argparse accepts any unambiguous prefix of an option, so --visible-map
+    # would turn "--v X", an error before the flag existed, into a request
+    # to write X. The flag is accepted only spelled out; every other
+    # option's abbreviations keep working as they always have.
+    # (Not alongside -h/--help, which argparse answers first, as before.)
+    for arg in [] if {"-h", "--help"} & set(raw_args) else raw_args:
+        name = arg.split("=", 1)[0]
+        if len(name) > 2 and name != "--visible-map" and "--visible-map".startswith(name):
+            parser.error(f"unrecognized arguments: {arg} (spell out --visible-map)")
     args = parser.parse_args(raw_args)
 
     pdf_path: Path = args.target
     report = ScanReport()
     json_path: Path | None = args.json
+    # --visible-map: the job (redaction_verifier.visible_map.runner.MapJob)
+    # and the sink the scan hands its truth to. Both stay None without the
+    # flag, and nothing below evaluates anything of the map's then.
+    map_job: Any = None
+    sink: MapSink | None = None
+    # SIGINT/SIGTERM handlers the map replaced, put back at the end.
+    map_signals: dict[int, Any] = {}
 
     def finish(code: int, error: tuple[str, str] | None = None) -> int:
         report.settle_notices()
@@ -3482,6 +3540,116 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # a [PASS] first).
                 return 2
         return code
+
+    def _drop_stale_map() -> None:
+        """The --json path refusals below end the run before the map's own
+        path check, which is what removes an old map: remove it here too,
+        best effort (only ever a file carrying both markers)."""
+        if args.visible_map is None:
+            return
+        try:
+            from redaction_verifier.visible_map import paths as map_paths
+
+            inputs = [pdf_path, args.secrets] + ([args.json] if args.json else [])
+            map_paths.check_inputs(args.visible_map, inputs)
+            map_paths.remove_stale(args.visible_map)
+        except Exception:
+            pass
+
+    def _map_after_report(final: int) -> None:
+        """Build the --visible-map after the human report is out, from
+        both of the scan's normal returns (never from finish() or crash()).
+
+        Nothing here can reach *final*, or stdout: the map is built in a
+        child process, and every failure — a KeyboardInterrupt included —
+        ends as one stderr line and no map. All of it, the handler's own
+        print and its cleanup of the child included, runs inside one
+        suppress(BaseException), so an interrupt between any two steps is
+        swallowed too; main()'s finally then kills whatever is left.
+
+        A suppress's own __exit__ is Python code a signal can land in, so
+        while the map is made SIGINT and SIGTERM do not raise at all: their
+        handlers only stop the child (and the map), and they stay until the
+        end of main()'s finally (_restore_map_signals), so a burst that
+        outlasts the map cannot land in the cleanup either. The verdict was decided before the map began; a
+        signal during it must not undo it (a burst of Ctrl-C used to turn a
+        confirmed leak's 1 into the crash code).
+        """
+        if map_job is None or sink is None:
+            return
+        def stop_map(signum: int, frame: Any) -> None:
+            map_job.interrupt()
+
+        with contextlib.suppress(BaseException):
+            try:
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    map_signals[signum] = signal.signal(signum, stop_map)
+            except ValueError:
+                pass            # not the main thread: signals stay as they are
+            with contextlib.suppress(BaseException):
+                _make_map(final)
+        # The previous handlers come back only at the very end of main()'s
+        # finally (_restore_map_signals): a burst that outlasts the map must
+        # not land in the cleanup after it, where a KeyboardInterrupt would
+        # turn the decided verdict into the crash code.
+
+    def _restore_map_signals() -> None:
+        for signum, handler in map_signals.items():
+            with contextlib.suppress(BaseException):
+                signal.signal(signum, handler)
+        map_signals.clear()
+
+    def _map_status(line: str) -> None:
+        """One line of map status, on stderr only -- never stdout, which a
+        closed fd 2 would otherwise make print() fall back to."""
+        if sys.stderr is not None:
+            with contextlib.suppress(Exception):
+                print(_sanitize_report_text(line), file=sys.stderr)
+
+    def _make_map(final: int) -> None:
+        with contextlib.suppress(BaseException):
+            sys.stdout.flush()
+        try:
+            from redaction_verifier.visible_map import runner as map_runner
+
+            data = build_json_report(
+                report, final, None, target=pdf_path, tool_version=__version__,
+                ocr_available=_OCR_IMPORTS_OK, private_paths=(pdf_path, args.secrets),
+            )
+            items = (len(sink.hidden) + len(data["findings"]) + len(data["warnings"])
+                     + len(data["notices"]) + sum(len(t) for t in sink.truth.values()))
+            header = {
+                "rules": map_runner.rules_header(rules),
+                # ADR 0012: the rules whose matches are notices; the map
+                # lists them and never boxes them.
+                "informational": sorted(report.informational),
+                "sink": sink.to_header(),
+                "report": data,
+                "exit_code": final,
+                "scan_code": code,
+                "target_name": pdf_path.name,
+                "version": __version__,
+            }
+            shown = map_job.make(
+                header, env=_minimal_subprocess_env(),
+                cwd=tools_scratch.name if tools_scratch is not None else tempfile.gettempdir(),
+                pages=sink.page_count or 0, items=items,
+            )
+            _map_status(f"[MAP] MAP_WRITTEN: visible map written to {args.visible_map.name}: "
+                        f"{shown}")
+        except BaseException as exc:
+            with contextlib.suppress(BaseException):
+                map_job.abort()
+            failed = getattr(exc, "code", None) if hasattr(exc, "message") else None
+            why = getattr(exc, "message", None) if failed else (
+                f"internal error ({type(exc).__name__})")
+            if map_job.wrote_map():
+                # OUT already holds this run's map; only a step after
+                # publishing failed (removing the temp file, an interrupt).
+                _map_status(f"[MAP] MAP_WRITTEN: visible map written to {args.visible_map.name}; "
+                            f"a later step failed ({failed or type(exc).__name__})")
+            else:
+                _map_status(f"[ERROR] {failed or 'MAP_FAILED'}: visible map not written: {why}")
 
     def crash(exc: BaseException) -> int:
         """Any exception (or other BaseException — a SystemExit raised
@@ -3523,6 +3691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if json_path is not None:
             if _same_file(json_path, pdf_path) or _same_file(json_path, args.secrets):
                 json_path = None  # never overwrite an input with the report
+                _drop_stale_map()
                 return finish(
                     2, ("JSON_PATH_CONFLICT", "--json must not name the target PDF or the rules file")
                 )
@@ -3540,6 +3709,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # run and be read as its verdict. Refuse before scanning.
                 bad = json_path
                 json_path = None
+                _drop_stale_map()
                 return finish(
                     2,
                     (
@@ -3547,6 +3717,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"cannot replace JSON report {bad.name}: " f"{exc.strerror or exc}",
                     ),
                 )
+
+        if args.visible_map is not None:
+            # Checked like --json, before anything else can fail: a stale map
+            # is removed here, so no run that ends without writing its own
+            # leaves an earlier one behind. Refusing is the only way the map
+            # can change the exit code.
+            unchecked = ("MAP_PATH_UNWRITABLE", f"cannot check --visible-map "
+                         f"{args.visible_map.name}")
+            try:
+                from redaction_verifier.visible_map import runner as map_runner
+                from redaction_verifier.visible_map.paths import PathRefused
+            except Exception as exc:
+                return finish(2, (unchecked[0], f"{unchecked[1]} ({type(exc).__name__})"))
+            try:
+                inputs = [pdf_path, args.secrets] + ([json_path] if json_path else [])
+                map_job = map_runner.prepare(args.visible_map, inputs)
+            except PathRefused as exc:
+                return finish(2, (exc.code, exc.message))
+            except Exception as exc:
+                return finish(2, (unchecked[0], f"{unchecked[1]} ({type(exc).__name__})"))
+            sink = MapSink()
 
         if not pdf_path.is_file():
             return finish(2, ("TARGET_NOT_FOUND", f"Target PDF not found: {pdf_path}"))
@@ -3594,6 +3785,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         procs: dict[str, subprocess.Popen[bytes] | None] = {"exiftool": None, "qpdf": None}
         tools_scratch: tempfile.TemporaryDirectory[str] | None = None
         try:
+            if map_job is not None:
+                # One read-only descriptor, hashed now and handed to the map's
+                # child later; a failure only means no map.
+                map_job.open_target(pdf_path)
             procs, tools_scratch = start_hidden_tools(pdf_path, report)
 
             try:
@@ -3604,6 +3799,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 if doc.needs_pass:
                     return finish(2, ("PDF_PASSWORD", f"PDF is password-protected: {pdf_path}"))
+                if sink is not None:
+                    _offer(sink, "document", doc.page_count)
 
                 if doc.page_count == 0:
                     report.warn(
@@ -3622,7 +3819,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # a document nothing had been found in.
                 for layer, scan in (
                     ("Metadata", scan_xmp_metadata),
-                    ("Hidden", scan_hidden_objects),
+                    ("Hidden", functools.partial(scan_hidden_objects, sink=sink)),
                     ("Objects", functools.partial(scan_pdf_objects, pdf_path=pdf_path)),
                     ("Objects", functools.partial(scan_trailers, pdf_path)),
                     ("Objects", functools.partial(scan_earlier_revisions, pdf_path)),
@@ -3643,7 +3840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         seam_variants=TEXT_SEAM_READINGS,
                         tails_into_next=TEXT_TAILS_INTO_NEXT_PAGE,
                         scatter_readings=TEXT_SCATTER_READINGS,
-                        patterns=patterns, fail_fast=args.fail_fast,
+                        patterns=patterns, fail_fast=args.fail_fast, sink=sink,
                     )
                 except Exception as exc:
                     report.warn("LAYER_CRASHED", "Text", f"Text: layer crashed ({exc}) — NOT fully scanned")
@@ -3679,6 +3876,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             cross_page_reading=OCR_GENUINE_READINGS,
                             fail_fast=args.fail_fast,
                             incomplete=ocr_page_too_large,
+                            sink=sink,
                         )
                     except Exception as exc:
                         report.warn(
@@ -3728,6 +3926,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise
             if final != code:
                 print_report(report, pdf_path, rules=rules, json_unwritten=True)
+                _map_after_report(final)
                 return final
             try:
                 sys.stdout.write(rendered.getvalue())
@@ -3740,6 +3939,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     with contextlib.suppress(OSError):
                         json_path.unlink()
                 raise
+            _map_after_report(final)
             return final
         finally:
             # Guaranteed on every exit from the block above — a normal
@@ -3774,6 +3974,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"[ERROR] could not remove the tool scratch directory: {exc}",
                         file=sys.stderr,
                     )
+            if map_job is not None:
+                # Kill a child an interrupt left running: the map's cleanup,
+                # like the map, must never reach the verdict.
+                with contextlib.suppress(BaseException):
+                    map_job.abort()
+                try:
+                    map_job.close()
+                except Exception as exc:
+                    _map_status(f"[ERROR] could not close the visible map's target: {exc}")
+                _restore_map_signals()
     except BaseException as exc:
         # BaseException, not Exception: a SystemExit (or other
         # BaseException) raised somewhere inside the pipeline above must
