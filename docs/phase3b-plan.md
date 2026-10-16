@@ -3,10 +3,11 @@
 This is the PR sequence for REDESIGN §7's row 3b, as [phase3a-plan.md](phase3a-plan.md) was
 for 3a.
 
-- **History:** drafted 2026-10-15 (Pacific); revised the same day after review round 1 of
-  #179 and the owner's and coordinator's decisions (§7).
-- **Pending:** one question (Q11, the matcher's design) is open for the owner, and Q12 for the
-  coordinator.
+- **History:** drafted 2026-10-15 (Pacific); revised the same day after review rounds 1 and 2
+  of #179 and the owner's and coordinator's decisions (§7).
+- **Decided:** Q1-Q12.
+- **Pending:** one owner question, Q13 (a hard raw tier). Its recommendation is "no", so the
+  plan does not depend on it.
 - **Verdict changes:** nothing here changes a verdict.
 
 Read with:
@@ -59,7 +60,7 @@ Read with:
 - **What crosses the pipe.**
   - **Structural messages:** only integers and closed enum names. Spans and object numbers are
     document-derived integers.
-  - **Stage frames:** under Q11's recommended design, decoded document bytes, for matching, as
+  - **Stage frames:** under Q11's decided design, decoded document bytes, for matching, as
     stage frames (§3). Never secrets: nothing flows from parent to child but the descriptor and
     code paths.
 - **Code standards.**
@@ -111,7 +112,7 @@ Beyond the row:
   - dead object streams' bytes (3a-5: "3b/Phase 4's to scan as raw bytes");
   - owner decision 7's claimed comment bytes;
   - xref-stream free-entry bytes (ADR 0003, "Deferred");
-  - `Decryption.views` (§4).
+  - `Decryption.views` (REDESIGN §4, "Encryption"; ADR 0001's 3a-9a-1 note).
 
 The row's gate, as amended:
 
@@ -156,7 +157,8 @@ touches code the shipped CLI runs.
     - `ToolRef`, with a closed `Tool`.
     - `RuleScopeRef`.
     - `StageRef(unit, stage)`, with a closed `Stage`: `STORED`, `XREF_FIELDS`, `OBJSTM_PAYLOAD`,
-      `STRING_TAGGED`, `STRING_UNTAGGED`, `READER_VIEW`.
+      `STRING_TAGGED`, `STRING_UNTAGGED`, `READER_VIEW`. `unit` is a unit index, or `FILE` for a
+      file-level stage. `STORED` is always `StageRef(FILE, STORED)`: one stage over `[0, size)`.
     - `CheckRef`, with a closed `Check`: `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING`,
       `PAGE_COUNT`, `OBJECT_SET`, `INVENTORY_FILE_FLAGS`, `PARSER_AGREEMENT` and `RAW_MATCH`.
   - **Records:**
@@ -165,11 +167,13 @@ touches code the shipped CLI runs.
       they must tile. Glyph-count fields are reserved for 4a.
     - `DecodeResult`, without evidence or children.
     - `Finding(rule index, tier, stage ref)`: no text, since the parent masks at report time.
+      Raw-match findings are always review tier in 3b (§4, "Matching").
   - **Enums:**
     - `Label` and `StructuralKind`;
     - `PendingReason` (`NO_DECODER`, `NOT_IN_PHASE`);
     - the closed `UNREADABLE` reasons (`HINT_PAYLOAD`);
-    - the closed `FAILED` reasons (`NOT_REPORTED`).
+    - the closed `FAILED` reasons (`NOT_REPORTED`);
+    - the `FLAGGED` reason `REVIEW_MATCH`, for a `RAW_MATCH` with a review-tier match.
   - `check_tiling` and the PDF-whitespace predicate move here from `inventory/tiling.py`, which
     re-exports them. The parent then re-runs both without importing the inventory package. The
     file is Lane A's and outside Lane A2's 9b claim.
@@ -198,7 +202,10 @@ touches code the shipped CLI runs.
   - The validator is incremental: it validates frames as they arrive and spools stage bytes.
   - It returns a `ChildReport`, or a closed `ProtocolError` that makes `CHILD_COMPLETE`
     `FAILED`.
-  - If Q11 goes to option (i), the stage frames are dropped from this PR.
+  - Stage frames are in, per Q11 (iii).
+  - Caps: a frame past a cap the child must honour is a protocol error. Those caps are the
+    structural cap (§3) and `max_stage_bytes` per stage. An over-cap stage is never sent:
+    the child truncates it and flags it (3b-6).
 - **Files:** `protocol.py`, `tests/test_protocol.py`, and the guard entry (`json`, `struct`).
 - **Depends on:** 3b-1.
 - **Tests (Hypothesis):**
@@ -281,13 +288,33 @@ touches code the shipped CLI runs.
     - an incremental reader of a dedicated protocol descriptor, with a byte cap, feeding 3b-2's
       validator;
     - stdout stays diagnostics, with its existing cap.
+  - **Spooling:** the reader spools stage bytes to an unlinked temporary file, opened and then
+    unlinked at once inside the parent's private `0700` directory. The bytes then die with the
+    parent's descriptor, even on a `SIGKILL` (Principle 5).
+  - **Wall clock:** the child's wall-clock limit counts from legacy's end, not the child's start,
+    since a niced child may get little CPU while legacy runs. The CPU rlimit still bounds it
+    from its start.
+    - After legacy ends, the parent waits at most `post_legacy_wait_s` for the child. That
+      defaults to 20 s, and Q12's measurement sets it.
+    - Then it cancels the child (outcome `killed_wall_clock`).
+    - **The bound:** the CLI's added time after legacy is at most `post_legacy_wait_s` plus the
+      matcher's own pass. That pass is linear in the file and its stages, measured in §6 gate
+      5. The CLI therefore stays inside the scorecard's 60 s per file whenever legacy plus
+      that bound does, and gate 5 checks it.
   - **An `input_fd` variant:** the child gets the parent's already-open descriptor. Both sides
     read with `os.pread` and never `read`/`seek`, because they share one open file
     description and its offset.
   - **Parent death:** a lifeline pipe whose write end only the parent holds. The child's
     preamble watches its read end and `_exit`s on EOF. Beside it:
-    - on Linux, `PR_SET_PDEATHSIG` (`SIGKILL`);
-    - on macOS, a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` watch on the parent's pid.
+    - on Linux, `PR_SET_PDEATHSIG` (`SIGKILL`). It fires when the *thread* that spawned the
+      child exits, not the process, so `start()` must spawn from a thread that outlives the
+      child. That is the parent's main thread, or a dedicated long-lived spawner thread, never a
+      short-lived worker. A test spawns from a thread that then exits, and checks the child
+      survives until the parent ends. The preamble also re-checks `getppid()` after setting
+      it, since the parent may already be gone;
+    - on macOS, a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` watch on the parent's pid. After
+      registering it, the preamble re-checks `getppid()`: a parent that died before the
+      registration is caught there.
   - **What the lifeline covers:**
     - the parent killed by `SIGKILL` (the scorecard runner's timeout kill);
     - the parent's process group killed (`bombrun`'s), which `start_new_session=True` keeps
@@ -305,7 +332,17 @@ touches code the shipped CLI runs.
   - Ctrl-C;
   - the descriptor's offset is never moved;
   - the reader cap gives a closed `truncated` outcome;
+  - fault injection: a child that sleeps past `post_legacy_wait_s` is cancelled within the
+    bound, and the CLI's added time stays within it;
+  - spooled bytes leave no file behind after a parent `SIGKILL`;
   - no rlimit or watchdog regression.
+- **The bomb harness:** `bombrun` runs the whole CLI under the outer caps, but the CLI's own
+  child is in a session of its own. So the watchdog changes: `sandbox`'s footprint and kill
+  cover the run's whole process tree (descendants by parent pid, sampled each poll), not only
+  its process group. That counts the inner child against the outer memory cap and kills it with
+  the CLI. A bomb test shows an inner child over the outer cap is counted and killed. (Bounding
+  the inner `Limits` by the outer caps instead would need a CLI argument; not chosen.)
+- **Files:** also `eval/caselib/bombrun.py` if its own polling needs the same change.
 - **Gate:** the suite on both platforms; the bomb harness still green.
 - **Verdict path:** none (unwired).
 
@@ -316,15 +353,25 @@ touches code the shipped CLI runs.
   - `XREF_FIELDS`: each cross-reference stream's decoded field data, free entries included;
   - `OBJSTM_PAYLOAD`: each object stream's decoded payload, so members are matched over their
     whole span;
-  - `STRING_TAGGED` and `STRING_UNTAGGED`: each text string's decoding with its language tags
-    kept and with them stripped (`strings.py` already returns both), in UTF-8;
+  - `STRING_TAGGED` and `STRING_UNTAGGED`: every string token of every object and object-stream
+    member, taken from the **decrypted** values (9b-1's), not the stored bytes:
+    - each text string decoded with its language tags kept and with them stripped (`strings.py`
+      already returns both);
+    - each non-text string's bytes as written.
+
+    They are sent as UTF-8 and flagged as text, so the parent matches them as text, the way
+    legacy matches decoded strings: decoded with UTF-8, then normalised. Not as latin-1, which
+    would miss a non-ASCII value whose UTF-8 bytes latin-1 reads as other characters;
   - `READER_VIEW`: each `Decryption.views` entry, as a stream of that object (Lane A2's
     9b obligation).
 
-  Each stage is charged to the `Budget`. Each is capped by `Limits.max_stage_bytes` (Q12); past
-  the cap, a `STAGE_TRUNCATED` flag is raised, and that stage's `RAW_MATCH` is `FLAGGED`.
-- **Files:** `decoders/stages.py`, `ledger.py` (`STAGE_TRUNCATED`, EMITTERS),
-  `tests/test_stages.py`, and the guard entry.
+  Each stage is charged to the `Budget`, and each is capped by `Limits.max_stage_bytes` (Q12,
+  added to `budget.py` by this PR). Past the cap, the child sends the stage cut at the cap and
+  raises a `STAGE_TRUNCATED` flag. That stage's `RAW_MATCH` is `FLAGGED`. It is shadow-only and
+  never a child failure. The total stage bytes are capped the same way (`max_stage_total`):
+  stages past it are not sent, each is flagged, and none fails the child.
+- **Files:** `decoders/stages.py`, `budget.py` (`max_stage_bytes`, `max_stage_total`),
+  `ledger.py` (`STAGE_TRUNCATED`, EMITTERS), `tests/test_stages.py`, and the guard entry.
 - **Depends on:** 3b-3. Its `READER_VIEW` part depends on 9b-1, and lands as a follow-up if 9b-1
   is later.
 - **Tests:** a planted value reaches a stage in each of these shapes:
@@ -332,9 +379,11 @@ touches code the shipped CLI runs.
   - an object-stream member;
   - a hex string in UTF-16BE;
   - a language-tagged string, both forms;
+  - a non-ASCII value in a UTF-16 string, matched as text;
+  - a string in an encrypted object, from its decrypted value;
   - a views entry.
 
-  Also: the cap gives a flag, not a failure.
+  Also: either cap gives a flag, not a failure.
 - **Gate:** the suite and mypy strict.
 - **Verdict path:** none.
 
@@ -345,8 +394,9 @@ touches code the shipped CLI runs.
   1. `pread`s the descriptor, hashing as it goes;
   2. runs `crypt.decrypt` and `build_inventory` with the decryptions, per 3a-9b-1's interface;
   3. runs the registry and the stage extraction;
-  4. charges each reported unit and region to `max_units`. Tiling units are not charged today;
-     past the cap the child reports `BUDGET_EXHAUSTED`, still in a complete report;
+  4. charges every structural message it sends to `max_units` (§3, "Sizing"). Tiling units are
+     not charged today; past the cap the child reports `BUDGET_EXHAUSTED`, still in a complete
+     report;
   5. writes the protocol to its dedicated descriptor. fd 1 points at `/dev/null` before
      `pymupdf` or `pikepdf` load.
 - **Files:** `child.py`, `tests/test_child.py`, and the guard (entry-point exemption).
@@ -364,10 +414,21 @@ touches code the shipped CLI runs.
 
 **3b-8. The parent's raw matcher** (Lane A)
 
-- **Deliverable:** `redaction_verifier/rawmatch.py`, parent-side. Q11's recommended design is
-  option (iii), §3. Today's raw matcher (`RollingScanner` and `PatternScanner` over
-  `normalize_string(bytes.decode("latin-1"))`, the legacy raw layer's exact calls and tiers,
-  with ADR 0012's informational policy as legacy applies it) runs over:
+- **Deliverable:** `redaction_verifier/rawmatch.py`, parent-side, under Q11's decided design,
+  (iii)+M (§3, §7).
+  - **The matcher:** the legacy Binary layer's own calls: `RollingScanner` over
+    `normalize_string(bytes.decode("latin-1"))` for binary stages, and over the UTF-8 decode for
+    the text-flagged string stages.
+  - **Tiers:** legacy's. Every raw match is **review tier**, as `REVIEW_BINARY` with
+    `NOISY_SOURCE` is today (`verify.py`'s Binary layer), and never hard.
+  - **Rules:** exact-value rules only (`SecretMatcher`), as legacy's Binary layer runs.
+    - ADR 0012's policy function, `matching.policy.informational_rules`, classifies class
+      rules. The raw matcher runs none, so it does not call that function.
+    - #160 flips the policy's default partway through this sequence. That changes nothing
+      here, and 3b-8's tests pin rawmatch's output under both defaults.
+    - Raw pattern and class matching (ADR 0003's review tier over image bytes) is 4b's.
+
+  It runs over:
   - `STORED`: every byte `[0, size)` of the parent's own descriptor, `pread` in chunks. That
     covers whole object spans with comments inside them, claimed comment lines, dead
     object-stream bytes, slack and unindexed ranges. A secret across a chunk edge is found;
@@ -391,7 +452,8 @@ touches code the shipped CLI runs.
   - a chunk edge.
 
   Further:
-  - findings carry no text;
+  - findings carry no text, and every one is review tier;
+  - a match leaves that stage's `RAW_MATCH` `FLAGGED` (review);
   - a stage that never arrived leaves its `RAW_MATCH` `UNEXAMINED`;
   - a truncated stage is `FLAGGED`.
 - **Gate:** the suite and mypy strict, plus a case-library table of the shadow matcher against
@@ -544,17 +606,21 @@ touches code the shipped CLI runs.
 **Framing.** Each frame is a 4-byte big-endian length and then a payload.
 
 - **Structural frames:** JSON payloads, one object each, of closed types.
-- **Stage frames:** a JSON header (unit index, `Stage`, length), and then a binary frame of
-  exactly that length.
+- **Stage frames:** a JSON header (`{"unit": index | null, "stage", "text": bool, "length"}`;
+  null is a file-level stage), and then a binary frame of exactly that length. `text` marks
+  the string stages, which are UTF-8 and matched as text. The parent's own `STORED` stage is
+  never sent.
 
 The order is strict. An unknown key, a missing key, a duplicate or a reordering is a protocol
 error.
 
 1. **`hello`:** `{"v": 1, "size", "sha256"}`, about the bytes the child read.
 2. **`unit`:** one per unit.
-   - `{"i", "kind", "object", "generation", "revision", "within", "claim": [start, end]}`.
+   - `{"i", "kind", "object", "generation", "revision", "within", "claims": [[start, end],
+     ...]}`.
    - `within` is a container unit's index, or null.
-   - The `claim` is in the container's coordinates: raw for `STREAM_SLACK`, decoded for
+   - `claims` lists every span the unit claimed in `tile()`, so a unit may have several.
+     They are in the container's coordinates: raw for `STREAM_SLACK`, decoded for
      object-stream members and headers.
    - SYNTHESIZED units are `{"i", "synth": [body, revision]}`.
 3. **`decoded`:** `{"unit", "length"}`, the decoded length of each container whose nested
@@ -590,19 +656,41 @@ error.
   are PDF whitespace (the predicate moved to `ledger.py`);
 - each container's regions tile its decoded length;
 - every owner index is a declared unit;
-- an owned region lies within its owner's claim;
+- an owned region lies within one of its owner's claims;
 - every `xref` entry names a declared unit of matching number and generation;
-- units and regions are at most `max_units` (the child charges both);
+- structural messages are at most `max_units` (below);
 - flags are at most `max_flags_per_file` plus one `FLAGS_TRUNCATED`;
-- stage bytes are at most `max_stage_bytes` (Q12);
-- structural frames are at most 128 MiB;
+- each stage frame is at most `max_stage_bytes`, and all stage frames together at most
+  `max_stage_total` (Q12);
+- every structural frame is at most 512 bytes;
 - `Child` ended ok: exit 0, not killed, not cancelled, the private directory removed.
 
-On sizes: the corpus's largest file has 32,976 tiling units, and about 44,000 with views and
-drawable streams. At roughly 150 bytes per unit or region frame, that is about 10-15 MB. At
-the full 500,000 units the structural frames could pass 128 MiB. **Past any cap the run is
-`FAILED`, explicitly.** From 3b-11 that exits 2, so §6 measures the corpus maximum against
-each cap.
+**Sizing, so that a complete report within the budget always fits.**
+
+- **The child's side.** The child charges every structural message it sends to the unit budget
+  (`max_units`, 500,000). That covers units, claims, regions, labels, results, pages, xref
+  entries and decoded lengths.
+  - Past the budget it stops adding detail and sends a `BUDGET_EXHAUSTED` flag. That is still a
+    complete, valid report: a shadow-only flag, never a failure.
+- **The encoder's side.** It bounds every structural frame at 512 bytes by construction:
+  integers of at most 20 digits, at most 16 owners per region, at most one witness span per
+  structural result. A test builds the largest frame of each type.
+- **The structural cap** is then 500,000 × 512 bytes plus `hello` and `end`, about 245 MB.
+  The validator enforces it as a 256 MiB cap. A report within budget always fits.
+- **The corpus is far below it.** The largest file (32,976 tiling units, 3,876 pages) is about
+  150,000 messages, roughly 10-15 MB.
+- **Spooling and memory.** Structural and stage frames are spooled to the unlinked file
+  (3b-5). The parent keeps only index sets in memory: a few integers per unit.
+
+**Which caps fail, and which flag.**
+
+- **`FAILED`** is kept for real protocol violations: a malformed or truncated frame, or a frame
+  past a cap the child itself must honour (more than 500,000 structural messages, a frame over
+  512 bytes, a stage frame over `max_stage_bytes`, stages over `max_stage_total`). A child that
+  honours the caps never meets these.
+- **Content over a cap is never `FAILED`.** It is flagged by the child: `BUDGET_EXHAUSTED`, or
+  `STAGE_TRUNCATED`, which leaves that stage's `RAW_MATCH` `FLAGGED`. Both are shadow-only, so
+  no legitimate large file can move to exit 2 at 3b-11.
 
 **Failure semantics.** Any of these makes `CHILD_COMPLETE` `FAILED`, with a closed outcome:
 
@@ -616,31 +704,31 @@ each cap.
 
 Every obligation the child would have discharged is then `FAILED` (`NOT_REPORTED`). There is no
 partial credit: a valid-looking prefix is discarded whole. The STORED raw pass still runs, since
-it needs only the parent's bytes. A confirmed match from it makes the shadow verdict exit 1. The
-enforced verdict never takes an exit from raw matches.
+it needs only the parent's bytes. Its matches are review tier (§4), and neither verdict takes
+an exit 1 from a raw match in 3b.
 
 **Limits.**
 
 - The work budget is primary: exhaustion is a flag inside a complete report.
-- The wall clock, CPU and memory backstops are `sandbox.Limits`' defaults until 3d (Q3).
+- The wall clock, CPU and memory backstops are `sandbox.Limits`' defaults until 3d (Q3). The
+  exception is the wall clock, which counts from legacy's end with `post_legacy_wait_s` (3b-5).
 - A backstop hit is a failure.
 
-**Concurrency** (Q2 decided "always, concurrently"; blocker 4's fix keeps it).
+**Concurrency** (Q2 decided "always, concurrently"; this approach approved by the coordinator,
+2026-10-15).
 
 - **The child:** it starts once the target exists and runs at `nice` +10.
-- **The parent during legacy:** its reader thread only copies frames into its private `0700`
-  directory (Principle 5), bounded by the caps. It does no validation or matching, holds the
-  GIL for no CPU-heavy work, and so adds nothing to legacy's deadline-bound steps.
+- **The parent during legacy:** its reader thread only copies frames into the unlinked spool
+  file in its private `0700` directory (Principle 5), bounded by the caps. It does no
+  validation or matching, holds the GIL for no CPU-heavy work, and so adds nothing to legacy's
+  deadline-bound steps.
   - Those steps are the 120 s subprocess timeout (`SUBPROCESS_TIMEOUT_S`) and the 20 s qpdf
     check deadline (`QPDF_CHECK_DEADLINE_S`).
 - **After legacy finishes:** the parent validates, matches and computes the verdict.
 - **The residual risk:** a niced child starved under the scorecard's one-worker-per-core load
-  could reach its wall clock, or push the CLI past the scorecard's 60 s per-file timeout. §6
-  gate 5 measures this directly. If it fails, the remaining options go to the owner as a new
-  question:
-  - a capped child pool;
-  - running the child after legacy instead of beside it;
-  - a scorecard worker-count change.
+  could reach `post_legacy_wait_s`, and become a child failure. The CLI's own added time is
+  bounded (3b-5). §6 gate 5 measures both directly. If it fails, the options go to the owner
+  (§7, "Possible new question").
 
 **Identity.** `FILE_IDENTITY` binds the parent's descriptor to the child's read only. Legacy's
 layers open the path separately, which this check does not bind; legacy is frozen.
@@ -688,17 +776,23 @@ then applies, in order:
 **Matching.**
 
 - **Where findings come from:** the parent's raw matcher (§2, 3b-8).
-- **What a finding does:** a hard-tier finding makes the shadow exit 1; a review-tier one leaves
-  that `RAW_MATCH` `FLAGGED`.
-- **What discharges a `RAW_MATCH`:** being scanned with no finding.
-- **Decoded content is not covered yet.** Decoded text from content streams and dictionaries
-  is 4a's evidence. Until then, a raw match is the only source of exit 1 in the shadow verdict.
+- **Tier:** every raw-match finding is **review tier**, as legacy's Binary layer makes every
+  raw match (`REVIEW_BINARY`, `NOISY_SOURCE`). A raw match is never hard in 3b.
+- **`RAW_MATCH`'s status:**
+  - after a review-tier match, `FLAGGED`, with reason `REVIEW_MATCH`, a closed reason added
+    in 3b-1;
+  - after a scan with no match, discharged (`DECODED`, with a witness covering the stage);
+  - over a truncated stage, `FLAGGED` (`STAGE_TRUNCATED`);
+  - for a stage named but never sent, `UNEXAMINED`.
+- **No exit 1 from a raw match.** In 3b nothing gives the shadow verdict an exit 1. Hard
+  findings need decoded evidence, which is 4a's. A hard raw tier would be an owner question; it
+  is not recommended (Q13).
 
 **Exits.**
 
-- **Shadow:** 1 on a confirmed hard finding; else 2 if anything is undischarged; else 0.
-  Before 4a every file has `UNEXAMINED` dictionaries and views, so a shadow 0 before 4a is a
-  bug, and §6 gates on it.
+- **Shadow:** 1 on a confirmed hard finding (none can arise in 3b); else 2 if anything is
+  undischarged; else 0. Before 4a every file has `UNEXAMINED` dictionaries and views, so a
+  shadow 0 before 4a is a bug, and §6 gates on it.
 - **Enforced:** the same function over Q1's set.
 - **Shipped:** legacy alone until 3b-11; from then, `worst_of(legacy, enforced)`.
 
@@ -759,9 +853,11 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
     per-file output, keyed by SHA-256. If that output was not kept, `unit_budget.py` is re-run
     at b8aa29c. Today's CLI is not re-run, because #167 has since changed the exit-2 set;
   - 3a-12's per-file XMP image bodies (`xmp_flag_bodies`).
-- **9b has no effect:** no corpus file is encrypted, so 9b's decryption changes no corpus
-  label. The gate checks that: 0 files whose labels differ between the inventory at 3c49bce
-  and the run's commit.
+- **9b should have no effect on the corpus.** The inventory gate's corpus runs found 0
+  encrypted files (RESULTS.md, "The corpus": "0 encrypted files"). So 9b's decryption should
+  change no corpus label. The gate checks it rather than assuming it: 0 files whose labels
+  differ between the inventory at 3c49bce and the run's commit, and any that differ are
+  root-caused.
 - **The mapping from ledger groups to 3a-12's classes,** by manifest entry:
 
   | 3a-12 class | Ledger group |
@@ -799,16 +895,25 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
 - A per-file table of the shadow exit against the shipped one.
 - **Gate:**
   - shadow exit 0 on 0 files;
-  - shadow exit 1 on 0 corpus files under 3a-12's fabricated value rule (the corpus is clean).
-- Case-library exit-1 cases that the shadow leaves at 2 are listed: they are matches outside
-  the raw stages, which 4a gains. Reported, not gated.
+  - shadow exit 1 on 0 files: no 3b path yields one (§4).
+- Case-library exit-1 cases show shadow 2; that is expected until 4a. Reported, not gated.
 
-**4. The matcher against legacy's raw layers** (3b-8, 3b-9).
+**4. The matcher against legacy's raw search** (3b-8, 3b-9).
 
-- Every case-library case in which today's raw layers (Binary, Objects) report a hard finding
-  in raw storage also gets a hard finding from the shadow matcher.
-- Any case where they differ is root-caused.
-- Planted values in every span §1 lists are found (3b-8's tests).
+- **In scope:** legacy matches whose bytes lie in the stored file or in one of 3b's stages
+  (xref field data, object-stream payloads, string tokens, `Decryption.views`).
+- **Gate:** for every such legacy Binary-layer review match (`REVIEW_BINARY`) on the case
+  library, the shadow matcher has a review match in the same stage. Every legacy hard finding
+  from the Objects layer whose value lies in a string token also has a shadow review match in
+  a string stage.
+- Any difference in scope is root-caused.
+- **Out of 3b's scope, and listed as 4a's:**
+  - Binary-layer matches in Flate-decoded streams that 3b does not stage. Legacy scans
+    `qpdf --qdf` output, which inflates every stream, content and image streams included; 3b
+    stages only xref and object-stream payloads.
+  - The Objects layer's fitz-decoded content.
+  - Gate 4 lists them by case, and does not gate them.
+- **Planted values** in every span §1 lists are found (3b-8's tests).
 
 **5. Shipped output identical, under load** (3b-10, 3b-11, 3b-12).
 
@@ -819,7 +924,9 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
   parallelism, plus one corpus run, with:
   - 0 exit drift;
   - 0 child failures;
-  - 0 scorecard timeouts.
+  - 0 scorecard timeouts;
+  - the CLI's added time after legacy within 3b-5's bound (`post_legacy_wait_s` plus the
+    matcher's pass), with its maximum reported.
 - **Runtime:** the added wall clock per case and on the corpus (p50, p95, max), reported to the
   owner (Q2):
   - p95 must stay within REDESIGN §9's 2x;
@@ -830,20 +937,21 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
 **Decided** (recorded 2026-10-15, Pacific):
 
 - **Q1, decided by the owner on 2026-10-15 and confirmed as an explicit amendment to REDESIGN
-  6.** In 3b the enforced verdict counts the child-integrity checks only (`CHILD_COMPLETE`,
+  §6.** In 3b the enforced verdict counts the child-integrity checks only (`CHILD_COMPLETE`,
   `FILE_IDENTITY`, `TILING`). The qpdf anchors and every other ledger finding are recorded,
   not enforced.
-  - This departs from 6's "tool, view, rules-scope and cross-check obligations plus units of
-    enforced kinds". 6 now says so, dated.
+  - This departs from REDESIGN §6's "tool, view, rules-scope and cross-check obligations plus
+    units of enforced kinds". REDESIGN §6 now says so, dated.
   - Legacy keeps enforcing its own tool and scope warnings.
 - **Q2, decided by the coordinator on 2026-10-15:** the child always runs, concurrently with
-  the legacy scan. 3b-10 reports the added wall clock on the corpus (p50, p95). Blocker 4's
-  measures, in §3 "Concurrency", keep this decision.
+  the legacy scan. 3b-10 reports the added wall clock on the corpus (p50, p95).
+  - The approach in §3 "Concurrency" was approved by the coordinator on 2026-10-15: a child at
+    nice +10, the parent only spooling during legacy, and gate 5's zero drift under load.
+  - If gate 5 fails, the question goes back to the owner.
 - **Q3, decided by the coordinator on 2026-10-15:** `sandbox.Limits`' defaults until 3d.
-- **Q4, decided by the coordinator on 2026-10-15:** no decoded text crosses the pipe in 3b.
-  - **Q11's recommendation would change this decision**, and it is put to the owner there.
-  - If the owner takes (iii), decoded stage bytes cross for matching only.
-  - 4a's evidence channel still gets its own review.
+- **Q4, decided by the coordinator on 2026-10-15, and superseded for stage bytes by the owner's
+  Q11 the same day.** Structural messages carry no document bytes or text. Decoded stage bytes
+  cross for matching only (Q11). 4a's evidence channel still gets its own review.
 - **Q5, decided by the coordinator on 2026-10-15:** `--explain` ships in 3b.
 - **Q6, decided by the coordinator on 2026-10-15:** the new warning is `LEDGER_INCOMPLETE`.
   The closed reasons are as named in 3b-1 and §3.
@@ -855,8 +963,8 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
     earlier plans give 3b this matching (phase3a-plan, 3a-2/3a-3, 3a-5, and owner decision 7;
     ADR 0003's deferred free-entry bytes).
   - **Re-decision:** build the matcher in 3b, covering those spans (3b-6, 3b-8).
-  - **`Decryption.views`:** discharged in 3b as the `READER_VIEW` stage, since the design
-    covers it naturally. If Q11 goes to (i), it falls back to 4a.
+  - **`Decryption.views`:** discharged in 3b as the `READER_VIEW` stage, since Q11's design
+    covers it naturally.
 - **Q9, decided by the coordinator on 2026-10-15:** Lane A writes the guard entries, and Lane A2
   reviews them.
 - **Q10, decided by the owner on 2026-10-15:** the views move behind the ledger and into the
@@ -867,99 +975,119 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
   - The backstop is not live until something consumes `views`.
   - The coordinator has asked Lane A2 for 3b-5's `input_fd` and protocol-descriptor API.
 
-**Q11 (owner): where the raw matcher runs.** It needs the secrets, which only the parent holds.
-No rules value may reach the child (ADR 0010), and the parent must not parse the hostile file
-(§4).
+**Q11, decided by the owner on 2026-10-15: (iii)+M, split by stage, with the 4a mitigation.**
+The matcher needs the secrets, which only the parent holds. No rules value may reach the child
+(ADR 0010), and the parent must not parse the hostile file (REDESIGN §4). The options were:
 
 - **(i) The parent reads and decodes.** The child sends only spans and closed transforms, as
-  integers. The parent `pread`s its own descriptor and runs today's matcher:
-  - the stored bytes need nothing more: this is the legacy raw search's trust level;
-  - the decoded stages make the parent re-decode in process, on the child's spans. That means
-    capped Flate for xref-stream and object-stream payloads (`inventory/flate.py`), and string
-    unescaping with UTF-16/PDFDocEncoding and tag stripping (`inventory/strings.py`).
-  - **Cost:** the parent then inflates and decodes hostile bytes. The code is pure Python plus
-    zlib, budget-charged, with no MuPDF. But it departs from 4's "the child touches the PDF",
-    the CLI would load two inventory modules, and the import guard changes.
-  - **Protocol:** no stage frames, and Q4 stands.
-- **(ii) The child matches against salted digests** of normalized secrets.
-  - **Leakage:** SSNs and phone numbers are low-entropy. 10^9 candidates brute-force a salted
-    digest in seconds, so a compromised child recovers every such secret.
-  - **No OS sandbox until 3d:** nothing stops a compromised child from exfiltrating what it
-    recovers.
-  - **Coverage:** rolling matching means one digest per window length per byte, which is
-    feasible. But pattern rules and built-in classes are regular expressions and cannot be
-    digested, and review-tier logic (separators, joined lines) cannot run blind.
-  - **ADR 0010:** it fails the canary in spirit, since a function of every rules value reaches
-    the child.
-  - **Rejected.**
-- **(iii) Split by stage: the parent scans stored bytes, and the child sends decoded stages.**
-  - **STORED:** the parent scans all `[0, size)` of its own descriptor, needing nothing from
-    the child. It covers whole object spans, comments, dead object streams' stored bytes,
-    slack and unindexed ranges, at legacy's trust level.
-  - **Decoded stages:** the child, which already decodes them, sends their bytes as
-    length-prefixed stage frames. Those are xref field data with free entries, object-stream
-    payloads, both forms of each text string, and `Decryption.views`. The parent only matches.
-  - **Under §4,** document bytes flow child to parent only. That direction is §4's design: the
-    child "streams obligations and evidence back", and matching stays in the parent. Secrets
-    still never reach the child, and the parent still parses nothing. Stages are capped (Q12),
-    and a stage past its cap is flagged, not failed.
-  - **What it forces:**
-    - a protocol change: binary-safe framing and stage frames, already written into §3 and
-      3b-2;
-    - Q4 reversed for stage bytes;
-    - sandbox work: an incremental reader of the protocol descriptor and spooling to the
-      parent's private directory (3b-5);
-    - **no ADR change.** ADR 0010's canary is untouched, and §4 already allows evidence back.
-      3b-13's ADR 0010 note records it.
+  integers. The parent `pread`s its own descriptor and runs today's matcher on those spans.
+  - **Advantage: every matched byte is derived by the parent from the file itself.** A buggy
+    or compromised child can misreport spans, but it cannot hand the parent clean bytes in
+    place of the file's own. Every stage is bound to the file.
+  - **Cost:** the parent re-decodes hostile bytes in process: capped Flate
+    (`inventory/flate.py`) and string decoding (`inventory/strings.py`). That is pure Python
+    plus zlib, budget-charged, with no MuPDF. But it departs from REDESIGN §4's "the child
+    touches the PDF", the CLI would load two inventory modules, and the import guard changes.
+- **(ii) The child matches against salted digests.** Rejected.
+  - SSN-sized secrets (10^9 candidates) brute-force in seconds, and before 3d nothing stops a
+    compromised child exfiltrating them.
+  - Pattern rules can't be digested.
+  - A function of every rules value reaches the child, against ADR 0010's canary.
+- **(iii) Split by stage.**
+  - The parent scans all of `[0, size)` from its own descriptor, needing nothing from the child.
+  - The child sends the decoded stages as capped, length-prefixed binary frames: xref field
+    data, object-stream payloads, string tokens and `Decryption.views`.
+  - The parent only matches. Document bytes flow child to parent only, which REDESIGN §4's
+    design allows ("evidence back"). Secrets never reach the child, and the parent parses
+    nothing.
+  - **Its weakness, the trade-off against (i): nothing binds a stage to the file.** A buggy or
+    compromised child could send clean stages, and so discharge those stages' `RAW_MATCH`. The
+    `STORED` pass is unaffected: it reads the parent's own bytes.
 
-*Recommendation: (iii).* It keeps every decode in the child and every secret in the parent. It
-needs no new trust in the parent beyond legacy's raw read, and it discharges `Decryption.views`
-in 3b. (i) is the fallback if the owner prefers no document-derived bytes on the pipe before
-4a. Under (i), the stage frames leave 3b-2, 3b-6 shrinks to transforms, 3b-8 imports the two
-decoders parent-side, `READER_VIEW` moves to 4a, and the estimate is unchanged.
+**The decision.** The owner took (iii), with mitigation M:
 
-**Q12 (coordinator, before 3b-6): `Limits.max_stage_bytes` and the 128 MiB structural cap.**
-*Recommendation:* set both from 3b-9's corpus maxima with 10x headroom, as `max_units` was set.
-Until then, 256 MiB for stage bytes, spooled to disk, not held in memory.
+- **3b:** keep the split by stage. It costs nothing here, because `RAW_MATCH` is shadow-only in
+  3b, so no enforced verdict rests on a stage.
+- **From 4a on (M):** a stage's `RAW_MATCH` never discharges on the child's word alone. It needs
+  a second derivation: either the parent re-inflates the stage in a throwaway process, or it is
+  cross-checked against MuPDF's own decode. The 4a plan chooses between them. REDESIGN's 4a row
+  records this.
+- **What it forces:**
+  - binary-safe framing and stage frames (§3, 3b-2);
+  - sandbox spooling (3b-5);
+  - Q4 superseded for stage bytes;
+  - an ADR 0010 note in 3b-13, recording (iii) and M. No ADR amendment is needed: ADR 0010's
+    canary is untouched, and REDESIGN §4 already allows evidence back.
+- **`Decryption.views`** is discharged in 3b as the `READER_VIEW` stage, subject to M from 4a.
 
-**Possible new question:** if §6 gate 5 shows exit drift or timeouts under load, the
-concurrency options of §3 go to the owner as a new question. Q2's "always, concurrently" is not
-changed here.
+**Q12, decided by the coordinator on 2026-10-15:**
+
+- The caps are the corpus maxima with 10x headroom, measured and reported by 3b-6 (stage bytes)
+  and 3b-9 (everything else).
+- Until measured: `max_stage_bytes` 256 MiB, spooled to disk. `max_stage_total` starts at the
+  same.
+- An over-cap stage is flagged (fail-closed), never failed (§3, "Which caps fail, and which
+  flag").
+- The structural cap is not set by measurement. It is fixed by the budget, at 500,000 frames
+  of 512 bytes (§3, "Sizing").
+
+**Q13 (owner, not recommended): a hard raw tier.**
+
+- **The question:** should some raw matches be hard (exit 1), for example an exact value in a
+  string stage?
+- **Today:** legacy makes every raw match review tier. Hard findings come from its structural
+  pass, which the ledger gains with 4a's decoders.
+- **Recommendation: no.** Keep every raw match review tier in 3b, and leave hard findings to
+  decoded evidence (4a).
+
+**Possible new question:** if §6 gate 5 shows exit drift or timeouts under load, the concurrency
+options go to the owner:
+
+- a capped child pool;
+- running the child after legacy instead of beside it;
+- a scorecard worker-count change.
 
 ## 8. PR count and estimate
 
 **Count:** 13 PRs, plus this plan; a 14th if review splits the scorecard column out of 3b-10.
 
-- Lane A has 11: 3b-1 to 3b-13 except 3b-5 and 3b-7. Lane A2 has 2: 3b-5 and 3b-7.
-- **Up from 10 in the first draft:** the raw matcher (3b-6 stages, 3b-8 matcher, owner Q8 (b))
-  and the sandbox lifetime API split out of the child entry (3b-5, blocker 3).
+- Lane A has 11: 3b-1 to 3b-13, except 3b-5 and 3b-7. Lane A2 has 2: 3b-5 and 3b-7.
+- **Up from 10 in the first draft:** the raw matcher (3b-6 stages, 3b-8 matcher; owner Q8 (b))
+  and the sandbox lifetime API, split out of the child entry (3b-5).
 
 **Pace:**
 
 - Lane A merged five 3a-7 PRs on 2026-10-15, with 2-3 review rounds each.
-- Each `verify.py` PR (3b-10, 3b-11, 3b-12) adds a 58-62 minute macOS+OCR run and waits its
-  turn behind #160, which needs owner sign-offs (35 cases).
+- Each `verify.py` PR (3b-10, 3b-11, 3b-12) adds a 58-62 minute macOS+OCR run, and waits its turn
+  behind #160, which needs owner sign-offs (35 cases).
+- Lane A2's work is serial. It holds #178, then 9b-1, then 9b-2, then 3b-5, then 3b-7. That
+  queue, not Lane A, sets the child's date.
 
-**Estimate:** about 15-23 working days elapsed, if no decision blocks. That is the round-1
-review's 12-18, plus about 3-5 for the matcher.
+**Estimate:** 15-23 working days elapsed, with the upper end likely. The lower end assumes A2's
+queue and the `verify.py` queue both move at the 2026-10-15 pace, and that no gate needs a
+second root-causing round.
 
 | Work | Estimate |
 | --- | --- |
-| The four pure PRs, 3b-1 to 3b-4 | 3-4 days |
+| 3b-1 to 3b-4, pure | 3-4 days |
 | 3b-6 and 3b-8 | 3-4 days, partly parallel |
-| 3b-5 (Lane A2) | 1-2 days, from now |
-| 3b-7 (Lane A2) | 1-2 days, after 9b-1 |
+| Lane A2: 9b-1, 9b-2, 3b-5, 3b-7 in order | 4-7 days from #178's merge |
 | 3b-9, with its corpus gates and root-causing | 2-3 days |
 | The three `verify.py` PRs | 1-2 days each, at the queue's head |
 | Close-out | Half a day |
 
-**Critical path:** #178 → 3a-9b-1 → 3b-7 → 3b-9 → 3b-10 → 3b-11 → 3b-12 → 3b-13.
+**Critical path:** #178 → 9b-1 → 9b-2 → 3b-5 → 3b-7 → 3b-9 → 3b-10 → 3b-11 → 3b-12 → 3b-13.
 
+- 3b-5 needs no 3b PR and could start now, but it sits in Lane A2's serial queue unless A2
+  takes it ahead of 9b.
 - 3b-9 also waits on 3a-14's final gate.
 - 3b-10 also waits on #160's place in the `verify.py` queue.
-- Off the path: 3b-1 to 3b-4, 3b-5, 3b-6 and 3b-8.
+- Off the path: 3b-1 to 3b-4, 3b-6 and 3b-8.
 
-**Owner input still needed:** Q11 before 3b-2 pins the stage frames. Q1, Q8 and Q10 are
-decided.
+**Owner input still needed:** only Q13, and its recommendation is "no". Q1, Q8, Q10 and Q11
+are decided.
+
+**REDESIGN's 3b row** is updated by 3b-13's close-out for the matcher and the protocol as
+built. Until then it points here.
 
 3d, and through it 4b, starts from 3b-9's runner.
