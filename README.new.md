@@ -140,8 +140,12 @@ mean the file holds nothing else sensitive.
 
 ## Writing your secrets file
 
-The secrets file is a list. Each entry has a `name` and one of `value`,
-`pattern` or `class`.
+You can write it in either of two formats: this tool's own **JSON** file
+(below), or a redaction tool's **YAML** config, so one file can drive both the
+redaction and the check (see [Using a YAML config](#using-a-yaml-config)).
+
+In JSON, the secrets file is a list. Each entry has a `name` and one of
+`value`, `pattern` or `class`.
 
 **Values.** A `value` is a secret you know, written out. Case, punctuation,
 spacing and accents are already ignored: `123-45-6789` also finds `123 45 6789`,
@@ -184,12 +188,39 @@ your own secrets, run with `--strict-classes`, or add `"strict": true` to that
 entry. Strict mode reports matches on many clean files, because ordinary ID
 numbers often look like phone numbers or SSNs.
 
-**Using a redaction tool's config.** If your redaction tool keeps its settings
-in a YAML file, you can pass that file instead (its name must end in `.yaml` or
-`.yml`). The checker reads `exact_values` as values, `patterns` as patterns and
-`entity_types` as built-in types. Types it cannot check by pattern, such as
-names or addresses, give Needs review instead of being skipped. So does a
-config with no `entity_types` list at all.
+### Using a YAML config
+
+If your redaction tool keeps its settings in a YAML file, pass that file to
+`--secrets` instead. Its name must end in `.yaml` or `.yml`:
+
+```yaml
+exact_values:
+  - "Jordan Q. Testperson"
+  - "Testperson, Jordan Q."
+  - "123-45-6789"
+patterns:
+  - "CASE-[0-9]{6}"
+entity_types:
+  - ssn
+  - person_name
+```
+
+```bash
+pdf-verify --target letter.pdf --secrets redact_config.yaml
+```
+
+The checker reads `exact_values` as values and `patterns` as your own patterns,
+exactly as in JSON. It does **not** check `entity_types`: those ask the
+redaction tool to find *any* SSN or *any* name, which this checker can't judge.
+They never change the result; the report says once that they weren't checked.
+So list the specific names and numbers you care about under `exact_values`:
+only those are verified.
+
+Put every value and pattern in quotes. Without quotes, YAML can change them:
+an unquoted `00123456` is read as a number, and a `#` starts a comment, so
+`Invoice #[0-9]{6}` becomes just `Invoice`. The checker warns about these.
+Other settings in the file, such as which AI model the redaction tool uses,
+are ignored.
 
 ## Reading the report
 
