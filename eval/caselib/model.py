@@ -103,6 +103,12 @@ def expect(exit: int, findings: tuple[tuple[str, str], ...] = (),
     return Expect(exit, frozenset(findings), frozenset(warnings), frozenset(layers))
 
 
+def _rules(want: Expect) -> tuple[frozenset[str], frozenset[str], frozenset[tuple[str, str]]]:
+    """*want* without its storage classes: what a storage mislabel keeps."""
+    return (frozenset(rule for rule, _ in want.findings),
+            frozenset(code for code, _ in want.warnings), want.layers)
+
+
 @dataclass(frozen=True)
 class KnownGap:
     """Today's tool gets this case wrong. *today* pins exactly what it
@@ -126,8 +132,8 @@ class Bomb:
     ``"hang"`` (killed at the wall-clock cap), ``"memory"`` (killed at the
     memory cap) or ``"error:CODE"`` (the CLI reported error CODE, exiting
     2). Or an Expect: it answers with the case's verdict, but files what it
-    found under the wrong storage (COVERAGE's ⚑: "found, filed under the
-    wrong storage"), and *today* pins that answer exactly, as a known gap's
+    found under the wrong storage (COVERAGE's footnote 15), and *today*
+    pins that answer exactly, as a known gap's
     does. None: it answers, and ``expected`` / ``known_gap`` judge the
     answer. If the case stops doing what *today* says, the test fails until
     it is relabelled, as a closed known gap does."""
@@ -140,6 +146,9 @@ class Bomb:
         if not 0 < self.wall_clock_s <= 900 or self.memory_bytes <= 0:
             raise ValueError("a bomb's caps must be positive, and its wall clock at most 900 s "
                              "(the suite's own timeout)")
+        if not (self.today is None or isinstance(self.today, (str, Expect))):
+            raise TypeError(f"a bomb's today must be None, a str or an Expect, "
+                            f"not {self.today!r}")
         if isinstance(self.today, str) and not (
                 self.today in ("hang", "memory")
                 or (self.today.startswith("error:") and len(self.today) > 6)):
@@ -261,9 +270,11 @@ class Case:
             raise ValueError(f"{self.id}: a bomb case's caps replace perf and scan_timeout")
         if self.bomb is not None and isinstance(self.bomb.today, Expect) and (
                 self.known_gap is not None or self.bomb.today.exit != self.expected.exit
-                or self.bomb.today == self.expected):
+                or self.bomb.today == self.expected
+                or _rules(self.bomb.today) != _rules(self.expected)):
             raise ValueError(f"{self.id}: a bomb's pinned answer is a mislabel: the case's own "
-                             "verdict, a different report, and no known gap")
+                             "verdict and the same finding rules and warning codes, "
+                             "under different storage, and no known gap")
         if self.scan_timeout is not None and (
                 isinstance(self.scan_timeout, bool)
                 or not isinstance(self.scan_timeout, (int, float))

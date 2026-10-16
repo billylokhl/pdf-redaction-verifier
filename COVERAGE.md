@@ -12,7 +12,9 @@ clean.
 - ✓ **Read** — the content is searched; a match is a finding or a
   manual-review warning, per the reading layer's tier (see the README).
 - ⚑ **Flagged** — the tool finds the content but cannot read it, and says
-  so: a manual-review warning, so the run exits `2`, never `0`.
+  so: a manual-review warning, so the run exits `2`, never `0`. (Under
+  Hostile input, ⚑ also marks a value found, exit `1`, but filed under
+  the wrong storage¹⁵.)
 - ✗ **Not covered** — a secret here can pass as clean (exit `0`).
 - — Not applicable.
 
@@ -191,7 +193,8 @@ fails closed, but names no reason. Phase 3d turns it into a limit flag.
 unreadable object is reported as orphaned, and the deeply nested file's
 page — live, and drawn by other viewers — as unreferenced. The verdict is
 right, but the report misleads about where the value is. A legacy
-mislabel, pinned by each case; the redesign's ledger fixes it.
+mislabel, pinned by each case; the redesign's ledger fixes it
+([#169](https://github.com/billylokhl/pdf-redaction-verifier/issues/169)).
 
 ## Matching limits
 

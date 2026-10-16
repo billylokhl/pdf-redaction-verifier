@@ -11,7 +11,9 @@ They are never scanned in the test process (``Case.bomb``):
 tests/test_bomb_cases.py runs the CLI out of process through
 redaction_verifier.sandbox, killed at each case's caps, and judges the
 answer -- or pins a hang, a memory kill or an error as a known gap's
-outcome. All bytes are hand-assembled (eval/caselib/rawpdf.py's style);
+outcome, or (``Bomb.today`` as an Expect) the exact answer of a case
+today's tool finds but files under the wrong storage: a legacy mislabel
+(COVERAGE's footnote 15) that the redesign's ledger fixes. All bytes are hand-assembled (eval/caselib/rawpdf.py's style);
 the caps were sized on the owner's Mac (2026-10-15) with headroom.
 """
 
@@ -21,10 +23,6 @@ import zlib
 from pathlib import Path
 
 from ..model import SSN, Bomb, KnownGap, case, expect
-
-# Today's tool finds the SSN in these but files a finding or warning under
-# the wrong storage (COVERAGE's ⚑ footnote): a legacy mislabel, pinned
-# exactly by Bomb.today, which the redesign's ledger fixes.
 
 GB = 1 << 30
 
