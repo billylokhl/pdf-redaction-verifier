@@ -518,6 +518,10 @@ def test_the_packet_check_is_charged_and_done_once_per_body() -> None:
         pdf = pdf[:j] + h.trailer(7) + b" " + pdf[j:]
     revisions = decrypt(pdf)
     assert all(r.flags == () for r in revisions)
-    # The inflated 900 KB is charged (once: memoized), so a cap below it stops the read.
+    # The inflated 900 KB is charged, so a cap below it stops the read...
     assert any(f.reason is FlagReason.BUDGET_EXHAUSTED
                for r in decrypt(pdf, max_bytes=800_000) for f in r.flags)
+    # ...and charged once (memoized): four revisions fit in a cap that
+    # holds one inflate and every revision's cuts, not two inflates.
+    cuts = 4 * len(pdf) * 2
+    assert all(r.flags == () for r in decrypt(pdf, max_bytes=cuts + 1_500_000))

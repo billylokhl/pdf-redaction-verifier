@@ -342,6 +342,9 @@ class _Revision:
             if theirs is not None and theirs != stored:
                 self.views[key] = theirs
             unit = self.inv.body(key[0], self.revision)
+            # Sound only because the verdict rests on the stored bytes and a
+            # direct /Filter and /DecodeParms: an indirect one never passes
+            # (_xmp_packet), so a later revision cannot change it unseen.
             memo = None if unit is None else (unit.start, self.identity)
             packet = self.shared.packets.get(memo) if memo is not None else None
             if packet is None:
