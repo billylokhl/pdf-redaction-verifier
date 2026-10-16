@@ -18,7 +18,7 @@ jobs:
   # environment-gated tests can never silently skip on this job.
   #
   # Split into four parallel shards (owner decisions 2026-10-16: the single job
-  # took about 40 of its 50 minutes; smaller jobs fail fast when one hangs).
+  # took 40-47 of its 50 minutes; smaller jobs fail fast when one hangs).
   # tests/ci_shards.py is the one place the
   # split is defined: shards a-c run explicit lists of files, balanced by
   # measured time; shard "d" runs everything under tests/ except those lists,
@@ -32,8 +32,8 @@ jobs:
   full-macos:
     name: full-macos (shard ${{ matrix.shard }})
     runs-on: macos-latest
-    # Each shard takes about 11-13 minutes including setup (see CHANGELOG); 25
-    # is about 2x that, so a runaway is cut early. Concurrency: a public repo
+    # Each shard takes about 11-16 minutes including setup (see CHANGELOG); 25
+    # is about 1.6x the slowest, so a runaway is cut early. Concurrency: a public repo
     # gets 5 concurrent macOS jobs, and one PR run now uses 4 of them (in practice a leg sometimes waited
     # for a free runner, so a whole run can take longer than its slowest leg); the
     # weekly scorecard job (scorecard-weekly.yml, also macOS) queues behind
