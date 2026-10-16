@@ -3,7 +3,7 @@
 
 pikepdf (libqpdf) decrypts each encrypted revision's prefix cut with the
 empty user password; MuPDF decrypts the same cut independently. What the
-two agree on is the revision's decrypted view (``Revision.values`` and
+two agree on is the revision's decrypted view (``Decryption.values`` and
 ``.streams``, for the inventory in 3a-9b); anything else is flagged, never
 trusted on one decryption's word:
 
@@ -37,7 +37,6 @@ import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import IntEnum
 from fractions import Fraction
 from typing import Any
 
@@ -47,6 +46,7 @@ import pymupdf as _pymupdf
 from .inventory.objects import (
     ObjectParser, PdfArray, PdfBool, PdfDict, PdfInt, PdfName, PdfNull, PdfReal, PdfRef,
     PdfString, PdfValue)
+from .inventory.decrypted import CryptRule, Decryption, Key, MismatchRule
 from .inventory.types import Inventory
 from .inventory.xref import Chain
 from .ledger import Flag, FlagReason, Span, UnitRef
@@ -55,47 +55,16 @@ from .ledger import Flag, FlagReason, Span, UnitRef
 pymupdf: Any = _pymupdf
 
 
-class CryptRule(IntEnum):
-    """Why something was flagged DECRYPTION_UNVERIFIED (its ``rule``)."""
-
-    PASSWORD = 1       # both readers need a user password we do not have
-    AUTH_SPLIT = 2     # one reader opens with the empty password, the other does not
-    HANDLER = 3        # a security handler other than /Standard
-    OPEN_FAILED = 4    # pikepdf cannot open the cut without recovery
-    REPAIRED = 5       # MuPDF repaired the cut: nothing in it is trusted
-    PERMS = 6          # /Perms does not check out (qpdf warns; ADR 0001)
-    WARNING = 7        # a reader warned while reading this object
-    CRYPT_FILTER = 8   # a stream-level /Crypt filter (the readers read it differently)
-    EFF = 9            # an embedded file under an /EFF other than /StmF
-    STORED_PLAIN = 10  # an "encrypted" stream whose stored bytes inflate as they are
-    UNLOCATED = 11     # the inventory holds no stored bytes for this stream
+# Every read of one decrypt() call: the byte cap, and what both readers
+# verified, by body and identity (a body two revisions share under one
+# identity decrypts alike: verified once).
+_Verified = dict[tuple[UnitRef, tuple[bytes, bytes]], tuple[object, bytes | None]]
 
 
-class MismatchRule(IntEnum):
-    """Why something was flagged DECRYPTION_MISMATCH (its ``rule``)."""
-
-    STREAM = 1         # decrypted stream bytes differ
-    VALUE = 2          # a decrypted dictionary or object differs
-    PLAINTEXT = 3      # an unencrypted stream is not its stored bytes
-
-
-Key = tuple[int, int]                  # (object number, generation)
-
-
-@dataclass(frozen=True)
-class Revision:
-    """One revision's decryption. ``identity`` is None when the revision
-    is not encrypted; otherwise a digest of its /Encrypt dictionary's
-    value and its first /ID string (3a-9b keys reuse on it). ``values``
-    and ``streams`` hold only what both readers agreed on: each object's
-    value (a stream's: its dictionary) and each stream's decrypted,
-    still-filtered bytes."""
-
-    revision: int
-    identity: tuple[bytes, bytes] | None
-    values: dict[Key, object]
-    streams: dict[Key, bytes]
-    flags: tuple[Flag, ...]
+@dataclass
+class _Shared:
+    left: int
+    verified: _Verified
 
 
 def cut(chain: Chain, data: bytes, revision: int) -> bytes:
@@ -107,17 +76,18 @@ def cut(chain: Chain, data: bytes, revision: int) -> bytes:
 
 
 def decrypt(data: bytes, inventory: Inventory, chain: Chain, *,
-            max_bytes: int = 1 << 30) -> tuple[Revision, ...]:
+            max_bytes: int = 1 << 30) -> tuple[Decryption, ...]:
     """Every revision's decryption, current first. *max_bytes* caps the
-    bytes read from both readers together (BUDGET_EXHAUSTED past it)."""
-    budget = [max_bytes]
+    bytes read -- every object's printed value and every stream, from both
+    readers and the file -- over all revisions (BUDGET_EXHAUSTED past it)."""
+    shared = _Shared(max_bytes, {})
     shown = pymupdf.TOOLS.mupdf_display_errors()
     pymupdf.TOOLS.mupdf_display_errors(False)
     try:
         # Explicit conversion: integers, booleans and the like stay pikepdf
         # objects, so a value's form never depends on Python's coercions.
         with pikepdf.explicit_conversion():
-            return tuple(_Revision(cut(chain, data, r), r, inventory, budget).run()
+            return tuple(_Revision(cut(chain, data, r), r, inventory, shared).run()
                          for r in range(inventory.revisions))
     finally:
         pymupdf.TOOLS.mupdf_display_errors(shown)
@@ -131,8 +101,9 @@ def _flag(reason: FlagReason, rule: int, revision: int, key: Key | None,
 
 
 class _Revision:
-    def __init__(self, blob: bytes, revision: int, inventory: Inventory, budget: list[int]):
-        self.blob, self.revision, self.inv, self.budget = blob, revision, inventory, budget
+    def __init__(self, blob: bytes, revision: int, inventory: Inventory, shared: _Shared):
+        self.blob, self.revision, self.inv, self.shared = blob, revision, inventory, shared
+        self.identity: tuple[bytes, bytes] | None = None
         self.flags: list[Flag] = []
         self.values: dict[Key, object] = {}
         self.streams: dict[Key, bytes] = {}
@@ -146,12 +117,12 @@ class _Revision:
         self.flags.append(_flag(FlagReason.DECRYPTION_MISMATCH, rule, self.revision, key,
                                 self._span(key)))
 
-    def done(self, identity: tuple[bytes, bytes] | None, trusted: bool = True) -> Revision:
+    def done(self, identity: tuple[bytes, bytes] | None, trusted: bool = True) -> Decryption:
         if not trusted:
             self.values.clear()
             self.streams.clear()
-        return Revision(self.revision, identity, dict(self.values), dict(self.streams),
-                        tuple(self.flags))
+        return Decryption(self.revision, identity, dict(self.values), dict(self.streams),
+                          tuple(self.flags))
 
     def _span(self, key: Key | None) -> Span | None:
         unit = None if key is None else self.inv.body(key[0], self.revision)
@@ -162,8 +133,8 @@ class _Revision:
         return self.spans.get(unit)
 
     def charge(self, *parts: bytes) -> bool:
-        self.budget[0] -= sum(len(p) for p in parts)
-        if self.budget[0] < 0:
+        self.shared.left -= sum(len(p) for p in parts)
+        if self.shared.left < 0:
             if not any(f.reason is FlagReason.BUDGET_EXHAUSTED for f in self.flags):
                 self.flags.append(Flag(FlagReason.BUDGET_EXHAUSTED, None,
                                        (("revision", self.revision),)))
@@ -171,7 +142,7 @@ class _Revision:
         return True
 
     # ── Opening ─────────────────────────────────────────────────────────
-    def run(self) -> Revision:
+    def run(self) -> Decryption:
         try:
             doc = pymupdf.open(stream=self.blob, filetype="pdf")
         except Exception:                      # FileDataError and kin: unreadable
@@ -193,7 +164,7 @@ class _Revision:
             if doc is not None:
                 doc.close()
 
-    def _opened(self, doc: Any, pdf: pikepdf.Pdf | None, locked: bool) -> Revision:
+    def _opened(self, doc: Any, pdf: pikepdf.Pdf | None, locked: bool) -> Decryption:
         mu_encrypted = doc is not None and bool(doc.needs_pass or doc.metadata.get("encryption"))
         pk_encrypted = locked or (pdf is not None and pdf.is_encrypted)
         if not (mu_encrypted or pk_encrypted):
@@ -224,6 +195,7 @@ class _Revision:
         if warnings:
             self.unverified(CryptRule.WARNING)
             return self.done(identity, trusted=False)
+        self.identity = identity
         self._objects(doc, pdf, encrypt)
         _drain_mupdf()
         if doc.is_repaired:                     # repair is lazy: only known after the reads
@@ -248,17 +220,34 @@ class _Revision:
                 return
 
     def _container_decoded(self, entry: Any) -> bool:
+        """Whether the inventory decoded the object stream holding a
+        compressed entry within its budget: the readers inflate it whole,
+        uncapped, to read one member. An encrypted object stream the
+        inventory cannot inflate yet (it reads ciphertext until 3a-9b)
+        still lands in ``object_streams``, without members: its members
+        are read here (tests/test_crypt.py pins that)."""
         home = self.inv.entry(entry.obj_stream_number, self.revision)
         return home is not None and home[0] == 1 and home[1] in self.inv.object_streams
 
     def _object(self, doc: Any, pdf: pikepdf.Pdf, key: Key, plain_metadata: Key | None,
                 eff: bool) -> bool:
         number, gen = key
+        unit = self.inv.body(number, self.revision)
+        reuse = None if unit is None or self.identity is None or key == plain_metadata \
+            else (unit, self.identity)
+        if reuse is not None and reuse in self.shared.verified:
+            form, data = self.shared.verified[reuse]   # an earlier revision verified this body
+            self.values[key] = form
+            if data is not None:
+                self.streams[key] = data
+            return True
         try:
             obj = pdf.get_object(number, gen)
             text = doc.xref_object(number, compressed=False)
         except Exception:
             obj, text = None, ""
+        if not self.charge(text.encode("latin-1", "replace")):
+            return False
         if pdf.get_warnings() or _drain_mupdf() or obj is None:
             self.unverified(CryptRule.WARNING, key)
             return True
@@ -269,8 +258,11 @@ class _Revision:
             return True
         if not isinstance(obj, pikepdf.Stream):
             self.values[key] = ours
-            return True
-        return self._stream(doc, pdf, obj, key, ours, plain_metadata, eff)
+        elif not self._stream(doc, pdf, obj, key, ours, plain_metadata, eff):
+            return False
+        if reuse is not None and key in self.values:
+            self.shared.verified[reuse] = (self.values[key], self.streams.get(key))
+        return True
 
     def _stream(self, doc: Any, pdf: pikepdf.Pdf, obj: pikepdf.Stream, key: Key,
                 form: object, plain_metadata: Key | None, eff: bool) -> bool:
@@ -333,11 +325,32 @@ def _drain_mupdf() -> bool:
 
 
 def _identity(pdf: pikepdf.Pdf) -> tuple[bytes, bytes]:
+    """Everything that decides how the revision decrypts: its /Encrypt
+    dictionary with every indirect part resolved (a later revision may
+    rewrite only an indirect /CF), the file key pikepdf derived and the
+    stream, string and file methods -- and its first /ID string."""
     encrypt = pdf.trailer.get("/Encrypt")
     ident = pdf.trailer.get("/ID")
     first = bytes(ident[0]) if isinstance(ident, pikepdf.Array) and len(ident) else b""
-    form = repr(_pike_form(encrypt, top=True)).encode() if encrypt is not None else b""
-    return hashlib.sha256(form).digest(), first
+    info = pdf.encryption
+    parts = (repr(_resolved_form(encrypt)), bytes(info.encryption_key).hex(),
+             str(info.stream_method), str(info.string_method), str(info.file_method))
+    return hashlib.sha256(repr(parts).encode()).digest(), first
+
+
+def _resolved_form(obj: Any, depth: int = 0) -> object:
+    """*obj*'s value form with indirect objects resolved, to a small depth
+    (an /Encrypt dictionary is shallow; a deeper one is cut off, which only
+    makes two revisions' identities differ where they need not)."""
+    if obj is None or depth > 8:
+        return NULL
+    kind = obj._type_code
+    if kind is _PIKE.array:
+        return ("array", tuple(_resolved_form(item, depth + 1) for item in obj))
+    if kind in (_PIKE.dictionary, _PIKE.stream):
+        return _dict_form((key.encode("utf-8", "surrogateescape")[1:],
+                           _resolved_form(value, depth + 1)) for key, value in obj.items())
+    return _pike_form(obj, top=True)
 
 
 def _plain_metadata(pdf: pikepdf.Pdf, encrypt: Any) -> Key | None:

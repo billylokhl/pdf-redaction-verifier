@@ -15,7 +15,7 @@ from caselib import rawpdf
 from caselib.rawcrypt import Handler, flip_last_block, replace_stream_data, stream_span
 from redaction_verifier import crypt
 from redaction_verifier.budget import Budget
-from redaction_verifier.crypt import CryptRule, MismatchRule
+from redaction_verifier.inventory.decrypted import CryptRule, Decryption, MismatchRule
 from redaction_verifier.inventory.build import build_inventory
 from redaction_verifier.inventory.xref import read_chain
 from redaction_verifier.ledger import FlagReason
@@ -24,13 +24,13 @@ CONTENT = b"BT /F1 12 Tf 72 700 Td (SSN 123-45-6789) Tj ET"
 FILE_ID = bytes(range(16))
 
 
-def decrypt(pdf: bytes, **kwargs: int) -> tuple[crypt.Revision, ...]:
+def decrypt(pdf: bytes, **kwargs: int) -> tuple[Decryption, ...]:
     inventory = build_inventory(pdf, budget=Budget(file_size=len(pdf)))
     chain = read_chain(pdf, budget=Budget(file_size=len(pdf)))
     return crypt.decrypt(pdf, inventory, chain, **kwargs)
 
 
-def rules(revision: crypt.Revision) -> set[tuple[str, int, int]]:
+def rules(revision: Decryption) -> set[tuple[str, int, int]]:
     """(reason, object, rule) of each flag."""
     return {(f.reason.value, dict(f.params)["object"], dict(f.params)["rule"])
             for f in revision.flags}
@@ -80,7 +80,7 @@ def test_aes_written_by_pikepdf_is_verified(tmp_path: Path, aes: int) -> None:
 def test_an_unencrypted_file_has_nothing_to_decrypt() -> None:
     pdf = rawpdf.build({1: rawpdf.CATALOG, 2: rawpdf.PAGES, 3: rawpdf.page(),
                         4: rawpdf.stream(b"", CONTENT), 6: rawpdf.HELVETICA})
-    assert decrypt(pdf) == (crypt.Revision(0, None, {}, {}, ()),)
+    assert decrypt(pdf) == (Decryption(0, None, {}, {}, ()),)
 
 
 def test_identity_tells_handlers_and_ids_apart() -> None:
@@ -191,3 +191,63 @@ def test_only_the_catalogs_metadata_is_plain_under_encrypt_metadata_false() -> N
     (revision,) = decrypt(pdf)
     assert revision.flags == ()
     assert revision.streams[(8, 0)] == revision.streams[(9, 0)] == xmp
+
+
+
+# ── Identity, reuse and cost ───────────────────────────────────────────
+def test_identity_sees_an_indirect_crypt_filter_change() -> None:
+    # Two R4 files alike but for an indirect /StdCF's method: the /Encrypt
+    # dictionaries print alike (`/CF 9 0 R`), the decryptions do not.
+    h = Handler(4, b"owner", FILE_ID)
+    indirect = h.encrypt_dict().replace(
+        b"/CF << /StdCF << /CFM /V2 /Length 16 /AuthEvent /DocOpen >> >>", b"/CF 9 0 R")
+    a = hand_built(h, x7=indirect, x9=b"<< /StdCF << /CFM /V2 /Length 16 /AuthEvent /DocOpen >> >>")
+    b = hand_built(h, x7=indirect, x9=b"<< /StdCF << /CFM /None /Length 16 /AuthEvent /DocOpen >> >>")
+    (first,), (second,) = decrypt(a), decrypt(b)
+    assert first.identity is not None and second.identity is not None
+    assert first.identity != second.identity
+
+
+def test_a_body_two_revisions_share_under_one_identity_is_verified_once() -> None:
+    h = Handler(3, b"owner", FILE_ID)
+    base = hand_built(h)
+    pdf = rawpdf.incremental_update(base, {5: b"<< /Title " + h.string(5, b"New") + b" >>"},
+                                    info=5)
+    pdf = pdf.replace(b"/Prev", h.trailer(7) + b" /Prev")
+    current, earlier = decrypt(pdf)
+    assert current.flags == earlier.flags == ()
+    assert current.identity == earlier.identity
+    assert current.streams == earlier.streams == {(4, 0): CONTENT}
+    assert current.values[(5, 0)] != earlier.values[(5, 0)]   # the rewritten /Info
+
+
+def test_every_value_read_is_charged() -> None:
+    # No stream at all: the cap still stops the reads.
+    h = Handler(3, b"owner", FILE_ID)
+    pdf = rawpdf.build({1: rawpdf.CATALOG, 2: b"<< /Type /Pages /Kids [] /Count 0 >>",
+                        5: b"<< /Title " + h.string(5, b"A title") + b" >>",
+                        7: h.encrypt_dict()}, info=5, trailer=h.trailer(7))
+    (revision,) = decrypt(pdf, max_bytes=20)
+    assert any(f.reason is FlagReason.BUDGET_EXHAUSTED for f in revision.flags)
+
+
+def test_members_of_an_encrypted_object_stream_are_read(tmp_path: Path) -> None:
+    # The inventory cannot inflate the encrypted object stream yet (until
+    # 3a-9b) but keeps it, without members; crypt reads them through both
+    # readers.
+    path = tmp_path / "objstm.pdf"
+    with pikepdf.new() as pdf:
+        page = pdf.add_blank_page()
+        page.Contents = pdf.make_stream(CONTENT)
+        pdf.docinfo["/Title"] = "A title"
+        pdf.save(path, object_stream_mode=pikepdf.ObjectStreamMode.generate, static_id=True,
+                 encryption=pikepdf.Encryption(owner="owner", user="", R=6, aes=True))
+    data = path.read_bytes()
+    inventory = build_inventory(data, budget=Budget(file_size=len(data)))
+    assert inventory.object_streams and all(
+        s.members == () for s in inventory.object_streams.values())
+    (revision,) = decrypt(data)
+    assert revision.flags == ()
+    assert ("str", b"A title") in [v for form in revision.values.values()
+                                    if isinstance(form, tuple) and form[0] == "dict"
+                                    for _, v in form[1]]
