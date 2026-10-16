@@ -1,46 +1,87 @@
 # Phase 3b (Ledger + verdict) plan
 
-Drafted 2026-10-15 (Pacific), for review by the coordinator and owner. This is the PR sequence
-for REDESIGN §7's row 3b, as [phase3a-plan.md](phase3a-plan.md) was for 3a. The open
-questions at the end need decisions before the PRs they name start. Nothing here changes a
-verdict.
+This is the PR sequence for REDESIGN §7's row 3b, as [phase3a-plan.md](phase3a-plan.md) was
+for 3a.
 
-Read with: REDESIGN §2 (obligations, parent anchors), §3 (principles 1, 2, 4, 6, 8), §4
-(process boundary, core types, decoder registry), §6 (shadow and enforced verdicts, worst-of)
-and §7a; ADR 0003, ADR 0006 (amendment: `Limits.max_units` 500,000), ADR 0007 (note: the
-overlap), ADR 0008, ADR 0010 item 5, ADR 0011 item 5 and R1-R7; RESULTS.md "Phase 3a-7e" and
-"Phase 3a-12".
+- **History:** drafted 2026-10-15 (Pacific); revised the same day after review round 1 of
+  #179 and the owner's and coordinator's decisions (§7).
+- **Pending:** one question (Q11, the matcher's design) is open for the owner, and Q12 for the
+  coordinator.
+- **Verdict changes:** nothing here changes a verdict.
+
+Read with:
+
+- **REDESIGN:** §2 (obligations, parent anchors); §3 (principles 1, 2, 4, 5, 6, 8 and 11);
+  §4 (process boundary, core types, decoder registry); §6 ("Shadow mode", as amended for 3b
+  on 2026-10-15); §7a.
+- **ADRs:**
+  - ADR 0001, with its 3a-9a-1 note: `Decryption.views`;
+  - ADR 0003, including its governing rule and the deferred free-entry bytes;
+  - ADR 0006's amendment: `Limits.max_units` 500,000;
+  - ADR 0007's note;
+  - ADR 0008;
+  - ADR 0010, item 5;
+  - ADR 0011, item 5, and R1-R7.
+- **RESULTS.md:** "Phase 3a-7e" and "Phase 3a-12".
+
+**Lanes, stated here because the registry is local-only:**
+
+- **Lane A owns the core:** `verdict.py`, `decoders/`, `rawmatch.py`, the inventory's build
+  and types, `eval/scorecard/inventory.py`, and the `verify.py` hook.
+- **Lane A2 owns:**
+  - `crypt.py`;
+  - `sandbox.py`;
+  - the child entry;
+  - the bomb cases;
+  - the edits to `tests/test_import_boundaries.py`.
+- **Lane F (Phase 5) shares files:** `verify.py`, `model.py` and `report/*`.
+- **The `verify.py` queue:** one open PR at a time on `verify.py` (REDESIGN §7a). Today's open
+  one is #160, Phase 5's "PR 3b", which waits on owner sign-offs. #167 has merged.
 
 ## Ground rules for every 3b PR
 
-- **Shipped exit unchanged, except where a PR says otherwise.** Only 3b-8 may change a
-  shipped exit, and only to exit 2 on a run whose child failed (Q1). Nothing else may change
-  one. That covers every case in the case library and every corpus file.
-  - The scorecard stays at its current accepted list: 0 unlisted, 0 crashed.
-  - CHANGELOG: "Verdict changes: none", except for 3b-8.
-- **The #147 rule.** Every PR that touches `verify.py`, `redaction_verifier/report/*` or
-  `redaction_verifier/model.py` (3b-1's re-export, 3b-7, 3b-8, 3b-9) needs a passing
-  macOS+OCR scorecard run on its branch before merge (`gh workflow run scorecard-weekly.yml
-  --ref <branch>`), recorded in the PR body. The Linux every-PR differential must also pass.
-- **The verdict rules live in the parent.** That means the rules file and secrets, plus every
-  rule that turns statuses into an exit: the ORPHANED mapping, STRUCTURAL's whole-parse
-  condition, witness checks, the enforced set and worst-of.
-  - The child reports facts: units, flags, labels, decoder results and witnesses.
-  - It never decides an obligation's final status.
-- **Types and checking.** New modules are mypy strict, with Python 3.10 as the floor.
-  - `verdict.py` targets 100% branch coverage now (REDESIGN Phase 6 requires it), so the
-    target is never back-filled.
-  - Every closed enum is pinned by a test, and every new `FlagReason` gets an EMITTERS entry.
-- **Import guard.** Every new child-side module is added to the child-side import guard
-  (`tests/test_import_boundaries.py`). Lane A2 owns that file's edits (LANES.md), so each PR
-  that adds a module asks A2 for the entry or makes it with A2's review.
-- **One problem per PR.** About 600 changed code lines triggers a split decision.
-- **Docs in sync.** Each PR updates README, DESIGN, COVERAGE, eval/README, REDESIGN and
-  CHANGELOG as applicable.
-- **Review.** Each PR gets an independent adversarial review. Use Opus for this phase: all of
-  it is on the exit-0 audit surface (Principle 2). The PR body ends with the Review table.
-- **Nothing document-derived crosses the pipe in 3b.** No bytes, text or names cross. Every
-  value is an integer or a closed enum's name (Q4).
+- **Shipped exit unchanged, except in 3b-11.** Only 3b-11 may change a shipped exit, and only
+  to exit 2 on a run whose child-integrity checks fail (Q1, REDESIGN §6 as amended). Any such
+  change needs at least a minor version bump (Principle 11).
+  - Every case in the case library and every corpus file keeps its exit.
+  - The scorecard stays at its accepted list, with 0 unlisted and 0 crashed.
+  - CHANGELOG reads "Verdict changes: none", except in 3b-11.
+- **The #147 rule.** These PRs touch `verify.py`, `report/*` or `model.py`: 3b-1 (re-export
+  lines only), 3b-10, 3b-11 and 3b-12. Each needs a passing macOS+OCR scorecard run on its
+  branch before merge (`gh workflow run scorecard-weekly.yml --ref <branch>`; about 58-62
+  minutes), recorded in the PR body. The Linux every-PR differential must also pass.
+- **The parent holds all the rules.**
+  - It holds the rules file and its values.
+  - It holds every rule that turns statuses into an exit: the ORPHANED mapping, STRUCTURAL's
+    whole-parse condition, the witness checks, the enforced set, worst-of and matching.
+  - The child reports facts and never decides an obligation's final status.
+  - No rules value reaches the child (ADR 0010 item 5; the canary test).
+- **What crosses the pipe.**
+  - **Structural messages:** only integers and closed enum names. Spans and object numbers are
+    document-derived integers.
+  - **Stage frames:** under Q11's recommended design, decoded document bytes, for matching, as
+    stage frames (§3). Never secrets: nothing flows from parent to child but the descriptor and
+    code paths.
+- **Code standards.**
+  - New modules are mypy strict, Python 3.10 floor.
+  - `verdict.py` is at 100% branch coverage from its first PR.
+  - Every closed enum is pinned by a test.
+  - Every new `FlagReason` has an EMITTERS entry.
+- **Import-guard entries.** Lane A writes them in its own PRs, and Lane A2 reviews them (Q9).
+  `protocol.py` is child-side and may import `json` and `struct` beyond the allowlist.
+  `child.py` is an entry point, shaped like `inventory/__main__.py`'s exemption:
+  - it may import `os`, `sys`, `hashlib`, `select` and, through `crypt.py`, `pikepdf` and
+    `pymupdf`;
+  - nothing may import it;
+  - every other check applies.
+
+  The parent-side modules (`verdict`, `anchors`, `shadow`, `rawmatch`) never import the
+  inventory, `crypt`, `pikepdf`, `decoders` or `child`.
+- **Process.**
+  - One problem per PR; about 600 changed code lines triggers a split decision.
+  - Docs stay in sync: README, DESIGN, COVERAGE, eval/README, REDESIGN and CHANGELOG.
+  - Each PR gets an independent adversarial review (Opus: all of this is on the exit-0 audit
+    surface), ending with the Review table.
 
 ## 1. Scope
 
@@ -49,678 +90,876 @@ REDESIGN's row 3b covers:
 - obligations and parent anchors;
 - the child protocol and its completion sentinel;
 - witnesses;
-- a single verdict function, with shadow and enforced verdicts;
+- the single verdict function, with shadow and enforced verdicts;
 - worst-of shipping;
 - `--explain`.
 
-The row also fixes these verdict rules:
+It also fixes two verdict rules:
 
-- Every stream the reference graph labels `ORPHANED` is `FLAGGED`, whatever its decoder
-  reports. This is per body across the revisions it lives in (`Inventory.body_labels`). A
-  test pins that a `DECODED` orphan still yields `FLAGGED`.
-- A stream that is both `STRUCTURAL` and `DRAWABLE` is drawable: every label's decoder runs,
-  and the worst status wins.
+- every stream labelled `ORPHANED` (per body, `Inventory.body_labels`) is `FLAGGED` whatever its
+  decoder reports, with a test where a `DECODED` orphan still yields `FLAGGED`;
+- a stream both `STRUCTURAL` and `DRAWABLE` is drawable.
 
-ADR 0010 item 5 moves the minimal child process here from 3d: `python -I`, an empty
-environment, the PDF as an open descriptor and never the rules path, rlimits, a wall-clock
-kill, a typed protocol and a canary test. REDESIGN §4 (#176) runs `crypt.py` (3a-9) in that
-child, beside the inventory and the decoders. The gate is:
+Beyond the row:
+
+- **The minimal child.** ADR 0010 item 5 moved it here. REDESIGN §4 (#176) runs `crypt.py` in
+  it.
+- **The matcher.** The owner's re-decision of Q8 (2026-10-15) adds the ledger's own raw matcher
+  over the spans earlier plans assign to 3b:
+  - whole object spans (phase3a-plan, 3a-3: "3b must match the whole object span's bytes");
+  - both forms of a language-tagged text string (3a-2/3a-3: "for 3b to match both");
+  - dead object streams' bytes (3a-5: "3b/Phase 4's to scan as raw bytes");
+  - owner decision 7's claimed comment bytes;
+  - xref-stream free-entry bytes (ADR 0003, "Deferred");
+  - `Decryption.views` (§4).
+
+The row's gate, as amended:
 
 - the shipped exit is identical to the reference on every case;
 - the shadow verdict is reported;
-- a truncated or empty child report exits `2`.
+- a truncated or empty child report exits `2`. That holds in the enforced verdict, from 3b-11.
 
 **Not 3b:**
 
-- **3c, parser agreement:** the re-run of 3a's agreement harness against the full decoded view,
-  and ADR 0002's two check gaps. 3b creates the parser-agreement obligation, `UNEXAMINED`,
-  so nothing can be certified without it; 3c discharges it.
-- **3d, the sandbox:** the OS sandbox, watchdog tuning, the private temporary directory as a
-  gate, and the bomb and hang cases exiting `2`. 3b uses `redaction_verifier/sandbox.py` (#166)
-  as merged, with `os_sandbox=False`.
-- **4a-4d, decoders.** Content streams, fonts, the consumption witness as an enforced gate
-  (ADR 0008), synthesized appearances and the string/name token decoder are 4a. Images,
-  decision D's "used" and the strips-under-a-box question are 4b. Owner decision 2026-10-15:
-  strips under a box must be caught, and Lane G measures. Containers are 4c; filter chains and
-  `RESIDUE` are 4d.
-  - 3b's registry holds only the structural kinds the inventory already decodes. Every other
-    unit kind stays `UNEXAMINED`, with the reason `NO_DECODER`.
-  - **No unit kind is enforced in 3b** (REDESIGN §6).
-- **The hint-table decoder.** RESULTS.md "Owner choice", option (a), staged. Owner decision
-  2026-10-15: the spike runs in parallel, and hint streams stay flagged meanwhile.
-  - Its six PRs are outside 3b's count. Its "registry hookup in 3b" (step 3) lands once its
-    decoder exists, in 3c.
-  - 3b's registry is built so that the hookup is a single new entry plus flipping one pinned
-    test (§4 below).
-- **Enforcing anything measured in 3a-12.** The 707 label-class files and the inventory's 153
-  flagged files stay shadow-only. They are enforced per kind, each from its decoder's phase,
-  and all of them only when the shadow verdict ships (Phase 6).
-- **Phase 5.** Lane F's "PR 3b" (#160) is Phase 5's third PR, not this phase.
+- **3c, parser agreement.** 3b creates the `PARSER_AGREEMENT` obligation, `UNEXAMINED`; 3c
+  discharges it. The qpdf anchors join the enforced set no earlier than 3c.
+- **3d, the sandbox.** The OS sandbox, watchdog tuning and the bomb and hang gate belong to
+  3d. 3b uses `sandbox.py` with `os_sandbox=False`, extended in 3b-5.
+- **4a** (owner decision Q10, 2026-10-15; REDESIGN's 4a row):
+  - the views move behind the ledger and into the child;
+  - the string/name/key token decoder of the registry;
+  - content streams, fonts and synthesized appearances;
+  - the consumption witness, enforced (ADR 0008).
+
+  Until then, page-view obligations and dictionary tokens stay `UNEXAMINED`. The raw matcher
+  covers their bytes, but a raw match is not a decode.
+- **4b-4d.** Images, decision D's "used" and the strips-under-a-box question are 4b's (owner
+  decision 2026-10-15: they must be caught; Lane G measures). Containers are 4c's, and the
+  general filter chain and `RESIDUE` are 4d's. No unit kind is enforced in 3b.
+- **The hint-table decoder.** RESULTS.md "Owner choice", option (a), is staged: its spike runs
+  in parallel, and hint streams stay flagged meanwhile (owner, 2026-10-15). Its six PRs are
+  outside this count, and its registry hookup lands with its decoder in 3c (§4, rule 6).
+- **Enforcing 3a-12's classes.** The 707 label-class files and the inventory's 153 flagged files
+  stay shadow-only until each kind's decoder phase, and all of them until Phase 6.
 
 ## 2. The PR sequence
 
-Ten PRs, plus this plan. Lane A owns the core and Lane A2 owns the child (DEPMAP). "Verdict
-path" means the PR touches code the shipped CLI runs.
+Thirteen PRs, plus this plan: Lane A has 11, Lane A2 has 2. "Verdict path" means the PR
+touches code the shipped CLI runs.
 
 **3b-1. Obligations, witnesses and labels: the types** (Lane A)
 
-- **Deliverable.** Additions to `ledger.py`, append-only:
+- **Deliverable:** additions to `ledger.py`, append-only.
   - **Reference types:**
-    - `SynthesizedRef(body, revision)`: a SYNTHESIZED unit. Not a `UnitKind`, since it
-      claims no bytes and `tile()` must keep rejecting it.
-    - `ViewRef(page, reading)`: reading is TEXT or OCR.
-    - `ToolRef`: a closed `Tool` enum (qpdf, exiftool, OCR).
+    - `SynthesizedRef(body, revision)`. It is not a `UnitKind`, since it claims no bytes.
+    - `ViewRef(page, reading)`, where the reading is TEXT or OCR.
+    - `ToolRef`, with a closed `Tool`.
     - `RuleScopeRef`.
-    - `CheckRef`: a closed `Check` enum. Its members:
-      - `CHILD_COMPLETE`;
-      - `FILE_IDENTITY`;
-      - `TILING`, which covers the gap bytes;
-      - `PAGE_COUNT`;
-      - `OBJECT_SET`;
-      - `INVENTORY_FILE_FLAGS`;
-      - `PARSER_AGREEMENT`, 3c's;
-      - `RAW_MATCH` (Q8).
-  - **Records:** `Obligation(id, status, reason, witness)` and `Witness`.
-    - `Witness` holds the byte-consumption spans, in the decoded coordinates of the unit's
-      stage, and the length they must tile.
-    - Fields for ADR 0008's glyph counts are reserved, not populated, until 4a.
-    - `DecodeResult` gets no evidence and no children in 3b (Q4).
-  - **Labels:** a closed `Label` enum (`DRAWABLE`, `STRUCTURAL`, `ORPHANED`, `SYNTHESIZED`)
-    and a closed `StructuralKind` matching `labels.py`'s records.
-  - **Reasons:** a closed `PendingReason` for `UNEXAMINED` (`NO_DECODER`, `NOT_IN_PHASE`),
-    and the closed reasons for `UNREADABLE` and `FAILED`, `NOT_REPORTED` among them (Q6 names
-    them).
-  - `model.py` re-exports the new names, additively.
-- **Files:** `redaction_verifier/ledger.py` (append-only; Lane A2's #178 appends
-  `DECRYPTION_*` to it, so rebase), `redaction_verifier/model.py` (re-export lines only),
-  `tests/test_ledger_types.py` (EMITTERS, shared).
-- **Depends on:** nothing beyond main. It can start before 3a-14 (Q7).
+    - `StageRef(unit, stage)`, with a closed `Stage`: `STORED`, `XREF_FIELDS`, `OBJSTM_PAYLOAD`,
+      `STRING_TAGGED`, `STRING_UNTAGGED`, `READER_VIEW`.
+    - `CheckRef`, with a closed `Check`: `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING`,
+      `PAGE_COUNT`, `OBJECT_SET`, `INVENTORY_FILE_FLAGS`, `PARSER_AGREEMENT` and `RAW_MATCH`.
+  - **Records:**
+    - `Obligation(id, status, reason, witness)`.
+    - `Witness`: byte-consumption spans in a stage's decoded coordinates, and the stage length
+      they must tile. Glyph-count fields are reserved for 4a.
+    - `DecodeResult`, without evidence or children.
+    - `Finding(rule index, tier, stage ref)`: no text, since the parent masks at report time.
+  - **Enums:**
+    - `Label` and `StructuralKind`;
+    - `PendingReason` (`NO_DECODER`, `NOT_IN_PHASE`);
+    - the closed `UNREADABLE` reasons (`HINT_PAYLOAD`);
+    - the closed `FAILED` reasons (`NOT_REPORTED`).
+  - `check_tiling` and the PDF-whitespace predicate move here from `inventory/tiling.py`, which
+    re-exports them. The parent then re-runs both without importing the inventory package. The
+    file is Lane A's and outside Lane A2's 9b claim.
+  - `model.py` re-exports the new names.
+- **Files:**
+  - `redaction_verifier/ledger.py`, append-only; Lane A2's #178 appends `DECRYPTION_*`, so this
+    PR rebases on it;
+  - `inventory/tiling.py`, the re-export;
+  - `model.py`, re-export lines;
+  - `tests/test_ledger_types.py`;
+  - the guard entries.
+- **Depends on:** main; it starts now (Q7).
 - **Tests:**
-  - every enum is closed and pinned;
-  - the records are frozen;
-  - every field that can cross the pipe holds only plain integers or enum members, as `Flag`
-    does;
-  - `Witness` balances only when its spans tile `[0, length)` exactly;
-  - an empty span is invalid. This settles 3a-1's open note: a unit reporting an empty span
-    is a protocol error.
-- **Gate:** the suite, mypy strict and the import guard.
-- **Verdict path:** none. `model.py` gains re-export lines only, but the #147 run applies
-  anyway because the PR touches `model.py`.
+  - closed enums pinned, frozen records;
+  - everything that crosses the pipe is plain integers or enum members;
+  - a `Witness` balances only when its spans tile `[0, length)`;
+  - an empty span is invalid, which settles 3a-1's note: it is a protocol error;
+  - `check_tiling` is unchanged behind the re-export.
+- **Gate:** the suite, mypy strict, the guard, and #147 (for `model.py`).
+- **Verdict path:** re-export lines only.
 
-**3b-2. The child protocol** (Lane A)
+**3b-2. The protocol** (Lane A)
 
-- **Deliverable.** A new `redaction_verifier/protocol.py`, pure (the standard library's `json`
-  plus `ledger`). It holds:
-  - the message schema of §3;
-  - the encoder the child uses;
-  - the parent's strict validator.
-
-  The validator returns a `ChildReport`, or a closed `ProtocolError` that makes
-  `CHILD_COMPLETE` `FAILED`.
-- **Files:** `redaction_verifier/protocol.py`, `tests/test_protocol.py`, and the guard entry
-  (A2).
+- **Deliverable:** `redaction_verifier/protocol.py`, child-side and pure: the length-prefixed
+  frame format, the message schema of §3, the child's encoder, and the parent's strict validator.
+  - The validator is incremental: it validates frames as they arrive and spools stage bytes.
+  - It returns a `ChildReport`, or a closed `ProtocolError` that makes `CHILD_COMPLETE`
+    `FAILED`.
+  - If Q11 goes to option (i), the stage frames are dropped from this PR.
+- **Files:** `protocol.py`, `tests/test_protocol.py`, and the guard entry (`json`, `struct`).
 - **Depends on:** 3b-1.
 - **Tests (Hypothesis):**
-  - every report round-trips;
-  - **no proper prefix of a valid stream validates**, whether cut at a line or at a byte;
-  - a single-byte mutation either is rejected or validates to a report whose sentinel counts
-    and hash still match what it carries, never to a report with obligations silently
-    dropped;
-  - duplicate, out-of-order and unknown messages are rejected, as are messages after the
-    sentinel;
-  - a count past its `Limits` bound is rejected, as is a non-integer where an integer belongs;
-  - any string field outside its closed enum is rejected.
+  - round-trip;
+  - no proper prefix validates, cut at any byte;
+  - a single-byte mutation is rejected, or still yields counts and a hash that match what
+    arrived;
+  - duplicates, reordering, unknown types, frames after `end`, and counts past their bound are
+    rejected;
+  - a non-integer where an integer belongs is rejected, and so is a name outside its enum;
+  - a region list that does not tile is rejected;
+  - a stage frame larger than its declared length is rejected.
 - **Gate:** the suite and mypy strict.
 - **Verdict path:** none.
 
-**3b-3. The decoder registry and the structural decoders** (Lane A)
+**3b-3. The registry and the structural decoders** (Lane A)
 
-- **Deliverable.** New modules `redaction_verifier/decoders/__init__.py` (the registry: a label
-  or unit kind maps to a `Decoder`) and `decoders/structural.py`. They run in the child.
-- **The 3b entries:**
-  - **Cross-reference streams and object streams:** the inventory's own decoding.
-    - `DECODED` with a witness when the inventory read the stream whole and unflagged.
-    - Their field data and header table are `NOT_APPLICABLE` under ADR 0003 reasons 1 and 2.
-  - **Hint streams:** `UNREADABLE` (ADR 0003, R6 (a)).
-  - **XMP, JavaScript, output intents and embedded files:** no entry, so `UNEXAMINED`
-    (`NO_DECODER`).
-  - **Every DRAWABLE kind:** no entry until 4a/4b.
-  - **SYNTHESIZED:** `UNEXAMINED` until 4a.
-- **The `HEADER`, `XREF_TABLE` and `XREF_EPILOGUE` units:** `DECODED` by the inventory's
-  canonical parse, with a witness over their span. Their bytes stay under `RAW_MATCH` (ADR
-  0003's governing rule; owner decision 7: claimed comment bytes must be raw-searched).
-- **Files:** `redaction_verifier/decoders/`, `tests/test_decoders_structural.py`, and the
-  guard entry (A2). Read-only use of `inventory/types.py` and `labels.py`; no inventory file is
-  edited.
+- **Deliverable:** `decoders/__init__.py`, the registry, and `decoders/structural.py`. They run
+  child-side.
+  - **Cross-reference and object streams:** each stream's payload result is `DECODED`, with a
+    witness, when the inventory read it whole and unflagged.
+    - The xref field data is `NOT_APPLICABLE`, reason 1.
+    - The object-stream header table is `NOT_APPLICABLE`, reason 2.
+    - The members are their own units.
+  - **What a stream's OBJECT unit ends with:** the payload's result, worst-of'd with its
+    dictionary's. A dictionary's result is `UNEXAMINED` (`NO_DECODER`) until 4a's token decoder.
+    So in 3b, **an xref-stream or object-stream OBJECT unit ends `UNEXAMINED` (`NO_DECODER`)**,
+    with its payload discharged.
+  - **`HEADER` and `XREF_EPILOGUE`:** `DECODED` by the inventory's canonical parse, with a
+    witness over the span.
+  - **`XREF_TABLE`:** its entries are `DECODED`, its trailer dictionary `UNEXAMINED`.
+  - **Hint streams:** no decoder entry; listed status `UNREADABLE` (`HINT_PAYLOAD`, ADR 0003,
+    R6 (a)).
+  - **XMP, JavaScript, output intents, embedded files, every DRAWABLE kind and SYNTHESIZED:**
+    no entry, so `UNEXAMINED` (`NO_DECODER`).
+- **Files:** `decoders/`, `tests/test_decoders_structural.py`, and the guard entries. It reads
+  `inventory/types.py` and `labels.py` and edits no inventory file.
 - **Depends on:** 3b-1.
 - **Tests:**
-  - every registry entry is pinned;
-  - **the hint stream is `UNREADABLE`**, a pinned test the hint-table hookup must flip
-    explicitly;
-  - a structural decoder whose witness does not cover the whole decoded stream reports so, and
-    3b-4's test turns that body `ORPHANED`, as 3a-7e promised;
-  - a body that is both structural and drawable gets both labels' results;
+  - every entry is pinned;
+  - **the hint stream has no entry and is `UNREADABLE`.** The hint-table hookup must flip this
+    pinned test explicitly;
+  - a structural decoder whose witness does not cover its whole stream says so; 3b-4 then drops
+    the label;
   - work is charged to the `Budget`.
 - **Gate:** the suite and mypy strict.
 - **Verdict path:** none.
 
 **3b-4. The verdict function** (Lane A)
 
-- **Deliverable.** A new `redaction_verifier/verdict.py`, pure. It holds:
-  - `build_ledger(anchors, report | failure) -> Ledger`;
-  - `verdict(ledger, enforced) -> Verdict`, with the shadow exit, the enforced exit and the
-    undischarged obligations grouped by kind, status and reason;
-  - `worst_of(a, b)`, ordered `0 < 2 < 1`.
-
-  `check_tiling` moves from `inventory/tiling.py` to `ledger.py`, and `inventory/tiling.py`
-  re-exports it. The parent can then re-run it without importing the inventory package,
-  whose `__init__` loads `build_inventory`.
-
-  Also in this PR, `Limits` is validated at construction (3a-1's open note), because the
-  parent now uses its values as protocol bounds.
-- **Files:** `redaction_verifier/verdict.py`, `ledger.py` (`check_tiling`, moved),
-  `inventory/tiling.py` (the re-export, one line, in coordination with Lane A2's 3a-9b claims),
-  `budget.py` (validation), `tests/test_verdict.py`, and the guard entry (A2).
-- **Depends on:** 3b-1, 3b-2 (`ChildReport`) and 3b-3 (result shapes).
+- **Deliverable:** `verdict.py`, parent-side and pure.
+  - `build_ledger(anchors, report | failure, findings) -> Ledger`.
+  - `verdict(ledger, enforced) -> Verdict`, giving the shadow exit, the enforced exit, and the
+    undischarged obligations grouped by (kind, status, reason) with counts and sample provenance.
+  - `worst_of`.
+  - `Limits` is validated at construction (3a-1's note), since the parent uses its values as
+    protocol bounds.
+- **Files:** `verdict.py`, `budget.py` (validation), `tests/test_verdict.py`, and the guard
+  entry.
+- **Depends on:** 3b-1, 3b-2 and 3b-3.
 - **Tests:**
-  - **every §4 rule;**
-  - **properties:**
-    - the shadow exit is never 0 while any obligation is undischarged;
+  - every rule of §4;
+  - properties:
+    - the shadow exit is never 0 while anything is undischarged;
     - worsening any obligation never lowers either exit;
-    - replacing a valid report with any protocol failure never lowers either exit;
+    - replacing a valid report with any failure never lowers either exit;
     - `worst_of` is commutative, associative and monotone;
-  - an exhaustive `match` over `Status`;
+  - an exhaustive `match` on `Status`;
   - 100% branch coverage.
-- **Gate:** the suite, mypy strict and the coverage target.
+- **Gate:** the suite, mypy strict, and the coverage target.
 - **Verdict path:** none.
 
-**3b-5. The child entry** (Lane A2)
+**3b-5. The sandbox's lifetime and descriptor API** (Lane A2)
 
-- **Deliverable.** A new `redaction_verifier/child.py`, run as `python -I` under
-  `sandbox.run`. Its sequence:
-  1. read the input descriptor and hash it;
-  2. run `crypt.decrypt` per encrypted revision and `build_inventory` with the decryptions
-     (3a-9b-1's interface);
-  3. run the registry;
-  4. write the protocol.
-
-  It also owns:
-  - **the protocol's own descriptor.** The protocol goes to a dedicated descriptor, not fd 1.
-    fd 1 is pointed at `/dev/null` before `pymupdf` or `pikepdf` load, so library output can
-    never corrupt the stream.
-  - **package lookup under `-I`.** The child finds the package even when the CLI runs from a
-    checkout (`python verify.py`). `-I` drops the script directory from `sys.path`, so the
-    parent passes the package root, a code path and never a rules path, and the preamble
-    prepends it.
-  - **an `input_fd` variant of `sandbox.run`.** The child must read the same open file
-    description the parent hashed, not reopen the path.
-- **Files:** `redaction_verifier/child.py`, `redaction_verifier/sandbox.py` (the `input_fd`
-  variant and the protocol descriptor), `tests/test_child.py`, and
-  `tests/test_import_boundaries.py`. In the guard, `child.py` may import the inventory, crypt,
-  decoders, protocol, ledger and budget, and never rules, matching, report, views or `verify`.
-- **Depends on:** 3b-2, 3b-3 and 3a-9b-1 (Lane A2: `build_inventory` reading decryptions). It
-  must not start on a stub interface.
+- **Deliverable:** `sandbox.py` grows from a blocking `run()` into a handle:
+  - **`start()` returns a `Child`:**
+    - `cancel()`;
+    - `wait(timeout)`;
+    - its watchdog (wall clock, memory footprint) runs in its own thread, not the caller's;
+    - an incremental reader of a dedicated protocol descriptor, with a byte cap, feeding 3b-2's
+      validator;
+    - stdout stays diagnostics, with its existing cap.
+  - **An `input_fd` variant:** the child gets the parent's already-open descriptor. Both sides
+    read with `os.pread` and never `read`/`seek`, because they share one open file
+    description and its offset.
+  - **Parent death:** a lifeline pipe whose write end only the parent holds. The child's
+    preamble watches its read end and `_exit`s on EOF. Beside it:
+    - on Linux, `PR_SET_PDEATHSIG` (`SIGKILL`);
+    - on macOS, a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` watch on the parent's pid.
+  - **What the lifeline covers:**
+    - the parent killed by `SIGKILL` (the scorecard runner's timeout kill);
+    - the parent's process group killed (`bombrun`'s), which `start_new_session=True` keeps
+      from reaching the child directly;
+    - Ctrl-C, which the parent's handler turns into `cancel()`.
+  - **Priority:** the child runs at a lower priority (`os.nice`, +10) (blocker 4, §6 gate 5).
+  - **Package lookup:** the preamble prepends the package root the parent passes (a code path,
+    never a rules path), so `python -I` finds the package from a checkout.
+- **Files:** `sandbox.py`, `tests/test_sandbox.py`.
+- **Depends on:** nothing from 3b; it can start now.
 - **Tests:**
-  - **ADR 0010 item 5's canary:** a rules file with a unique value is run through the CLI path.
-    The value must appear in none of the child's argv, environment, open descriptors or
-    working directory.
-  - the child's output validates on every case-library file and every encrypted fixture;
+  - the child dies when the parent is `SIGKILL`ed, on Linux and macOS, with no process outliving
+    it;
+  - cancel kills the group;
+  - Ctrl-C;
+  - the descriptor's offset is never moved;
+  - the reader cap gives a closed `truncated` outcome;
+  - no rlimit or watchdog regression.
+- **Gate:** the suite on both platforms; the bomb harness still green.
+- **Verdict path:** none (unwired).
+
+**3b-6. String and stage extraction** (Lane A, child-side)
+
+- **Deliverable:** `decoders/stages.py`. For each unit it yields the decoded stages the raw
+  matcher needs, each as (unit, `Stage`, bytes):
+  - `XREF_FIELDS`: each cross-reference stream's decoded field data, free entries included;
+  - `OBJSTM_PAYLOAD`: each object stream's decoded payload, so members are matched over their
+    whole span;
+  - `STRING_TAGGED` and `STRING_UNTAGGED`: each text string's decoding with its language tags
+    kept and with them stripped (`strings.py` already returns both), in UTF-8;
+  - `READER_VIEW`: each `Decryption.views` entry, as a stream of that object (Lane A2's
+    9b obligation).
+
+  Each stage is charged to the `Budget`. Each is capped by `Limits.max_stage_bytes` (Q12); past
+  the cap, a `STAGE_TRUNCATED` flag is raised, and that stage's `RAW_MATCH` is `FLAGGED`.
+- **Files:** `decoders/stages.py`, `ledger.py` (`STAGE_TRUNCATED`, EMITTERS),
+  `tests/test_stages.py`, and the guard entry.
+- **Depends on:** 3b-3. Its `READER_VIEW` part depends on 9b-1, and lands as a follow-up if 9b-1
+  is later.
+- **Tests:** a planted value reaches a stage in each of these shapes:
+  - a free entry;
+  - an object-stream member;
+  - a hex string in UTF-16BE;
+  - a language-tagged string, both forms;
+  - a views entry.
+
+  Also: the cap gives a flag, not a failure.
+- **Gate:** the suite and mypy strict.
+- **Verdict path:** none.
+
+**3b-7. The child entry** (Lane A2)
+
+- **Deliverable:** `redaction_verifier/child.py`, run by `sandbox.start` under `python -I`. In
+  order:
+  1. `pread`s the descriptor, hashing as it goes;
+  2. runs `crypt.decrypt` and `build_inventory` with the decryptions, per 3a-9b-1's interface;
+  3. runs the registry and the stage extraction;
+  4. charges each reported unit and region to `max_units`. Tiling units are not charged today;
+     past the cap the child reports `BUDGET_EXHAUSTED`, still in a complete report;
+  5. writes the protocol to its dedicated descriptor. fd 1 points at `/dev/null` before
+     `pymupdf` or `pikepdf` load.
+- **Files:** `child.py`, `tests/test_child.py`, and the guard (entry-point exemption).
+- **Depends on:** 3b-2, 3b-3, 3b-5, 3b-6 and 3a-9b-1; never a stub interface.
+- **Tests:**
+  - ADR 0010 item 5's canary: a unique rules value reaches none of the child's argv,
+    environment, descriptors or working directory;
+  - every case-library file and encrypted fixture validates;
   - library output on fd 1 cannot corrupt the protocol;
   - an installed package and a checkout both work;
-  - the rlimits apply;
-  - a raising child yields a non-zero exit with no sentinel.
-- **Gate:** the suite, plus a case-library sweep: every file's child report validates, with 0
-  failures and 0 timeouts, on Linux and macOS.
-- **Verdict path:** none. The module is new and unwired.
+  - a raising child sends no sentinel.
+- **Gate:** a case-library sweep on Linux and macOS: every report validates, with 0 failures and
+  0 timeouts.
+- **Verdict path:** none (unwired).
 
-**3b-6. Parent anchors, the shadow runner and the measurement gate** (Lane A)
+**3b-8. The parent's raw matcher** (Lane A)
 
-- **Deliverable.** New modules `redaction_verifier/anchors.py` and
-  `redaction_verifier/shadow.py`, plus a new eval harness, `eval/scorecard/shadow.py`. None of
-  it is wired into the CLI yet.
-  - **`anchors.py`** establishes, from the parent's own facts:
-    - the file size and SHA-256, from the descriptor it hands over;
-    - the page count and the current revision's in-use object numbers, from qpdf in a
-      separate process (`--show-npages`, `--show-xref`), using the existing subprocess
-      conventions: absolute path, `--`, minimal environment;
-    - the tool and rules-scope obligations.
-  - **`shadow.py`** runs the child through `sandbox.run`, validates its output (3b-2), re-checks
-    the tiling and every `WHITESPACE` region's bytes, builds the ledger and computes the
-    verdict (3b-4). It never raises: any failure becomes `CHILD_COMPLETE` `FAILED`.
-  - **The dev entry** `python -m redaction_verifier.shadow FILE` prints counts only, with no
-    rules and no document bytes.
-- **Files:** the three new modules, `tests/test_anchors.py`, `tests/test_shadow.py`, a "Phase
-  3b" section in RESULTS.md, and eval/README.
-- **Depends on:** 3b-4 and 3b-5.
-- **Tests:**
-  - **every failure path yields `FAILED`:** a kill for wall clock, memory or a stray process,
-    a truncated report, an empty report, a garbled report, a hash mismatch, a tiling mismatch,
-    a `WHITESPACE` region holding a non-whitespace byte, and qpdf missing or failing;
-  - a page-count or object-set mismatch yields `FAILED` on that `CheckRef`.
-- **Gate:** the measurement gates of §6, items 1-2.
+- **Deliverable:** `redaction_verifier/rawmatch.py`, parent-side. Q11's recommended design is
+  option (iii), §3. Today's raw matcher (`RollingScanner` and `PatternScanner` over
+  `normalize_string(bytes.decode("latin-1"))`, the legacy raw layer's exact calls and tiers,
+  with ADR 0012's informational policy as legacy applies it) runs over:
+  - `STORED`: every byte `[0, size)` of the parent's own descriptor, `pread` in chunks. That
+    covers whole object spans with comments inside them, claimed comment lines, dead
+    object-stream bytes, slack and unindexed ranges. A secret across a chunk edge is found;
+  - each stage the child sent.
+
+  The STORED pass itself needs no child report. A hit is attributed to the region containing it
+  when the report is valid, and to the file otherwise. The output is ledger `Finding`s and the
+  `RAW_MATCH` obligations' statuses.
+- **Files:** `rawmatch.py`, `tests/test_rawmatch.py`, and the guard (parent-side: never imported
+  by the child).
+- **Depends on:** 3b-2 (stage frames) and 3b-4.
+- **Tests:** a value planted in each of these is found:
+  - a whole object span;
+  - an object comment;
+  - a claimed comment line;
+  - a dead object stream's stored bytes;
+  - a free entry;
+  - an object-stream member;
+  - both language-tag forms;
+  - a views entry;
+  - a chunk edge.
+
+  Further:
+  - findings carry no text;
+  - a stage that never arrived leaves its `RAW_MATCH` `UNEXAMINED`;
+  - a truncated stage is `FLAGGED`.
+- **Gate:** the suite and mypy strict, plus a case-library table of the shadow matcher against
+  today's raw layers (§6 gate 4).
 - **Verdict path:** none.
 
-**3b-7. The CLI hook, shadow only** (Lane A)
+**3b-9. Parent anchors, the shadow runner, and the measurement gate** (Lane A)
 
 - **Deliverable:**
-  - `verify.py` starts the shadow run concurrently with the legacy scan (Q2) and joins it
-    before the report. The exit is unchanged.
-  - `--json` gains `experimental.shadow` (§5). `JSON_SCHEMA_VERSION` stays 2: the field is
-    additive, and it is documented as outside the schema's stability promise.
-  - The scorecard gains a `shadow_exit` column in `metrics` and the corpus aggregate, outside
-    the normalised key.
-  - `keys.py` gains a test that `experimental` never enters the key.
-- **Files:** `verify.py` (the hook only), `redaction_verifier/report/json.py` (one keyword
-  argument, additive), `eval/scorecard/metrics.py`, `corpus.py`, `keys.py` (the test only),
-  and `tests/test_json.py`.
-- **Depends on:** 3b-6, and the `verify.py` queue: one open `verify.py` PR at a time, behind
-  #167 and #160 today.
-- **Tests:**
-  - with the hook, the exit and every field outside `experimental` are byte-identical to
-    without it, on every case-library file;
-  - `experimental.shadow` is present on every path; it is `null`, with a status, on early
-    error exits;
-  - the JSON stays deterministic across runs, with no timings in it.
-- **Gate:**
-  - the scorecard diff is identical (Linux every-PR, and macOS+OCR on the branch, per #147);
-  - the shipped exit is identical on every case;
-  - the runtime overhead is measured (§6, item 4).
-- **Verdict path:** yes. The hook must keep the shipped exit identical.
-
-**3b-8. Worst-of: enforce the child-integrity checks** (Lane A)
-
-- **Deliverable.**
-  - **The enforced set** is the integrity `CheckRef`s: `CHILD_COMPLETE`, `FILE_IDENTITY` and
-    `TILING` (Q1). No unit kind and no qpdf anchor joins it.
-  - The shipped exit becomes `worst_of(legacy, enforced)`.
-  - When the enforced exit raises the shipped one, the report carries a new stable warning
-    (Q6), so the report stays self-consistent: the scorecard checks every exit against its
-    report's own findings and warnings.
-- **Files:** `verify.py`, `redaction_verifier/report/text.py` (the warning's line),
-  `tests/test_shadow_enforced.py`, and CHANGELOG (Verdict changes).
-- **Depends on:** 3b-7, and §6 gate 3 holding first.
-- **Tests (the row's gate):**
-  - a truncated, empty or garbled child report, or a killed child, exits 2;
-  - legacy exit 1 with any child failure stays 1;
-  - legacy exit 0 with a child failure becomes 2, with the warning;
-  - legacy exit 2 is unchanged.
-- **Gate:**
-  - the scorecard diff stays identical on both platforms, with 0 child failures on the case
-    library;
-  - the corpus has 0 child failures;
-  - the bomb cases (#168) are re-judged, and any `Bomb.today` pin that moves is recorded:
-    stricter only, each moving pin named in the PR.
-- **Verdict path:** yes. It is stricter only, and only where the child fails.
-
-**3b-9. `--explain`** (Lane A)
-
-- **Deliverable:**
-  - `--explain` prints the enforced verdict's undischarged obligations, then a separately
-    headed shadow section. Both are grouped by (kind, status, reason) with counts and integer
-    provenance (revision, object, span), never text (Principle 8).
-  - `--json`'s `experimental.shadow.undischarged` carries the same groups.
-- **Files:** `verify.py` (the flag), `redaction_verifier/report/text.py`, and
-  `tests/test_explain.py`.
-- **Depends on:** 3b-8 and the `verify.py` queue.
-- **Tests:**
-  - the output is deterministic;
-  - no document bytes or rule values appear, checked with the canary values;
-  - every `PendingReason`, `FlagReason` and `Check` renders;
-  - the exit is identical with and without `--explain`.
-- **Gate:** the scorecard diff is identical (#147).
-- **Verdict path:** yes, and the exit must stay identical.
-
-**3b-10. Close-out** (Lane A)
-
-- **Deliverable:** the final measurement (§6) re-run on main, the REDESIGN 3b row, ADR notes
-  (ADR 0010 item 5: the protocol as built; ADR 0011 item 5: the verdict's mapping as built),
-  and CHANGELOG.
-- **Files:** docs and RESULTS.md only.
-- **Depends on:** 3b-9.
+  - **`anchors.py`:**
+    - the file size and SHA-256 by `pread` on the descriptor the child will get;
+    - qpdf in its own process (`--show-npages`, `--show-xref`), with an absolute path, `--` and
+      a minimal environment;
+    - the tool and rules-scope facts.
+  - **`shadow.py`:**
+    - starts the child (3b-5, 3b-7);
+    - feeds the validator;
+    - runs the STORED matcher pass and then the stage passes;
+    - checks the anchors and builds the verdict (3b-4);
+    - never raises.
+  - **`python -m redaction_verifier.shadow FILE --rules R`:** counts only.
+  - **`eval/scorecard/shadow.py`:** the corpus, case-library and fuzz harness of §6.
+- **Files:** `anchors.py`, `shadow.py`, `eval/scorecard/shadow.py`, tests, a "Phase 3b" section
+  in RESULTS.md, and eval/README.
+- **Depends on:** 3b-4, 3b-7, 3b-8, and 3a-14's final gate.
+- **Tests:** each of these yields `FAILED`:
+  - a kill: wall clock, memory or stray;
+  - a cancel;
+  - a truncated, empty or garbled report;
+  - a hash mismatch;
+  - a region tiling mismatch;
+  - a `WHITESPACE` region with another byte;
+  - qpdf missing or failing (its `CheckRef`).
+- **Gate:** §6 gates 1-4.
 - **Verdict path:** none.
 
-Order and parallelism:
+**3b-10. The CLI hook, shadow only** (Lane A)
 
-- 3b-1 comes first. 3b-2 and 3b-3 can then run in parallel, and 3b-4 joins them.
-- 3b-5 (Lane A2) runs once 3b-2, 3b-3 and 3a-9b-1 have landed, in parallel with 3b-4.
-- From 3b-6 on, the sequence is serial: 3b-6, 3b-7, 3b-8, 3b-9, 3b-10. Three of those PRs
-  queue on `verify.py`.
+- **Deliverable:**
+  - **The hook:** `verify.py` starts the shadow run when the target exists, before the rules
+    load (Q2), and does its own CPU work only after legacy has finished (§3, "Concurrency").
+  - **JSON:** `--json` gains `experimental.shadow` (§5), `undischarged` included: this PR owns
+    that field. `JSON_SCHEMA_VERSION` stays 2.
+  - **Scorecard:** a `shadow_exit` column in `metrics` and the corpus aggregate, outside the
+    key.
+  - **Import guard:** `test_cli_never_loads_the_inventory_or_pikepdf` changes. The CLI now
+    loads `sandbox`, `budget`, `ledger`, `protocol`, `verdict`, `anchors`, `shadow` and
+    `rawmatch`, and must still never load the inventory, `crypt`, `pikepdf`, `decoders` or
+    `child`.
+- **Files:**
+  - `verify.py` (the hook);
+  - `report/json.py` (an additive keyword);
+  - `eval/scorecard/metrics.py`, `corpus.py`, and a test in `keys.py`'s suite;
+  - `tests/test_json.py`;
+  - `tests/test_import_boundaries.py` (Lane A2's file, Q9).
+- **Depends on:** 3b-9, and the `verify.py` queue (behind #160).
+- **Tests:**
+  - every byte outside `experimental` is identical with and without the hook, on every
+    case-library file;
+  - `experimental.shadow` is present on every path;
+  - deterministic JSON.
+- **Gate:** §6 gate 5; the bomb cases re-judged (H2: the CLI now spawns a child, and no bomb
+  may hang it or leave a process behind).
+- **Verdict path:** yes, with the exit identical.
+
+**3b-11. Worst-of: enforce the child-integrity checks** (Lane A)
+
+- **Deliverable:**
+  - **Enforced set:** `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING` (Q1; REDESIGN §6 as amended).
+  - **Shipped exit:** `worst_of(legacy, enforced)`.
+  - **New warning:** `LEDGER_INCOMPLETE` (Q6), in layer "Ledger", whenever the enforced exit
+    raises the shipped one, so the report stays self-consistent for the scorecard.
+  - **Version:** at least a minor version bump.
+- **Files:**
+  - `verify.py`;
+  - `model.py` (`WARNING_CODES`: `LEDGER_INCOMPLETE` as coverage; `LAYERS`: "Ledger");
+  - `report/text.py` and `report/json.py` (the layer's rendering);
+  - `tests/test_shadow_enforced.py`;
+  - `CHANGELOG` (Verdict changes) and the version.
+- **Depends on:** 3b-10 and §6 gate 5 holding.
+- **Tests:**
+  - a truncated, empty or garbled report exits 2 with the warning, and so do a killed child and
+    a hash mismatch;
+  - legacy 1 stays 1;
+  - legacy 2 is unchanged;
+  - a cancelled child under `--fail-fast` after a confirmed leak stays 1.
+- **Gate:**
+  - the scorecard diff is identical on both platforms;
+  - 0 child failures on the corpus, the case library and fuzz;
+  - the bomb pins (#168) are re-judged, each moving pin stricter only and named.
+- **Verdict path:** yes, stricter only.
+
+**3b-12. `--explain`** (Lane A)
+
+- **Deliverable:** `--explain` prints the enforced verdict's undischarged obligations, then the
+  shadow's under their own heading.
+  - **Order:** by status severity (`FAILED`, `UNREADABLE`, `FLAGGED`, `UNEXAMINED`), then count
+    descending, then kind and reason.
+  - **Cap:** at most 50 groups each, then "N more groups", with at most 5 provenance samples
+    per group (lowest revision, object, span).
+  - **Content:** integers and closed names only, never text.
+  - **JSON:** it reads the `undischarged` field 3b-10 added and adds none.
+- **Files:** `verify.py` (the flag), `report/text.py`, `tests/test_explain.py`.
+- **Depends on:** 3b-11 and the `verify.py` queue.
+- **Tests:**
+  - deterministic;
+  - canary values absent;
+  - every reason renders;
+  - the exit is identical with and without the flag.
+- **Gate:** #147.
+- **Verdict path:** yes, with the exit identical.
+
+**3b-13. Close-out** (Lane A)
+
+- **Deliverable:**
+  - the §6 measurements re-run on main;
+  - the REDESIGN 3b row;
+  - an ADR 0010 note on item 5 as built: `python -I <file>` through `sandbox.py` rather than
+    `-m`, and a parent-side memory watchdog rather than a memory rlimit (macOS ignores it);
+  - an ADR 0011 item-5 note on the verdict's mapping as built;
+  - CHANGELOG.
+- **Files:** docs only.
+- **Depends on:** 3b-12.
+
+**Order:**
+
+1. **Now, in parallel:** 3b-1 and 3b-5.
+2. **After 3b-1:** 3b-2 and 3b-3 together.
+3. **After both:** 3b-4. 3b-6 follows 3b-3.
+4. **The child:** 3b-7 joins 3b-2, 3b-3, 3b-5, 3b-6 and 9b-1.
+5. **The matcher:** 3b-8 follows 3b-4.
+6. **Serial from here:** 3b-9 (also needing 3a-14), then 3b-10, 3b-11, 3b-12 and 3b-13.
 
 ## 3. The child protocol
 
-**Direction and content.**
+**Directions.**
 
-- **Parent to child:** the input as one open, read-only descriptor; the package root, a code
-  path; and the protocol version. Nothing else crosses. The rules path, rule values, the
-  target's path and the environment never reach the child (the canary test, 3b-5).
-- **Child to parent:** facts only, on a dedicated descriptor. Every value is a non-negative
-  integer or a closed enum's name. No document bytes, decoded text, names or messages cross
-  in 3b. The parent never prints the child's stderr tail; it records only a closed failure
-  outcome.
-- **From 4a**, decoded text must reach the parent for matching, since matching stays in the
-  parent and the child never holds secrets. That adds an `evidence` message under its own
-  review (Q4). Until then, a 3b parent rejects an `evidence` message as a protocol error.
+- **Parent to child:**
+  - the input as one read-only descriptor, read with `pread` only;
+  - the protocol descriptor's write end;
+  - the lifeline's read end;
+  - the package root (a code path);
+  - the protocol version.
 
-**Messages.** One JSON object per line, in this order. Each type is closed; unknown keys,
-missing keys, duplicates and reordering are all protocol errors.
+  Never the rules path, rule values, the target's path or an environment. The canary test
+  checks this.
+- **Child to parent:** on the protocol descriptor, structural frames and stage frames. The
+  parent never prints the child's stderr or stdout. It records only a closed outcome.
 
-1. `hello`: `{"v": 1, "size": int, "sha256": hex}`, giving the protocol version and the size
-   and SHA-256 of the bytes the child read from the descriptor.
-2. `unit` (one per tiling unit; nested units follow their parent):
-   - `{"kind", "span": [start, end], "within": unit index | null, "object", "generation",
-     "revision"}`;
-   - gaps (`WHITESPACE`, `UNINDEXED`) as `{"gap": kind, "span": [...]}`;
-   - SYNTHESIZED units as `{"synth": [body, revision]}`.
-3. `flag`, as `ledger.Flag` already serializes: the reason, an optional span, named integers.
-   It is attached to a unit index, or to the file.
-4. `label`: per stream body, its labels across revisions (`Inventory.body_labels`), with each
-   STRUCTURAL record's kind.
-5. `result`: per (unit, label), the registry's status, its reason and its witness.
-6. `end`, the completion sentinel. It must come last and carries:
-   - the count of every message type above;
-   - the `Budget`'s counters;
-   - whether the budget was exhausted.
+**Framing.** Each frame is a 4-byte big-endian length and then a payload.
 
-**Validation, in the parent:**
+- **Structural frames:** JSON payloads, one object each, of closed types.
+- **Stage frames:** a JSON header (unit index, `Stage`, length), and then a binary frame of
+  exactly that length.
+
+The order is strict. An unknown key, a missing key, a duplicate or a reordering is a protocol
+error.
+
+1. **`hello`:** `{"v": 1, "size", "sha256"}`, about the bytes the child read.
+2. **`unit`:** one per unit.
+   - `{"i", "kind", "object", "generation", "revision", "within", "claim": [start, end]}`.
+   - `within` is a container unit's index, or null.
+   - The `claim` is in the container's coordinates: raw for `STREAM_SLACK`, decoded for
+     object-stream members and headers.
+   - SYNTHESIZED units are `{"i", "synth": [body, revision]}`.
+3. **`decoded`:** `{"unit", "length"}`, the decoded length of each container whose nested
+   units are tiled (each object stream).
+4. **`region`:** the tiling as `inventory/types.py` holds it.
+   - `{"container": unit | null, "span", "kind", "owners": [unit indices], "claimants"}`.
+   - `kind` is a `UnitKind`, `CONTESTED`, `WHITESPACE` or `UNINDEXED`.
+   - A contested region lists at most `max_contested_owners` owners and its true claimant
+     count, so one unit may own several regions.
+   - Top-level regions tile `[0, size)`; each container's regions tile `[0, decoded length)`.
+5. **`flag`:** as `ledger.Flag` serializes, attached to a unit index or to the file.
+6. **`page`:** the current revision's canonical page list, `{"index", "object",
+   "generation"}`, for `PAGE_COUNT`.
+7. **`xref`:** the current revision's in-use entries.
+   - `{"object", "generation", "type": "offset" | "compressed", "unit"}`, where `unit` is
+     the OBJECT or OBJSTM_MEMBER unit it lands on. Free entries are not units and are not
+     listed.
+   - This is for `OBJECT_SET`, against `qpdf --show-xref`.
+8. **`label`:** per stream body, its labels across revisions, each STRUCTURAL record with its
+   kind.
+9. **`result`:** per (unit, label), the registry's status, reason and witness.
+10. **`stage`:** stage frames, under Q11 (iii).
+11. **`end`:** the completion sentinel, which must come last. It carries:
+    - the count of each message type;
+    - the stage bytes sent;
+    - the `Budget` counters, and whether the budget is exhausted.
+
+**What the parent validates:**
 
 - every count in `end` equals what arrived;
-- `size` and `sha256` equal the parent's own;
-- top-level unit and gap spans tile `[0, size)` exactly (`check_tiling`), and every
-  `WHITESPACE` gap's bytes are PDF whitespace;
-- nested spans tile their declared decoded lengths;
-- units number at most `Limits.max_units`, and flags at most `max_flags_per_file` plus one
-  `FLAGS_TRUNCATED`;
-- every referenced unit index exists;
-- the stream fits `sandbox.Limits.output_bytes` (64 MiB; 500,000 units at about 60 bytes each
-  is about 30 MB);
-- `sandbox.Result.ok` holds: exit 0, no kill, not truncated, the private directory removed.
+- `size` and `sha256` equal its own `pread` of the same descriptor;
+- top-level regions tile `[0, size)` (`check_tiling`), and every `WHITESPACE` region's bytes
+  are PDF whitespace (the predicate moved to `ledger.py`);
+- each container's regions tile its decoded length;
+- every owner index is a declared unit;
+- an owned region lies within its owner's claim;
+- every `xref` entry names a declared unit of matching number and generation;
+- units and regions are at most `max_units` (the child charges both);
+- flags are at most `max_flags_per_file` plus one `FLAGS_TRUNCATED`;
+- stage bytes are at most `max_stage_bytes` (Q12);
+- structural frames are at most 128 MiB;
+- `Child` ended ok: exit 0, not killed, not cancelled, the private directory removed.
 
-**Failure semantics.** Any protocol error, a kill (wall clock, memory or stray), a reader
-failure, a non-zero exit, truncated output, or a missing or short sentinel makes
-`CHILD_COMPLETE` `FAILED`, with a closed outcome reason. Every obligation the child would
-have discharged is then `FAILED` with the reason `NOT_REPORTED` (REDESIGN §4: "a missing,
-truncated or malformed stream, or a non-zero child exit, makes every unreported obligation
-`FAILED`").
+On sizes: the corpus's largest file has 32,976 tiling units, and about 44,000 with views and
+drawable streams. At roughly 150 bytes per unit or region frame, that is about 10-15 MB. At
+the full 500,000 units the structural frames could pass 128 MiB. **Past any cap the run is
+`FAILED`, explicitly.** From 3b-11 that exits 2, so §6 measures the corpus maximum against
+each cap.
 
-**No partial credit.** If validation fails anywhere, the parent keeps none of the report. It
-does not trust a prefix, even where the prefix's own messages look valid. In the shadow
-verdict and, from 3b-8, in the enforced one, the run cannot exit 0.
+**Failure semantics.** Any of these makes `CHILD_COMPLETE` `FAILED`, with a closed outcome:
 
-**Timeout and limits.** The primary limit is the work budget (ADR 0010 item 3): exhaustion is
-a `BUDGET_EXHAUSTED` flag inside a complete report, not a failure. The wall clock, CPU time
-and memory are `sandbox.Limits` backstops (Q3); hitting one is a failure.
+- a protocol error;
+- a kill (`killed_wall_clock`, `killed_memory`, `stray`);
+- `cancelled` (Ctrl-C, or `--fail-fast` after a confirmed leak);
+- `reader_failed`;
+- `exit_nonzero`;
+- `truncated`;
+- a missing sentinel.
 
-**Concurrency and cost.** The parent starts the child as soon as the target exists, before the
-rules load, and joins it before the verdict. With `--fail-fast` and a confirmed leak, the
-parent kills the child, since worst-of is already 1.
+Every obligation the child would have discharged is then `FAILED` (`NOT_REPORTED`). There is no
+partial credit: a valid-looking prefix is discarded whole. The STORED raw pass still runs, since
+it needs only the parent's bytes. A confirmed match from it makes the shadow verdict exit 1. The
+enforced verdict never takes an exit from raw matches.
+
+**Limits.**
+
+- The work budget is primary: exhaustion is a flag inside a complete report.
+- The wall clock, CPU and memory backstops are `sandbox.Limits`' defaults until 3d (Q3).
+- A backstop hit is a failure.
+
+**Concurrency** (Q2 decided "always, concurrently"; blocker 4's fix keeps it).
+
+- **The child:** it starts once the target exists and runs at `nice` +10.
+- **The parent during legacy:** its reader thread only copies frames into its private `0700`
+  directory (Principle 5), bounded by the caps. It does no validation or matching, holds the
+  GIL for no CPU-heavy work, and so adds nothing to legacy's deadline-bound steps.
+  - Those steps are the 120 s subprocess timeout (`SUBPROCESS_TIMEOUT_S`) and the 20 s qpdf
+    check deadline (`QPDF_CHECK_DEADLINE_S`).
+- **After legacy finishes:** the parent validates, matches and computes the verdict.
+- **The residual risk:** a niced child starved under the scorecard's one-worker-per-core load
+  could reach its wall clock, or push the CLI past the scorecard's 60 s per-file timeout. §6
+  gate 5 measures this directly. If it fails, the remaining options go to the owner as a new
+  question:
+  - a capped child pool;
+  - running the child after legacy instead of beside it;
+  - a scorecard worker-count change.
+
+**Identity.** `FILE_IDENTITY` binds the parent's descriptor to the child's read only. Legacy's
+layers open the path separately, which this check does not bind; legacy is frozen.
 
 ## 4. The verdict computation
 
-**Obligations** (REDESIGN §2; types from 3b-1), all starting `UNEXAMINED`:
+**Obligations,** all starting `UNEXAMINED`:
 
-- one per tiling unit the child reports, and one per SYNTHESIZED unit;
-- one per page view, per reading (Text, OCR), anchored from qpdf's page count;
-- one per tool (qpdf, exiftool, OCR) and per rules scope;
-- one per `Check`: `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING`, `PAGE_COUNT`, `OBJECT_SET`,
-  `INVENTORY_FILE_FLAGS`, `PARSER_AGREEMENT` (3c's) and `RAW_MATCH` (Q8).
+- each reported unit and SYNTHESIZED unit;
+- each page view per reading, anchored from qpdf's page count. They stay `NOT_IN_PHASE` until
+  4a (Q10);
+- each tool and rules scope;
+- each `Check`;
+- a `RAW_MATCH` per `StageRef`: STORED for the file, plus each stage the child names in its
+  registry results. A stage named but never sent stays `UNEXAMINED`.
 
-Each obligation has its own source of status:
+**Unit status:** the worst result per unit, `UNEXAMINED` (`NO_DECODER`) with none. The parent
+then applies, in order:
 
-- **Views:** `UNEXAMINED` (`NOT_IN_PHASE`) until the views run behind the ledger (4a). No
-  adapter over the legacy layers (REDESIGN §6).
-- **Tool and rules-scope obligations:** from the parent's own facts, which legacy also uses.
-- **`PAGE_COUNT` and `OBJECT_SET`:** the anchors against the child's page list and current
-  revision's units.
-
-**Unit status.** Each unit's status is the worst status of every decoder result for it. A unit
-with no result is `UNEXAMINED` (`NO_DECODER`). The parent then applies these rules, in order:
-
-1. **Flags.** A unit carrying any inventory flag is `FLAGGED`, and so is anything a crypt flag
-   attaches to (`DECRYPTION_MISMATCH`, `DECRYPTION_UNVERIFIED`). File-level flags make
+1. **Flags.** Any inventory or crypt flag on a unit makes it `FLAGGED`. File-level flags make
    `INVENTORY_FILE_FLAGS` `FLAGGED`.
-2. **Witnesses (Principle 2, ADR 0008).** A `DECODED` result counts only if its witness
-   balances: its consumed spans tile the stage's length exactly. Otherwise the result is
-   `FLAGGED`. A `NOT_APPLICABLE` result counts only with one of ADR 0003's four `NAReason`s,
-   and only on the kind that reason names. Glyph-count balancing is reserved in the type and
-   enforced from 4a.
-3. **ORPHANED is `FLAGGED` (R3, ADR 0007, decision D by walk).** A stream body whose
-   `body_labels` are `ORPHANED` is `FLAGGED` whatever its decoders report. A test pins that a
-   `DECODED` orphan yields `FLAGGED`.
-4. **STRUCTURAL's whole-parse condition (ADR 0011 item 5).** A STRUCTURAL record from the
-   inventory is a candidate. It holds only if that kind's registry decoder reports a witness
-   covering the whole decoded stream.
-   - If it does not, the label drops. A body with no other label becomes `ORPHANED`, and rule
-     3 applies. This is the test 3a-7e promised.
-   - A kind with no decoder keeps its listed status: the hint stream is `UNREADABLE`, and XMP,
-     JavaScript, output intents and embedded files are `UNEXAMINED`.
-5. **STRUCTURAL and DRAWABLE together means drawable.** Every label's decoder runs, and the
-   worst status wins. No label discharges a unit by itself. In 3b the drawable side has no
-   decoder, so such a body stays `UNEXAMINED`. A test pins that the XMP or structural result
-   alone never discharges it.
-6. **Hint streams stay flagged until their decoder lands.** The registry maps the hint stream
-   to `UNREADABLE`, so it is `FLAGGED` (ADR 0003, R6 (a); owner decision 2026-10-15: the spike
-   runs in parallel). Clearing it takes a decoder that reads every bit and checks it against
-   the layout (RESULTS, option (a)). That means a new registry entry, the pinned test flipped,
-   and an ADR 0003 amendment for a new `NOT_APPLICABLE` reason, or a `DECODED` witness, at
-   that list's bar.
+2. **Witnesses (Principle 2, ADR 0008).**
+   - `DECODED` counts only when the witness's spans tile the stage length; otherwise
+     `FLAGGED`.
+   - `NOT_APPLICABLE` counts only with ADR 0003's reason for that kind.
+   - Glyph counts are enforced from 4a.
+3. **ORPHANED is `FLAGGED`** (R3, ADR 0007, decision D by walk), whatever its decoders
+   report. A test pins that a `DECODED` orphan is `FLAGGED`.
+4. **STRUCTURAL's whole-parse condition** (ADR 0011 item 5). A record is a candidate.
+   - **Kinds with a registry decoder** (cross-reference and object streams): the label holds
+     only if the witness covers the whole decoded stream. Otherwise it drops; a body with no
+     other label becomes `ORPHANED`, and rule 3 applies. This is 3a-7e's promised test.
+   - **Kinds with no decoder** keep the label and their listed status:
+     - **the hint stream:** STRUCTURAL, `UNREADABLE`, so flagged, and never ORPHANED (R6 (a),
+       staged);
+     - **XMP, JavaScript, output intents and embedded files:** STRUCTURAL, `UNEXAMINED`.
+5. **STRUCTURAL and DRAWABLE together means drawable.** Every label's decoder runs, the worst
+   wins, and no label discharges alone. In 3b the drawable side has no decoder, so such a
+   body stays `UNEXAMINED`; a test pins that a structural result alone never discharges it.
+6. **Hint streams stay flagged until their decoder lands.** Clearing one takes:
+   - the hint-table decoder: every bit read, checked against the layout;
+   - its registry entry, with the pinned test flipped;
+   - an ADR 0003 amendment at that list's bar.
+
+**Matching.**
+
+- **Where findings come from:** the parent's raw matcher (§2, 3b-8).
+- **What a finding does:** a hard-tier finding makes the shadow exit 1; a review-tier one leaves
+  that `RAW_MATCH` `FLAGGED`.
+- **What discharges a `RAW_MATCH`:** being scanned with no finding.
+- **Decoded content is not covered yet.** Decoded text from content streams and dictionaries
+  is 4a's evidence. Until then, a raw match is the only source of exit 1 in the shadow verdict.
 
 **Exits.**
 
-- **Shadow verdict:** over every obligation. Its exit is 1 if a confirmed match exists (none in
-  3b: no evidence crosses), else 2 if any obligation is undischarged, else 0. Before 4a every
-  file has `UNEXAMINED` objects, so the shadow exit is 2 everywhere. A shadow 0 before 4a is a
+- **Shadow:** 1 on a confirmed hard finding; else 2 if anything is undischarged; else 0.
+  Before 4a every file has `UNEXAMINED` dictionaries and views, so a shadow 0 before 4a is a
   bug, and §6 gates on it.
-- **Enforced verdict:** the same function over the enforced set only: in 3b, the integrity
-  checks of Q1.
-- **Shipped exit:** `worst_of(legacy, enforced)` from 3b-8; legacy alone before that.
+- **Enforced:** the same function over Q1's set.
+- **Shipped:** legacy alone until 3b-11; from then, `worst_of(legacy, enforced)`.
 
-**Determinism and provenance.** The ledger is sorted, and the verdict is a pure function of
-(anchors, report). The undischarged groups carry integer provenance only.
+**Determinism.** The ledger is sorted, and the verdict is pure in (anchors, report, findings).
 
 ## 5. Shadow output
 
-`--json` gains, additively:
+`--json` gains, additively (3b-10):
 
 ```json
 "experimental": {
   "shadow": {
     "version": 1,
     "status": "complete | child_failed | not_run",
-    "outcome": "ok | <closed failure reason>",
+    "outcome": "ok | <closed outcome> | null",
     "exit_code": 2,
     "enforced_exit_code": 0,
     "obligations": {"total": 0, "discharged": 0},
+    "findings": {"hard": 0, "review": 0},
     "undischarged": [{"kind": "...", "status": "...", "reason": "...", "count": 0}],
     "labels": {"drawable": 0, "structural": {"<kind>": 0}, "orphaned": 0, "synthesized": 0}
   }
 }
 ```
 
-- The shipped `exit_code` and `verdict` are computed as today: legacy alone in 3b-7, and
-  worst-of with the enforced exit from 3b-8. The shadow exit never enters either.
-- Every field is always present: `shadow` is `null`, with a status, on early error exits
-  (target not found, rules invalid, a password).
-- There are no timings, file names or text. That keeps the output byte-identical across runs
-  (Principle 6) and secret-free.
-- `JSON_SCHEMA_VERSION` stays 2. README marks `experimental` as outside the stability
-  promise.
-- The scorecard reads `experimental.shadow.exit_code` into a `shadow_exit` column (`metrics`,
-  the corpus aggregate). It is outside the normalised key (`keys.py`), with a test that a
-  change confined to `experimental` makes no diff. The differential's "the scorecard diff is
-  identical" therefore holds for shipped output by construction, and the test proves it.
-- The human report is unchanged in 3b-7. `--explain` (3b-9) is the only human view.
+- **Shipped fields are untouched.** `exit_code` and `verdict` are the shipped ones; the shadow
+  exit never enters them.
+- **Every field is always present.** On early error exits (target not found, rules invalid, a
+  password) `shadow` is an object with `"status": "not_run"` and every other field null.
+- **No timings, file names, text or rule names.** That keeps the output byte-identical across
+  runs and secret-free. Findings are counts here; masked findings appear only if a later phase
+  ships them.
+- **Stability.** `JSON_SCHEMA_VERSION` stays 2, and README marks `experimental` outside the
+  stability promise.
+- **The scorecard.** Its `shadow_exit` column is outside the normalised key. A test pins that a
+  change confined to `experimental` makes no diff.
 
 ## 6. Measurement gates
 
-All of these are measured on the SHA-pinned corpus (2,073 files, 489 text-bearing), the case
-library and the fuzz set, and recorded in RESULTS.md "Phase 3b".
+All gates run over the SHA-pinned corpus (2,073 files, 489 text-bearing), the case library and
+fuzz. Results go in RESULTS.md, "Phase 3b".
 
-1. **Child and anchors (3b-6, before any wiring):**
-   - 0 child failures and 0 timeouts on all three sets, on Linux and macOS;
-   - every report validates;
-   - on every inventory-unflagged file, `TILING`, `FILE_IDENTITY`, `PAGE_COUNT` and
-     `OBJECT_SET` hold. On flagged files, mismatches are counted by reason, not gated;
-   - the case-library run uses the scorecard's per-file timeout; the corpus run uses the 3a
-     gate's 60 s, reported against Q3's limit.
-2. **The ledger reproduces 3a-12 (3b-6).**
-   - **Class counts:** over the unflagged corpus files, the undischarged groups must give
-     exactly RESULTS.md's per-class file counts:
+**1. The enforced checks hold on every file** (3b-9).
 
-     | Class | Files |
-     | --- | --- |
-     | Orphans per body | 242 |
-     | Hint streams | 400 |
-     | XMP images | 516 |
-     | JavaScript | 86 |
-     | Synthesized | 130 |
-     | Output intents | 0 |
-     | Any of them | 707 |
-     | Any of them, with the inventory's flagged files | 860 |
+- On all three sets, on Linux and macOS: 0 child failures and 0 timeouts.
+- `CHILD_COMPLETE`, `FILE_IDENTITY` and `TILING` hold on **every** file, flagged or not.
+  Contested files' regions tile like any other. These are exactly what 3b-11 enforces.
+- The qpdf anchors (`PAGE_COUNT`, `OBJECT_SET`) must hold on every inventory-unflagged file;
+  mismatches on flagged files are counted by reason, not gated.
+- The maxima of structural bytes, stage bytes, units, regions and child wall time are
+  reported against each cap.
 
-   - **The net review rate:** the per-class counts joined with today's exit-2 files must give
-     3a-12's rates:
+**2. The ledger reproduces 3a-12** (3b-9).
 
-     | Population | Today's qpdf exit 3 | qpdf exit 3 removed |
-     | --- | --- | --- |
-     | All files | 49.2% | 41.3% |
-     | All files, with the inventory's flags | 52.2% | 46.0% |
-     | Text-bearing | 80.6% | 47.6% |
-     | Text-bearing, with the inventory's flags | 82.2% | 56.2% |
+- **Pinned inputs:**
+  - the corpus manifest;
+  - 3a-12's per-file record of today's exit, measured at b8aa29c and kept in its local
+    per-file output, keyed by SHA-256. If that output was not kept, `unit_budget.py` is re-run
+    at b8aa29c. Today's CLI is not re-run, because #167 has since changed the exit-2 set;
+  - 3a-12's per-file XMP image bodies (`xmp_flag_bodies`).
+- **9b has no effect:** no corpus file is encrypted, so 9b's decryption changes no corpus
+  label. The gate checks that: 0 files whose labels differ between the inventory at 3c49bce
+  and the run's commit.
+- **The mapping from ledger groups to 3a-12's classes,** by manifest entry:
 
-   - **The 1,571-distinct-contents view** must also match: text-bearing 25.9%, 49.5% and
-     60.0%.
-   - Any deviation is root-caused before merge. A deviation in the ledger is a bug; one in
-     the spike is documented. This is an independent check of the verdict's label mapping
-     against 3a-12's spike, which computed the same classes another way.
-3. **The shadow exit against today's exit (3b-6, and re-run at 3b-7 and 3b-10):**
-   - a table of shadow against shipped exits per file;
-   - **gate: shadow exit 0 on 0 files** (pre-4a);
-   - exit-1 files show shadow 2 (no evidence crosses yet): reported, not gated, since the
-     shadow is not shipped until Phase 6.
-4. **Shipped output identical (3b-7, 3b-8 and 3b-9):**
-   - the scorecard diff, Linux every-PR and macOS+OCR on the branch (#147), shows 0 unlisted
-     and 0 new accepted entries;
-   - the corpus run's shipped exits are unchanged file by file;
-   - at 3b-8, child failures on all three sets are still 0, so worst-of changes nothing there;
-   - **runtime** is the shipped CLI's wall time with the hook, against without, per case
-     (p50, p95, max) and on the corpus. The gate is REDESIGN §9's p95 ≤ 2x. Anything above
-     +25% p95 goes to the coordinator before merge.
+  | 3a-12 class | Ledger group |
+  | --- | --- |
+  | Orphans | Files with a body made `FLAGGED` by rule 3 |
+  | Hint streams | Files with a STRUCTURAL hint record (`UNREADABLE`) |
+  | XMP images | 3a-12's image bodies, each of which must lie in the ledger's STRUCTURAL-XMP `UNEXAMINED` group |
+  | JavaScript | STRUCTURAL-JavaScript records |
+  | Synthesized | Files with a `SynthesizedRef` |
+  | Output intents | STRUCTURAL output-intent records |
+  | Inventory flags | Any `FLAGGED` from rule 1 |
 
-## 7. Open questions
+  The ledger cannot tell an image-holding XMP packet from another until there is an XMP
+  decoder. So 3a-12's XMP class is joined in: its image bodies must be a subset of the ledger's
+  XMP group, and that group must equal the inventory's STRUCTURAL XMP records.
+- **"Reproduces" means equal file sets, not just equal counts:**
+  - over the 1,920 unflagged files: orphans 242, hint streams 400, XMP images 516, JavaScript
+    86, synthesized 130, output intents 0, any of them 707;
+  - over all 2,073 files: with the inventory's flags, 860.
+- **The rates, from the pinned exits:**
 
-Each question below has options and a recommendation. "Coordinator" means a coordinator
-decision with the owner informed. "Owner" means it changes what can exit 2 and goes to the
-owner.
+  | Population | Classes | Today's qpdf exit 3 | qpdf exit 3 removed |
+  | --- | --- | --- | --- |
+  | All files | 707 | 49.2% | 41.3% |
+  | All files | 860 | 52.2% | 46.0% |
+  | Text-bearing | 707 | 80.6% | 47.6% |
+  | Text-bearing | 860 | 82.2% | 56.2% |
 
-**Q1 (owner, before 3b-8): what does the enforced verdict hold in 3b?**
+  Per distinct content, text-bearing: 25.9%, 49.5% and 60.0%. The same rates are also
+  reported with current main's exits, as information.
+- Any difference is root-caused before merge: a ledger bug is fixed, a spike error documented.
 
-- (a) Only the child-integrity checks (`CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING`). A run
-  whose child fails or lies about the file's bytes exits 2; nothing else changes. This
-  matches the row's gate ("a truncated or empty child report exits 2"). Expected cost: 0
-  files, if §6 gate 1 holds.
-- (b) Nothing. The child stays pure shadow until 3d, and the row's gate is met only in the
-  shadow verdict.
-- (c) Also the qpdf anchors (`PAGE_COUNT`, `OBJECT_SET`). These are environment-dependent:
-  without qpdf the scorecard drops `TOOL_MISSING` and recomputes the exit, so an enforced
-  anchor would make a cross-platform diff. They also overlap the inventory's 153 flagged
-  files, which stay shadow-only.
+**3. Shadow against today** (3b-9; re-run at 3b-10 and 3b-13).
 
-*Recommendation: (a).* The anchors join with 3c, when parser agreement is enforced.
+- A per-file table of the shadow exit against the shipped one.
+- **Gate:**
+  - shadow exit 0 on 0 files;
+  - shadow exit 1 on 0 corpus files under 3a-12's fabricated value rule (the corpus is clean).
+- Case-library exit-1 cases that the shadow leaves at 2 are listed: they are matches outside
+  the raw stages, which 4a gains. Reported, not gated.
 
-**Q2 (coordinator, before 3b-7): when does the child run?**
+**4. The matcher against legacy's raw layers** (3b-8, 3b-9).
 
-- (a) Always, concurrently with the legacy scan, so 3b-7 measures the cost 3b-8 will ship.
-- (b) Only with `--json` or `--explain` until 3b-8.
+- Every case-library case in which today's raw layers (Binary, Objects) report a hard finding
+  in raw storage also gets a hard finding from the shadow matcher.
+- Any case where they differ is root-caused.
+- Planted values in every span §1 lists are found (3b-8's tests).
 
-*Recommendation: (a).*
+**5. Shipped output identical, under load** (3b-10, 3b-11, 3b-12).
 
-**Q3 (coordinator, before 3b-6): the child's backstop limits.**
+- The scorecard diff shows 0 unlisted and 0 new accepted entries:
+  - on Linux, on every PR;
+  - on macOS+OCR, on the branch (#147).
+- **Repeat runs under load:** three runs of the full case-library scorecard at CI's default
+  parallelism, plus one corpus run, with:
+  - 0 exit drift;
+  - 0 child failures;
+  - 0 scorecard timeouts.
+- **Runtime:** the added wall clock per case and on the corpus (p50, p95, max), reported to the
+  owner (Q2):
+  - p95 must stay within REDESIGN §9's 2x;
+  - an added p95 above 25% goes to the coordinator.
 
-- (a) `sandbox.Limits`' defaults: 300 s wall clock, 600 s CPU, 4 GiB, 64 MiB of output.
-- (b) The 3a gate's 60 s.
+## 7. Decisions and open questions
 
-*Recommendation: (a) until 3d.* 3b-6 reports the corpus maximum against both. The work
-budget is the real limit, and a tighter wall clock is 3d's call, with its watchdog.
+**Decided** (recorded 2026-10-15, Pacific):
 
-**Q4 (coordinator, now): does decoded text cross the pipe in 3b?**
+- **Q1, decided by the owner on 2026-10-15 and confirmed as an explicit amendment to REDESIGN
+  6.** In 3b the enforced verdict counts the child-integrity checks only (`CHILD_COMPLETE`,
+  `FILE_IDENTITY`, `TILING`). The qpdf anchors and every other ledger finding are recorded,
+  not enforced.
+  - This departs from 6's "tool, view, rules-scope and cross-check obligations plus units of
+    enforced kinds". 6 now says so, dated.
+  - Legacy keeps enforcing its own tool and scope warnings.
+- **Q2, decided by the coordinator on 2026-10-15:** the child always runs, concurrently with
+  the legacy scan. 3b-10 reports the added wall clock on the corpus (p50, p95). Blocker 4's
+  measures, in §3 "Concurrency", keep this decision.
+- **Q3, decided by the coordinator on 2026-10-15:** `sandbox.Limits`' defaults until 3d.
+- **Q4, decided by the coordinator on 2026-10-15:** no decoded text crosses the pipe in 3b.
+  - **Q11's recommendation would change this decision**, and it is put to the owner there.
+  - If the owner takes (iii), decoded stage bytes cross for matching only.
+  - 4a's evidence channel still gets its own review.
+- **Q5, decided by the coordinator on 2026-10-15:** `--explain` ships in 3b.
+- **Q6, decided by the coordinator on 2026-10-15:** the new warning is `LEDGER_INCOMPLETE`.
+  The closed reasons are as named in 3b-1 and §3.
+- **Q7, decided by the coordinator on 2026-10-15:** 3b-1 to 3b-4 start now, without waiting for
+  3a-14.
+- **Q8, decided by the owner on 2026-10-15, then re-decided the same day to (b).** The ledger's
+  raw matcher is built in 3b.
+  - **First decision:** a file-level `RAW_MATCH`, `UNEXAMINED` in 3b. That premise was false:
+    earlier plans give 3b this matching (phase3a-plan, 3a-2/3a-3, 3a-5, and owner decision 7;
+    ADR 0003's deferred free-entry bytes).
+  - **Re-decision:** build the matcher in 3b, covering those spans (3b-6, 3b-8).
+  - **`Decryption.views`:** discharged in 3b as the `READER_VIEW` stage, since the design
+    covers it naturally. If Q11 goes to (i), it falls back to 4a.
+- **Q9, decided by the coordinator on 2026-10-15:** Lane A writes the guard entries, and Lane A2
+  reviews them.
+- **Q10, decided by the owner on 2026-10-15:** the views move behind the ledger and into the
+  child in 4a, and the string/name token decoder is built in 4a. REDESIGN's 4a row says so.
+- **Lane A2's obligation, recorded 2026-10-15** (ADR 0001's 3a-9a-1 note): the matcher scans
+  each `Decryption.views` entry as a stream of its object, with that object's storage class.
+  - That entry is the catalog's `/Metadata` under `/EncryptMetadata false` today.
+  - The backstop is not live until something consumes `views`.
+  - The coordinator has asked Lane A2 for 3b-5's `input_fd` and protocol-descriptor API.
 
-- (a) No. 3b has no decoder that yields evidence. The `evidence` message is specified when
-  4a needs it, under its own review, and a 3b parent rejects one.
-- (b) Define it now with no producer, which leaves a path untested until 4a.
+**Q11 (owner): where the raw matcher runs.** It needs the secrets, which only the parent holds.
+No rules value may reach the child (ADR 0010), and the parent must not parse the hostile file
+(§4).
 
-*Recommendation: (a).*
+- **(i) The parent reads and decodes.** The child sends only spans and closed transforms, as
+  integers. The parent `pread`s its own descriptor and runs today's matcher:
+  - the stored bytes need nothing more: this is the legacy raw search's trust level;
+  - the decoded stages make the parent re-decode in process, on the child's spans. That means
+    capped Flate for xref-stream and object-stream payloads (`inventory/flate.py`), and string
+    unescaping with UTF-16/PDFDocEncoding and tag stripping (`inventory/strings.py`).
+  - **Cost:** the parent then inflates and decodes hostile bytes. The code is pure Python plus
+    zlib, budget-charged, with no MuPDF. But it departs from 4's "the child touches the PDF",
+    the CLI would load two inventory modules, and the import guard changes.
+  - **Protocol:** no stage frames, and Q4 stands.
+- **(ii) The child matches against salted digests** of normalized secrets.
+  - **Leakage:** SSNs and phone numbers are low-entropy. 10^9 candidates brute-force a salted
+    digest in seconds, so a compromised child recovers every such secret.
+  - **No OS sandbox until 3d:** nothing stops a compromised child from exfiltrating what it
+    recovers.
+  - **Coverage:** rolling matching means one digest per window length per byte, which is
+    feasible. But pattern rules and built-in classes are regular expressions and cannot be
+    digested, and review-tier logic (separators, joined lines) cannot run blind.
+  - **ADR 0010:** it fails the canary in spirit, since a function of every rules value reaches
+    the child.
+  - **Rejected.**
+- **(iii) Split by stage: the parent scans stored bytes, and the child sends decoded stages.**
+  - **STORED:** the parent scans all `[0, size)` of its own descriptor, needing nothing from
+    the child. It covers whole object spans, comments, dead object streams' stored bytes,
+    slack and unindexed ranges, at legacy's trust level.
+  - **Decoded stages:** the child, which already decodes them, sends their bytes as
+    length-prefixed stage frames. Those are xref field data with free entries, object-stream
+    payloads, both forms of each text string, and `Decryption.views`. The parent only matches.
+  - **Under §4,** document bytes flow child to parent only. That direction is §4's design: the
+    child "streams obligations and evidence back", and matching stays in the parent. Secrets
+    still never reach the child, and the parent still parses nothing. Stages are capped (Q12),
+    and a stage past its cap is flagged, not failed.
+  - **What it forces:**
+    - a protocol change: binary-safe framing and stage frames, already written into §3 and
+      3b-2;
+    - Q4 reversed for stage bytes;
+    - sandbox work: an incremental reader of the protocol descriptor and spooling to the
+      parent's private directory (3b-5);
+    - **no ADR change.** ADR 0010's canary is untouched, and §4 already allows evidence back.
+      3b-13's ADR 0010 note records it.
 
-**Q5 (coordinator, before 3b-9): `--explain` in 3b or 4a?**
+*Recommendation: (iii).* It keeps every decode in the child and every secret in the parent. It
+needs no new trust in the parent beyond legacy's raw read, and it discharges `Decryption.views`
+in 3b. (i) is the fallback if the owner prefers no document-derived bytes on the pipe before
+4a. Under (i), the stage frames leave 3b-2, 3b-6 shrinks to transforms, 3b-8 imports the two
+decoders parent-side, `READER_VIEW` moves to 4a, and the estimate is unchanged.
 
-- (a) In 3b, as REDESIGN's row lists it: grouped counts with integer provenance.
-- (b) Defer to 4a, when enforced kinds make it useful to users.
+**Q12 (coordinator, before 3b-6): `Limits.max_stage_bytes` and the 128 MiB structural cap.**
+*Recommendation:* set both from 3b-9's corpus maxima with 10x headroom, as `max_units` was set.
+Until then, 256 MiB for stage bytes, spooled to disk, not held in memory.
 
-*Recommendation: (a).* It is the only human view of the shadow ledger, and the row names
-it.
-
-**Q6 (coordinator, before 3b-1 and 3b-8): names.**
-
-- The closed reasons for `UNEXAMINED` (`NO_DECODER`, `NOT_IN_PHASE`), for `UNREADABLE` (the
-  hint stream's payload, ADR 0003), for `FAILED` (`NOT_REPORTED`) and for the child's failure
-  outcomes (`killed_wall_clock`, `killed_memory`, `stray`, `reader_failed`, `exit_nonzero`,
-  `truncated`, `protocol:<closed code>`).
-- The shipped warning 3b-8 emits when the enforced verdict raises the exit. Recommended:
-  `LEDGER_INCOMPLETE`, layer "Ledger", message "the independent structure check did not
-  complete — NOT certified", with no detail beyond the closed outcome.
-
-*Recommendation: as listed.*
-
-**Q7 (coordinator, now): start before 3a closes?** DEPMAP puts 3b after 3a-14.
-
-- (a) Start 3b-1 to 3b-4 now. They are new pure files that touch no inventory file except
-  `tiling.py`'s one-line re-export, after 3a-9b. 3b-5 waits for 3a-9b-1, and 3b-6 for 3a-14's
-  final gate.
-- (b) Wait for 3a-14.
-
-*Recommendation: (a).* It takes about 2-3 days off the critical path.
-
-**Q8 (owner, before 3b-1): which phase builds the ledger's raw matcher?**
-
-ADR 0003's governing rule needs every unit's bytes raw-matched at every filter-chain stage,
-whatever the unit's status. Legacy's Binary layer does it today; the ledger has no matcher of
-its own yet. The options:
-
-- (a) A `RAW_MATCH` check obligation, `UNEXAMINED` in 3b, discharged by a parent-side raw
-  matcher over the file's stored bytes in 4a and over every decoded stage in 4d. The parent
-  holds both the secrets and the file's bytes.
-- (b) A raw-match obligation per unit, discharged by the same matcher.
-- (c) Build the stored-bytes matcher in 3b.
-
-*Recommendation: (a) now.* Nothing can be certified without it, and (b) is the shape the 4a
-plan may choose. (c) adds matcher work to a phase with no evidence yet.
-
-**Q9 (coordinator): ownership of shared files.** The guard edits in 3b-2 to 3b-4 and 3b-5
-fall in Lane A2's `test_import_boundaries.py`. Recommendation: Lane A writes each entry in its
-own PR, and Lane A2 reviews it, rather than serializing through A2.
+**Possible new question:** if §6 gate 5 shows exit drift or timeouts under load, the
+concurrency options of §3 go to the owner as a new question. Q2's "always, concurrently" is not
+changed here.
 
 ## 8. PR count and estimate
 
-- **Count:** 10 PRs plus this plan. RESULTS.md estimated 7-9, before two splits:
-  - the child entry moves to Lane A2 (3b-5);
-  - the hook (3b-7) is split from enforcement (3b-8), so each `verify.py` PR has one problem
-    and the #147 rule judges each alone.
-- **Split:** Lane A has 9 PRs and Lane A2 has 1.
-- **Pace basis:** Lane A merged five 3a-7 PRs on 2026-10-15, with reviews at 2-3 rounds each.
-  Each `verify.py` PR adds a macOS+OCR scorecard run (about 35-60 minutes) and waits its turn
-  in the `verify.py` queue: #167 and #160 are open today.
+**Count:** 13 PRs, plus this plan; a 14th if review splits the scorecard column out of 3b-10.
 
-**Estimate by stage:**
+- Lane A has 11: 3b-1 to 3b-13 except 3b-5 and 3b-7. Lane A2 has 2: 3b-5 and 3b-7.
+- **Up from 10 in the first draft:** the raw matcher (3b-6 stages, 3b-8 matcher, owner Q8 (b))
+  and the sandbox lifetime API split out of the child entry (3b-5, blocker 3).
 
-| Stage | Estimate | Note |
-| --- | --- | --- |
-| 3b-1 to 3b-4, pure | 2-3 days | 3b-1 first; 3b-2 and 3b-3 in parallel; 3b-4 last |
-| 3b-5, child (Lane A2) | 1-2 days after 3a-9b-1 | |
-| 3b-6, anchors, runner and corpus gate | 1-2 days | Includes root-causing any 3a-12 deviation |
-| 3b-7 to 3b-9, `verify.py` | About 1 day each once at the queue's head | 3 PRs |
-| 3b-10, close-out | Half a day | |
+**Pace:**
 
-**Total:** about 8-11 working days elapsed, if no owner decision blocks.
+- Lane A merged five 3a-7 PRs on 2026-10-15, with 2-3 review rounds each.
+- Each `verify.py` PR (3b-10, 3b-11, 3b-12) adds a 58-62 minute macOS+OCR run and waits its
+  turn behind #160, which needs owner sign-offs (35 cases).
 
-**Critical path:** 3b-1, 3b-2, 3b-4, 3b-6, 3b-7, 3b-8, 3b-9, 3b-10. 3b-5 joins from 3a-9b-1.
-The owner's Q1 and Q8 are needed before 3b-8 and 3b-1 respectively. 3d, and through it 4b,
-starts from 3b-6's runner.
+**Estimate:** about 15-23 working days elapsed, if no decision blocks. That is the round-1
+review's 12-18, plus about 3-5 for the matcher.
+
+| Work | Estimate |
+| --- | --- |
+| The four pure PRs, 3b-1 to 3b-4 | 3-4 days |
+| 3b-6 and 3b-8 | 3-4 days, partly parallel |
+| 3b-5 (Lane A2) | 1-2 days, from now |
+| 3b-7 (Lane A2) | 1-2 days, after 9b-1 |
+| 3b-9, with its corpus gates and root-causing | 2-3 days |
+| The three `verify.py` PRs | 1-2 days each, at the queue's head |
+| Close-out | Half a day |
+
+**Critical path:** #178 → 3a-9b-1 → 3b-7 → 3b-9 → 3b-10 → 3b-11 → 3b-12 → 3b-13.
+
+- 3b-9 also waits on 3a-14's final gate.
+- 3b-10 also waits on #160's place in the `verify.py` queue.
+- Off the path: 3b-1 to 3b-4, 3b-5, 3b-6 and 3b-8.
+
+**Owner input still needed:** Q11 before 3b-2 pins the stage frames. Q1, Q8 and Q10 are
+decided.
+
+3d, and through it 4b, starts from 3b-9's runner.
