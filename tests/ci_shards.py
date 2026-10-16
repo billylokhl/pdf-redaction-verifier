@@ -23,11 +23,11 @@ SHARDS: dict[str, tuple[str, ...]] = {
     "a": (
         "tests/test_visible_map_cli.py",
         "tests/test_inventory_stage.py",
+        "tests/test_pattern_baseline.py",
+        "tests/test_inventory_pages.py",
     ),
     "b": (
         "tests/test_case_library.py",
-        "tests/test_pattern_baseline.py",
-        "tests/test_inventory_pages.py",
     ),
     "c": (
         "tests/test_visible_map.py",

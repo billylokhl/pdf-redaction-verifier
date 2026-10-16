@@ -109,7 +109,7 @@ jobs:
         # --timeout=300 per test (pyproject's 900 s default is for local
         # runs): the slowest test takes about 63 s locally, so a hung
         # Vision call fails the shard in 5 minutes, not 15.
-        run: uv run pytest $(python tests/ci_shards.py ${{ matrix.shard }}) -rs -m "not grid" --timeout=300
+        run: uv run pytest $(python tests/ci_shards.py ${{ matrix.shard }}) -rs -m "not grid" --timeout=300 --durations=15
 
   # Partial suite on Linux across the supported Python range (README
   # promises 3.10+): OCR-dependent tests skip with a reason; the
