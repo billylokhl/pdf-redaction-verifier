@@ -644,9 +644,10 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
       `_reference_graph`; tests/test_inventory_stage.py scales revisions and objects
       together (n vs 8n): within the limit at n, flagged BUDGET_EXHAUSTED at 8n (about 64x
       the work); 10.2-10.6 lines per charged unit, bound 15, no growth; a wall-clock
-      backstop per part at 1,000 vs 8,000 pages (clean 0.69-1.39x, bound 2x each; list
-      mutants caught in pages 2.5-2.7x, trees 3.4x, the drawing walk 4.8x and the reachable
-      walk 7.4x; not in annotations' per-page set, 1.0x).
+      backstop per part at 1,000 vs 8,000 pages (interleaved best of two, the collector
+      off; clean 0.99-1.16x at load averages 3-92, bound 1.75x each; mutants caught in
+      pages 2.9-3.9x, trees 3.4-3.6x, the drawing walk 4.2x, the reachable walk 6-7x whole,
+      annotations' read set sorted 6.4x; not annotations' per-page set as a list, 1.0x).
     - eval: `graph_sum`, the XMP image scan (eval only), per-body orphan classes, today's
       page-thumbnail mark (#133), `labels_cost`, the REACHABLE share of the oracle.
     - ADR 0011 wording: the Q3 note (an /N chain is synthesized only when /AS is absent or

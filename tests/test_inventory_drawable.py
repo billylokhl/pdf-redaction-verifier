@@ -503,7 +503,9 @@ def _broken_icc(alternate: bytes, stream: tuple[bytes, bytes],
 
 
 def _srgb() -> tuple[bytes, bytes]:
-    """A valid sRGB profile (the review of #165's reproducer)."""
+    """A valid sRGB profile (the review of #165's reproducer). Pillow comes
+    in through pikepdf, a test dependency (uv.lock), so CI does not skip
+    this case; the skip is only for an environment without it."""
     cms = pytest.importorskip("PIL.ImageCms")
     return b" /N 3", cms.ImageCmsProfile(cms.createProfile("sRGB")).tobytes()
 

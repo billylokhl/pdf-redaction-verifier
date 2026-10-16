@@ -12,6 +12,7 @@ wall-clock backstop for that, sized not to flake; the trees tests do not."""
 
 from __future__ import annotations
 
+import gc
 import sys
 from collections.abc import Callable
 from types import FrameType
@@ -143,9 +144,14 @@ def step_costs(data: bytes, entries: list[str]) -> dict[str, tuple[float, int]]:
         return wrapped
     for entry in entries:
         setattr(build_module, entry, wrap(entry))
+    # The collector's passes land wherever allocation triggers them, often
+    # in a short part, and their cost grows with the heap: off while timed.
+    gc.collect()
+    gc.disable()
     try:
         build_inventory(data, budget=budget)
     finally:
+        gc.enable()
         for entry, real in reals.items():
             setattr(build_module, entry, real)
     assert not budget.exhausted(Counter.WORK), "the budget ran out"

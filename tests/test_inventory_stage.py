@@ -190,29 +190,39 @@ def test_every_step_of_the_stage_is_charged(walk_only: None) -> None:
 
 
 # Each part's bound on its time per charged unit, 8n against n (the
-# wall-clock backstop below), on _stage(n, 4 updates, n pages) at n = 1,000.
-# Measured clean, load average 10-14: whole stage 0.76-1.15x, graph
-# 0.95-1.16, pages 0.80-1.39, trees 0.85-1.19, annotations 0.69-1.21,
-# labels 0.73-1.12. The review of #165's C-level mutants (a set read as
-# `in list(...)`): pages' visited 2.73x, trees' visited 3.41x, the drawing
-# walk's seen-set 4.75x (labels; whole 3.13x). The whole stage alone had
-# missed pages' and trees' (they are a small share of it), so each part has
-# its bound. Not caught: annotations' per-page `kept` set as a list (1.01x;
-# it holds one page's annotations).
+# wall-clock backstop below), on _stage(n, 4 updates, n pages) at n = 1,000:
+# best of two at each size, interleaved, the collector off while timed.
+# Measured clean, 13 readings at load averages 3 to 92 (other sessions
+# running, plus up to 12 busy processes on 10 cores): whole stage
+# 1.05-1.12x, graph 0.99-1.14, pages 1.02-1.14, trees 1.02-1.11,
+# annotations 1.02-1.16, labels 1.08-1.15. (Before the collector was
+# turned off and the sizes interleaved, the annotations part read up to
+# 1.88x: the review of #165, round 2.) The review's C-level mutants, each
+# on its own part: pages' visited read as a list 2.92-2.96x, sorted per
+# page 3.72-3.85x; trees' visited as a list 3.43-3.64x; the drawing walk's
+# seen-set as a list 4.24-4.29x (labels; whole 2.89x); the reachable walk's
+# 7.3x (labels; whole stage 6-7x); annotations' read set sorted per add
+# 6.4-6.5x. 1.75x for every part leaves 1.5x of room above the clean
+# readings and 1.67x below the smallest mutant. Not caught: annotations'
+# per-page `kept` set as a list (about 1.0x; it holds one page's
+# annotations).
 STAGE_BOUNDS: dict[str, float] = {
-    "_reference_graph": 2.0, "build_graph": 2.0, "build_pages": 2.0, "build_trees": 2.0,
-    "build_annotations": 2.0, "build_labels": 2.0}
+    "_reference_graph": 1.75, "build_graph": 1.75, "build_pages": 1.75, "build_trees": 1.75,
+    "build_annotations": 1.75, "build_labels": 1.75}
 
 
-def _per_unit_ratios(small: bytes, large: bytes) -> dict[str, float]:
-    """Each part's time per charged unit at 8n over that at n: best of
-    three runs at n, one at 8n (a loaded machine only slows a run), from
-    one build per run."""
-    best = []
-    for data, runs in ((small, 3), (large, 1)):
-        timed = [step_costs(data, list(STAGE_BOUNDS)) for _ in range(runs)]
-        # The work charged is the same on every run (deterministic).
-        best.append({e: (min(t[e][0] for t in timed), timed[0][e][1]) for e in STAGE_BOUNDS})
+def _per_unit_ratios(small: bytes, large: bytes, runs: int = 2) -> dict[str, float]:
+    """Each part's time per charged unit at 8n over that at n, best of
+    *runs* at each size, the sizes interleaved (n, 8n, n, 8n), so a burst
+    of load falls on both alike; each run one build, the collector off
+    while it is timed (steps.step_costs)."""
+    timed: tuple[list[dict[str, tuple[float, int]]], ...] = ([], [])
+    for _ in range(runs):
+        for size, data in enumerate((small, large)):
+            timed[size].append(step_costs(data, list(STAGE_BOUNDS)))
+    # The work charged is the same on every run (deterministic).
+    best = [{e: (min(t[e][0] for t in runs_), runs_[0][e][1]) for e in STAGE_BOUNDS}
+            for runs_ in timed]
     return {e: (best[1][e][0] / best[1][e][1]) / (max(best[0][e][0], 1e-3) / best[0][e][1])
             for e in STAGE_BOUNDS}
 
@@ -225,8 +235,10 @@ def test_the_stage_costs_its_charged_work_in_wall_clock_too(walk_only: None) -> 
     # revisions: 1,000 against 8,000 pages, name-tree leaves and
     # annotations, four updates. (With n revisions as well, 60 vs 480, a
     # reachable-set mutant read only 1.3x.) A part over its bound is measured
-    # once more and passes if either reading is under it: load only slows a
-    # run, a mutant fails both. Under coverage Python runs slower and C does
+    # once more and passes if either reading is under it: interleaving puts
+    # a steady load on both sizes alike, but a burst can still fall on the
+    # 8n runs alone, and a second reading is an independent chance; a
+    # mutant fails both. Under coverage Python runs slower and C does
     # not, diluting the signal: the uncovered leg is the one that catches it
     # (as for the graph and the page walk).
     small, large = _stage(1000, updates=4, pages=1000), _stage(8000, updates=4, pages=8000)

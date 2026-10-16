@@ -761,9 +761,11 @@ in [RESULTS.md](../../eval/spikes/RESULTS.md), "Phase 3a-7e".
   10.2 to 10.6 against a bound of 15, not growing from n to 8n. A
   wall-clock backstop for work inside C times each part on its own (time
   per unit at 1,000 against 8,000 pages, name-tree leaves and
-  annotations; clean 0.69-1.39x; a bound of 2x each): a set read as a list
-  is caught in pages (2.5-2.7x), trees (3.4x), the drawing walk (4.8x)
-  and the reachable walk (7.4x for the whole stage). The whole stage alone
+  annotations; best of two at each size, interleaved, the collector off;
+  clean 0.99-1.16x at load averages 3 to 92; a bound of 1.75x each): a set
+  read as a list is caught in pages (2.9x; sorted per page 3.7x), trees
+  (3.4-3.6x), the drawing walk (4.2x) and the reachable walk (6-7x for the
+  whole stage), and annotations' read set sorted per add (6.4x). The whole stage alone
   had missed the pages and trees mutants. Annotations' per-page set as a
   list is not caught (1.0x: it holds one page's annotations).
 - **The cost of a revision.** The stage walks the whole live set, S live
