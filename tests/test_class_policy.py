@@ -1,6 +1,6 @@
-"""ADR 0012's class policy, PR 3a: built-in class matches as informational
-notices under --no-strict-classes; strict mode (still the default here)
-unchanged. Every value is fabricated.
+"""ADR 0012's class policy: built-in class matches as informational
+notices by default (PR 3b; PR 3a made them opt-in); strict mode
+(--strict-classes) unchanged. Every value is fabricated.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def test_strict_key_is_ignored_on_other_rules_as_unknown_keys_always_were(tmp_pa
 
 
 def test_a_malformed_strict_on_a_class_rule_still_loads(tmp_path):
-    # Refused only under --no-strict-classes (verify.py), where it matters.
+    # Refused by default (not under --strict-classes; verify.py), where it matters.
     rs = _rules(tmp_path, [{"name": "S", "class": "ssn", "strict": "yes"}])
     assert rs.strict_invalid == frozenset({"S"}) and rs.strict_rules == frozenset()
 

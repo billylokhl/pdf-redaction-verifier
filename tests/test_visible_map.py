@@ -1337,12 +1337,12 @@ class TestMaskedLabels:
                                                                 monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / "overlap.pdf")
         _run, the_plan = mapped(monkeypatch, tmp_path, pdf,
-                                f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n')
+                                f'exact_values:\n  - "{SSN}"\nentity_types: [ssn]\n', "--strict-classes")
         labels = {b.label for b in the_plan.boxes}
         assert "built-in type: SSN ****" in labels
         assert "exact value #1 (exact_values[0])" in labels and not the_plan.legend
         # With no exact value it would reveal, the masked tail stays.
-        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n")
+        _run, the_plan = mapped(monkeypatch, tmp_path, pdf, "entity_types: [ssn]\n", "--strict-classes")
         assert "built-in type: SSN ****6789" in {b.label for b in the_plan.boxes}
 
     def test_a_one_character_tail_on_a_value_is_hidden(self, tmp_path, monkeypatch) -> None:

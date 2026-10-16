@@ -124,6 +124,11 @@ def run_main(monkeypatch: Any, target: Path, rules: Path, *extra: str, ocr: bool
             "target_name": target.name,
             "version": verify.__version__,
         }
+        # The mirror above must agree with what verify did: every notice's
+        # rule is informational and no finding's is.
+        informational = set(header["informational"])
+        assert {n["rule"] for n in report.get("notices", [])} <= informational, extra
+        assert not {f["rule"] for f in report.get("findings", [])} & informational, extra
     return Run(code, stdout.getvalue(), stderr.getvalue(), report, header)
 
 
