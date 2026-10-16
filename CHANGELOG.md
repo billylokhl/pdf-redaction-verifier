@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **Phase 3b plan** (docs only; `docs/phase3b-plan.md`, linked from REDESIGN's 3b row), revised after review rounds 1-3 and the owner's and coordinator's decisions of 2026-10-15. It plans thirteen PRs for the ledger and verdict:
+- **Phase 3b plan** (docs only; `docs/phase3b-plan.md`, linked from REDESIGN's 3b row), revised after review rounds 1-4 and the owner's and coordinator's decisions of 2026-10-15. It plans thirteen PRs for the ledger and verdict:
   - the types;
   - the protocol, with its strict parent-side validator;
   - the registry and the structural decoders;
@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the close-out.
 
   The plan also fixes:
-  - **the child protocol:** length-prefixed frames. Structural messages carry only integers and closed enum names; spans and object numbers are document-derived integers. Decoded stages are sent as capped binary frames (owner decision Q11, (iii)+M). The anchors get the tiling's regions, contested ones included, plus the page list, the in-use map and decoded lengths. Every frame is fixed-shape and at most 512 bytes. The core (units, claims, regions, the in-use map, pages, flags) is always sent whole, and is bounded by the file's structure. Detail is budgeted by its own `Limits.max_messages`; `max_units` keeps ADR 0006's meaning. So every report a correct child can send validates. Over-cap content is flagged, never failed, and any real child failure means the run cannot exit 0;
+  - **the child protocol:** length-prefixed frames. Structural messages carry only integers and closed enum names; spans and object numbers are document-derived integers. Decoded stages are sent as capped binary frames (owner decision Q11, (iii)+M). The anchors get the tiling's regions, contested ones included, plus the page list, the in-use map and decoded lengths. Every frame is fixed-shape. The core (units, claims, regions, the in-use map with body-less entries, pages, every flag) is always sent whole, and detail is budgeted by its own `Limits.max_messages`; `max_units` keeps ADR 0006's meaning. The plan states these as requirements; the exact schema and numeric bounds are 3b-2's, accepted by property tests against the real inventory and the corpus, with the review's reproducers as fixtures. A hard criterion: a file that legacy exits 0 on must never become FAILED from flag volume. The child's backstops can move a file too large for them to exit 2, by design, which 3b-11 must document. Over-cap content is flagged, never failed, and any real child failure means the run cannot exit 0;
   - **the verdict rules, which the parent holds:** ORPHANED is always `FLAGGED`. STRUCTURAL holds only when its decoder parses the whole stream. A hint stream stays STRUCTURAL and `UNREADABLE` until its decoder lands. A stream both structural and drawable is drawable;
   - **the shadow output:** `--json`'s additive `experimental.shadow`, and the scorecard's `shadow_exit` column outside the normalised key;
   - **the measurement gates:** they include reproducing 3a-12's class file sets and review rates from the ledger on pinned inputs, and zero exit drift under load.

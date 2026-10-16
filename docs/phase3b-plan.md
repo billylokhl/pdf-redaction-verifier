@@ -155,8 +155,9 @@ touches code the shipped CLI runs.
     - `ToolRef`, with a closed `Tool`.
     - `RuleScopeRef`.
     - `StageRef(unit, stage)`, with a closed `Stage`: `STORED`, `XREF_FIELDS`, `OBJSTM_PAYLOAD`,
-      `STRING_TAGGED`, `STRING_UNTAGGED`, `READER_VIEW`. `unit` is a unit index, or `FILE` for a
-      file-level stage. `STORED` is always `StageRef(FILE, STORED)`: one stage over `[0, size)`.
+      `STRING_TAGGED`, `STRING_UNTAGGED`, `STRING_BINARY`, `READER_VIEW`. `unit` is a unit
+      index, or `FILE` for a file-level stage. `STORED` is always `StageRef(FILE, STORED)`:
+      one stage over `[0, size)`.
     - `CheckRef`, with a closed `Check`: `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING`,
       `PAGE_COUNT`, `OBJECT_SET`, `INVENTORY_FILE_FLAGS`, `PARSER_AGREEMENT` and `RAW_MATCH`.
   - **Records:**
@@ -195,35 +196,60 @@ touches code the shipped CLI runs.
 
 **3b-2. The protocol** (Lane A)
 
-- **Deliverable:** `redaction_verifier/protocol.py`, child-side and pure: the length-prefixed
-  frame format, the message schema of §3, the child's encoder, and the parent's strict validator.
-  - The validator is incremental: it validates frames as they arrive and spools stage bytes.
-  - It returns a `ChildReport`, or a closed `ProtocolError` that makes `CHILD_COMPLETE`
-    `FAILED`.
-  - Stage frames are in, per Q11 (iii).
-  - Caps: a frame past a bound the child must honour is a protocol error. Those bounds are the
-    core bound, `max_messages`, the 512-byte frame limit, and `max_stage_bytes` per stage
-    (§3). An over-cap stage is never sent: the child truncates it and flags it (3b-6).
-  - The encoder sends the core first and whole, and charges detail to
-    `Limits.max_messages`, which this PR adds.
-- **Files:** `protocol.py`, `budget.py` (`max_messages`), `tests/test_protocol.py`, and the
+- **Deliverable:** `redaction_verifier/protocol.py`, child-side and pure.
+  - **The exact frame schema** for §3's frame types, the child's encoder, and the parent's
+    strict, incremental validator. The validator checks frames as they arrive and spools stage
+    bytes.
+  - **Every numeric bound** of §3's B1-B5 and B3.
+  - The new `Limits` fields: `max_messages`, `max_stage_bytes` and `max_stage_total`.
+  - The validator returns a `ChildReport`, or a closed `ProtocolError` that makes
+    `CHILD_COMPLETE` `FAILED`.
+- **Review:** coordinator decision, 2026-10-15. 3b-2 is reviewed as a property test against
+  the real inventory and the corpus, not against figures written in this plan.
+- **Files:** `protocol.py`; `budget.py` (`max_messages`, `max_stage_bytes`,
+  `max_stage_total`); `tests/test_protocol.py`; the fixtures below, under `tests/`; and the
   guard entry (`json`, `struct`).
 - **Depends on:** 3b-1.
-- **Tests (Hypothesis):**
-  - round-trip;
-  - no proper prefix validates, cut at any byte;
-  - a single-byte mutation is rejected, or still yields counts and a hash that match what
-    arrived;
-  - duplicates, reordering, unknown types, frames after `end`, and counts past their bound are
-    rejected;
-  - a non-integer where an integer belongs is rejected, and so is a name outside its enum;
-  - a region list that does not tile is rejected;
-  - a stage frame larger than its declared length is rejected;
-  - the largest frame of each type, built with worst-case values, fits in 512 bytes;
-  - a report exhausted at `max_messages` still validates, with its core whole, and yields
-    `BUDGET_EXHAUSTED`;
-  - a file with many revisions sends more `label` frames, never a longer one.
-- **Gate:** the suite and mypy strict.
+- **Acceptance criteria:**
+  - **B1, verbatim, a hard criterion (and 3b-11's too):** "a file that legacy exits 0 on must
+    never become FAILED from flag volume". `manyflags.py` is a fixture.
+  - **B2:** `offset0.py` is a fixture. The offset-0 entry is sent with no unit, and
+    `OBJECT_SET` agrees with `qpdf --show-xref`. Entries with a mismatched number or
+    generation, and entries sharing an offset, are tested too.
+  - **B4:** `contested.py` is a fixture, and every contested region it yields validates.
+  - **`bigint.py` is a fixture.** Integers in frames go up to about 70 digits, as the
+    inventory's flag parameters can, plus -1 (a trailer as a flag's source).
+  - **Per-unit flags:** a nested unit's flags carry their 3 parameters.
+  - **Encoding:** the compact JSON encoding (separators, key order) is pinned by a test. The
+    `hello` frame carries `sha256`.
+  - **Frame shapes:**
+    - `label` frames are one per body and label;
+    - `result` frames are defined for units with no label, and for `XREF_TABLE`'s two parts;
+    - `witness` frames are one per claim for stored units (B5).
+  - **Bounds:**
+    - each frame type's bound and byte size is derived from the real inventory's worst cases
+      and proved with worst-case values;
+    - `decoded` arrives before units and claims, and `D` is bounded by `max_inflated_bytes +
+      size`;
+    - the fixed absolute structural cap and the parent's memory bound are derived from
+      `sandbox.Limits.memory_bytes`;
+    - a property test over the case library, the corpus and the fuzz set shows that no correct
+      child report reaches any bound.
+  - **Exhaustion:** the child counts its detail before it emits the core. A report exhausted
+    at `max_messages` still validates, with its core whole and `BUDGET_EXHAUSTED` among its
+    flags.
+  - **Stages:**
+    - truncation travels in the stage header;
+    - binary strings have their own stage;
+    - no match can span two strings: one frame per string, or a separator the normaliser can't
+      bridge (this PR decides which);
+    - the expected stages are derived from the units.
+  - **Rejected input:** no proper prefix validates, cut at any byte. Duplicates, reordering,
+    unknown types, frames after `end`, out-of-enum names and non-integers are rejected. A
+    single-byte mutation is rejected, or yields counts and a hash that still match what
+    arrived.
+  - `STREAM_SLACK` is excluded from tiling validation.
+- **Gate:** the suite, mypy strict, and the acceptance criteria above.
 - **Verdict path:** none.
 
 **3b-3. The registry and the structural decoders** (Lane A)
@@ -243,7 +269,7 @@ touches code the shipped CLI runs.
     witness over the span.
   - **`XREF_TABLE`:** its entries are `DECODED`, its trailer dictionary `UNEXAMINED`.
   - **Hint streams:** no decoder entry; listed status `UNREADABLE` (`HINT_PAYLOAD`, ADR 0003,
-    R6 (a)).
+    ADR 0011's R6 (a)).
   - **XMP, JavaScript, output intents, embedded files, every DRAWABLE kind and SYNTHESIZED:**
     no entry, so `UNEXAMINED` (`NO_DECODER`).
 - **Files:** `decoders/`, `tests/test_decoders_structural.py`, and the guard entries. It reads
@@ -303,9 +329,11 @@ touches code the shipped CLI runs.
       defaults to 20 s, a dated refinement of Q3 (§7), and 3b-9's measurement may revise it.
     - Then it cancels the child (outcome `killed_wall_clock`).
     - **The bound:** the CLI's added time after legacy is at most `post_legacy_wait_s` plus the
-      matcher's own pass. That pass is linear in the file and its stages, measured in §6 gate
-      5. The CLI therefore stays inside the scorecard's 60 s per file whenever legacy plus
-      that bound does, and gate 5 checks it.
+      parent's own post-legacy work: the qpdf anchors (`--show-npages`, `--show-xref`, unless
+      they ran during legacy), the SHA-256 of the file, validating the spool, and the matcher's
+      pass. Each is linear in the file and its stages, and §6 gate 5 measures each. The CLI
+      therefore stays inside the scorecard's 60 s per file whenever legacy plus that bound
+      does, and gate 5 checks it.
     - **Consequence:** a case whose legacy run takes more than about 40 s can now time out
       against the scorecard's 60 s, if its child is still running when legacy ends. §6 gate 1
       reports the child's time after legacy's end, per platform and with OCR off, so such
@@ -328,7 +356,11 @@ touches code the shipped CLI runs.
     - the parent killed by `SIGKILL` (the scorecard runner's timeout kill);
     - the parent's process group killed (`bombrun`'s), which `start_new_session=True` keeps
       from reaching the child directly;
-    - Ctrl-C, which the parent's handler turns into `cancel()`.
+    - Ctrl-C, which the parent's handler turns into `cancel()`, then re-raises the
+      `KeyboardInterrupt` so legacy's own interrupt path runs unchanged.
+  - **The private `0700` directory** is removed by the parent on every normal path. If the
+    parent dies, the child removes it when the lifeline fires, before it exits, so neither
+    spooled nor child-side files survive (Principle 5).
   - **Priority:** the child runs at a lower priority (`os.nice`, +10) (blocker 4, §6 gate 5).
   - **Package lookup:** the preamble prepends the package root the parent passes (a code path,
     never a rules path), so `python -I` finds the package from a checkout.
@@ -366,27 +398,28 @@ touches code the shipped CLI runs.
   - `XREF_FIELDS`: each cross-reference stream's decoded field data, free entries included;
   - `OBJSTM_PAYLOAD`: each object stream's decoded payload, so members are matched over their
     whole span;
-  - `STRING_TAGGED` and `STRING_UNTAGGED`: every string token of every object and object-stream
-    member, taken from the **decrypted** values (9b-1's), not the stored bytes:
-    - each text string decoded with its language tags kept and with them stripped (`strings.py`
-      already returns both);
-    - each non-text string's bytes as written.
-
-    They are sent as UTF-8 and flagged as text, so the parent matches them as text, the way
-    legacy matches decoded strings: decoded with UTF-8, then normalised. Not as latin-1, which
-    would miss a non-ASCII value whose UTF-8 bytes latin-1 reads as other characters;
+  - **String stages:** every string token of every object and object-stream member, taken from
+    the **decrypted** values (9b-1's), not the stored bytes. They are split into separate
+    stages, and kept apart so that no match can span two strings (§3):
+    - `STRING_TAGGED` and `STRING_UNTAGGED`: each text string decoded with its language tags
+      kept, and with them stripped (`strings.py` already returns both). They are sent as UTF-8
+      and flagged as text, so the parent matches them as text, the way legacy matches decoded
+      strings: decoded with UTF-8, then normalised. Not as latin-1, which would miss a non-ASCII
+      value whose UTF-8 bytes latin-1 reads as other characters;
+    - `STRING_BINARY`: each non-text string's bytes as written, matched as bytes;
   - `READER_VIEW`: each `Decryption.views` entry, as a stream of that object (Lane A2's
     9b obligation).
 
   Each stage is charged to the `Budget`, and each is capped by `Limits.max_stage_bytes` (Q12,
-  added to `budget.py` by this PR). Past the cap, the child sends the stage cut at the cap and
-  raises a `STAGE_TRUNCATED` flag. That stage's `RAW_MATCH` is `FLAGGED`. It is shadow-only and
-  never a child failure. The total stage bytes are capped the same way (`max_stage_total`):
-  stages past it are not sent, each is flagged, and none fails the child.
-- **Files:** `decoders/stages.py`, `budget.py` (`max_stage_bytes`, `max_stage_total`),
-  `ledger.py` (`STAGE_TRUNCATED`, EMITTERS), `tests/test_stages.py`, and the guard entry.
-- **Depends on:** 3b-3. Its `READER_VIEW` part depends on 9b-1, and lands as a follow-up if 9b-1
-  is later.
+  added to `budget.py` by 3b-2). Past the cap, the child sends the stage cut at the cap, marks
+  it truncated in the stage header (B1) and raises a `STAGE_TRUNCATED` flag. That stage's
+  `RAW_MATCH` is `FLAGGED`. It is shadow-only and never a child failure. The total stage bytes
+  are capped the same way (`max_stage_total`): stages past it are not sent, each is flagged
+  (its header marks it), and none fails the child.
+- **Files:** `decoders/stages.py`, `ledger.py` (`STAGE_TRUNCATED`, EMITTERS),
+  `tests/test_stages.py`, and the guard entry.
+- **Depends on:** 3b-2 (the caps) and 3b-3. Its `READER_VIEW` part depends on 9b-1, and lands
+  as a follow-up if 9b-1 is later.
 - **Tests:** a planted value reaches a stage in each of these shapes:
   - a free entry;
   - an object-stream member;
@@ -407,10 +440,11 @@ touches code the shipped CLI runs.
   1. `pread`s the descriptor, hashing as it goes;
   2. runs `crypt.decrypt` and `build_inventory` with the decryptions, per 3a-9b-1's interface;
   3. runs the registry and the stage extraction;
-  4. sends the core whole, and charges detail messages to `Limits.max_messages` (§3,
-     "Sizing"). `max_units` is unchanged: SYNTHESIZED units are charged to it as today, tiling
-     units are not. Past `max_messages`, the child drops the remaining detail and reports
-     `BUDGET_EXHAUSTED`, still in a complete report;
+  4. counts its detail first, then sends the core whole, and charges detail messages to
+     `Limits.max_messages` (§3, B1; 3b-2 sets the bounds). `max_units` is unchanged:
+     SYNTHESIZED units are charged to it as today, tiling units are not. Past `max_messages`,
+     the child drops the remaining detail and reports `BUDGET_EXHAUSTED`, still in a complete
+     report;
   5. writes the protocol to its dedicated descriptor. fd 1 points at `/dev/null` before
      `pymupdf` or `pikepdf` load.
 - **Files:** `child.py`, `tests/test_child.py`, and the guard (entry-point exemption).
@@ -453,7 +487,8 @@ touches code the shipped CLI runs.
   `RAW_MATCH` obligations' statuses.
 - **Files:** `rawmatch.py`, `tests/test_rawmatch.py`, and the guard (parent-side: never imported
   by the child).
-- **Depends on:** 3b-2 (stage frames) and 3b-4.
+- **Depends on:** 3b-2 (stage frames), 3b-4, and 3b-6 for real stages. It may land before
+  3b-6 by testing against synthetic stage frames, with 3b-6's own tests adding the real ones.
 - **Tests:** a value planted in each of these is found:
   - a whole object span;
   - an object comment;
@@ -509,6 +544,12 @@ touches code the shipped CLI runs.
 - **Deliverable:**
   - **The hook:** `verify.py` starts the shadow run when the target exists, before the rules
     load (Q2), and does its own CPU work only after legacy has finished (§3, "Concurrency").
+    - **"The target exists"** means `is_file()`, and then an `fstat` of the opened
+      descriptor showing `S_ISREG`. A FIFO, a device or a file swapped in after the check gets
+      no child: the run records `not_run`.
+    - **Early exits:** on every early exit after the child starts (rules invalid, a password,
+      an unreadable PDF, a crash), the parent cancels the child and reaps it before returning,
+      so no child outlives the run.
   - **JSON:** `--json` gains `experimental.shadow` (§5), `undischarged` included: this PR owns
     that field. `JSON_SCHEMA_VERSION` stays 2.
   - **Scorecard:** a `shadow_exit` column in `metrics` and the corpus aggregate, outside the
@@ -527,6 +568,9 @@ touches code the shipped CLI runs.
 - **Tests:**
   - every byte outside `experimental` is identical with and without the hook, on every
     case-library file;
+  - the rules-invalid path, and each other early exit, leave no child process behind;
+  - a FIFO target gets no child;
+  - Ctrl-C cancels the child and re-raises;
   - `experimental.shadow` is present on every path;
   - deterministic JSON.
 - **Gate:** §6 gate 5; the bomb cases re-judged (H2: the CLI now spawns a child, and no bomb
@@ -541,8 +585,12 @@ touches code the shipped CLI runs.
   - **New warning:** `LEDGER_INCOMPLETE` (Q6), in layer "Ledger", whenever the enforced exit
     raises the shipped one, so the report stays self-consistent for the scorecard.
   - **Version:** at least a minor version bump.
+  - **Documentation of the backstops (B3):** the CHANGELOG and README must say that a file too
+    large for the child's backstops (wall clock, CPU, memory) now exits 2 by design, where
+    legacy alone might have exited 0.
 - **Files:**
   - `verify.py`;
+  - `README.md`;
   - `model.py` (`WARNING_CODES`: `LEDGER_INCOMPLETE` as coverage; `LAYERS`: "Ledger");
   - `report/text.py` and `report/json.py` (the layer's rendering);
   - `tests/test_shadow_enforced.py`;
@@ -553,7 +601,9 @@ touches code the shipped CLI runs.
     a hash mismatch;
   - legacy 1 stays 1;
   - legacy 2 is unchanged;
-  - a cancelled child under `--fail-fast` after a confirmed leak stays 1.
+  - a cancelled child under `--fail-fast` after a confirmed leak stays 1;
+  - **B1's hard criterion, verbatim:** "a file that legacy exits 0 on must never become FAILED
+    from flag volume". `manyflags.py` exits 0, as legacy does.
 - **Gate:**
   - the scorecard diff is identical on both platforms;
   - 0 child failures on the corpus, the case library and fuzz;
@@ -620,138 +670,169 @@ touches code the shipped CLI runs.
 - **Child to parent:** on the protocol descriptor, structural frames and stage frames. The
   parent never prints the child's stderr or stdout. It records only a closed outcome.
 
-**Framing.** Each frame is a 4-byte big-endian length and then a payload.
+**Scope of this section** (coordinator decision, 2026-10-15, owner informed). This section
+states the protocol's requirements and its frame types, with enough detail to fix their
+meaning. The exact frame schema and every numeric bound belong to 3b-2. That PR is reviewed as
+a property test against the real inventory and the corpus, and its acceptance criteria are
+listed in 3b-2.
 
-- **Structural frames:** JSON payloads, one object each, of closed types.
-- **Stage frames:** a JSON header (`{"unit": index | null, "stage", "text": bool, "length"}`;
-  null is a file-level stage), and then a binary frame of exactly that length. `text` marks
-  the string stages, which are UTF-8 and matched as text. The parent's own `STORED` stage is
-  never sent.
+**Framing.**
 
-The order is strict. An unknown key, a missing key, a duplicate or a reordering is a protocol
-error. **Every frame is fixed-shape.** No message holds a list that grows with the file, its
-revisions or its units. The one list allowed is a region's owners, which the inventory caps at
-16. Anything with more items becomes one frame per item.
+- Each frame is a 4-byte big-endian length, then a payload.
+- **Structural frames:** a canonical JSON object each, of a closed type: compact separators,
+  no whitespace, keys in a fixed order (pinned by 3b-2).
+- **Stage frames:** a structural header, then a binary frame of exactly the declared length.
+- The order is strict. An unknown key, a missing key, a duplicate or a reordering is a protocol
+  error.
+- **Every frame is fixed-shape.** No frame holds a list that grows with the file, its
+  revisions or its units. The one list allowed is a region's owners, which the inventory caps at
+  16. Anything with more items becomes one frame per item.
 
-Messages 1-7 and 11 are the **core**, which a report always contains, exhausted or not (see
-"Sizing"). Messages 8-10 are **detail**.
+**Frame types, in arrival order.**
 
-1. **`hello`:** `{"v": 1, "size", "sha256"}`, about the bytes the child read.
-2. **`unit`**, one per unit, and **`claim`**, one per claimed span.
-   - A unit is `{"i", "kind", "object", "generation", "revision", "within"}`, where `within`
-     is a container unit's index, or null.
-   - A claim is `{"unit", "start", "end"}`, one frame for each span the unit claimed in
-     `tile()`; a unit may have several. Claims are in the container's coordinates: raw for
-     `STREAM_SLACK`, decoded for object-stream members and headers.
-   - SYNTHESIZED units are `{"i", "synth": [body, revision]}`.
-3. **`decoded`:** `{"unit", "length"}`, the decoded length of each container whose nested
-   units are tiled (each object stream).
+- **Core:** `hello` through `flag` and `end`. A report always contains its core, whole,
+  exhausted or not.
+- **Detail:** `label`, `result`, `witness` and `stage`. Detail is budgeted.
+
+1. **`hello`:** the protocol version, and the size and SHA-256 of the bytes the child read.
+2. **`decoded`:** each container's decoded length (each object stream's).
+   - It comes before any unit or claim, so the parent can bound what follows on arrival
+     (B3).
+3. **`unit`**, one per unit, and **`claim`**, one per claimed span.
+   - A unit carries its kind, object, generation, revision, and its container (or none).
+   - A claim is one span the unit claimed in `tile()`; a unit may have several.
+   - Claims are in the container's coordinates: raw for `STREAM_SLACK`, decoded for
+     object-stream members and headers.
+   - A SYNTHESIZED unit carries its (body, revision) and no claim.
 4. **`region`:** the tiling as `inventory/types.py` holds it.
-   - `{"container": unit | null, "span", "kind", "owners": [unit indices], "claimants"}`.
-   - `kind` is a `UnitKind`, `CONTESTED`, `WHITESPACE` or `UNINDEXED`.
-   - A contested region lists at most `max_contested_owners` owners and its true claimant
-     count, so one unit may own several regions.
-   - Top-level regions tile `[0, size)`; each container's regions tile `[0, decoded length)`.
-5. **`flag`:** as `ledger.Flag` serializes, attached to a unit index or to the file.
-6. **`page`:** the current revision's canonical page list, `{"index", "object",
-   "generation"}`, for `PAGE_COUNT`.
-7. **`xref`:** the current revision's in-use entries.
-   - `{"object", "generation", "type": "offset" | "compressed", "unit"}`, where `unit` is
-     the OBJECT or OBJSTM_MEMBER unit it lands on. Free entries are not units and are not
-     listed.
-   - This is for `OBJECT_SET`, against `qpdf --show-xref`.
-8. **`label`:** one frame per (stream body, revision, label), `{"unit", "revision", "label",
-   "kind"}`, with `kind` the STRUCTURAL record's kind or null. A heavily updated file sends
-   more frames, never a longer one.
-9. **`result`:** one frame per (unit, label): the registry's status, reason and a witness of at
-   most one span. A structural decoder's witness is a single span; 4a's multi-span witnesses
-   will need their own frames.
-10. **`stage`:** stage frames, under Q11 (iii).
-11. **`end`:** the completion sentinel, which must come last. It carries:
-    - the count of each message type;
-    - the stage bytes sent;
-    - the `Budget` counters, and whether the budget is exhausted.
+   - It carries its container (or the file), its span and kind (a `UnitKind`, `CONTESTED`,
+     `WHITESPACE` or `UNINDEXED`), up to 16 owners and the true claimant count.
+5. **`xref`:** each in-use entry of the current revision.
+   - It carries the object number, generation and type, and the unit it lands on **or none**
+     (B2).
+6. **`page`:** each page of the current revision's canonical list, for `PAGE_COUNT`.
+7. **`flag`:** each flag, attached to a unit or to the file, with its own bound per source
+   (B1).
+8. **`label`:** one frame per (stream body, label), from `Inventory.body_labels`.
+   - The labels are per body across revisions, so one frame per body and label is all the
+     verdict needs.
+   - A STRUCTURAL label carries its record's kind.
+9. **`result`:** one frame per (unit, label), the registry's status and reason.
+   - A unit with no label gets one result with the label "none".
+   - A unit with several parts gets one result per part, named by a closed `Part`. Today the
+     only such unit is `XREF_TABLE`: its entries (`DECODED`) and its trailer dictionary
+     (`UNEXAMINED`).
+10. **`witness`:** one frame per witness span, attached to its result (B5).
+11. **`stage`:** a header (unit or file, `Stage`, a text flag, the length sent, and the
+    original length with a truncated flag), then the bytes (B1, Q11).
+12. **`end`:** the completion sentinel, which must come last.
+    - It carries the count of each frame type, the stage bytes sent, and the `Budget`'s
+      counters with whether the budget is exhausted.
 
 **What the parent validates:**
 
 - every count in `end` equals what arrived;
-- `size` and `sha256` equal its own `pread` of the same descriptor;
+- the `hello` size and SHA-256 equal its own `pread` of the same descriptor;
 - top-level regions tile `[0, size)` (`check_tiling`), and every `WHITESPACE` region's bytes
   are PDF whitespace (the predicate moved to `ledger.py`);
 - each container's regions tile its decoded length;
+- `STREAM_SLACK` is excluded from tiling validation, since it is nested in its object's raw
+  span and is not a container's tiling;
 - every owner index is a declared unit;
-- an owned region lies within one of its owner's claims;
-- every `xref` entry names a declared unit of matching number and generation;
-- the core frames are within the core bound, and the detail frames within `max_messages`
-  (below);
-- flags are at most `max_flags_per_file` plus one `FLAGS_TRUNCATED`;
-- each stage frame is at most `max_stage_bytes`, and all stage frames together at most
-  `max_stage_total` (Q12);
-- every structural frame is at most 512 bytes;
+- region containment, under B4;
+- `xref` entries, under B2;
+- every bound of B3, checked as frames arrive;
 - `Child` ended ok: exit 0, not killed, not cancelled, the private directory removed.
 
-**Sizing, so that every report a correct child can send fits.**
+**The requirements.**
 
-- **Frame size.** The encoder bounds every structural frame at 512 bytes by construction. Every
-  frame is fixed-shape (above): integers of at most 20 digits, at most 16 owners per region, a
-  closed set of named parameters per flag reason, and at most one witness span. A test builds
-  the largest frame of each type with worst-case values: 20-digit integers, 16 owners, every
-  parameter of the widest flag reason, and the longest enum names. It asserts each fits.
-- **The core is always sent, and is never cut.** It is `hello`, every `unit` and `claim`,
-  every `decoded` length, every `region` (top-level regions tiling `[0, size)`, and each
-  container's), every `xref` entry, every `page`, every `flag`, and `end`. With all of it,
-  `CHILD_COMPLETE`, `FILE_IDENTITY`, `TILING` and the anchors validate, so an exhausted report
-  still validates.
-  - **The core is bounded by the file's structure, not by a budget.** Every claim covers at
-    least one byte. Top-level claims lie in `[0, size)` and nested ones in the containers'
-    decoded lengths `D`, which the child reports and `max_inflated_bytes` (2 GiB) bounds. So:
-    - claims are at most `size + D`;
-    - units with a claim are at most `size + D`, and SYNTHESIZED units at most `max_units`
-      (charged, as today);
-    - regions are at most 2 × claims + 1 per tiling;
-    - `xref` entries and pages are at most the units;
-    - flags are at most 10,001.
-  - **The core bound** is therefore `5 × (size + D) + max_units + max_flags_per_file + 4`
-    frames. The parent computes it from its own `size` and the reported `D`, after checking
-    `D` against `max_inflated_bytes`. Core frames past it are a protocol violation. A correct
-    child never sends that many: each counted item is real.
-- **Detail is budgeted, by its own counter.** Labels, results and stage headers are charged to
-  a new `Limits.max_messages`. It lives in `budget.py`, is added by 3b-2 (which owns the
-  encoder), and is sized like Q12's caps: the corpus maximum with 10x headroom, measured by
-  3b-9, with 1,000,000 as the placeholder until then.
-  - Past it, the child drops the remaining detail and sends a file-level `BUDGET_EXHAUSTED`
-    flag in the core. That is a complete, valid report: `INVENTORY_FILE_FLAGS` is `FLAGGED`
-    (shadow-only), and any unit left without a result stays `UNEXAMINED`.
-- **`max_units` keeps ADR 0006's meaning,** and its 11.3x headroom: units, charged as today
-  (SYNTHESIZED units; tiling units are not charged). Protocol messages never touch it.
-- **The structural cap** is `512 × (core bound + max_messages)` bytes, computed per file. At
-  the placeholder `max_messages`, the detail part is 512,000,000 bytes, about 488 MiB (512 MB).
-  The core part grows with the file. A report a correct child can send therefore always fits.
-- **The corpus is far below it.** The largest file (32,976 tiling units, 3,876 pages) is about
-  150,000 frames, roughly 10-15 MB. 3b-9 reports the maxima of core and detail frames.
-- **Spooling and memory.** Frames are spooled to the unlinked file (3b-5). The parent keeps
-  only index sets in memory: a few integers per unit, the same order as the child's own
-  inventory.
+**B1. Flag volume.** Every flag the enforced and shadow rules need can be sent, each source
+with its own derived bound:
 
-**Which caps fail, and which flag.**
+- per-unit flags: up to `max_flags_per_object` (64) per unit, plus `FLAGS_TRUNCATED`;
+- the file's flag list: up to `max_flags_per_file`, plus `FLAGS_TRUNCATED`;
+- flags the child adds itself: `STAGE_TRUNCATED`, `BUDGET_EXHAUSTED` from `max_messages`,
+  and crypt's flags.
 
-- **`FAILED`** is kept for real protocol violations: a malformed or truncated frame, or a frame
-  past a bound the child itself must honour:
-  - more core frames than the core bound;
-  - more detail frames than `max_messages`;
-  - a frame over 512 bytes;
-  - a stage frame over `max_stage_bytes`, or stages over `max_stage_total`.
+How the flags must behave:
 
-  A correct child never meets these, however large or heavily updated the file.
-- **Content over a budget is never `FAILED`.** The child flags it instead: `BUDGET_EXHAUSTED`
-  for detail, or `STAGE_TRUNCATED`, which leaves that stage's `RAW_MATCH` `FLAGGED`. Both are
-  shadow-only, so no legitimate large file can move to exit 2 at 3b-11.
+- **Truncation can't be hidden.** A stage's truncation travels in its own stage header, so a
+  capped flag list can't hide it.
+- **Exhaustion is known in time.** The child counts its detail before it emits the core, so a
+  `BUDGET_EXHAUSTED` caused by `max_messages` is in the core's flags.
+- **Hard acceptance criterion, for 3b-2 and 3b-11:** "a file that legacy exits 0 on must never
+  become FAILED from flag volume". `manyflags.py` (10,050 objects, each with an integer outside
+  32 bits, on which legacy passes) is a fixture.
+
+**B2. In-use xref entries without a body.** These are representable:
+
+- owner decision 7's offset-0 entries (129 corpus files);
+- entries whose number or generation doesn't match the body at their offset;
+- several entries sharing one offset.
+
+Each is sent with no unit, or with the unit it shares. Its number and generation are checked
+against a unit only when it names one. `OBJECT_SET` compares the full in-use set, body-less
+entries included, against `qpdf --show-xref`, which lists offset-0 entries too. `offset0.py`
+is a fixture.
+
+**B3. The parent's bounds.**
+
+- **Per type, on arrival:** the parent checks each frame type's bound as frames arrive. `decoded`
+  comes first, so units and claims are bounded by `size + D` before they arrive.
+- **`D`:** at most `max_inflated_bytes + size`, since an unfiltered object stream is not
+  charged to the inflated-bytes budget.
+- **Absolute caps:** there is a fixed absolute structural byte cap, and a bound on the parent's
+  memory. Both are tied to `sandbox.Limits.memory_bytes`: a child that fits in its memory
+  backstop cannot produce more frames than the cap admits. 3b-2 derives the ratio from the
+  inventory's memory per unit, and proves it on the corpus.
+- **Disk and memory during legacy:** the parent's disk use (the spool: the structural cap plus
+  `max_stage_total`) and its memory are bounded while legacy runs, not only afterwards.
+- **What happens past a bound:** a child past any of these is `FAILED`. A correct child can't
+  reach them.
+- **Backstops by design.** A file too large for the child's backstops (wall clock, CPU,
+  memory) **can** be moved to exit 2. The child is killed, and from 3b-11 that fails
+  `CHILD_COMPLETE`. 3b-11's CHANGELOG and README must say so.
+
+**B4. Contested regions.**
+
+- A single-owner region must lie within one of its owner's claims.
+- A `CONTESTED` region must intersect each listed owner's claims; it need not lie inside any
+  one of them. The inventory's sweep merges adjacent contested bytes with different claimant
+  sets into one region.
+
+`contested.py` is a fixture.
+
+**B5. Stored-unit witnesses.**
+
+- A stored unit's witness coordinates are its claims concatenated in order, with one witness
+  span per claim.
+- That covers units whose claims are not one span: `HEADER` (the header line plus the
+  binary-marker comment) and `XREF_EPILOGUE`.
+- The witness balances when the spans tile the concatenated length.
+
+**Content past a budget is flagged, never `FAILED`.** That covers detail past `max_messages`,
+which becomes `BUDGET_EXHAUSTED`, and stages past `max_stage_bytes` or `max_stage_total`, which
+are truncated and marked in their header. All of it is shadow-only.
+
+**Stages: what the parent expects, and how strings are kept apart.**
+
+- **Expected stages come from the units** (REDESIGN §4: the parent holds the list of expected
+  obligations):
+  - `XREF_FIELDS` for each cross-reference stream unit;
+  - `OBJSTM_PAYLOAD` for each object-stream unit;
+  - a string stage for each object and object-stream member, which may be empty;
+  - `READER_VIEW` for each entry the core's `Decryption` facts announce.
+- **A stage that never arrives** leaves its `RAW_MATCH` `UNEXAMINED`.
+- **Binary strings have their own stage,** `STRING_BINARY`, matched as bytes. Text strings are
+  matched as text.
+- **No match can span two strings:** each string is its own unit of matching, and 3b-2
+  decides between one frame per string and a separator the normaliser can't bridge.
 
 **Failure semantics.** Any of these makes `CHILD_COMPLETE` `FAILED`, with a closed outcome:
 
-- a protocol error;
+- a protocol error, including any bound of B3;
 - a kill (`killed_wall_clock`, `killed_memory`, `stray`);
-- `cancelled` (Ctrl-C, or `--fail-fast` after a confirmed leak);
+- `cancelled` (Ctrl-C, `--fail-fast` after a confirmed leak, or an early error exit);
 - `reader_failed`;
 - `exit_nonzero`;
 - `truncated`;
@@ -766,8 +847,9 @@ an exit 1 from a raw match in 3b.
 
 - The work budget is primary: exhaustion is a flag inside a complete report.
 - The wall clock, CPU and memory backstops are `sandbox.Limits`' defaults until 3d (Q3). The
-  exception is the wall clock, which counts from legacy's end with `post_legacy_wait_s` (3b-5).
-- A backstop hit is a failure.
+  exception is the wall clock, which counts from legacy's end with `post_legacy_wait_s` (3b-5,
+  Q3's refinement).
+- A backstop hit is a failure, and so can move a large file to exit 2 from 3b-11 (B3).
 
 **Concurrency** (Q2 decided "always, concurrently"; this approach approved by the coordinator,
 2026-10-15).
@@ -817,8 +899,8 @@ then applies, in order:
      only if the witness covers the whole decoded stream. Otherwise it drops; a body with no
      other label becomes `ORPHANED`, and rule 3 applies. This is 3a-7e's promised test.
    - **Kinds with no decoder** keep the label and their listed status:
-     - **the hint stream:** STRUCTURAL, `UNREADABLE`, so flagged, and never ORPHANED (R6 (a),
-       staged);
+     - **the hint stream:** STRUCTURAL, `UNREADABLE`, so flagged, and never ORPHANED (ADR
+       0011's R6 (a), staged);
      - **XMP, JavaScript, output intents and embedded files:** STRUCTURAL, `UNEXAMINED`.
 5. **STRUCTURAL and DRAWABLE together means drawable.** Every label's decoder runs, the worst
    wins, and no label discharges alone. In 3b the drawable side has no decoder, so such a
@@ -892,7 +974,12 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
 
 **1. The enforced checks hold on every file** (3b-9).
 
-- On all three sets, on Linux and macOS: 0 child failures and 0 timeouts.
+- On all three sets, on Linux and macOS: 0 child failures and 0 timeouts. The sets are the
+  corpus, the case library, and the fuzz set (`scorecard inventory fuzz`, 2,000 files, seed 0).
+  The bomb cases are excluded; they are judged by `bombrun`.
+- A re-encrypted corpus sample: the corpus has no encrypted file, so 3b-9 re-encrypts a
+  sample with pikepdf (each standard handler) and runs the child on it. That covers
+  `crypt.py` in the child on real layouts, with the same 0-failure gate.
 - `CHILD_COMPLETE`, `FILE_IDENTITY` and `TILING` hold on **every** file, flagged or not.
   Contested files' regions tile like any other. These are exactly what 3b-11 enforces.
 - The qpdf anchors (`PAGE_COUNT`, `OBJECT_SET`) must hold on every inventory-unflagged file;
@@ -1087,12 +1174,13 @@ The matcher needs the secrets, which only the parent holds. No rules value may r
   and 3b-9 (everything else).
 - Until measured: `max_stage_bytes` 256 MiB, spooled to disk. `max_stage_total` starts at the
   same.
-- An over-cap stage is flagged (fail-closed), never failed (§3, "Which caps fail, and which
-  flag").
+- An over-cap stage is flagged (fail-closed), never failed (§3, "Content past a budget is
+  flagged").
 - The detail-message budget, `Limits.max_messages`, is sized the same way (3b-9 measures it;
   1,000,000 until then). `max_units` keeps ADR 0006's meaning and headroom.
-- The structural cap is not a measured number. It is computed per file, as 512 bytes times the
-  core bound (fixed by the file's structure) plus `max_messages` (§3, "Sizing").
+- The structural byte cap and the parent's memory bound are not corpus multiples. They are
+  derived by 3b-2 from `sandbox.Limits.memory_bytes`, so a child within its memory backstop
+  cannot reach them (§3, B3).
 
 **Q13, decided by the coordinator on 2026-10-15 (owner informed): no hard raw tier in 3b.**
 
@@ -1126,6 +1214,14 @@ options go to the owner:
 **Estimate:** 15-23 working days elapsed, with the upper end likely. The lower end assumes A2's
 queue and the `verify.py` queue both move at the 2026-10-15 pace, and that no gate needs a
 second root-causing round.
+
+The estimate is also conditional on two things outside 3b:
+
+- **#160 clearing the `verify.py` queue.** It waits on 35 owner sign-offs, and 3b-10 cannot
+  start before it.
+- **3a-14's final gate,** which 3b-9 waits on.
+
+A delay in either moves the end date day for day.
 
 | Work | Estimate |
 | --- | --- |
