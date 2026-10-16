@@ -78,6 +78,17 @@ def test_bomb_case(cid, tmp_path):
     else:
         verdict = judge(case, run.scan)
         assert verdict.ok, f"{cid}: {'; '.join(verdict.problems)}"
+    # The visible map re-reads the target: asked for, it must move no
+    # verdict (whether or not a map comes out: a map that cannot be made
+    # costs only the map). (The map's identity tests in test_visible_map*.py skip
+    # bombs, which they would otherwise scan in this process.)
+    mapped_dir = tmp_path / "mapped"
+    mapped_dir.mkdir()
+    mapped = run_bomb(case, pdf, mapped_dir, visible_map=mapped_dir / "map.pdf")
+    assert mapped.outcome is None, f"{cid}: with the visible map: {mapped.outcome}"
+    assert mapped.scan is not None
+    for field in ("exit_code", "error", "findings", "warnings"):
+        assert mapped.scan.report[field] == run.scan.report[field], (cid, field)
 
 
 def test_every_bomb_case_is_kept_out_of_the_in_process_runs():
@@ -85,10 +96,14 @@ def test_every_bomb_case_is_kept_out_of_the_in_process_runs():
 
     from . import test_case_library as lib
     from . import test_views_text_readings as readings
+    from . import test_visible_map as map_sink
+    from . import test_visible_map_cli as map_cli
 
     assert BOMBS
     assert not set(BOMBS) & {p.id for p in lib._params()}
     assert not set(BOMBS) & set(readings._library_cases())
+    assert not set(BOMBS) & set(map_sink._identity_cases())
+    assert not set(BOMBS) & set(map_cli._identity_cases())
     assert not set(BOMBS) & {c.id for c in differential_cases(None, have=HAVE)}
     assert not set(BOMBS) & {c.id for c in differential_cases(BOMBS, have=HAVE)}
 
