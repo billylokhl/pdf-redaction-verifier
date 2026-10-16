@@ -27,6 +27,7 @@ from .visible_map_support import (
     SSN,
     SSN_RULES,
     boxes,
+    drawn,
     mapped,
     plan_of,
     run_main,
@@ -1037,6 +1038,14 @@ class TestNotices:
         assert boxes(the_plan, plan.SOLID) and not sections(the_plan, "notices")
         assert the_plan.flags.V
 
+    def test_the_count_is_not_added_to_other_rows(self) -> None:
+        flags = headline.Flags(V=True)
+        line = headline.text(flags, exit_code=1, json_unwritten=False, codes=[],
+                             outside_only=False, notices=3)
+        assert line == "VISIBLE SECRETS FOUND"
+        assert "notice" in headline.text(headline.Flags(), exit_code=0, json_unwritten=False,
+                                         codes=[], outside_only=False, notices=1)
+
     def test_a_header_without_informational_is_refused(self, tmp_path, monkeypatch) -> None:
         pdf = self._pdf(tmp_path)
         run, _plan = mapped(monkeypatch, tmp_path, pdf, NOTICE_RULES, "--no-strict-classes")
@@ -1450,6 +1459,37 @@ class TestHeadlineFixtures:
         run, the_plan = self._run(tmp_path, monkeypatch, _save(doc, tmp_path / "r7.pdf"))
         assert run.code == 0
         assert the_plan.row == 7 and the_plan.headline == headline.ROWS[7]
+
+    def _notice_pdf(self, tmp_path: Path, ssns: list[str]) -> Path:
+        doc = fitz.open()
+        page = doc.new_page()
+        for i, ssn in enumerate(ssns):
+            page.insert_text((72, 72 + 30 * i), f"SSN {ssn} here")
+        page.insert_text((72, 400), "nothing else of note")
+        return _save(doc, tmp_path / "counted.pdf")
+
+    @pytest.mark.parametrize("ssns", [[], [NOTICE_SSN], [NOTICE_SSN, "345-67-8912"]])
+    def test_the_headline_counts_the_notices(self, tmp_path, monkeypatch, ssns) -> None:
+        pdf = self._notice_pdf(tmp_path, ssns)
+        run, the_plan, _out = drawn(monkeypatch, tmp_path, pdf, NOTICE_RULES,
+                                    "--no-strict-classes", ocr=True)  # the self-check ran
+        assert run.code == 0 and the_plan.row == 7
+        n = len(run.report["notices"])  # one per layer that holds a match
+        assert (n > 0) == bool(ssns)
+        base = "Nothing visible found — every check ran (exit 0)"
+        tail = f"; {n} notice{'s' if n != 1 else ''} not counted in the verdict" if n else ""
+        assert the_plan.headline == base + tail
+        assert not any(part in the_plan.headline for ssn in ssns for part in ssn.split("-"))
+
+    @pytest.mark.parametrize("n, tail", [
+        (0, ""),
+        (1, "; 1 notice not counted in the verdict"),
+        (2, "; 2 notices not counted in the verdict"),
+    ])
+    def test_the_count_wording(self, n, tail) -> None:
+        got = headline.text(headline.Flags(), exit_code=0, json_unwritten=False, codes=[],
+                            outside_only=False, notices=n)
+        assert got == "Nothing visible found — every check ran (exit 0)" + tail
 
     def test_row_2_and_5(self, tmp_path, monkeypatch) -> None:
         # Exit 0 with a switched-off layer: incomplete (row 2), as approved.
