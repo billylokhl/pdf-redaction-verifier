@@ -38,7 +38,7 @@ cells).
 
 | Row id | Where the content is | Plain text | Font-coded text¹ | Pixels | Container² |
 | --- | --- | --- | --- | --- | --- |
-| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ⚑ OCR on a page too large for Vision¹² · ✗ under a box drawn over an image, a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹², or an image with far more detail than the page's OCR render resolves (`live.pixels.oversized-image`) | — |
+| `live` | **Live page content** — drawn on a page | ✓ Text, Objects, OCR · ✗ after a stream's end marker⁹ | ✓ Text, OCR · ✗ overprinted at the same point as other text | ✓ OCR, Binary (a value hidden in raw sample or codec bytes¹⁰) · ⚑ OCR on a page too large for Vision¹² · ✓ OCR under a box drawn over an image (⚑ without OCR)¹⁷ · ✗ a pattern rule over those same hidden bytes, extra rows beyond the declared height, an EXIF/other thumbnail beyond the main decoded picture, a one-character-per-line stack Vision does not report as a line, searched with a value rule (see Matching limits), or a line OCR silently leaves out of its reading¹², or an image with far more detail than the page's OCR render resolves (`live.pixels.oversized-image`) | — |
 | `off-page` | **Off the page** — outside the visible crop/media box | ✓ Text, Objects | ✓ Text if the font has a Unicode map, also written vertically or running across the page edge · ✗ if the font has no Unicode map | ✗ | — |
 | `oc-off` | **Switched-off optional-content layer** | ✓ Objects | ✗ | ✗ | — |
 | `annot-appearance` | **Annotation appearance** — a hidden annotation's drawing | ✓ Objects | ✗ | ✗ | — |
@@ -153,6 +153,21 @@ a clean document with thumbnails cannot certify as `0` until it is. A
 thumbnail only an earlier revision still holds is covered as that
 revision's superseded or orphaned image (⁵: flagged if big enough to
 hold text, ✗ below the size gate).
+
+¹⁷ An image with an opaque box drawn over it (K12; ADR 0004's drawn
+strips under a box, K38): OCR reads the rendered page, so it sees the
+box. Since the legacy hotfix of 2026-10-15 (owner decision), a page with
+an image that one opaque fill drawn after it covers by at least a
+quarter of its area gets `IMAGE_COVERED` (⚑, exit `2`, with or without
+OCR), and with OCR the page is rebuilt from its images alone, each at
+its drawn place, and read again: a listed value there is a finding
+(exit `1`); strips drawn apart in one render rejoin as drawn. Limits:
+one fill's coverage counts (boxes adding up are not summed), a fill's
+bounding rectangle stands for its area, an image covered by another
+image, by text or by clipping is not a cover, and inline images and
+images over 35 Mpx are flagged but not rebuilt. A blank image under a
+box is flagged too (`page.box-over-blank-image`, review). Phase 4b's
+per-image evidence is to subsume this.
 
 ¹⁶ Some unindexed bytes make qpdf exit 3 ("succeeded with warnings"):
 an in-use cross-reference entry at offset 0 while that object's body is

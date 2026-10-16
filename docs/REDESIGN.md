@@ -859,7 +859,8 @@ owner together with what it does not yet cover.
 `2`), 3a-8/9 (owner-password decryption checked), 4a (content kinds
 enforced; K3-K6 closed), 4b (image kinds; K21 and the strips cases exit
 `2`; recall measured; the open question on drawn strips under a box
-answered by the owner) and Phase 5 (in default mode no built-in class
+answered by the owner: for the legacy tool, `IMAGE_COVERED` plus
+images-only OCR, 2026-10-15, ADR 0004's note, which 4b is to subsume) and Phase 5 (in default mode no built-in class
 match changes an exit code, ADR 0012). R leaves open 4c, 4d (K1, K2) and any K-gap whose enforcing
 phase is unspecified (e.g. K7); these stay listed in README until closed.
 
@@ -993,7 +994,7 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K9 | Font-coded text running across the page edge: the page reading splits it into on- and off-page parts; **fixed** in the current tool: the Text layer also reads each stretch of a line between column breaks that holds a visible glyph together with the off-page glyphs in it, so the value is read whole (`page.runs-off-right-edge-embedded-font` is now a caught case) |
 | K10 | Leftover glyph codes shown one character per `Tj`: no string is long enough to judge |
 | K11 | An untyped leftover text with three stand-alone words that are content operators (`n`, `m`, `q`) is taken for page content and never searched (pre-existing) |
-| K12 | A scanned image with a box drawn over it on the same page: OCR only ever sees the rendered, composited page, never the image object itself |
+| K12 | **Flagged and read** in the current tool (legacy hotfix, owner decision 2026-10-15; `IMAGE_COVERED`, images-only OCR; cases `page.pixels-under-box`, `-no-ocr`): a scanned image with a box drawn over it on the same page: OCR only ever sees the rendered, composited page, never the image object itself |
 | K13 | Font-coded text off the page in a real embedded font whose `/ToUnicode` map has been stripped: the glyphs are genuine (rendering the page with a widened media box and OCRing it reads the secret plainly), but no character-based reading, on or off the page, can turn the codes back into text without the map |
 | K14 | Pixels drawn entirely outside the page's media box: never rendered, so OCR never sees them. In the new design the image is unused under owner decision D's definition of "used" ([ADR 0004](adr/0004-image-ocr-envelope.md)), so `FLAGGED` |
 | K15 | Font-coded text in a switched-off optional-content layer: the layer is never rendered, and the Objects layer's literal scan does not apply a font's map |
@@ -1019,7 +1020,7 @@ All exit `0` on today's tool with the secret present (reproduced):
 | K35 | Text drawn at coordinates around 10⁹ points, split across two content-stream objects on the same baseline: PyMuPDF's extraction returns no glyphs that far out, and the Objects layer's per-object literal scan never sees either half whole (the same split at ordinary coordinates is read normally) |
 | K36 | Font-coded text in a real embedded font, drawn starting at the exact same point as other page text: the two runs' glyphs share one baseline and interleave by x-position in both the Text layer's own reading and OCR's rendered pixels, so neither line comes out intact (a plain, non-embedded font at the same point is still caught by the Objects layer regardless of position, and a 20pt vertical offset — no more overlap — is read normally) |
 | K37 | A referenced, drawn 200×20 DeviceGray image whose declared frame renders blank, but whose stream holds 20 more undeclared rows with an SSN render: MuPDF decodes only the declared `Width`×`Height`×components×bits-per-component byte range, so the extra rows are never drawn, never rendered, and never OCR'd, and MuPDF raises no warning that more data followed |
-| K38 | The strips variant of K21, drawn under a box: a 90×14 SSN render split into two 90×7 images, drawn stacked on the page, with a black box painted over both afterwards — OCR only ever sees the rendered, composited page (the box), not what is under it, the same gap as K12 but for a render stored as two image objects rather than one |
+| K38 | **Flagged and read** with K12 (the strips rejoin on the images-only page; `page.ssn-strips-under-box`, `-no-ocr`). The strips variant of K21, drawn under a box: a 90×14 SSN render split into two 90×7 images, drawn stacked on the page, with a black box painted over both afterwards — OCR only ever sees the rendered, composited page (the box), not what is under it, the same gap as K12 but for a render stored as two image objects rather than one |
 | K39 | A small JPEG's own EXIF (APP1) thumbnail renders the SSN: a second, fully decodable picture the main image's declared frame never mentions. Only the main picture is ever drawn or OCR'd, and unlike a raw sample byte or a JPEG comment segment, the thumbnail's render is itself DCT/Huffman-compressed pixel data, not literal text bytes, so no raw byte sweep finds it either |
 | K40 | **Fixed** in the current tool (`verify.scan_trailers`, owner decision D on the tier; cases in `eval/caselib/families/trailer.py`): the document `/ID` in a classic trailer holds the secret as a literal string (or as hex-encoded text): the trailer dictionary is not an object, so the Objects layer never read it, and the Binary layer scanned qpdf's rewrite, where the file's first `/ID` element comes back hex-encoded and the second is replaced by qpdf's own. A private (non-standard) trailer key failed the same way for a pattern rule; a known value there got only Binary's manual-review warning. In the new design a trailer is part of its cross-reference unit (§4); its strings must be decoded and matched the same way, under the same tier rule, not only tiled |
 | K41 | **Fixed** with K40. Same, in an earlier revision's trailer: an incremental update writes a new trailer, the earlier-revision scan compared objects, not trailers, and qpdf writes only the current trailer |
@@ -1074,8 +1075,7 @@ above:
   bytes. Under [ADR 0004](adr/0004-image-ocr-envelope.md)'s decision B
   the new design flags it.
 - **Strips of one render that the page never shows joined.** A 90×14
-  SSN render split into two 90×7 images exits `0` when both strips are
-  drawn under a black box (K38, `page.ssn-strips-under-box`), when both
+  SSN render split into two 90×7 images exits `0` when both
   are unreferenced (the strips variant of K21 itself,
   `leftover.ssn-strips`), or when both are listed in `/Resources` but
   never drawn (`page.ssn-strips-unused-resource`, the `unused-resource.pixels`
@@ -1083,9 +1083,10 @@ above:
   K-number of its own); drawn side by side and uncovered, the rendered
   page's OCR reads it, exit `1` (`page.ssn-strips-joined`, a control, not
   a gap) — all measured against today's `verify.py`. Decision D flags
-  the never-drawn strips (unused); the covered drawn strips are used, so
-  they are a known miss of per-image OCR and an open question for the
-  owner before Phase 4b (ADR 0004).
+  the never-drawn strips (unused). Drawn under a black box (K38,
+  `page.ssn-strips-under-box`) they exited `0` too, until the legacy
+  hotfix of 2026-10-15 (`IMAGE_COVERED`, and images-only OCR, where the
+  strips rejoin: exit `1` with OCR, `2` without; ADR 0004's note).
 
 To check in Phase 0b:
 
