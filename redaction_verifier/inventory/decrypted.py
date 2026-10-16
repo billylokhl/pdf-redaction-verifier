@@ -12,7 +12,7 @@ both sides name the same rules.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 from ..ledger import Flag
@@ -36,7 +36,8 @@ class CryptRule(IntEnum):
     UNLOCATED = 11     # the inventory holds no stored bytes for this stream
     NONCANONICAL = 12  # a security handler outside the closed set (ADR 0001 note)
     XREF_TYPE = 13     # a /Type /XRef stream that is no cross-reference section
-    METADATA_CIPHER = 14  # "unencrypted" metadata that MuPDF decrypts to text
+    METADATA_CIPHER = 14  # "unencrypted" metadata whose stored bytes are no XMP packet
+    TRAILER_SPLIT = 15  # our trailer and the readers disagree on whether it is encrypted
 
 
 class MismatchRule(IntEnum):
@@ -61,10 +62,14 @@ class Decryption:
     forms are tuples: ("dict", ((key, form), ...)) with sorted keys and
     no nulls, ("array", (form, ...)), ("str", bytes), ("name", bytes),
     ("ref", n, g), ("int", int), ("real", Fraction), ("bool", bool),
-    ("null",)."""
+    ("null",). ``views`` holds what a reader shows that is not the agreed
+    view and that the matcher must scan as well: MuPDF's decryption of the
+    catalog's /Metadata under /EncryptMetadata false, which pikepdf (and
+    the spec) leave as stored."""
 
     revision: int
     identity: tuple[bytes, bytes] | None
     values: Mapping[Key, object]
     streams: Mapping[Key, bytes]
     flags: tuple[Flag, ...]
+    views: Mapping[Key, bytes] = field(default_factory=dict)

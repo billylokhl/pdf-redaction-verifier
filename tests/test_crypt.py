@@ -427,3 +427,45 @@ def test_every_encrypted_case_in_the_library_verifies_clean(tmp_path: Path) -> N
             seen += 1
             assert [f for r in revisions for f in r.flags] == [], cid
     assert seen >= 8
+
+
+# ── Round 2 (#178): plain metadata proved, not guessed; trailer splits ──
+def _metadata_file(h: Handler, stored: bytes, extra: bytes = b"") -> bytes:
+    return hand_built(h, x1=b"<< /Type /Catalog /Pages 2 0 R /Metadata 8 0 R >>",
+                      x8=rawpdf.stream(b"/Type /Metadata /Subtype /XML " + extra, stored))
+
+
+SECRET_XMP = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>SSN 123-45-6789</x:xmpmeta>"
+
+
+@pytest.mark.parametrize("plaintext", [
+    SECRET_XMP + b"\xff", SECRET_XMP.decode().encode("utf-16"),
+    b"<x:xmpmeta>Jos\xe9 SSN 123-45-6789</x:xmpmeta>"], ids=["trailing-ff", "utf-16", "latin-1"])
+def test_ciphertext_as_plain_metadata_is_caught_whatever_it_decrypts_to(plaintext: bytes) -> None:
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    (revision,) = decrypt(_metadata_file(h, h.stream_data(8, plaintext)))
+    assert rules(revision) == {("decryption_unverified", 8, CryptRule.METADATA_CIPHER)}
+    assert revision.views[(8, 0)] == plaintext        # what MuPDF shows, for the matcher
+
+
+@pytest.mark.parametrize("stored, extra", [
+    (SECRET_XMP, b""), (SECRET_XMP.decode().encode("utf-16"), b""),
+    (__import__("zlib").compress(b"<?xpacket begin=''?>" + SECRET_XMP), b"/Filter /FlateDecode")],
+    ids=["utf-8", "utf-16", "flate"])
+def test_plain_metadata_that_is_an_xmp_packet_is_trusted(stored: bytes, extra: bytes) -> None:
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    (revision,) = decrypt(_metadata_file(h, stored, extra))
+    assert revision.flags == ()
+    assert revision.streams[(8, 0)] == stored
+    assert (8, 0) in revision.views                   # MuPDF's decryption of it, scanned too
+
+
+@pytest.mark.parametrize("target", [b"null", None], ids=["null", "missing"])
+def test_an_encrypt_entry_naming_nothing_is_a_split_not_a_crash(target: bytes | None) -> None:
+    objects = {1: rawpdf.CATALOG, 2: rawpdf.PAGES, 3: rawpdf.page(),
+               4: rawpdf.stream(b"", CONTENT), 6: rawpdf.HELVETICA}
+    if target is not None:
+        objects[7] = target
+    pdf = rawpdf.build(objects, trailer=b" /Encrypt 7 0 R")
+    (revision,) = decrypt(pdf)
+    assert rules(revision) == {("decryption_unverified", -1, CryptRule.TRAILER_SPLIT)}

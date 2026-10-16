@@ -119,6 +119,7 @@ class _Revision:
         self.flags: list[Flag] = []
         self.values: dict[Key, object] = {}
         self.streams: dict[Key, bytes] = {}
+        self.views: dict[Key, bytes] = {}
         self.spans: dict[UnitRef, Span] | None = None
 
     def unverified(self, rule: CryptRule, key: Key | None = None) -> None:
@@ -136,7 +137,7 @@ class _Revision:
         else:
             self.shared.verified.update(self.staged)
         return Decryption(self.revision, identity, dict(self.values), dict(self.streams),
-                          tuple(self.flags))
+                          tuple(self.flags), dict(self.views))
 
     def _span(self, key: Key | None) -> Span | None:
         unit = None if key is None else self.inv.body(key[0], self.revision)
@@ -158,6 +159,8 @@ class _Revision:
 
     # ── Opening ─────────────────────────────────────────────────────────
     def run(self) -> Decryption:
+        if not self.charge(self.blob):          # each revision's cut is read whole, twice
+            return self.done(None, trusted=False)
         try:
             doc = pymupdf.open(stream=self.blob, filetype="pdf")
         except Exception:                      # FileDataError and kin: unreadable
@@ -184,7 +187,14 @@ class _Revision:
         pk_encrypted = locked or (pdf is not None and pdf.is_encrypted)
         if not (mu_encrypted or pk_encrypted or self.ours_encrypted):
             return self.done(None)              # nobody reads it encrypted: not this module's
-        identity = _identity(pdf) if pdf is not None else (b"", b"")
+        readers = pk_encrypted or mu_encrypted
+        identity = _identity(pdf) if pdf is not None and pdf.is_encrypted else (b"", b"")
+        if self.ours_encrypted != readers:
+            # Our trailer and the readers disagree (an /Encrypt naming a null
+            # or missing object; one we do not see): the inventory's view and
+            # theirs would not be one file's.
+            self.unverified(CryptRule.TRAILER_SPLIT)
+            return self.done(identity, trusted=False)
         mu_locked = doc is not None and bool(doc.needs_pass)
         if locked and mu_locked:
             self.unverified(CryptRule.PASSWORD)
@@ -319,15 +329,20 @@ class _Revision:
         except Exception:
             ours = theirs = None
             is_xref = False
-        warned = bool(pdf.get_warnings()) | _drain_mupdf()
+        pk_warned = bool(pdf.get_warnings())
+        warned = pk_warned | _drain_mupdf()
         if not self.charge(stored, ours or b"", theirs or b""):
             return False
-        if key == plain_metadata and theirs is not None and theirs != stored \
-                and _readable(theirs):
-            self.unverified(CryptRule.METADATA_CIPHER, key)
-            return True
-        if (warned and not (key == plain_metadata)) or ours is None \
-                or (theirs is None and not is_xref):
+        if key == plain_metadata:
+            # MuPDF decrypts it anyway (and may warn doing so): its warnings
+            # are expected, pikepdf's are not. What it shows is scanned too.
+            warned = pk_warned
+            if theirs is not None and theirs != stored:
+                self.views[key] = theirs
+            if not _xmp_packet(stored, obj):
+                self.unverified(CryptRule.METADATA_CIPHER, key)
+                return True
+        if warned or ours is None or (theirs is None and not is_xref):
             self.unverified(CryptRule.WARNING, key)
             return True
         if plain:
@@ -449,16 +464,38 @@ def _ours_encrypted(chain: Chain, revision: int) -> bool:
     return value is not None and not isinstance(value, PdfNull)
 
 
-def _readable(data: bytes) -> bool:
-    """Whether *data* reads as content: it inflates, or it is UTF-8 text
-    (XMP is). Ciphertext is neither, essentially always."""
-    if _inflates(data):
-        return True
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
+_MARKERS = ("<?xpacket", "<x:xmpmeta")
+
+
+def _xmp_packet(stored: bytes, obj: Any) -> bool:
+    """Whether the catalog's unencrypted /Metadata is, as stored, wholly an
+    XMP packet: unfiltered or Flate alone (inflated to a cap), then text in
+    one Unicode encoding throughout, holding an XMP marker. Anything else
+    may be ciphertext a reader shows decrypted: not trusted. (MuPDF's
+    decryption is carried for the matcher regardless: ``views``.)"""
+    filters = obj.get("/Filter")
+    names = list(filters) if isinstance(filters, pikepdf.Array) else \
+        ([] if filters is None else [filters])
+    data = stored
+    if names == [pikepdf.Name.FlateDecode] and obj.get("/DecodeParms") is None:
+        z = zlib.decompressobj()
+        try:
+            data = z.decompress(stored, 1 << 24)
+        except zlib.error:
+            return False
+        if not z.eof or z.unused_data or z.unconsumed_tail:
+            return False
+    elif names:
         return False
-    return bool(text) and sum(c.isprintable() or c.isspace() for c in text) >= 0.95 * len(text)
+    for encoding in ("utf-8", "utf-16", "utf-16-le", "utf-16-be", "utf-32"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if any(m in text for m in _MARKERS) and all(
+                c.isprintable() or c.isspace() or c == "\ufeff" for c in text):
+            return True
+    return False
 
 
 def _plain_metadata(pdf: pikepdf.Pdf, encrypt: Any) -> Key | None:

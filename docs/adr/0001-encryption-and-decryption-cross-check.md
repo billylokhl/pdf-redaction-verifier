@@ -315,10 +315,19 @@ files are all in the set.
   `/EncryptMetadata false` pikepdf returns the catalog's `/Metadata`
   stream as stored and MuPDF decrypts it. When the stored bytes are
   ciphertext, MuPDF shows the decrypted XMP and the raw matcher sees only
-  ciphertext. MuPDF's decryption of that stream is therefore still read:
-  if it reads as content (inflates, or is UTF-8 text), the stream is
-  flagged (rule `METADATA_CIPHER`). Plain stored XMP decrypts to noise and
-  passes.
+  ciphertext. Guessing from MuPDF's output whether it "looks decrypted"
+  is not enough: one odd byte, UTF-16 or Latin-1 defeats any such guess.
+  So two things hold, without guessing:
+  - The stream is trusted only when its stored bytes are wholly an XMP
+    packet: unfiltered or Flate alone, then text in one Unicode encoding
+    throughout, holding `<?xpacket` or `<x:xmpmeta`. Anything else is
+    flagged (rule `METADATA_CIPHER`).
+  - MuPDF's decryption of the stream is carried for the matcher to scan
+    as well (`Decryption.views`), so a secret it shows is found even
+    where the stored bytes pass as a packet.
+- **Our trailer and the readers must agree on whether a revision is
+  encrypted.** An `/Encrypt` naming a null or missing object, or one only
+  the readers see, is flagged (rule `TRAILER_SPLIT`).
 - **`/EFF` other than `/StmF`** flags the whole revision (rule `EFF`).
   Both readers ignore `/EFF`, and `/Type` is optional on an embedded-file
   stream, so no single stream can be named.
