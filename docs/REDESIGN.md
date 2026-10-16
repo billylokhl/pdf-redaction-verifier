@@ -204,7 +204,7 @@ In priority order.
 
 - **Parent** (holds the secrets): CLI, rules, the list of expected
   obligations, matching, verdict, report.
-- **Child** (touches the PDF): inventory, decoders, views. Streams
+- **Child** (touches the PDF): inventory, decryption (`crypt.py`), decoders, views. Streams
   obligations and evidence back over a pipe. A missing, truncated or
   malformed stream, or a non-zero child exit, makes every unreported
   obligation `FAILED`.
@@ -252,7 +252,7 @@ class DecodeContext:
     revision: int
     referrer: UnitRef | None       # the object that draws/uses this unit
     resources: ResourceScope | None  # resolved, incl. inherited
-    crypt: CryptHandler | None
+    crypt: Decryption | None       # inventory/decrypted.py; None only if unencrypted
     depth: int
 
 @dataclass(frozen=True)
@@ -325,6 +325,18 @@ are never enumerated via `xref_length()`.
   (accepted): **pikepdf** decrypts each revision's prefix cut, and its
   decrypted-but-unfiltered stream bytes are cross-checked against
   MuPDF's `xref_stream_raw`; pikepdf is pinned when Phase 3a adds it.
+  The cross-check is `redaction_verifier/crypt.py` (3a-9). It runs in
+  the child, beside the decoders, since it reads the hostile file, and
+  hands the inventory plain data: per revision, an
+  `inventory/decrypted.py` `Decryption` holding the values and stream
+  bytes the cross-check accepts (ADR 0001, with its 2026-10-15
+  amendment: both readers agree or, for streams the handler does not
+  encrypt, pikepdf's read equals the stored bytes), its flags (e.g.
+  `DECRYPTION_MISMATCH`, `DECRYPTION_UNVERIFIED`) and an identity that
+  keys reuse. An encrypted revision always gets one, failed or
+  flagged included. The inventory never imports either reader
+  (coordinator decision 2026-10-15; ADR 0010's child-side import
+  guard is unchanged).
 - **Resource resolution** is cross-checked the same way: for content
   drawn on current pages, the fonts we resolve must match the fonts
   MuPDF reports in its text trace.
