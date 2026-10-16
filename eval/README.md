@@ -84,6 +84,24 @@ pattern rule alone; labels and known gaps in
 CI runs them on Linux, where OCR is absent — their labels hold with and
 without OCR.
 
+### Built-in classes: strict cases and default-mode twins (`caselib/policy1.py`)
+
+By default a built-in class match is a notice that never changes the exit
+code ([ADR 0012](../docs/adr/0012-pattern-classes-inform.md)). `caselib.load()`
+keeps every layout tested both ways: it marks every case's class rules
+`"strict": true`, so each case keeps the expectation it had before ADR 0012
+(the reference tool ignores the key, so the scorecard sees no difference),
+and adds one default-mode twin, `<id>-default-mode`, for each case on the
+owner's sign-off list (`policy1.SIGNED_OFF`): the same file and rules
+without `"strict"`, truth `clean`, expected exit 0. `-default-mode` is a
+reserved suffix. Each twin that differs from the reference has an accepted,
+`weaker: true` diff per environment (`env: no-ocr`, `env: ocr`) citing the
+sign-off; `tests/test_policy1_cases.py` checks that the twins are exactly
+the list, that every twin with a match reports it as a notice, and that
+every other class case keeps its exit in default mode. The twins count as
+clean cases in the scorecard's clean-side rates, and
+`scorecard.pattern_recall` scans them with the rest.
+
 ### The raw writer (`caselib/rawpdf.py`)
 
 Every case above can be written with PyMuPDF, but PyMuPDF is also the

@@ -45,6 +45,22 @@ def test_every_signed_off_case_has_exactly_one_twin_and_nothing_else_does():
         assert all("strict" not in r for r in tw.rules)
 
 
+@pytest.mark.parametrize("cid", [c for c in SIGNED_OFF if c not in SIGNED_OFF_BY_LABEL])
+def test_a_twin_reports_its_class_match_as_a_notice(cid, tmp_path):
+    """ADR 0012 decision 7: default mode expects exit 0 *plus a notice*.
+    (The 11 known gaps are left out: today's tool misses their value, so
+    there is no match to report.)"""
+    twin = REGISTRY[cid + TWIN_SUFFIX]
+    missing = twin.requires - _HAVE
+    if missing:
+        pytest.skip(f"needs {', '.join(sorted(missing))}")
+    pdf = build(twin, tmp_path / f"{twin.id}.pdf")
+    result = scan(twin, pdf, tmp_path)
+    rules = {r["name"] for r in twin.rules}
+    assert any(n["kind"] == "class-match" and n["rule"] in rules
+               for n in result.report["notices"]), cid
+
+
 def test_every_original_class_rule_is_strict():
     for cid, case in REGISTRY.items():
         if cid.endswith(TWIN_SUFFIX):

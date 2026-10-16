@@ -112,9 +112,12 @@ set by the class alone; the 11 known gaps exit 0 today and still do, only
 their target changes. A case reaching 0 is a pinned loosening: the planted
 secret is caught only by a class rule.
 
-Every one is an `ssn` case (the case library has no other class leak
-case). 35 leak cases reach exit 0: 24 by the exit they give today, and 11
-known gaps whose target (the label) is set by the class alone.
+When #138 ran, every class leak case was an `ssn` case; 35 leak cases
+reach exit 0: 24 by the exit they give today, and 11 known gaps whose
+target (the label) is set by the class alone. PR 3a (#154) then added one
+leak case each for `us-phone`, `credit-card` and `email` (strict-mode
+coverage); they too reach exit 0 by default, and the owner signed them off
+separately (decision 6). 38 leak cases in all.
 
 | Today | Cases | What they are |
 | --- | --- | --- |
@@ -182,9 +185,19 @@ All recommendations adopted, relayed by the coordinator:
    listed secret. In strict mode each keeps its current label and target. Each is
    recorded `weaker: true` with this sign-off and a CHANGELOG line naming
    its layout. The relabels of the clean cases `document.generated-id-digits`
-   and `page.digit-column` are covered by the same decision.
+   and `page.digit-column` are covered by the same decision. **A third
+   sign-off the same day** approved the three cases PR 3a added for the
+   other classes, `page.visible-us-phone-class-rule`,
+   `page.visible-credit-card-class-rule` and `page.visible-email-class-rule`,
+   for the same reason (the value is not a listed secret): 38 leak cases
+   and 2 clean relabels in all, each with a default-mode twin (PR 3b).
 7. **Case library:** strict-mode runs keep today's expectations; default
    mode expects exit 0 plus a notice.
+8. **A malformed `"strict"`** (not true or false) on a class rule is a rules
+   error (exit 2) by default, where before PR 3b it mattered only under
+   `--no-strict-classes`: a 1 -> 2 move for such a file, accepted by the
+   coordinator as fail-closed (2026-10-15, owner informed) and listed in
+   the CHANGELOG's verdict changes.
 
 **Owner decision 2026-10-15 (policy 1 explicitly framed as covering YAML
 `entity_types`), recorded by the coordinator:** the `entity_types` of a

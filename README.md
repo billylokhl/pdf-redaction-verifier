@@ -19,6 +19,10 @@ Write the secrets you expect to be gone into a JSON file:
 ]
 ```
 
+(`"Any SSN"` is a built-in class: by default its matches are reported as
+notices that do not change the verdict; add `"strict": true` to make them
+count. See **Built-in classes** below.)
+
 Scan a document against it:
 
 ```bash
@@ -639,11 +643,11 @@ decompressed font tables, or an image's raw bytes, can raise
 coincidental Binary warnings (see Binary); a document `/ID` written as
 hex text whose digits happen to form an SSN, card or phone number is
 manual review under a pattern rule. Prefer longer, more specific values.
-The built-in classes raise hard findings on many clean files: on 488 real
-text-bearing PDFs with no secret in them, `ssn` or `us-phone` did on
-28.3%, mostly digit runs inside hex or alphanumeric ids (Phase 5 of
-docs/REDESIGN.md addresses this; eval/spikes/RESULTS.md, "Phase 5
-baseline").
+In strict mode (`--strict-classes`) the built-in classes raise hard
+findings on many clean files: on 488 real text-bearing PDFs with no secret
+in them, `ssn` or `us-phone` did on 28.3%, mostly digit runs inside hex or
+alphanumeric ids (eval/spikes/RESULTS.md, "Phase 5 baseline"). By default
+those matches are notices that do not change the verdict (ADR 0012).
 <!-- gap-cells: false-alarm.slug-beside-visible-line false-alarm.binary-value-collision false-alarm.generated-id-digits -->
 
 A rewrite that closes these gaps by accounting for every byte of the
