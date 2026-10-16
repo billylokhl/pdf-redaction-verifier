@@ -12,6 +12,7 @@ wall-clock backstop for that, sized not to flake; the trees tests do not."""
 
 from __future__ import annotations
 
+import gc
 import sys
 from collections.abc import Callable
 from types import FrameType
@@ -60,7 +61,8 @@ def lines_executed(files: set[str], call: Callable[[], T]) -> tuple[T, int]:
 def charged_steps(data: bytes, entry: str,
                   budget: Budget | None = None) -> tuple[int, int, Any]:
     """Build *data*'s inventory; return (the work charged inside
-    build.<entry> -- one part of the inventory, e.g. "build_graph" --, the
+    build.<entry> -- one part of the inventory, e.g. "build_graph", or the
+    reference graph's whole stage, "_reference_graph" --, the
     lines executed in every inventory module and the budget while that
     part ran -- the callbacks it makes into build.py included --, the
     inventory). *budget*, if given, is the one the whole build charges
@@ -115,3 +117,42 @@ def step_cost(data: bytes, entry: str) -> tuple[float, int]:
     # Spent, the step stops early: its time per unit would mean nothing.
     assert not budget.exhausted(Counter.WORK), "the budget ran out"
     return taken[0]
+
+
+def step_costs(data: bytes, entries: list[str]) -> dict[str, tuple[float, int]]:
+    """step_cost for several entries of build.py at once, from one build:
+    each entry's (process time, work charged). An entry that calls another
+    (``_reference_graph`` calls each ``build_*``) includes its time."""
+    import time
+
+    import redaction_verifier.inventory.build as build_module
+    from redaction_verifier.budget import Budget, Counter
+    from redaction_verifier.inventory import build_inventory
+    budget = Budget(file_size=len(data))
+    taken: dict[str, tuple[float, int]] = {}
+    reals = {entry: getattr(build_module, entry) for entry in entries}
+
+    def wrap(entry: str) -> Callable[..., Any]:
+        real = reals[entry]
+
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            before, started = budget.work, time.process_time()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                taken[entry] = (time.process_time() - started, budget.work - before)
+        return wrapped
+    for entry in entries:
+        setattr(build_module, entry, wrap(entry))
+    # The collector's passes land wherever allocation triggers them, often
+    # in a short part, and their cost grows with the heap: off while timed.
+    gc.collect()
+    gc.disable()
+    try:
+        build_inventory(data, budget=budget)
+    finally:
+        gc.enable()
+        for entry, real in reals.items():
+            setattr(build_module, entry, real)
+    assert not budget.exhausted(Counter.WORK), "the budget ran out"
+    return taken
