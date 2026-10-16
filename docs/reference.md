@@ -196,8 +196,9 @@ report, `--json` and warnings.
 `--secrets` accepts either this tool's JSON array or a redaction tool's
 `redact_config.yaml` (selected by the `.yaml`/`.yml` suffix), so one file
 can drive both redaction and verification without the two drifting apart.
-A rules file that cannot be read, or that defines no value or pattern to
-check, is an error (`RULES_INVALID`, exit `2`).
+A rules file that cannot be read, or that defines no rule (for a YAML
+config: no `exact_values` and no `patterns`), is an error
+(`RULES_INVALID`, exit `2`).
 
 ### JSON
 
@@ -237,9 +238,9 @@ example:
 
 ```text
   ℹ FOR YOUR INFORMATION (does not change the result above)
-    Entity types in your config (person_name, ssn) are not checked; only
-    your listed exact_values and patterns are. List specific names or
-    numbers under exact_values to have them verified.
+    Entity types in your config (person_name, ssn) are not checked; only your
+    listed exact_values and patterns are. List specific names or numbers under
+    exact_values to have them verified.
 ```
 
 It is shown when the config lists `entity_types`, and when it leaves the
@@ -262,10 +263,12 @@ the match can survive redaction.
 
 **Quote your values and patterns.** YAML reads some unquoted scalars as
 other types: an unquoted `00123456` in `exact_values` is an octal number,
-`yes` a boolean, `2026-10-16` a date. The tool keeps the literal text and
-warns (`RULES_UNQUOTED_VALUE`, exit `2`), because a redaction tool reading
-the same file uses the converted value instead. The warning names only
-the type, never the value. For `patterns` the tool also keeps the literal
+`yes` a boolean. The tool keeps the literal text and, when the conversion
+changes the text (as for those two), warns (`RULES_UNQUOTED_VALUE`, exit
+`2`), because a redaction tool reading the same file uses the converted
+value instead. A value that reads back unchanged, such as a plain
+`123456` or a date like `2026-10-16`, gives no warning. The warning names
+only the type, never the value. For `patterns` the tool also keeps the literal
 text (an unquoted `0777` is searched as `0777`) but does not warn,
 although the redaction tool will use `511`.
 
@@ -729,6 +732,11 @@ run that ends without a map leaves no file at all. The codes:
 | `MAP_CHILD_FAILED` | the map process failed |
 | `MAP_OUTPUT_INVALID` | the map process's output did not check out |
 | `MAP_INTERRUPTED` | the run was interrupted while the map was built |
+| `MAP_FAILED` | the map step hit an unexpected internal error |
+
+If the map was already written and only a later clean-up step failed, the
+line is `[MAP] MAP_WRITTEN: ...; a later step failed (...)`: the map is
+there.
 
 ### What it shows
 

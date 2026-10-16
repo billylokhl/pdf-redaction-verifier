@@ -281,8 +281,9 @@ them yourself, or use `--strict-classes` to count them.
 
 These can still give a Clean result although a secret is in the file:
 
-- An image with a box drawn over it. The image is still stored under the box,
-  but the picture check only sees the box.
+- Some pictures with something drawn over them. A box over a picture is
+  flagged, but not, for example, several small boxes, or one picture drawn
+  over another: the picture check only sees what is on top.
 - Pictures it doesn't read: images placed off the page, previews stored in
   metadata or inside a photo, and small print in very detailed images.
 - Forms of a secret you didn't list, such as a reordered name, or a first name
@@ -333,7 +334,7 @@ read, what is only flagged, and what is missed; its
 
 ## How it works
 
-Part 1 showed how to use the tool. This part explains the ideas behind it,
+The sections above show how to use the tool. This part explains the ideas behind it,
 so you can judge what a result does and doesn't promise. The exact rules
 are in [docs/reference.md](docs/reference.md).
 
@@ -345,7 +346,7 @@ file, which can cost far more, because you then share the file. This tool
 is built so the second kind of failure is as rare as it can make it.
 
 So **Clean is a claim the tool has to earn.** It says Clean only when
-every check ran to the end and none of them found anything. Not finding
+every check ran to the end and found none of your secrets. Not finding
 something is only evidence if the tool actually looked. When it couldn't
 look somewhere, it doesn't stay silent: it says Needs review and tells
 you why. A helper program that is missing, a page the picture check
@@ -402,7 +403,7 @@ often appears on several lines of the report.
 ### How matching works
 
 The tool doesn't guess, and it uses no AI. It compares text exactly, so
-the same file and secrets always give the same result.
+on the same Mac the same file and secrets give the same result.
 
 **Values are compared after tidying both sides.** Before comparing, the
 tool lowercases the text and your value, removes accents, turns
@@ -516,7 +517,9 @@ The map never shows a secret: values are masked the same way as in the
 report, and the finished map is checked for your values before it is
 saved. It also never changes the result. It's built after the report, as
 a separate step, and if anything goes wrong you get no map, never a
-different verdict. To keep your files safe, it only ever creates a new
+different verdict. (The one exception comes before checking starts: if
+the map's file name is taken by something that isn't one of its own
+maps, the tool stops there with Needs review rather than overwrite it.) To keep your files safe, it only ever creates a new
 file or replaces a map it wrote itself.
 
 The map draws what the checks found, not what the eye sees: a solid box

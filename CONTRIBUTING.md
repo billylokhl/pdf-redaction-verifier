@@ -156,8 +156,8 @@ included, with OCR, plus the scorecard differential and metrics.
   CHANGELOG.md.
 - **Verdict changes.** Any change that can move a file's exit code (clean
   to uncertifiable, or certified to leak) is listed under **Verdict
-  changes** in [CHANGELOG.md](CHANGELOG.md), and accepted in
-  `eval/accepted_diffs.yaml`.
+  changes** in [CHANGELOG.md](CHANGELOG.md) and, if it moves a
+  case-library case, accepted in `eval/accepted_diffs.yaml`.
 - **Dates** in decisions, ADRs, the CHANGELOG, issues and PR bodies are
   the owner's local date, Pacific time.
 - **Public repository.** Fabricated data only: no real names, documents,
