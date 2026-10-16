@@ -21,15 +21,18 @@ def _collect(args: list[str]) -> set[str]:
     return ids
 
 
-def test_shard_a_files_exist():
-    for f in ci_shards.SHARD_A:
-        assert (ROOT / f).is_file(), f"{f} is in SHARD_A but does not exist"
+def test_listed_files_exist_and_appear_once():
+    assert len(set(ci_shards.ALL_LISTED)) == len(ci_shards.ALL_LISTED)
+    for f in ci_shards.ALL_LISTED:
+        assert (ROOT / f).is_file(), f"{f} is listed in a shard but does not exist"
 
 
 def test_shards_partition_the_full_collection():
     full = _collect(["tests/"])
-    a = _collect(ci_shards.pytest_args("a"))
-    b = _collect(ci_shards.pytest_args("b"))
-    assert a and b
-    assert not (a & b), f"collected by both shards: {sorted(a & b)[:5]}"
-    assert a | b == full, f"unrun in CI: {sorted(full - (a | b))[:5]}"
+    shards = {s: _collect(ci_shards.pytest_args(s)) for s in "abcd"}
+    seen: set[str] = set()
+    for s, ids in shards.items():
+        assert ids, f"shard {s} collects nothing"
+        assert not (seen & ids), f"collected by two shards: {sorted(seen & ids)[:5]}"
+        seen |= ids
+    assert seen == full, f"unrun in CI: {sorted(full - seen)[:5]}"

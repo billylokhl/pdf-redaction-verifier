@@ -17,28 +17,32 @@ jobs:
   # if the Vision bridge, exiftool, or qpdf is unavailable — so the
   # environment-gated tests can never silently skip on this job.
   #
-  # Split into two parallel shards (owner decision 2026-10-16: the single job
-  # took about 40 of its 50 minutes). tests/ci_shards.py is the one place the
-  # split is defined: shard "a" runs its explicit list of slow, OCR-heavy
-  # files; shard "b" runs everything under tests/ except that list, so a NEW
-  # test file lands in "b" by default and cannot go unrun on macOS.
-  # tests/test_ci_shards.py asserts the two collections are disjoint and
+  # Split into four parallel shards (owner decisions 2026-10-16: the single job
+  # took about 40 of its 50 minutes; smaller jobs fail fast when one hangs).
+  # tests/ci_shards.py is the one place the
+  # split is defined: shards a-c run explicit lists of files, balanced by
+  # measured time; shard "d" runs everything under tests/ except those lists,
+  # so a NEW test file lands in "d" by default and cannot go unrun on macOS.
+  # tests/test_ci_shards.py asserts the four collections are disjoint and
   # together equal the unsplit one. The job id stays `full-macos`, so
-  # `needs.full-macos.result` (and ci-ok) is the aggregate of both legs: one
+  # `needs.full-macos.result` (and ci-ok) is the aggregate of all four legs: one
   # failed or cancelled leg fails it. No branch protection exists on main
   # (checked 2026-10-16), so no required check name changes; if it is added,
   # require `ci-ok`, not the per-leg names.
   full-macos:
     name: full-macos (shard ${{ matrix.shard }})
     runs-on: macos-latest
-    # Each shard takes about SHARD_MINUTES (see CHANGELOG); the unsplit suite
-    # took 25-47 minutes. 30 leaves room for runner variance and new tests.
-    timeout-minutes: 30
+    # Each shard takes about SHARD_MINUTES including setup (see CHANGELOG); 25
+    # is about 2x that, so a runaway is cut early. Concurrency: a public repo
+    # gets 5 concurrent macOS jobs, and one PR run now uses 4 of them; the
+    # weekly scorecard job (scorecard-weekly.yml, also macOS) queues behind
+    # them, never dropped, for at most about one shard's duration.
+    timeout-minutes: 25
     strategy:
-      # Let the other shard finish so one run shows every failure.
+      # Let the other shards finish so one run shows every failure.
       fail-fast: false
       matrix:
-        shard: [a, b]
+        shard: [a, b, c, d]
     env:
       REQUIRE_FULL_ENV: "1"
     steps:
@@ -102,7 +106,10 @@ jobs:
         # Case-library grids need no OCR and run on Linux; here they would add
         # OCR time for nothing (their labels hold both ways; a full-env run of
         # the grids is tracked in REDESIGN.md Phase 0c).
-        run: uv run pytest $(python tests/ci_shards.py ${{ matrix.shard }}) -rs -m "not grid"
+        # --timeout=300 per test (pyproject's 900 s default is for local
+        # runs): the slowest test takes about 63 s locally, so a hung
+        # Vision call fails the shard in 5 minutes, not 15.
+        run: uv run pytest $(python tests/ci_shards.py ${{ matrix.shard }}) -rs -m "not grid" --timeout=300
 
   # Partial suite on Linux across the supported Python range (README
   # promises 3.10+): OCR-dependent tests skip with a reason; the
@@ -312,7 +319,7 @@ jobs:
   # dependency failed": a skipped job can read as passing to some branch
   # protection setups, which would let a failed scorecard-diff (or any
   # other needed job) through silently.
-  # `needs.full-macos.result` covers both macOS shards (a matrix job reports
+  # `needs.full-macos.result` covers all four macOS shards (a matrix job reports
   # one aggregate result: failure/cancelled if any leg did).
   ci-ok:
     needs: [full-macos, partial-linux, scorecard-diff, lint, ratchets]
