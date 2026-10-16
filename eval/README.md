@@ -1276,7 +1276,8 @@ What each part of the output means:
     `exit_2_files_marked_today`: those that already exit `2` today for a
     page thumbnail (`page_thumb_legacy`: #133's `PAGE_THUMBNAIL`, or its
     check failing, read without importing verify.py) -- a lower bound on
-    the overlap with today's exit `2`, which 3a-12 measures in full;
+    the overlap with today's exit `2`, which 3a-12 measures in full
+    (`eval/spikes/unit_budget.py`; RESULTS.md, "Phase 3a-12");
     `exit_2_files_but_thumbnails_marked_today` leaves out only the files
     whose sole class is page-thumbnail orphans so marked;
   - `orphan_files_current` beside the per-body count, and

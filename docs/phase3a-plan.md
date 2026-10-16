@@ -723,9 +723,11 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
     clear 141 new files (5 text-bearing); 4a's synthesized units are all blank fields but
     never a file's only class. Every lever outright: text-bearing 47.6% -> 27.2%.
   - OWNER CHOICE, the hint stream (RESULTS.md, "Owner choice"): (a) a full hint-table
-    decoder, layout-exact, about 6 PRs in 3c (recommended, staged: its spike first, (b) until
-    then); (b) keep hint streams flagged; (c) the middle options, judged. The 170 files qpdf's
-    linearization check warns on are all single-revision: no update drift explains them.
+    decoder, layout-exact, 6 PRs (2-4 days) in 3c (recommended, staged: its spike first, (b)
+    until then); (b) keep hint streams flagged; (c) the middle options, judged. The 170 files
+    qpdf's linearization check warns on are all single-revision (no update drift explains
+    them) and essentially Adobe's linearizer (126 of the 129 naming a producer). R6 (b)'s
+    condition alone takes 1 file out of exit 2 (153 together with R7 (b)).
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 

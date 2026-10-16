@@ -1,6 +1,7 @@
 # 0006. Recursion and decode budget
 
-Status: accepted (owner approval, 2026-09-27)
+Status: accepted (owner approval, 2026-09-27); amended 2026-10-15 (3a-12: the unit cap
+measured and set to 500,000, below)
 
 ## Context
 
@@ -210,7 +211,7 @@ context, so a form drawn from many pages is undercounted; that is what
   the decoder-uncovered children 4a/4b add to the largest files.
 - (c) A cap proportional to the file, like the work budget (`Limits.
   work_per_byte`): a floor of 100,000 plus 1 unit per byte -- at least
-  72x the largest measured units per byte. It scales with a large
+  ~73x the largest measured units per byte (1,024 / 13.94 per KiB). It scales with a large
   legitimate file, but a cap per byte grows with what an attacker pads
   in; the work budget already bounds the inventory's own work per byte.
 

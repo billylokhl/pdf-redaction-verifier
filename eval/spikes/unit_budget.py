@@ -69,25 +69,17 @@ from redaction_verifier.budget import Budget  # noqa: E402
 from redaction_verifier.inventory import build_inventory  # noqa: E402
 from redaction_verifier.ledger import UnitKind  # noqa: E402
 from scorecard import corpus as corpus_mod  # noqa: E402
+from scorecard.inventory_gate import _EXIT_2_CLASSES  # noqa: E402
 
 DEFAULT_OUT = corpus_mod.REAL_CORPUS_DIR / "unit-budget"
 # A fabricated value no corpus file holds and with no digits in sequence
 # (eval/README.md, "Use a non-sequential value in --secrets").
 RULES = [{"name": "Fabricated SSN", "value": "666-51-4073"}]
 
-# The 3a-7e exit-2 classes (eval/scorecard/inventory_gate.py's
-# _EXIT_2_CLASSES), plus orphans in the current revision's sense.
-CLASSES = (
-    ("orphan", "bodies_orphaned"),
-    ("orphan_current", "orphaned_current"),
-    ("hint_stream", "structural_hint_stream"),
-    ("xmp_image", "xmp_image_bodies"),
-    ("javascript", "structural_javascript"),
-    ("synthesized", "synthesized_current"),
-    ("output_intent", "structural_output_intent"),
-)
-# The union is the 7e briefing's: orphan_current is reported, not joined.
-UNION = ("orphan", "hint_stream", "xmp_image", "javascript", "synthesized", "output_intent")
+# The 3a-7e exit-2 classes, as the inventory gate defines them, plus
+# orphans in the current revision's sense (reported, never joined).
+CLASSES = tuple(_EXIT_2_CLASSES) + (("orphan_current", "orphaned_current"),)
+UNION = tuple(name for name, _ in _EXIT_2_CLASSES)
 
 
 # ── units ────────────────────────────────────────────────────────────────
@@ -177,11 +169,15 @@ def measure_levers(path: str, classes: dict[str, int]) -> dict[str, Any]:
     doc = fitz.open(stream=data, filetype="pdf")
     if classes.get("hint_stream"):
         qpdf = shutil.which("qpdf")
-        if qpdf is not None:
-            done = subprocess.run([qpdf, "--check-linearization", path], capture_output=True,
-                                  timeout=300)
-            out["qpdf_linearization"] = done.returncode  # 0 clean, 2 errors, 3 warnings
+        if qpdf is None:  # fail, never skip: the lever's numbers need it
+            raise SystemExit("unit_budget levers: qpdf is not on PATH")
+        done = subprocess.run([qpdf, "--check-linearization", path], capture_output=True,
+                              text=True, errors="replace", timeout=300)
+        out["qpdf_linearization"] = done.returncode  # 0 clean, 2 errors, 3 warnings
+        out["qpdf_messages"] = _qpdf_messages(done.stdout + done.stderr, path)
+        out["qpdf_version"] = _qpdf_version(qpdf)
         out["hint_stale"] = inv_mod.measure(data, inv).get("hint_stream_stale", 0)
+        out["producer"] = _producer_label((doc.metadata or {}).get("producer"))
     if classes.get("xmp_image"):
         images = []
         current = {ref: n for n, ref in inv.bodies_by_number(0).items()}
@@ -220,9 +216,61 @@ def measure_levers(path: str, classes: dict[str, int]) -> dict[str, Any]:
     return out
 
 
+def _qpdf_messages(text: str, path: str) -> list[str]:
+    """qpdf's linearization messages, each once, the file's path and every
+    number taken out (so they tally across files and name no file)."""
+    import re
+
+    found = set()
+    for line in text.splitlines():
+        line = line.replace(path, "FILE")
+        line = re.sub(r"^.*?FILE[^:]*:\s*", "", line)
+        line = re.sub(r"\d+", "N", line).strip()
+        if line and "no linearization errors" not in line.lower():
+            found.add(line[:160])
+    return sorted(found)
+
+
+_QPDF_VERSION: dict[str, str] = {}
+
+
+def _qpdf_version(qpdf: str) -> str:
+    import subprocess
+
+    if qpdf not in _QPDF_VERSION:
+        done = subprocess.run([qpdf, "--version"], capture_output=True, text=True, timeout=60)
+        first = (done.stdout.splitlines() or [""])[0]
+        _QPDF_VERSION[qpdf] = first.split()[-1] if first else "unknown"
+    return _QPDF_VERSION[qpdf]
+
+
+# Producer names this measurement reports, matched in order; the raw
+# /Producer string is classified and discarded (it can name a person or a
+# host: eval/README.md, "The real-world corpus").
+_PRODUCERS = (
+    ("Adobe PDF Library", "adobe pdf library"),
+    ("Acrobat Distiller", "distiller"),
+    ("Adobe Security Envelope", "security envelope"),
+    ("Adobe XD", "adobe xd"),
+    ("Adobe Photoshop", "photoshop"),
+    ("Adobe, other", "adobe"),
+    ("Acrobat, other", "acrobat"),
+    ("Quartz", "quartz"),
+)
+
+
+def _producer_label(producer: str | None) -> str:
+    if not producer or not producer.strip():
+        return "none"
+    low = producer.lower()
+    return next((label for label, needle in _PRODUCERS if needle in low), "other")
+
+
 def _image_reading(run: bytes, fitz: Any) -> dict[str, Any]:
-    """An XMP image: decodes or not, its size, and the characters Apple
-    Vision reads on it (the shipped OCR path, enlarged to a page)."""
+    """An XMP image: decodes or not, its size, and what Apple Vision reads
+    on it (the shipped OCR path, enlarged to a page): the characters and
+    distinct tokens of its first reading (language correction on), not of
+    the six readings extract_ocr_text returns together."""
     from redaction_verifier.views.ocr import extract_ocr_text
 
     try:
@@ -234,9 +282,9 @@ def _image_reading(run: bytes, fitz: Any) -> dict[str, Any]:
         page_doc = fitz.open()
         page = page_doc.new_page(width=pixmap.width, height=pixmap.height)
         page.insert_image(page.rect, stream=run)
-        lines = extract_ocr_text(page)
-        reading["ocr_chars"] = sum(len(line.strip()) for line in lines)
-        reading["ocr_words"] = sum(len(line.split()) for line in lines)
+        first = (extract_ocr_text(page) or [""])[0]
+        reading["ocr_chars"] = len("".join(first.split()))
+        reading["ocr_tokens"] = len(set(first.split()))
         page_doc.close()
     except Exception as exc:
         reading["ocr_error"] = type(exc).__name__
@@ -441,6 +489,19 @@ def report(out_dir: Path, manifest: list[Any]) -> dict[str, Any]:
         "text_bearing_7e_unflagged": review_rates(text_rows, added_unflagged, cli),
         "text_bearing_7e_and_inventory_flags": review_rates(text_rows, added_all, cli),
     }
+    # The same once per distinct content (a file under two paths once).
+    first: dict[str, str] = {}
+    for i, e in enumerate(manifest):
+        first.setdefault(e.sha256, str(i))
+    keep = set(first.values())
+    distinct = [h for h in scanned if h in keep]
+    distinct_text = [h for h in distinct if h in text]
+    result["review_rate_distinct_contents"] = {
+        "all_files_7e_unflagged": review_rates(distinct, added_unflagged, cli),
+        "all_files_7e_and_inventory_flags": review_rates(distinct, added_all, cli),
+        "text_bearing_7e_unflagged": review_rates(distinct_text, added_unflagged, cli),
+        "text_bearing_7e_and_inventory_flags": review_rates(distinct_text, added_all, cli),
+    }
 
     # Levers: what clearing each large class would take off the new files.
     by_hash_levers = _load(out_dir / "levers.jsonl")
@@ -504,6 +565,19 @@ def lever_report(union: list[str], members: dict[str, list[str]],
                 1 for h in new_rows if h in text and check(levers[h]))
             section["new_text_bearing_stale"] = sum(
                 1 for h in new_rows if h in text and levers[h].get("hint_stale"))
+            section["qpdf_version"] = sorted({str(levers[h].get("qpdf_version"))
+                                              for h in rows})
+            section["revisions_by_qpdf_result"] = dict(Counter(
+                f"revisions {min(units[h]['revisions'], 3)}"
+                f"{'+' if units[h]['revisions'] >= 3 else ''}, "
+                f"qpdf {levers[h].get('qpdf_linearization')}" for h in rows))
+            for label, group in (("all", rows), ("new", new_rows),
+                                 ("new_text_bearing", [h for h in new_rows if h in text])):
+                warned = [h for h in group if levers[h].get("qpdf_linearization") == 3]
+                section[f"messages_{label}"] = dict(Counter(
+                    m for h in group for m in levers[h].get("qpdf_messages", [])).most_common())
+                section[f"warned_producers_{label}"] = dict(Counter(
+                    str(levers[h].get("producer")) for h in warned).most_common())
         if name == "xmp_image":
             images = [i for h in rows for i in levers[h].get("xmp_images", [])]
             readable = [i for i in images if i.get("decodes")]
@@ -511,12 +585,13 @@ def lever_report(union: list[str], members: dict[str, list[str]],
             section["images_decoded"] = len(readable)
             section["image_long_side"] = percentiles(
                 [max(i["width"], i["height"]) for i in readable])
-            section["images_ocr_reads_words"] = sum(1 for i in readable
-                                                    if i.get("ocr_words", 0) > 0)
-            section["images_ocr_reads_3_words"] = sum(1 for i in readable
-                                                      if i.get("ocr_words", 0) >= 3)
-            section["files_ocr_reads_words"] = sum(
-                1 for h in rows if any(i.get("ocr_words", 0) > 0
+            # Distinct tokens of the first OCR reading (correction on).
+            section["images_ocr_reads_a_token"] = sum(1 for i in readable
+                                                      if i.get("ocr_tokens", 0) > 0)
+            section["images_ocr_reads_3_tokens"] = sum(1 for i in readable
+                                                       if i.get("ocr_tokens", 0) >= 3)
+            section["files_ocr_reads_a_token"] = sum(
+                1 for h in rows if any(i.get("ocr_tokens", 0) > 0
                                        for i in levers[h].get("xmp_images", [])))
             section["ocr_errors"] = sum(1 for i in images if "ocr_error" in i)
             section["files_with_older_bodies"] = sum(1 for h in rows
