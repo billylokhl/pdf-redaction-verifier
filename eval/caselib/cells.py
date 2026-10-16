@@ -46,7 +46,8 @@ def _cells() -> dict[str, Cell]:
         "live.font.overprinted": Cell(
             gap, "font-coded text drawn starting at the same point as other text"),
         "live.pixels": Cell(read, "text as pixels on a page (OCR)"),
-        "live.pixels.under-box": Cell(gap, "pixels under a box drawn over an image"),
+        "live.pixels.under-box": Cell(
+            read, "pixels under a box drawn over an image (flagged; read by images-only OCR)"),
         "live.pixels.hidden-samples": Cell(
             read, "a value hidden in a drawn image's raw sample or codec bytes, not rendered as "
                   "glyphs (Binary layer, raw byte sweep)", tier="review"),

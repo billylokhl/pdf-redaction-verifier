@@ -162,6 +162,9 @@ it):
   and decision D does not apply to used images, so they would be
   `DECODED` and exit `0`. Phase 3a adds a strips-under-a-box case next
   to the K21 strips case.
+  (In the legacy tool, strips and images under an opaque box are
+  flagged and read from the images alone since 2026-10-15; see the
+  owner decision at the end.)
 
 **Open question for the owner, before Phase 4b** (not decided here):
 how Phase 4b handles drawn strips. For example, must 4b's recall bound
@@ -389,3 +392,37 @@ this ADR is its home.
   unused, so text hidden in a mask is read either way; being unused only
   changes whether a clean OCR/decode result can certify it, per decision
   D.
+
+## Owner decision (2026-10-15): drawn strips under a box, legacy tool
+
+The "Strips" open question, for the legacy tool (K12, and its strips
+variant K38), answered by the owner on 2026-10-15 from the Lane G
+spike's numbers, shipped as a legacy hotfix:
+
+- **Flag if covered.** A page with an image that one opaque fill drawn
+  after it covers by at least 25% of the image's area gets
+  `IMAGE_COVERED` (coverage, exit `2`), with or without OCR.
+- **Images-only OCR on those pages.** The page is rebuilt from its
+  images alone, each at its drawn place with nothing painted over it,
+  and OCR'd as the OCR layer reads a page; a listed value there is a
+  hard finding (exit `1`). Strips drawn apart in one render rejoin as
+  drawn, so K38 reads.
+
+Measured before the decision: on the case library the 25% threshold
+flags exactly K12 and K38 and no clean case, and images-only OCR reads
+no listed value in any clean case; on the 2,073-file local corpus it
+counted 10 files (1 text-bearing), and images-only OCR of their 60 pages
+took 5.8 s and read no listed value (OCR of every image page instead:
+673 pages, 78 s). That count was low: the spike's matching of fills to
+the draw log missed covers after empty paths and on rotated pages,
+which review found and the hotfix fixes. As shipped, with the decided
+25% threshold, 34 files are flagged (25 text-bearing); 24 of them
+already exit `2` for other reasons, so 10 move from `0` to `2` (3
+text-bearing), and no listed value is read (today's `verify.py` against
+the hotfix, OCR on, one fabricated value rule). Stricter only: no case moves toward `0`; a blank or
+harmless image under a box is now review (`page.box-over-blank-image`).
+
+This does not change the decisions above for the new design: a covered
+image is still used under D, and Phase 4b's per-image evidence (with
+the recall bound) is to subsume the hotfix. The open question of how 4b
+reads banded images stays open.

@@ -3494,3 +3494,137 @@
   pr: '#160'
   weaker: true
   env: ocr
+- case: page.box-over-blank-image
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note): a clean blank image under
+    a black box is now flagged IMAGE_COVERED (exit 2, review): the tool cannot know the image is blank
+    without reading it. Stricter only; the owner asked for this case.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: no-ocr
+- case: page.pixels-under-box-no-ocr
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note; K12/K38): an image that
+    an opaque fill drawn after it covers by a quarter or more is flagged IMAGE_COVERED (exit 2); without
+    OCR nothing reads what is under it. Stricter only.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: no-ocr
+- case: page.ssn-strips-under-box-no-ocr
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note; K12/K38): an image that
+    an opaque fill drawn after it covers by a quarter or more is flagged IMAGE_COVERED (exit 2); without
+    OCR nothing reads what is under it. Stricter only.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: no-ocr
+- case: page.box-over-blank-image
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 2
+    findings: []
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note): a clean blank image under
+    a black box is now flagged IMAGE_COVERED (exit 2, review): the tool cannot know the image is blank
+    without reading it. Stricter only; the owner asked for this case.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: ocr
+- case: page.pixels-under-box
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 1
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note; K12/K38): an image that
+    an opaque fill drawn after it covers by a quarter or more is flagged IMAGE_COVERED (exit 2), and the
+    images-only OCR pass reads the SSN under the box (exit 1). Stricter only.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: ocr
+- case: page.ssn-strips-under-box
+  old:
+    error: null
+    exit: 0
+    findings: []
+    warnings: []
+  new:
+    error: null
+    exit: 1
+    findings:
+    - - - SSN
+        - hard
+        - live
+      - 1
+    warnings:
+    - - - IMAGE_COVERED
+        - OCR
+        - null
+      - 1
+  reason: 'Lane G legacy hotfix (owner decision 2026-10-15, ADR 0004''s note; K12/K38): an image that
+    an opaque fill drawn after it covers by a quarter or more is flagged IMAGE_COVERED (exit 2), and the
+    images-only OCR pass reads the SSN under the box (exit 1). Stricter only.'
+  cell: live.pixels.under-box
+  pr: '#183'
+  env: ocr

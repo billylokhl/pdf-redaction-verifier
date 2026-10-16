@@ -533,6 +533,22 @@ without calling Vision, so a stuck Vision costs one deadline per run,
 not one per call or page. A page whose calls each return in time can
 still take up to its 147 calls' worth of deadlines; that is slow, not
 unbounded.
+
+Images painted over (K12, K38; legacy hotfix, owner decision
+2026-10-15): after the OCR layer, `verify.scan_covered_images` checks
+every page for an image that one opaque fill drawn after it covers by
+at least `COVERED_FRACTION` (0.25) of its area
+(`redaction_verifier/views/covered.py`: draw order from
+`Page.get_bboxlog`, fills and their opacity from `Page.get_drawings`,
+matched by sequence number). Such a page gets `IMAGE_COVERED` (coverage,
+storage `live`), with or without OCR. With OCR, `images_only_ocr`
+rebuilds the page from its images alone (each decoded and placed at its
+drawn rectangle, nearest quarter turn; inline images and images over 35
+Mpx left out) and the OCR layer reads it again through
+`scan_page_layer`, with the same tiers, so a listed value under the box
+is a hard OCR finding. A page the check cannot read is `PAGE_FAILED`, a
+crash of the whole check `LAYER_CRASHED`: never a pass. Phase 4b's
+per-image evidence is to subsume this.
 The redesign's inventory (Phase 3a, shadow mode) charges every parse and
 walk to a work budget of 64 units per byte of the file plus a floor of
 1,000,000 ([ADR 0010](docs/adr/0010-readers-are-the-authority.md)); past
@@ -663,8 +679,8 @@ independent routes. An occurrence without a verified box is listed as
 "could not be positioned", which marks the map incomplete. Every --json finding is checked off against the boxes and
 lists, every warning code is classified (a ratchet test keeps the table
 complete; an unclassified code counts as document-level; the page
-codes, `PAGE_FAILED` and `PAGE_THUMBNAIL` (a page thumbnail the scan
-never reads, #133), are named with their pages as INCOMPLETE reasons,
+codes, `PAGE_FAILED`, `PAGE_THUMBNAIL` (a page thumbnail the scan
+never reads, #133) and `IMAGE_COVERED` (an image painted over, K12/K38), are named with their pages as INCOMPLETE reasons,
 whatever their storage, and nothing of the page's content is shown; a
 code seen both on pages and with no page adds "and document-wide"), and the
 headline is one row of a table a property test proves exclusive. A built-in class match that is a notice (ADR 0012:
