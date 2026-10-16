@@ -252,7 +252,7 @@ class DecodeContext:
     revision: int
     referrer: UnitRef | None       # the object that draws/uses this unit
     resources: ResourceScope | None  # resolved, incl. inherited
-    crypt: CryptHandler | None
+    crypt: Decryption | None          # the revision's agreed decryption (inventory/decrypted.py); None: unencrypted
     depth: int
 
 @dataclass(frozen=True)
@@ -324,7 +324,13 @@ are never enumerated via `xref_length()`.
   [ADR 0001](adr/0001-encryption-and-decryption-cross-check.md)
   (accepted): **pikepdf** decrypts each revision's prefix cut, and its
   decrypted-but-unfiltered stream bytes are cross-checked against
-  MuPDF's `xref_stream_raw`; pikepdf is pinned when Phase 3a adds it.
+  MuPDF's `xref_stream_raw`; pikepdf is pinned when Phase 3a adds it. The cross-check is
+  `redaction_verifier/crypt.py` (3a-9), which runs in the child beside the decoders, since it
+  reads the hostile file. It hands the inventory plain data: per revision, an
+  `inventory/decrypted.py` `Decryption` holding the values and still-filtered stream bytes both
+  readers agree on, its flags (`DECRYPTION_MISMATCH`, `DECRYPTION_UNVERIFIED`), and an
+  identity that keys reuse. The inventory never imports either reader (coordinator decision
+  2026-10-15; ADR 0010's child-side import guard unchanged).
 - **Resource resolution** is cross-checked the same way: for content
   drawn on current pages, the fonts we resolve must match the fonts
   MuPDF reports in its text trace.
