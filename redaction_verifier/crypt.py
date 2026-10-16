@@ -163,6 +163,7 @@ class _Revision:
     def run(self) -> Decryption:
         if not self.charge(self.blob):          # each revision's cut is read whole, twice
             return self.done(None, trusted=False)
+        _drain_mupdf()                          # MuPDF's warnings are process-wide: not ours
         try:
             doc = pymupdf.open(stream=self.blob, filetype="pdf")
         except Exception:                      # FileDataError and kin: unreadable
