@@ -155,10 +155,14 @@ Owner decision: "approve all recommendations."
   detection, `RecursionError` handling) rather than being partially
   addressed here.
 
-## Amendment draft: the unit cap, measured (2026-10-15, 3a-12) -- PENDING OWNER DECISION
+## Amendment: the unit cap, measured (2026-10-15, 3a-12)
 
-Status: a draft. `Limits.max_units` stays 200,000 in the code until the
-owner decides; nothing here changes a verdict.
+Status: coordinator decision 2026-10-15 under owner decision 1
+("generous headroom", re-derive at 4c/4d); owner informed.
+`Limits.max_units` is 500,000 (option (a) below). Hitting the cap fails
+closed: the unit is `FLAGGED` (`BUDGET_EXHAUSTED`) and the file cannot
+exit `0`. The cap is read only by the shadow-mode inventory today (the
+shipped CLI never loads `budget.py`), so no verdict changes.
 
 Owner decision 1 of the Phase 3a plan (2026-09-27): measure the unit cap
 in 3a with generous headroom, re-derive it at 4c/4d; hitting it cannot
@@ -195,9 +199,9 @@ The DRAWABLE proxy counts a stream once per revision, not once per
 context, so a form drawn from many pages is undercounted; that is what
 4c/4d re-derives.
 
-**Proposal** (generous headroom, per decision 1):
+**Options considered** (generous headroom, per decision 1):
 
-- **(a) Recommended: `max_units = 500,000`, flat.** Headroom 11.3x over
+- **(a) Decided: `max_units = 500,000`, flat.** Headroom 11.3x over
   the largest file's 44,066 units (decoder-uncovered children included
   only as the proxy above), 237x over the largest unflagged file's 2,106,
   1,700x over p99. At a few hundred bytes per unit record (not measured
@@ -210,6 +214,7 @@ context, so a form drawn from many pages is undercounted; that is what
   legitimate file, but a cap per byte grows with what an attacker pads
   in; the work budget already bounds the inventory's own work per byte.
 
-In every option the cap is re-derived at 4c/4d, once the decoders count
-their children, and the number stays a named limit with a pinning test
-(Phase 3d).
+The cap is re-derived at 4c/4d, once the decoders count their children.
+It stays a named limit, pinned by
+`tests/test_ledger_types.py::test_limits_default_to_adr_0006s_numbers`;
+Phase 3d stress-tests it with the other bounds.

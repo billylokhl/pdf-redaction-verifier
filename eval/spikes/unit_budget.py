@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Phase 3a-12: the unit budget (an ADR 0006 amendment draft) and the
-orphan overlap (ADR 0007), on the real corpus.
+"""Phase 3a-12: the unit budget (ADR 0006's amendment) and the orphan
+overlap (ADR 0007), on the real corpus.
 
-Three steps, each re-runnable on its own; per-file records go to a
+Four steps, each re-runnable on its own; per-file records go to a
 local-only directory (``--out``, by default under the gitignored
 ``eval/scorecard/real_corpus/``), keyed by SHA-256 prefix, never by name:
 
@@ -23,12 +23,18 @@ local-only directory (``--out``, by default under the gitignored
 * ``cli``: runs today's shipped CLI (``verify.py``, through the
   scorecard's ``run_cli``) once on every manifest file with a fabricated,
   non-sequential value rule, keeping each report.
-* ``report``: joins the two and prints one JSON object: unit
+* ``levers``: for the unflagged files with a hint stream, an XMP image or
+  a synthesized annotation, what clearing that class would take: qpdf's
+  linearization check and a stale /L (ADR 0011 R6 (b)); each XMP image
+  decoded, its size and what Apple Vision reads on it (R7 (b), 4b); each
+  synthesized annotation's shown inputs (R2, 4a).
+* ``report``: joins them and prints one JSON object: unit
   distributions (p50/p90/p99/max, per kind, per byte), and for each 7e
   class and their union which files already exit 2 today (and why, by
   warning code; a qpdf exit status is its own reason) and which would
   newly exit 2; then the review rate today and after, on all files and on
-  text-bearing ones, with and without today's qpdf exit-3 warnings.
+  text-bearing ones, with and without today's qpdf exit-3 warnings; and
+  what each lever, and each combination, would take off the new files.
 
 Aggregate numbers only are printed; ``--out`` holds per-file records
 (hash prefixes, counts, warning codes) and the CLI's reports, which carry
@@ -37,6 +43,8 @@ the target's file name: keep it local, like the manifest.
     PYTHONPATH=eval:. python eval/spikes/unit_budget.py units \\
         --root eval/scorecard/real_corpus/links --workers 6
     PYTHONPATH=eval:. python eval/spikes/unit_budget.py cli \\
+        --root eval/scorecard/real_corpus/links --workers 6
+    PYTHONPATH=eval:. python eval/spikes/unit_budget.py levers \\
         --root eval/scorecard/real_corpus/links --workers 6
     PYTHONPATH=eval:. python eval/spikes/unit_budget.py report
 """
@@ -139,6 +147,131 @@ def run_one(path: Path, workdir: Path, case_id: str, timeout: float) -> dict[str
     record["reasons"] = sorted(reasons)
     record["hard"] = sum(1 for f in report.get("findings", []) if f.get("tier") == "hard")
     return record
+
+
+# ── levers ───────────────────────────────────────────────────────────────
+# What each large new-cost class would need to clear (the owner's
+# briefing, "Levers"), measured on the files in it: a hint stream's qpdf
+# linearization check and stale /L (ADR 0011 R6 (b)); each image an XMP
+# packet holds, decoded, its size and what OCR reads in it (R7 (b), 4b);
+# each synthesized annotation's shown inputs (R2, 4a).
+_RICH_IMAGE = ("<img", "<svg", "url(")
+LEVER_CLASSES = ("hint_stream", "xmp_image", "synthesized")
+
+
+def measure_levers(path: str, classes: dict[str, int]) -> dict[str, Any]:
+    import base64
+    import binascii
+    import re
+    import shutil
+    import subprocess
+
+    import fitz
+
+    from redaction_verifier.inventory.labels import StructuralKind
+    from scorecard import inventory as inv_mod
+
+    data = Path(path).read_bytes()
+    out: dict[str, Any] = {}
+    inv = build_inventory(data, budget=Budget(file_size=len(data)))
+    doc = fitz.open(stream=data, filetype="pdf")
+    if classes.get("hint_stream"):
+        qpdf = shutil.which("qpdf")
+        if qpdf is not None:
+            done = subprocess.run([qpdf, "--check-linearization", path], capture_output=True,
+                                  timeout=300)
+            out["qpdf_linearization"] = done.returncode  # 0 clean, 2 errors, 3 warnings
+        out["hint_stale"] = inv_mod.measure(data, inv).get("hint_stream_stale", 0)
+    if classes.get("xmp_image"):
+        images = []
+        current = {ref: n for n, ref in inv.bodies_by_number(0).items()}
+        older = 0
+        for unit, labels in inv.body_labels.items():
+            if StructuralKind.XMP not in labels.structural:
+                continue
+            if unit not in current:
+                older += 1  # not read here: MuPDF reads the current revision
+                continue
+            packet = inv_mod._XML_BREAKS.sub(b"", doc.xref_stream(current[unit]) or b"")
+            runs = []
+            for match in inv_mod._BASE64_RUN.finditer(packet):
+                run = re.sub(rb"[\t\n\r ]", b"", match.group())
+                try:
+                    runs.append(base64.b64decode(run + b"=" * (-len(run) % 4)))
+                except (binascii.Error, ValueError):
+                    continue
+            for match in inv_mod._HEX_RUN.finditer(packet):
+                runs.append(bytes.fromhex(re.sub(rb"[\t\n\r ]", b"", match.group()).decode()))
+            for run in runs:
+                if len(run) < 48 or not run.startswith(inv_mod._IMAGE_SIGNATURES):
+                    continue
+                images.append(_image_reading(run, fitz))
+        out["xmp_images"] = images
+        out["xmp_older_bodies"] = older
+    if classes.get("synthesized"):
+        notes = []
+        found = inv.annotations[0] if inv.annotations else None
+        for annotation in found or ():
+            if not annotation.synthesized:
+                continue
+            notes.append(_shown_inputs(doc, annotation.number))
+        out["synthesized_annotations"] = notes
+    doc.close()
+    return out
+
+
+def _image_reading(run: bytes, fitz: Any) -> dict[str, Any]:
+    """An XMP image: decodes or not, its size, and the characters Apple
+    Vision reads on it (the shipped OCR path, enlarged to a page)."""
+    from redaction_verifier.views.ocr import extract_ocr_text
+
+    try:
+        pixmap = fitz.Pixmap(run)
+    except Exception:
+        return {"decodes": False}
+    reading: dict[str, Any] = {"decodes": True, "width": pixmap.width, "height": pixmap.height}
+    try:
+        page_doc = fitz.open()
+        page = page_doc.new_page(width=pixmap.width, height=pixmap.height)
+        page.insert_image(page.rect, stream=run)
+        lines = extract_ocr_text(page)
+        reading["ocr_chars"] = sum(len(line.strip()) for line in lines)
+        reading["ocr_words"] = sum(len(line.split()) for line in lines)
+        page_doc.close()
+    except Exception as exc:
+        reading["ocr_error"] = type(exc).__name__
+    return reading
+
+
+def _shown_inputs(doc: Any, number: int | None) -> dict[str, Any]:
+    """What MuPDF builds a synthesized annotation from (ADR 0011 R2): its
+    /Subtype, /FT and /V (inherited through /Parent), and whether it has
+    rich text (/RC, /RV) -- and a rich text that could draw an image."""
+    if number is None:
+        return {"direct": True}
+    note: dict[str, Any] = {"subtype": doc.xref_get_key(number, "Subtype")[1]}
+    node, seen = number, set()
+    for key in ("FT", "V"):
+        node, seen = number, set()
+        while node and node not in seen:
+            seen.add(node)
+            kind, value = doc.xref_get_key(node, key)
+            if kind != "null":
+                note[key] = value if key == "FT" else kind
+                break
+            kind, value = doc.xref_get_key(node, "Parent")
+            node = int(value.split()[0]) if kind == "xref" else 0
+    for key in ("RC", "RV", "DS", "Contents"):
+        kind, value = doc.xref_get_key(number, key)
+        if kind != "null":
+            note[key] = True
+            if kind == "xref":  # rich text held in a stream
+                target = int(value.split()[0])
+                value = (doc.xref_stream(target) or b"").decode("latin-1") \
+                    if doc.xref_is_stream(target) else doc.xref_object(target)
+            if key in ("RC", "RV") and any(m in value.lower() for m in _RICH_IMAGE):
+                note["rich_image"] = True
+    return note
 
 
 # ── report ───────────────────────────────────────────────────────────────
@@ -308,7 +441,123 @@ def report(out_dir: Path, manifest: list[Any]) -> dict[str, Any]:
         "text_bearing_7e_unflagged": review_rates(text_rows, added_unflagged, cli),
         "text_bearing_7e_and_inventory_flags": review_rates(text_rows, added_all, cli),
     }
+
+    # Levers: what clearing each large class would take off the new files.
+    by_hash_levers = _load(out_dir / "levers.jsonl")
+    if by_hash_levers:
+        levers = {str(i): by_hash_levers[e.sha256[:16]] for i, e in enumerate(manifest)
+                  if e.sha256[:16] in by_hash_levers}
+        result["levers"] = lever_report(union, members, units, cli, levers, text)
     return result
+
+
+def _hint_ok(lever: dict[str, Any]) -> bool:
+    """R6 (b)'s precondition: qpdf's linearization check clean, /L not stale."""
+    return lever.get("qpdf_linearization") == 0 and not lever.get("hint_stale")
+
+
+def _xmp_in_envelope(lever: dict[str, Any]) -> bool:
+    """R7 (b)'s precondition: every image decodes, within ADR 0004's
+    envelope (at most 10,000 px a side, at most 35 Mpx)."""
+    images = lever.get("xmp_images", [])
+    return bool(images) and not lever.get("xmp_older_bodies") and all(
+        i.get("decodes") and max(i["width"], i["height"]) <= 10_000
+        and i["width"] * i["height"] <= 35_000_000 for i in images)
+
+
+def _synth_plain(lever: dict[str, Any]) -> bool:
+    """R2's DECODED precondition in part: no rich text that could draw an
+    image (the trace comparison itself is 4a's)."""
+    notes = lever.get("synthesized_annotations", [])
+    return bool(notes) and not any(n.get("rich_image") for n in notes)
+
+
+def lever_report(union: list[str], members: dict[str, list[str]],
+                 units: dict[str, dict[str, Any]], cli: dict[str, dict[str, Any]],
+                 levers: dict[str, dict[str, Any]], text: set[str]) -> dict[str, Any]:
+    new = [h for h in union if cli[h].get("exit") == 0]
+
+    def classes_of(h: str) -> set[str]:
+        return {c for c in UNION if units[h]["classes"].get(c, 0) > 0}
+
+    checks = {"hint_stream": _hint_ok, "xmp_image": _xmp_in_envelope,
+              "synthesized": _synth_plain}
+    out: dict[str, Any] = {"new_files": len(new),
+                           "new_text_bearing": sum(1 for h in new if h in text)}
+    for name, check in checks.items():
+        rows = [h for h in members[name] if h in levers]
+        new_rows = [h for h in rows if cli[h].get("exit") == 0]
+        sole = [h for h in new_rows if classes_of(h) == {name}]
+        section: dict[str, Any] = {
+            "files": len(rows), "new": len(new_rows), "new_sole_class": len(sole),
+            "new_sole_class_text_bearing": sum(1 for h in sole if h in text),
+            "precondition_met": sum(1 for h in rows if check(levers[h])),
+            "new_sole_class_precondition_met": sum(1 for h in sole if check(levers[h])),
+        }
+        if name == "hint_stream":
+            section["qpdf_linearization"] = dict(Counter(
+                str(levers[h].get("qpdf_linearization")) for h in rows))
+            section["stale"] = sum(1 for h in rows if levers[h].get("hint_stale"))
+            section["new_precondition_met"] = sum(1 for h in new_rows if check(levers[h]))
+            section["new_text_bearing"] = sum(1 for h in new_rows if h in text)
+            section["new_text_bearing_precondition_met"] = sum(
+                1 for h in new_rows if h in text and check(levers[h]))
+            section["new_text_bearing_stale"] = sum(
+                1 for h in new_rows if h in text and levers[h].get("hint_stale"))
+        if name == "xmp_image":
+            images = [i for h in rows for i in levers[h].get("xmp_images", [])]
+            readable = [i for i in images if i.get("decodes")]
+            section["images"] = len(images)
+            section["images_decoded"] = len(readable)
+            section["image_long_side"] = percentiles(
+                [max(i["width"], i["height"]) for i in readable])
+            section["images_ocr_reads_words"] = sum(1 for i in readable
+                                                    if i.get("ocr_words", 0) > 0)
+            section["images_ocr_reads_3_words"] = sum(1 for i in readable
+                                                      if i.get("ocr_words", 0) >= 3)
+            section["files_ocr_reads_words"] = sum(
+                1 for h in rows if any(i.get("ocr_words", 0) > 0
+                                       for i in levers[h].get("xmp_images", [])))
+            section["ocr_errors"] = sum(1 for i in images if "ocr_error" in i)
+            section["files_with_older_bodies"] = sum(1 for h in rows
+                                                     if levers[h].get("xmp_older_bodies"))
+        if name == "synthesized":
+            notes = [n for h in rows for n in levers[h].get("synthesized_annotations", [])]
+            section["annotations"] = len(notes)
+            section["by_field_type"] = dict(Counter(str(n.get("FT")) for n in notes))
+            section["with_value"] = sum(1 for n in notes if "V" in n)
+            section["rich_text"] = sum(1 for n in notes if n.get("RC") or n.get("RV"))
+            section["rich_text_image"] = sum(1 for n in notes if n.get("rich_image"))
+            section["direct"] = sum(1 for n in notes if n.get("direct"))
+        out[name] = section
+    # Levers together: the new files whose every class is cleared -- by a
+    # lever whose precondition the file meets, or (JavaScript) by a decoder
+    # assumed to clear every stream; orphans clear under no lever (R3).
+    scenarios = {
+        "synthesized (4a)": ("synthesized",),
+        "hint (R6 b)": ("hint_stream",),
+        "hint + synthesized": ("hint_stream", "synthesized"),
+        "hint + synthesized + javascript": ("hint_stream", "synthesized", "javascript"),
+        "xmp (R7 b)": ("xmp_image",),
+        "xmp + synthesized": ("xmp_image", "synthesized"),
+        "all four": ("hint_stream", "synthesized", "javascript", "xmp_image"),
+    }
+    out["scenarios"] = {}
+    for label, taken in scenarios.items():
+        cleared = [h for h in new if classes_of(h) <= set(taken) and all(
+            name == "javascript" or (h in levers and checks[name](levers[h]))
+            for name in classes_of(h))]
+        # The upper bound: each lever clears its whole class, preconditions aside.
+        outright = [h for h in new if classes_of(h) <= set(taken)]
+        out["scenarios"][label] = {"cleared": len(cleared),
+                                   "cleared_text_bearing": sum(1 for h in cleared if h in text),
+                                   "outright": len(outright),
+                                   "outright_text_bearing": sum(1 for h in outright if h in text)}
+    out["new_by_classes"] = dict(Counter(
+        "+".join(sorted(classes_of(h))) for h in new).most_common())
+    out["new_by_classes_text_bearing"] = dict(Counter(
+        "+".join(sorted(classes_of(h))) for h in new if h in text).most_common())
+    return out
 
 
 # ── plumbing ─────────────────────────────────────────────────────────────
@@ -328,7 +577,7 @@ def _append(path: Path, key: str, row: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("step", choices=("units", "cli", "report"))
+    parser.add_argument("step", choices=("units", "cli", "levers", "report"))
     parser.add_argument("--root", type=Path, help="the corpus root (units, cli)")
     parser.add_argument("--manifest", type=Path, default=corpus_mod.DEFAULT_MANIFEST)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -356,6 +605,22 @@ def main(argv: list[str] | None = None) -> int:
                             chunksize=4)
             for entry, row in zip(todo, rows):
                 _append(target, entry.sha256[:16], row)
+    elif args.step == "levers":
+        target = out / "levers.jsonl"
+        units = _load(out / "units.jsonl")
+        done = _load(target)
+        todo = []
+        for e in manifest:
+            key = e.sha256[:16]
+            row = units.get(key, {})
+            if (key not in done and key not in {k for k, _ in todo} and not row.get("flags")
+                    and any(row.get("classes", {}).get(c) for c in LEVER_CLASSES)):
+                todo.append((key, e))
+        with ProcessPoolExecutor(args.workers) as pool:
+            rows = pool.map(measure_levers, [str(args.root / e.path) for _, e in todo],
+                            [units[k]["classes"] for k, _ in todo], chunksize=2)
+            for (key, _), row in zip(todo, rows):
+                _append(target, key, row)
     else:
         target = out / "cli.jsonl"
         done = _load(target)
