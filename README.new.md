@@ -218,7 +218,8 @@ only those are verified.
 
 Put every value and pattern in quotes. Without quotes, YAML can change them:
 an unquoted `00123456` is read as a number, and a `#` starts a comment, so
-`Invoice #[0-9]{6}` becomes just `Invoice`. The checker warns about these.
+`Invoice #[0-9]{6}` becomes just `Invoice`. The checker warns about some of
+these mistakes, but not all, so quoting is the safe habit.
 Other settings in the file, such as which AI model the redaction tool uses,
 are ignored.
 
