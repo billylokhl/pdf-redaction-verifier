@@ -132,6 +132,10 @@ def _cells() -> dict[str, Cell]:
         "private-data.plain": Cell(read, "/PieceInfo: live known values via Binary", tier="review"),
         "private-data.plain.pattern-rules": Cell(gap, "pattern rules on live /PieceInfo streams"),
         "unindexed.plain": Cell(gap, "plain text after the final %%EOF, in comments, or free entries"),
+        "unindexed.plain.qpdf-warned": Cell(
+            flagged, "plain text in bytes qpdf warns about: the body behind an in-use entry at "
+                     "offset 0, tokens before a missing endobj, an earlier body a damaged xref's "
+                     "rebuild passes over (Binary, TOOL_EXIT_NONZERO)"),
         "unindexed.font": Cell(gap, "font-coded text outside any indexed object"),
         "unindexed.pixels": Cell(gap, "images outside any indexed object"),
         "unindexed.container": Cell(gap, "containers outside any indexed object"),
