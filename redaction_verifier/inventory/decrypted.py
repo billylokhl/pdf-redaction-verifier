@@ -31,10 +31,12 @@ class CryptRule(IntEnum):
     PERMS = 6          # /Perms does not check out (qpdf warns; ADR 0001)
     WARNING = 7        # a reader warned reading this object, or lacks it
     CRYPT_FILTER = 8   # a stream-level /Crypt filter (the readers read it differently)
-    EFF = 9            # an embedded file under an /EFF other than /StmF
+    EFF = 9            # an /EFF other than /StmF: the whole revision
     STORED_PLAIN = 10  # an "encrypted" stream whose stored bytes inflate as they are
     UNLOCATED = 11     # the inventory holds no stored bytes for this stream
     NONCANONICAL = 12  # a security handler outside the closed set (ADR 0001 note)
+    XREF_TYPE = 13     # a /Type /XRef stream that is no cross-reference section
+    METADATA_CIPHER = 14  # "unencrypted" metadata that MuPDF decrypts to text
 
 
 class MismatchRule(IntEnum):

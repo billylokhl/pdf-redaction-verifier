@@ -58,13 +58,15 @@ pymupdf: Any = _pymupdf
 # Every read of one decrypt() call: the byte cap, and what both readers
 # verified, by body and identity (a body two revisions share under one
 # identity decrypts alike: verified once).
-_Verified = dict[tuple[UnitRef, tuple[bytes, bytes]], tuple[object, bytes | None]]
+_Verified = dict[tuple[UnitRef, int, tuple[bytes, bytes]], tuple[object, bytes | None]]
 
 
 @dataclass
 class _Shared:
-    left: int
-    verified: _Verified
+    left: int                  # bytes still to read
+    entries: int               # xref entries still to visit, over all revisions
+    verified: _Verified        # only from revisions found trusted
+    xref_streams: frozenset[int]   # the chain's cross-reference streams, by offset
 
 
 def cut(chain: Chain, data: bytes, revision: int) -> bytes:
@@ -76,18 +78,25 @@ def cut(chain: Chain, data: bytes, revision: int) -> bytes:
 
 
 def decrypt(data: bytes, inventory: Inventory, chain: Chain, *,
-            max_bytes: int = 1 << 30) -> tuple[Decryption, ...]:
+            max_bytes: int = 1 << 30, max_entries: int = 1_000_000) -> tuple[Decryption, ...]:
     """Every revision's decryption, current first. *max_bytes* caps the
     bytes read -- every object's printed value and every stream, from both
-    readers and the file -- over all revisions (BUDGET_EXHAUSTED past it)."""
-    shared = _Shared(max_bytes, {})
+    readers and the file -- and *max_entries* the xref entries visited,
+    reused or not, over all revisions: each revision walks its whole table,
+    so the work is revisions x entries (BUDGET_EXHAUSTED past either).
+    Flags are one per object at most, bounded the same way."""
+    xref_streams = frozenset(part.offset for section in chain.sections
+                             for part in (section, section.xref_stm)
+                             if part is not None and part.is_stream)
+    shared = _Shared(max_bytes, max_entries, {}, xref_streams)
     shown = pymupdf.TOOLS.mupdf_display_errors()
     pymupdf.TOOLS.mupdf_display_errors(False)
     try:
         # Explicit conversion: integers, booleans and the like stay pikepdf
         # objects, so a value's form never depends on Python's coercions.
         with pikepdf.explicit_conversion():
-            return tuple(_Revision(cut(chain, data, r), r, inventory, shared).run()
+            return tuple(_Revision(cut(chain, data, r), r, inventory, shared,
+                                   _ours_encrypted(chain, r)).run()
                          for r in range(inventory.revisions))
     finally:
         pymupdf.TOOLS.mupdf_display_errors(shown)
@@ -101,9 +110,12 @@ def _flag(reason: FlagReason, rule: int, revision: int, key: Key | None,
 
 
 class _Revision:
-    def __init__(self, blob: bytes, revision: int, inventory: Inventory, shared: _Shared):
+    def __init__(self, blob: bytes, revision: int, inventory: Inventory, shared: _Shared,
+                 ours_encrypted: bool):
         self.blob, self.revision, self.inv, self.shared = blob, revision, inventory, shared
+        self.ours_encrypted = ours_encrypted
         self.identity: tuple[bytes, bytes] | None = None
+        self.staged: _Verified = {}             # joins shared.verified only if trusted
         self.flags: list[Flag] = []
         self.values: dict[Key, object] = {}
         self.streams: dict[Key, bytes] = {}
@@ -121,6 +133,8 @@ class _Revision:
         if not trusted:
             self.values.clear()
             self.streams.clear()
+        else:
+            self.shared.verified.update(self.staged)
         return Decryption(self.revision, identity, dict(self.values), dict(self.streams),
                           tuple(self.flags))
 
@@ -132,9 +146,10 @@ class _Revision:
             self.spans = {u.ref: u.spans[0] for u in self.inv.units if u.spans}
         return self.spans.get(unit)
 
-    def charge(self, *parts: bytes) -> bool:
+    def charge(self, *parts: bytes, entries: int = 0) -> bool:
         self.shared.left -= sum(len(p) for p in parts)
-        if self.shared.left < 0:
+        self.shared.entries -= entries
+        if self.shared.left < 0 or self.shared.entries < 0:
             if not any(f.reason is FlagReason.BUDGET_EXHAUSTED for f in self.flags):
                 self.flags.append(Flag(FlagReason.BUDGET_EXHAUSTED, None,
                                        (("revision", self.revision),)))
@@ -147,7 +162,6 @@ class _Revision:
             doc = pymupdf.open(stream=self.blob, filetype="pdf")
         except Exception:                      # FileDataError and kin: unreadable
             doc = None
-        _drain_mupdf()
         try:
             pdf: pikepdf.Pdf | None = pikepdf.open(
                 io.BytesIO(self.blob), attempt_recovery=False, inherit_page_attributes=False)
@@ -166,12 +180,10 @@ class _Revision:
 
     def _opened(self, doc: Any, pdf: pikepdf.Pdf | None, locked: bool) -> Decryption:
         mu_encrypted = doc is not None and bool(doc.needs_pass or doc.metadata.get("encryption"))
+        opening_warned = _drain_mupdf()         # opening, and reading the metadata
         pk_encrypted = locked or (pdf is not None and pdf.is_encrypted)
-        if not (mu_encrypted or pk_encrypted):
-            if doc is None and pdf is None:
-                return self.done(None)          # neither reads it: not this module's to say
-            if doc is not None and pdf is not None:
-                return self.done(None)          # both read it unencrypted
+        if not (mu_encrypted or pk_encrypted or self.ours_encrypted):
+            return self.done(None)              # nobody reads it encrypted: not this module's
         identity = _identity(pdf) if pdf is not None else (b"", b"")
         mu_locked = doc is not None and bool(doc.needs_pass)
         if locked and mu_locked:
@@ -191,11 +203,14 @@ class _Revision:
         if not _canonical(_resolved_form(encrypt)):
             self.unverified(CryptRule.NONCANONICAL)
             return self.done(identity, trusted=False)
+        if _eff_differs(encrypt):               # readers ignore /EFF; /Type is optional
+            self.unverified(CryptRule.EFF)
+            return self.done(identity, trusted=False)
         warnings = pdf.get_warnings()
         if any("/Perms" in w for w in warnings):
             self.unverified(CryptRule.PERMS)
             return self.done(identity, trusted=False)
-        if warnings:
+        if warnings or opening_warned:
             self.unverified(CryptRule.WARNING)
             return self.done(identity, trusted=False)
         self.identity = identity
@@ -209,9 +224,11 @@ class _Revision:
     # ── Objects ─────────────────────────────────────────────────────────
     def _objects(self, doc: Any, pdf: pikepdf.Pdf, encrypt: Any) -> None:
         plain_metadata = _plain_metadata(pdf, encrypt)
-        eff = _eff_differs(encrypt)
+        identity_streams = encrypt.get("/StmF") == pikepdf.Name.Identity
         for (number, gen), entry in sorted(pdf.get_xref_table().items()):
             key = (number, gen)
+            if not self.charge(entries=1):
+                return
             if entry.type == 0:
                 continue
             if number >= doc.xref_length():     # pikepdf lists it, MuPDF has no such number
@@ -219,7 +236,7 @@ class _Revision:
                 continue
             if entry.type == 2 and not self._container_decoded(entry):
                 continue                        # the inventory flags what it could not decode
-            if not self._object(doc, pdf, key, plain_metadata, eff):
+            if not self._object(doc, pdf, key, plain_metadata, identity_streams):
                 return
 
     def _container_decoded(self, entry: Any) -> bool:
@@ -233,11 +250,11 @@ class _Revision:
         return home is not None and home[0] == 1 and home[1] in self.inv.object_streams
 
     def _object(self, doc: Any, pdf: pikepdf.Pdf, key: Key, plain_metadata: Key | None,
-                eff: bool) -> bool:
+                identity_streams: bool) -> bool:
         number, gen = key
         unit = self.inv.body(number, self.revision)
         reuse = None if unit is None or self.identity is None or key == plain_metadata \
-            else (unit, self.identity)
+            else (unit, gen, self.identity)
         if reuse is not None and reuse in self.shared.verified:
             form, data = self.shared.verified[reuse]   # an earlier revision verified this body
             self.values[key] = form
@@ -251,7 +268,7 @@ class _Revision:
             obj, text = None, ""
         if not self.charge(text.encode("latin-1", "replace")):
             return False
-        if pdf.get_warnings() or _drain_mupdf() or obj is None:
+        if bool(pdf.get_warnings()) | _drain_mupdf() or obj is None:
             self.unverified(CryptRule.WARNING, key)
             return True
         ours = _pike_form(obj, top=True)
@@ -261,46 +278,64 @@ class _Revision:
             return True
         if not isinstance(obj, pikepdf.Stream):
             self.values[key] = ours
-        elif not self._stream(doc, pdf, obj, key, ours, plain_metadata, eff):
+        elif not self._stream(doc, pdf, obj, key, ours, plain_metadata, identity_streams):
             return False
         if reuse is not None and key in self.values:
-            self.shared.verified[reuse] = (self.values[key], self.streams.get(key))
+            self.staged[reuse] = (self.values[key], self.streams.get(key))
         return True
 
     def _stream(self, doc: Any, pdf: pikepdf.Pdf, obj: pikepdf.Stream, key: Key,
-                form: object, plain_metadata: Key | None, eff: bool) -> bool:
+                form: object, plain_metadata: Key | None, identity_streams: bool) -> bool:
         number = key[0]
         filters = obj.get("/Filter")
         names = list(filters) if isinstance(filters, pikepdf.Array) else [filters]
         if pikepdf.Name.Crypt in names:
             self.unverified(CryptRule.CRYPT_FILTER, key)
             return True
-        if eff and obj.get("/Type") == pikepdf.Name.EmbeddedFile:
-            self.unverified(CryptRule.EFF, key)
+        unit = self.inv.body(number, self.revision)
+        is_xref = obj.get("/Type") == pikepdf.Name.XRef
+        if is_xref and (unit is None or unit.start not in self.shared.xref_streams):
+            # qpdf leaves any /Type /XRef stream undecrypted, MuPDF decrypts
+            # it: only the chain's own sections are exempt (ISO 32000-1 7.5.8).
+            self.unverified(CryptRule.XREF_TYPE, key)
             return True
         stored = self._stored(key)
         if stored is None:
             self.unverified(CryptRule.UNLOCATED, key)
             return True
-        # A stream the spec leaves unencrypted has no second decryption:
-        # MuPDF decrypts it anyway (and may warn doing so), so it is not
-        # asked; pikepdf's read must be the stored bytes.
-        plain = obj.get("/Type") == pikepdf.Name.XRef or key == plain_metadata
+        # A stream the spec leaves unencrypted (a cross-reference section;
+        # the catalog's /Metadata under /EncryptMetadata false) has no
+        # second decryption: MuPDF decrypts it anyway, so pikepdf's read
+        # must be the stored bytes. For the metadata, MuPDF's decryption is
+        # still read: if it is text, the stored bytes were ciphertext that a
+        # reader shows decrypted. Under /StmF /Identity both readers leave
+        # every stream as stored: all three must agree.
+        plain = is_xref or key == plain_metadata
         ours: bytes | None
         theirs: bytes | None
         try:
             ours = bytes(obj.read_raw_bytes())
-            theirs = stored if plain else doc.xref_stream_raw(number)
+            theirs = None if is_xref else doc.xref_stream_raw(number)
         except Exception:
             ours = theirs = None
+            is_xref = False
         warned = bool(pdf.get_warnings()) | _drain_mupdf()
-        if not self.charge(stored, ours or b"", b"" if plain else theirs or b""):
+        if not self.charge(stored, ours or b"", theirs or b""):
             return False
-        if warned or ours is None or theirs is None:
+        if key == plain_metadata and theirs is not None and theirs != stored \
+                and _readable(theirs):
+            self.unverified(CryptRule.METADATA_CIPHER, key)
+            return True
+        if (warned and not (key == plain_metadata)) or ours is None \
+                or (theirs is None and not is_xref):
             self.unverified(CryptRule.WARNING, key)
             return True
         if plain:
             if ours != stored:
+                self.mismatch(MismatchRule.PLAINTEXT, key)
+                return True
+        elif identity_streams:
+            if not ours == theirs == stored:
                 self.mismatch(MismatchRule.PLAINTEXT, key)
                 return True
         elif ours != theirs:
@@ -393,8 +428,10 @@ def _canonical(form: object) -> bool:
             return False
         if f.get(b"AuthEvent", ("name", b"DocOpen")) != ("name", b"DocOpen"):
             return False
-        if f.get(b"Length") not in (None, ("int", 16 if v == ("int", 4) else 32),
+        if f.get(b"Length") not in (("int", 16 if v == ("int", 4) else 32),
                                      ("int", 128 if v == ("int", 4) else 256)):
+            return False
+        if name == b"Identity":                 # reserved (ISO 32000-1 7.6.5)
             return False
         names.add(name)
     chosen = [d.get(key, ("name", b"Identity")) for key in (b"StmF", b"StrF")]
@@ -402,6 +439,26 @@ def _canonical(form: object) -> bool:
     return (all(c[0] == "name" and c[1] in names for c in chosen)
             and (eff is None or eff == d.get(b"StmF", ("name", b"Identity"))
                  or (eff[0] == "name" and eff[1] in names)))
+
+
+def _ours_encrypted(chain: Chain, revision: int) -> bool:
+    """Whether the revision's own trailer (as the inventory reads it) has a
+    non-null /Encrypt: decided by our reading, not a reader's."""
+    trailer = chain.sections[chain.revisions[revision][0]].trailer
+    value = trailer.get(b"Encrypt") if trailer is not None else None
+    return value is not None and not isinstance(value, PdfNull)
+
+
+def _readable(data: bytes) -> bool:
+    """Whether *data* reads as content: it inflates, or it is UTF-8 text
+    (XMP is). Ciphertext is neither, essentially always."""
+    if _inflates(data):
+        return True
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return bool(text) and sum(c.isprintable() or c.isspace() for c in text) >= 0.95 * len(text)
 
 
 def _plain_metadata(pdf: pikepdf.Pdf, encrypt: Any) -> Key | None:

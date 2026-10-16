@@ -156,7 +156,19 @@ def test_embedded_files_under_their_own_filter() -> None:
     pdf = hand_built(h, x8=attachment, x7=h.encrypt_dict().replace(
         b"/StrF /StdCF", b"/StrF /StdCF /EFF /Identity"))
     (revision,) = decrypt(pdf)
-    assert ("decryption_unverified", 8, CryptRule.EFF) in rules(revision)
+    assert rules(revision) == {("decryption_unverified", -1, CryptRule.EFF)}
+
+
+def test_an_eff_flags_the_revision_even_without_a_type() -> None:
+    # /Type is optional on an embedded file: a reader honouring /EFF shows
+    # an attachment no /Type names, so the whole revision is untrusted.
+    h = Handler(4, b"owner", FILE_ID, stm_f="Identity")
+    attachment = rawpdf.stream(b"", h.stream_data(8, b"SSN 123-45-6789", 0))
+    pdf = hand_built(h, x8=attachment, data=CONTENT, x7=h.encrypt_dict().replace(
+        b"/StrF /StdCF", b"/StrF /StdCF /EFF /StdCF"))
+    (revision,) = decrypt(pdf)
+    assert rules(revision) == {("decryption_unverified", -1, CryptRule.EFF)}
+    assert revision.streams == {}
 
 
 def test_stored_bytes_that_already_inflate_are_not_ciphertext() -> None:
@@ -197,7 +209,8 @@ def test_only_the_catalogs_metadata_is_plain_under_encrypt_metadata_false() -> N
 # ── Identity, reuse and cost ───────────────────────────────────────────
 def test_identity_sees_an_indirect_crypt_filter_change() -> None:
     # Two R4 files alike but for an indirect /StdCF's method: the /Encrypt
-    # dictionaries print alike (`/CF 9 0 R`), the decryptions do not.
+    # dictionaries print alike (`/CF 9 0 R`). (The second, /CFM /None, is
+    # outside the closed set too; its identity is computed first.)
     h = Handler(4, b"owner", FILE_ID)
     indirect = h.encrypt_dict().replace(
         b"/CF << /StdCF << /CFM /V2 /Length 16 /AuthEvent /DocOpen >> >>", b"/CF 9 0 R")
@@ -303,3 +316,114 @@ def test_a_handler_outside_the_set_is_never_trusted() -> None:
     (revision,) = decrypt(pdf)
     assert rules(revision) == {("decryption_unverified", -1, CryptRule.NONCANONICAL)}
     assert revision.values == {} and revision.streams == {}
+
+
+
+# ── Round 1 (#178): what a reader shows that the verifier would not ────
+def test_a_stream_calling_itself_xref_is_not_exempt() -> None:
+    # qpdf leaves any /Type /XRef stream undecrypted; MuPDF decrypts it and
+    # draws the page. Only the chain's own cross-reference streams are plain.
+    h = Handler(3, b"owner", FILE_ID)
+    (revision,) = decrypt(hand_built(h, b"/Type /XRef"))
+    assert rules(revision) == {("decryption_unverified", 4, CryptRule.XREF_TYPE)}
+    assert (4, 0) not in revision.streams
+
+
+def test_ciphertext_where_plain_metadata_belongs() -> None:
+    # /EncryptMetadata false, but the catalog's XMP stored encrypted: pikepdf
+    # returns the stored bytes, MuPDF decrypts them to the XMP it shows.
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    xmp = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>SSN 123-45-6789</x:xmpmeta>"
+    pdf = hand_built(h, x1=b"<< /Type /Catalog /Pages 2 0 R /Metadata 8 0 R >>",
+                     x8=rawpdf.stream(b"/Type /Metadata /Subtype /XML", h.stream_data(8, xmp)))
+    (revision,) = decrypt(pdf)
+    assert rules(revision) == {("decryption_unverified", 8, CryptRule.METADATA_CIPHER)}
+    assert (8, 0) not in revision.streams
+
+
+def test_identity_streams_are_plain_not_stored_plain() -> None:
+    import zlib
+    h = Handler(4, b"owner", FILE_ID, stm_f="Identity")
+    (revision,) = decrypt(hand_built(h, b"/Filter /FlateDecode", zlib.compress(CONTENT)))
+    assert revision.flags == ()
+    assert revision.streams[(4, 0)] == zlib.compress(CONTENT)
+
+
+def test_an_unencrypted_revision_pikepdf_cannot_open_is_not_ours_to_flag() -> None:
+    # A bad xref offset: MuPDF repairs, pikepdf (no recovery) refuses; no
+    # /Encrypt anywhere, so nothing here is crypt's.
+    pdf = rawpdf.build({1: rawpdf.CATALOG, 2: rawpdf.PAGES, 3: rawpdf.page(),
+                        4: rawpdf.stream(b"", CONTENT), 6: rawpdf.HELVETICA})
+    pdf = re.sub(rb"startxref\n\d+", b"startxref\n9", pdf)
+    assert all(r.identity is None and r.flags == () for r in decrypt(pdf))
+
+
+def test_entries_are_charged_reused_or_not() -> None:
+    # Revisions x entries is the work: the cap stops it, whatever is reused.
+    h = Handler(3, b"owner", FILE_ID)
+    pdf = hand_built(h)
+    for i in range(5):
+        pdf = rawpdf.incremental_update(pdf, {5: b"<< /Title " + h.string(5, b"v%d" % i)
+                                              + b" >>"}, info=5)
+        pdf = pdf.replace(b"/Prev", h.trailer(7) + b" /Prev", 1) if i == 0 else \
+            pdf[:pdf.rindex(b"/Prev")] + h.trailer(7) + b" " + pdf[pdf.rindex(b"/Prev"):]
+    revisions = decrypt(pdf, max_entries=20)
+    assert any(f.reason is FlagReason.BUDGET_EXHAUSTED for r in revisions for f in r.flags)
+
+
+def test_a_body_is_read_once_under_one_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    h = Handler(3, b"owner", FILE_ID)
+    pdf = rawpdf.incremental_update(hand_built(h), {5: b"<< /Title " + h.string(5, b"New")
+                                                    + b" >>"}, info=5)
+    pdf = pdf.replace(b"/Prev", h.trailer(7) + b" /Prev")
+    reads: list[int] = []
+    real = pikepdf.Pdf.get_object
+    monkeypatch.setattr(pikepdf.Pdf, "get_object",
+                        lambda self, *a: reads.append(a[0]) or real(self, *a))
+    decrypt(pdf)
+    assert sorted(reads) == [1, 2, 3, 4, 5, 5, 6, 7]   # only the rewritten /Info twice
+
+
+def test_an_untrusted_revision_verifies_nothing_for_another(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # A revision found REPAIRED after its reads must not hand its bodies to
+    # the next revision under the same identity.
+    h = Handler(3, b"owner", FILE_ID)
+    pdf = rawpdf.incremental_update(hand_built(h), {5: b"<< /Title " + h.string(5, b"New")
+                                                    + b" >>"}, info=5)
+    pdf = pdf.replace(b"/Prev", h.trailer(7) + b" /Prev")
+    repaired = iter([True, False])
+    real_open = crypt.pymupdf.open
+
+    def opened(*args: object, **kwargs: object) -> object:
+        doc = real_open(*args, **kwargs)
+        flag = next(repaired)
+        return type("Doc", (), {"__getattr__": lambda s, n: getattr(doc, n),
+                                "is_repaired": flag})()
+    monkeypatch.setattr(crypt.pymupdf, "open", opened)
+    reads: list[int] = []
+    real = pikepdf.Pdf.get_object
+    monkeypatch.setattr(pikepdf.Pdf, "get_object",
+                        lambda self, *a: reads.append(a[0]) or real(self, *a))
+    current, earlier = decrypt(pdf)
+    assert ("decryption_unverified", -1, CryptRule.REPAIRED) in rules(current)
+    assert earlier.flags == () and (4, 0) in earlier.streams
+    assert reads.count(4) == 2                  # read afresh, not reused
+
+
+def test_every_encrypted_case_in_the_library_verifies_clean(tmp_path: Path) -> None:
+    from caselib import REGISTRY, load
+    from caselib.run import available, build
+
+    load()
+    have = available()
+    seen = 0
+    for cid, case in sorted(REGISTRY.items()):
+        if "encrypted" not in cid or case.bomb is not None or case.requires - have:
+            continue
+        data = build(case, tmp_path / f"{cid}.pdf").read_bytes()
+        revisions = decrypt(data)
+        if any(r.identity for r in revisions):
+            seen += 1
+            assert [f for r in revisions for f in r.flags] == [], cid
+    assert seen >= 8

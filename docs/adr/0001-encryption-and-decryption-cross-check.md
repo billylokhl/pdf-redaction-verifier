@@ -305,6 +305,24 @@ files are all in the set.
 
 ## Note (2026-10-15, 3a-9a-1): what the cross-check cannot see
 
+- **Which streams are unencrypted** is decided by the file's structure,
+  not a stream's word: a cross-reference stream is one the chain reads as
+  a cross-reference section. qpdf leaves any `/Type /XRef` stream
+  undecrypted while MuPDF decrypts and draws it, so any other stream so
+  labelled is flagged (rule `XREF_TYPE`). Under `/StmF /Identity` both
+  readers leave every stream as stored, and the three must agree.
+- **The amendment's metadata exemption has a hidden view.** Under
+  `/EncryptMetadata false` pikepdf returns the catalog's `/Metadata`
+  stream as stored and MuPDF decrypts it. When the stored bytes are
+  ciphertext, MuPDF shows the decrypted XMP and the raw matcher sees only
+  ciphertext. MuPDF's decryption of that stream is therefore still read:
+  if it reads as content (inflates, or is UTF-8 text), the stream is
+  flagged (rule `METADATA_CIPHER`). Plain stored XMP decrypts to noise and
+  passes.
+- **`/EFF` other than `/StmF`** flags the whole revision (rule `EFF`).
+  Both readers ignore `/EFF`, and `/Type` is optional on an embedded-file
+  stream, so no single stream can be named.
+
 - **Plaintext stored where ciphertext belongs.** When both readers apply
   the same key to bytes that were never encrypted (a stream or string
   written plain under a handler that encrypts it), they agree on the
