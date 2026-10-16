@@ -159,6 +159,7 @@ ignore_errors = true
 module = [
     "redaction_verifier.inventory", "redaction_verifier.inventory.*",
     "redaction_verifier.budget", "redaction_verifier.ledger",
+    "redaction_verifier.sandbox",
 ]
 disallow_any_generics = true
 disallow_subclassing_any = true
