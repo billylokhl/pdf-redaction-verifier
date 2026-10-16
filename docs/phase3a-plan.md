@@ -720,6 +720,34 @@ Tracks: A parser core 1→7; B cases 10→11 (day one); C encryption 8 (after 1)
 - 3a-10/11 Image cases (hidden samples, JPEG COM, EXIF thumb, extra rows, strips variants)
   — PR #30 (merged).
 - 3a-12 Measure unit budget (ADR 0006 amendment draft) + orphan overlap (ADR 0007).
+  Done (3a-12 PR, 2026-10-15; eval/spikes/unit_budget.py, RESULTS.md "Phase 3a-12"); the
+  unit cap is the only code change, and no verdict changes. On 2,073 corpus files (489 text-bearing), all built:
+  - Units per file: the tiling's p50 16, p99 269, max 32,976 (one flagged 20 MB file with
+    32,971 objects); SYNTHESIZED at most 16; with a page view per page and each revision's
+    DRAWABLE streams (a proxy for 4a's units) p50 19, p99 293, max 44,066 (largest unflagged
+    2,106), at most 13.9 units per KiB. Decoder-uncovered children are 4a's and 4b's.
+  - Unit cap: `Limits.max_units` 500,000 (was the 200,000 placeholder), 11.3x the largest
+    file -- coordinator decision 2026-10-15 under owner decision 1, owner informed (ADR 0006
+    amendment). Read only by the shadow inventory; hitting it fails closed.
+  - Overlap with today's CLI (run once per file, a fabricated value rule; 600 exit 2, none
+    exit 1): orphans per body 242 files, 213 already exit 2 (194 with PAGE_THUMBNAIL, #133),
+    29 new (13 text-bearing: 2.7%; ADR 0007 note). Hint streams 400 / 137 / 263; XMP images
+    516 / 181 / 335; JavaScript 86 / 35 / 51; synthesized 130 / 44 / 86; any of them 707 /
+    288 / 419; with the inventory's 153 flagged, 860 / 378 / 482.
+  - Review rate (exit 2), today -> with the 707: all files 28.9% -> 49.2%, text-bearing
+    57.5% -> 80.6%; with today's qpdf exit-3 warnings removed (163 files exit 2 on them
+    alone, 161 text-bearing), 21.1% -> 41.3% and 24.5% -> 47.6%. None of the 707 exits 2 on
+    qpdf exit 3 alone.
+  - Levers (RESULTS.md): 108 of the 113 new text-bearing files have a hint stream; R6 (b)'s
+    condition (qpdf's linearization check clean) clears 1 of them. XMP images OCR'd (R7 (b))
+    clear 141 new files (5 text-bearing); 4a's synthesized units are all blank fields but
+    never a file's only class. Every lever outright: text-bearing 47.6% -> 27.2%.
+  - OWNER CHOICE, the hint stream (RESULTS.md, "Owner choice"): (a) a full hint-table
+    decoder, layout-exact, 6 PRs (2-4 days) in 3c (recommended, staged: its spike first, (b)
+    until then); (b) keep hint streams flagged; (c) the middle options, judged. The 170 files
+    qpdf's linearization check warns on are all single-revision (no update drift explains
+    them) and written by Adobe's linearizer (126 of the 129 naming a producer). R6 (b)'s
+    condition alone takes 1 file out of exit 2 (153 together with R7 (b)).
 - 3a-13 Measure decision-D cost (documented upper-bound approximations).
 - 3a-14 Close-out: final corpus gate, REDESIGN row, ADR notes, CHANGELOG.
 

@@ -265,10 +265,11 @@ def test_flag_params_carry_only_named_integers(params: Any) -> None:
     assert Flag(FlagReason.CONTESTED_SPAN, Span(0, 1), (("n", 0),)).params == (("n", 0),)
 
 
-def test_limits_default_to_adr_0006s_placeholders() -> None:
+def test_limits_default_to_adr_0006s_numbers() -> None:
+    # ADR 0006's placeholders, and its 3a-12 amendment's unit cap.
     limits = Limits()
     assert (limits.max_depth, limits.max_units, limits.max_inflated_bytes,
-            limits.max_ocr_pixels_per_page) == (25, 200_000, 2 * GIB, 200_000_000)
+            limits.max_ocr_pixels_per_page) == (25, 500_000, 2 * GIB, 200_000_000)
     assert (limits.max_ocr_run_pixels, limits.max_contested_owners) == (20_000_000_000, 16)
     assert GIB == 1 << 30
     assert limits.ocr_run_pixels(3) == 600_000_000
