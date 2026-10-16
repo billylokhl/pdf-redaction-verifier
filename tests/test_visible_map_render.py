@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import pymupdf as fitz
@@ -43,15 +44,47 @@ def _value_pdf(path: Path) -> Path:
     return _save(doc, path)
 
 
+# The header's "sha256 <4 hex>…<3 hex>" is tool-generated (an abbreviated
+# SHA-256 of the target), not derived from any value. Normalization drops
+# the spaces and the ellipsis, so it can join "sha256" and the hash into
+# digits that coincide with a value's ("sha256" + "789d" holds "6789").
+_SHA_FIELD = re.compile(r"sha256 ([0-9a-f]{4})(?:…|\.\.\.)([0-9a-f]{3})\b")
+
+
+def _hash_shapes(path: Path) -> list[str]:
+    """The header's abbreviated hash as drawn, in every spelling the map
+    file holds it (the font draws "…" as "...", and the content stream
+    splits the line into strings): exactly the strings built from the
+    header's own two hex pieces, nothing of the shape in general."""
+    found = _SHA_FIELD.search(map_text(path))
+    if found is None:
+        return []
+    head, tail = found.groups()
+    return [f"sha256 {head}{dots}{tail}" for dots in ("…", "...")] + [
+        f"{head}{dots}{tail}" for dots in ("…", "...")]
+
+
+def _without_sha(line: str, shapes: Sequence[str]) -> str:
+    """*line* with the header's abbreviated hash masked, and nothing else:
+    every other character of every line (names, labels, page text) stays
+    under the check."""
+    for shape in shapes:
+        line = line.replace(shape, "")
+    return line
+
+
 def _assert_absent(path: Path, *texts: str) -> None:
     """None of *texts* anywhere a reader of the map file could look: page
     text, decompressed streams and their decoded strings, document
-    information, XMP, raw bytes -- verbatim or normalized."""
+    information, XMP, raw bytes -- verbatim or normalized (the header's
+    abbreviated hash aside: see _SHA_FIELD)."""
     every = map_strings(path)
+    shapes = _hash_shapes(path)
     for text in texts:
         assert text not in every, text
         for line in every.splitlines():
-            assert normalize_string(text) not in normalize_string(line), (text, line[:80])
+            assert normalize_string(text) not in normalize_string(_without_sha(line, shapes)), (
+                text, line[:80])
 
 
 # ── Markers ───────────────────────────────────────────────────────────
@@ -182,6 +215,32 @@ class TestSelfCheck:
         assert "built-in type: SSN ****" in labels      # tail dropped: part of the value
         assert not the_plan.legend
         _assert_absent(out, SSN, "6789")
+
+    @pytest.mark.parametrize("sha", [
+        "789d" + "0" * 57 + "f84",          # "sha256" + "789d" -> 6789
+        "0006" + "0" * 57 + "789",          # prefix ends 6 + suffix 789
+        "a456" + "0" * 57 + "789",          # same, one more digit of overlap
+    ])
+    def test_a_hash_that_coincides_with_digits_of_the_value_is_not_a_leak(
+            self, tmp_path, monkeypatch, sha) -> None:
+        # Tool-generated fields (the hash, counts, numbers) are not derived
+        # from the value, so they may coincide with its digits; the
+        # self-check must neither refuse the map nor miss real leaks.
+        assert len(sha) == 64
+        pdf = _value_pdf(tmp_path / "plain.pdf")
+        run = run_main(monkeypatch, pdf, write_rules(tmp_path, SSN_RULES))
+        data = pdf.read_bytes()
+        out = tmp_path / "forced.map.pdf"
+        out.write_bytes(render.build_map(data, sha, run.header)[0])
+        assert re.search(f"sha256 {sha[:4]}(…|\\.\\.\\.){sha[-3:]}", map_text(out))
+        _assert_absent(out, SSN, "6789")
+
+    def test_the_hash_mask_leaves_every_other_character_checked(self) -> None:
+        shapes = ["sha256 789d...f84", "789d...f84"]
+        assert _without_sha("Target x   sha256 789d...f84   v1", shapes) == "Target x      v1"
+        for leak in ("Target 6789   sha256 0000...000", "sha256 789d...f84 6789",
+                     "abcd...123 6789", "Target 789d...f85 6789", "x 789d...f84 6789"):
+            assert "6789" in normalize_string(_without_sha(leak, shapes)), leak
 
     def test_step_two_catches_what_step_one_missed(self, tmp_path, monkeypatch) -> None:
         pdf = _value_pdf(tmp_path / f"{SSN}.pdf")
