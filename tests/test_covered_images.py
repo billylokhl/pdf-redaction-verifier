@@ -14,7 +14,8 @@ import pymupdf as fitz
 import pytest
 
 import verify
-from redaction_verifier.model import ScanReport
+from redaction_verifier.matching import SecretMatcher
+from redaction_verifier.model import ScanReport, Secret
 from redaction_verifier.views.covered import (COVERED_FRACTION, covered_images,
                                               images_only_page)
 
@@ -197,7 +198,7 @@ def test_a_rebuild_that_fails_is_a_failed_page(monkeypatch) -> None:
     report = ScanReport()
     covered = verify.scan_covered_images(doc, report)
     assert covered == {0}
-    matcher = verify.SecretMatcher([verify.Secret("Target", SSN)])
+    matcher = SecretMatcher([Secret("Target", SSN)])
     verify.scan_page_layer(doc, matcher, report, layer="OCR", extractor=verify.images_only_ocr,
                            note="images only")
     codes = {w.code for w in report.warnings}
