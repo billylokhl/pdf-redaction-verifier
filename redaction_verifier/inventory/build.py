@@ -26,18 +26,18 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, NamedTuple
 
 from ..budget import Budget, Limits
 from ..ledger import Flag, FlagReason, Span, Unit, UnitKind, UnitRef
 from .flate import flate_decode
-from .annotations import build_annotations
-from .graph import Body, build_graph
-from .labels import build_body_labels, build_labels
-from .pages import build_pages
-from .trees import build_trees
+from .annotations import Annotations, Synthesized, build_annotations
+from .graph import Body, Graph, build_graph
+from .labels import BodyLabels, RevisionLabels, build_body_labels, build_labels
+from .pages import Page, build_pages
+from .trees import Trees, build_trees
 from .lexer import DELIMITERS, WHITESPACE, Lexer, TokenKind
 from .objects import (IndirectObject, ObjectParser, PdfArray, PdfDict, PdfInt, PdfNull,
                       PdfRef, PdfValue)
@@ -180,28 +180,15 @@ class _Builder:
         # The graph runs before the budget's flags are gathered: one it
         # leaves unfinished is never an unflagged inventory.
         trailers = [chain.sections[group[0]].trailer for group in chain.revisions]
-        graph_start = self.budget.work
-        graph, graph_flags = build_graph(len(chain.revisions), self.changes, self._body_of,
-                                         self._home_number, trailers, self.budget)
-        self.flags.extend(graph_flags)
-        pages, page_flags = build_pages(len(chain.revisions), self.changes, self._body_of,
-                                        self._home_number, trailers, self.budget)
-        self.flags.extend(page_flags)
-        trees, tree_flags = build_trees(len(chain.revisions), self.changes, self._body_of,
-                                        self._home_number, trailers, self.budget)
-        self.flags.extend(tree_flags)
-        annotations, synthesized, annotation_flags = build_annotations(
-            len(chain.revisions), self.changes, self._body_of, self._home_number, trailers,
-            pages, self.budget)
-        self.flags.extend(annotation_flags)
-        labels = build_labels(len(chain.revisions), self.changes, self._body_of,
-                              self._home_number, graph.edges, graph.trailers, pages, annotations,
-                              self._xref_streams(chain), self._hint_stream(chain), self.budget)
         streams = [u.ref for u in self.units if u.ref.within is None
                    and u.ref.kind in (UnitKind.OBJECT, UnitKind.DEAD_BODY)
                    and u.ref.start in self.stream_data]
-        body_labels = build_body_labels(labels, streams, self.budget)
+        graph_start = self.budget.work
+        stage = _reference_graph(len(chain.revisions), self.changes, self._body_of,
+                                 self._home_number, trailers, self._xref_streams(chain),
+                                 self._hint_stream(chain), streams, self.budget)
         graph_work = self.budget.work - graph_start
+        self.flags.extend(stage.flags)
         self.flags.extend(self.budget.flags())
         tiles = check_tiling(len(data), (r.span for r in tiling.regions)) and all(
             check_tiling(s.tiling.size, (r.span for r in s.tiling.regions))
@@ -211,8 +198,9 @@ class _Builder:
         return Inventory(len(data), tiling, tiles,
                          tuple(sorted(self.units, key=lambda u: u.ref.sort_key())),
                          self.flags.result(), len(chain.revisions), self.stream_data,
-                         self.objects, self.streams, entries, graph, pages, trees,
-                         annotations, synthesized, labels, graph_work, body_labels)
+                         self.objects, self.streams, entries, stage.graph, stage.pages,
+                         stage.trees, stage.annotations, stage.synthesized, stage.labels,
+                         graph_work, stage.body_labels)
 
     def _xref_streams(self, chain: Chain) -> list[list[UnitRef]]:
         """Each revision's own cross-reference streams (its sections', a
@@ -677,6 +665,46 @@ class _Builder:
                 self._body(UnitRef(UnitKind.DEAD_BODY, obj.span.start, obj=obj.num,
                                    gen=obj.gen), obj)
                 pos = obj.span.end
+
+
+class _Stage(NamedTuple):
+    """What the reference graph's stage gives the inventory."""
+    graph: Graph
+    pages: tuple[tuple[Page, ...] | None, ...]
+    trees: tuple[Trees | None, ...]
+    annotations: tuple[Annotations | None, ...]
+    synthesized: tuple[tuple[Synthesized, ...], ...]
+    labels: tuple[RevisionLabels | None, ...]
+    body_labels: dict[UnitRef, BodyLabels]
+    flags: list[Flag]
+
+
+def _reference_graph(revisions: int, changes: list[list[int]],
+                     body_of: Callable[[int, int], Body | None],
+                     home_of: Callable[[int, int], int | None],
+                     trailers: list[PdfDict | None], xref_streams: list[list[UnitRef]],
+                     hint: UnitRef | None, streams: list[UnitRef], budget: Budget) -> _Stage:
+    """The reference graph's stage (ADR 0011 items 4, 5 and 7): the edges,
+    the page lists, the name trees, the annotations and the labels, every
+    revision of each in turn, all of it charged to *budget*. It runs before
+    the budget's flags are gathered, so a stage the budget cuts short is
+    never an unflagged inventory. One function, so the item-7 test
+    (tests/test_inventory_stage.py) counts the whole stage's work and lines
+    through one seam (tests/steps.py)."""
+    flags: list[Flag] = []
+    graph, found = build_graph(revisions, changes, body_of, home_of, trailers, budget)
+    flags += found
+    pages, found = build_pages(revisions, changes, body_of, home_of, trailers, budget)
+    flags += found
+    trees, found = build_trees(revisions, changes, body_of, home_of, trailers, budget)
+    flags += found
+    annotations, synthesized, found = build_annotations(revisions, changes, body_of, home_of,
+                                                        trailers, pages, budget)
+    flags += found
+    labels = build_labels(revisions, changes, body_of, home_of, graph.edges, graph.trailers,
+                          pages, annotations, xref_streams, hint, budget)
+    body_labels = build_body_labels(labels, streams, budget)
+    return _Stage(graph, pages, trees, annotations, synthesized, labels, body_labels, flags)
 
 
 def _nested(flag: Flag, where: Span, stream: int) -> Flag:
