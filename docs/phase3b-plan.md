@@ -56,8 +56,8 @@ Read with:
   - The child reports facts and never decides an obligation's final status.
   - No rules value reaches the child (ADR 0010 item 5; the canary test).
 - **What crosses the pipe.**
-  - **Structural messages:** only integers and closed enum names. Spans and object numbers are
-    document-derived integers.
+  - **Structural messages:** only integers, closed enum names, and `hello`'s `sha256` digest
+    of the file. Spans and object numbers are document-derived integers.
   - **Stage frames:** under Q11's decided design, decoded document bytes, for matching, as
     stage frames (§3). Never secrets: nothing flows from parent to child but the descriptor and
     code paths.
@@ -135,9 +135,12 @@ The row's gate, as amended:
 - **4b-4d.** Images, decision D's "used" and the strips-under-a-box question are 4b's (owner
   decision 2026-10-15: they must be caught; Lane G measures). Containers are 4c's, and the
   general filter chain and `RESIDUE` are 4d's. No unit kind is enforced in 3b.
-- **The hint-table decoder.** RESULTS.md "Owner choice", option (a), is staged: its spike runs
-  in parallel, and hint streams stay flagged meanwhile (owner, 2026-10-15). Its six PRs are
-  outside this count, and its registry hookup lands with its decoder in 3c (§4, rule 6).
+- **The hint-table decoder, in 3c** (owner decisions 2026-10-15; spike #180). It decodes under
+  six profile-bound rules for an observed Adobe writer, which the owner has accepted, and
+  discharges the files those rules fully account for. Files they don't fully account for stay
+  flagged.
+  - It is about 5 PRs, outside this count, and its registry hookup lands with it (§4, rule 6).
+  - Hint streams stay flagged until then.
 - **Enforcing 3a-12's classes.** The 707 label-class files and the inventory's 153 flagged files
   stay shadow-only until each kind's decoder phase, and all of them until Phase 6.
 
@@ -187,7 +190,8 @@ touches code the shipped CLI runs.
 - **Depends on:** main; it starts now (Q7).
 - **Tests:**
   - closed enums pinned, frozen records;
-  - everything that crosses the pipe is plain integers or enum members;
+  - everything that crosses the pipe is plain integers or enum members, apart from `hello`'s
+    SHA-256 digest;
   - a `Witness` balances only when its spans tile `[0, length)`;
   - an empty span is invalid, which settles 3a-1's note: it is a protocol error;
   - `check_tiling` is unchanged behind the re-export.
@@ -200,7 +204,7 @@ touches code the shipped CLI runs.
   - **The exact frame schema** for §3's frame types, the child's encoder, and the parent's
     strict, incremental validator. The validator checks frames as they arrive and spools stage
     bytes.
-  - **Every numeric bound** of §3's B1-B5 and B3.
+  - **Every numeric bound** of §3's B1-B5.
   - The new `Limits` fields: `max_messages`, `max_stage_bytes` and `max_stage_total`.
   - The validator returns a `ChildReport`, or a closed `ProtocolError` that makes
     `CHILD_COMPLETE` `FAILED`.
@@ -218,8 +222,13 @@ touches code the shipped CLI runs.
     generation, and entries sharing an offset, are tested too.
   - **B4:** `contested.py` is a fixture, and every contested region it yields validates.
   - **`bigint.py` is a fixture.** Integers in frames go up to about 70 digits, as the
-    inventory's flag parameters can, plus -1 (a trailer as a flag's source).
-  - **Per-unit flags:** a nested unit's flags carry their 3 parameters.
+    inventory's flag parameters can, plus -1. The -1 comes from `LENGTH_MISMATCH`'s `declared`
+    when there is no `/Length` (`objects.py`), and from `XREF_EPILOGUE_MISMATCH`'s revision and
+    named sentinels (`build.py`).
+  - **Per-unit flags:** a nested unit's flags carry their 3 parameters. A unit that claims
+    comment lines has no per-unit flag cap: `build.py` adds one `COMMENT_LINE` per line, so its
+    flags are bounded by its claims. `headerflags.py` (a `HEADER` with 502 spans and 500 flags)
+    is a fixture.
   - **Encoding:** the compact JSON encoding (separators, key order) is pinned by a test. The
     `hello` frame carries `sha256`.
   - **Frame shapes:**
@@ -247,7 +256,10 @@ touches code the shipped CLI runs.
   - **Rejected input:** no proper prefix validates, cut at any byte. Duplicates, reordering,
     unknown types, frames after `end`, out-of-enum names and non-integers are rejected. A
     single-byte mutation is rejected, or yields counts and a hash that still match what
-    arrived.
+    arrived. Three stage rejections:
+    - a stage frame longer than its header's declared length;
+    - a stage over `max_stage_bytes`;
+    - the stage total over `max_stage_total`.
   - `STREAM_SLACK` is excluded from tiling validation.
 - **Gate:** the suite, mypy strict, and the acceptance criteria above.
 - **Verdict path:** none.
@@ -265,11 +277,12 @@ touches code the shipped CLI runs.
     dictionary's. A dictionary's result is `UNEXAMINED` (`NO_DECODER`) until 4a's token decoder.
     So in 3b, **an xref-stream or object-stream OBJECT unit ends `UNEXAMINED` (`NO_DECODER`)**,
     with its payload discharged.
-  - **`HEADER` and `XREF_EPILOGUE`:** `DECODED` by the inventory's canonical parse, with a
-    witness over the span.
+  - **`HEADER` and `XREF_EPILOGUE`:** `DECODED` by the inventory's canonical parse. The witness
+    follows B5 (§3): one span per claim, tiling the claims' concatenated length.
   - **`XREF_TABLE`:** its entries are `DECODED`, its trailer dictionary `UNEXAMINED`.
   - **Hint streams:** no decoder entry; listed status `UNREADABLE` (`HINT_PAYLOAD`, ADR 0003,
-    ADR 0011's R6 (a)).
+    ADR 0011's R6 (a)). This holds until 3c's hint-table decoder (owner decision 2026-10-15;
+    spike #180), which discharges the files the six rules fully account for.
   - **XMP, JavaScript, output intents, embedded files, every DRAWABLE kind and SYNTHESIZED:**
     no entry, so `UNEXAMINED` (`NO_DECODER`).
 - **Files:** `decoders/`, `tests/test_decoders_structural.py`, and the guard entries. It reads
@@ -549,7 +562,8 @@ touches code the shipped CLI runs.
       no child: the run records `not_run`.
     - **Early exits:** on every early exit after the child starts (rules invalid, a password,
       an unreadable PDF, a crash), the parent cancels the child and reaps it before returning,
-      so no child outlives the run.
+      so no child outlives the run. The shadow records `child_failed` with outcome `cancelled`
+      (§5).
   - **JSON:** `--json` gains `experimental.shadow` (§5), `undischarged` included: this PR owns
     that field. `JSON_SCHEMA_VERSION` stays 2.
   - **Scorecard:** a `shadow_exit` column in `metrics` and the corpus aggregate, outside the
@@ -649,7 +663,7 @@ touches code the shipped CLI runs.
 
 1. **Now, in parallel:** 3b-1 and 3b-5.
 2. **After 3b-1:** 3b-2 and 3b-3 together.
-3. **After both:** 3b-4. 3b-6 follows 3b-3.
+3. **After both:** 3b-4, and 3b-6 (which needs 3b-2's caps and 3b-3).
 4. **The child:** 3b-7 joins 3b-2, 3b-3, 3b-5, 3b-6 and 9b-1.
 5. **The matcher:** 3b-8 follows 3b-4.
 6. **Serial from here:** 3b-9 (also needing 3a-14), then 3b-10, 3b-11, 3b-12 and 3b-13.
@@ -690,7 +704,7 @@ listed in 3b-2.
 
 **Frame types, in arrival order.**
 
-- **Core:** `hello` through `flag` and `end`. A report always contains its core, whole,
+- **Core:** `hello` through `view`, and `end`. A report always contains its core, whole,
   exhausted or not.
 - **Detail:** `label`, `result`, `witness` and `stage`. Detail is budgeted.
 
@@ -713,6 +727,12 @@ listed in 3b-2.
 6. **`page`:** each page of the current revision's canonical list, for `PAGE_COUNT`.
 7. **`flag`:** each flag, attached to a unit or to the file, with its own bound per source
    (B1).
+7a. **`view`:** one frame per `Decryption.views` entry, carrying its object number and
+   generation only.
+   - It is part of the core, so the parent knows which `READER_VIEW` stages to expect (R5-B2),
+     and a child that drops one is caught.
+   - The storage class is the parent's to derive, from the unit the object lands on.
+   - The bytes come only in the `READER_VIEW` stage.
 8. **`label`:** one frame per (stream body, label), from `Inventory.body_labels`.
    - The labels are per body across revisions, so one frame per body and label is all the
      verdict needs.
@@ -749,7 +769,9 @@ listed in 3b-2.
 **B1. Flag volume.** Every flag the enforced and shadow rules need can be sent, each source
 with its own derived bound:
 
-- per-unit flags: up to `max_flags_per_object` (64) per unit, plus `FLAGS_TRUNCATED`;
+- per-unit flags. An object's flags are capped by `max_flags_per_object` plus
+  `FLAGS_TRUNCATED`, but a unit that claims comment lines carries one `COMMENT_LINE` per line,
+  bounded by its claims (`headerflags.py`). 3b-2 derives the bound per unit kind;
 - the file's flag list: up to `max_flags_per_file`, plus `FLAGS_TRUNCATED`;
 - flags the child adds itself: `STAGE_TRUNCATED`, `BUDGET_EXHAUSTED` from `max_messages`,
   and crypt's flags.
@@ -785,6 +807,10 @@ is a fixture.
   memory. Both are tied to `sandbox.Limits.memory_bytes`: a child that fits in its memory
   backstop cannot produce more frames than the cap admits. 3b-2 derives the ratio from the
   inventory's memory per unit, and proves it on the corpus.
+- **Stage caps:** each stage is at most `max_stage_bytes`, and the stage total at most
+  `max_stage_total`. A stage frame must also be exactly its header's declared length. The
+  child truncates and marks a stage before sending it, so a stage frame past these caps is a
+  violation.
 - **Disk and memory during legacy:** the parent's disk use (the spool: the structural cap plus
   `max_stage_total`) and its memory are bounded while legacy runs, not only afterwards.
 - **What happens past a bound:** a child past any of these is `FAILED`. A correct child can't
@@ -821,7 +847,7 @@ are truncated and marked in their header. All of it is shadow-only.
   - `XREF_FIELDS` for each cross-reference stream unit;
   - `OBJSTM_PAYLOAD` for each object-stream unit;
   - a string stage for each object and object-stream member, which may be empty;
-  - `READER_VIEW` for each entry the core's `Decryption` facts announce.
+  - `READER_VIEW` for each core `view` frame (7a).
 - **A stage that never arrives** leaves its `RAW_MATCH` `UNEXAMINED`.
 - **Binary strings have their own stage,** `STRING_BINARY`, matched as bytes. Text strings are
   matched as text.
@@ -879,8 +905,11 @@ layers open the path separately, which this check does not bind; legacy is froze
   4a (Q10);
 - each tool and rules scope;
 - each `Check`;
-- a `RAW_MATCH` per `StageRef`: STORED for the file, plus each stage the child names in its
-  registry results. A stage named but never sent stays `UNEXAMINED`.
+- a `RAW_MATCH` per `StageRef`: STORED for the file, plus each stage the parent derives from
+  the core (§3, "Stages"): `XREF_FIELDS` per cross-reference stream unit, `OBJSTM_PAYLOAD` per
+  object-stream unit, the string stages per object and object-stream member, and
+  `READER_VIEW` per `view` frame. The child's word never creates or removes an obligation. An
+  expected stage that never arrives stays `UNEXAMINED`.
 
 **Unit status:** the worst result per unit, `UNEXAMINED` (`NO_DECODER`) with none. The parent
 then applies, in order:
@@ -888,8 +917,9 @@ then applies, in order:
 1. **Flags.** Any inventory or crypt flag on a unit makes it `FLAGGED`. File-level flags make
    `INVENTORY_FILE_FLAGS` `FLAGGED`.
 2. **Witnesses (Principle 2, ADR 0008).**
-   - `DECODED` counts only when the witness's spans tile the stage length; otherwise
-     `FLAGGED`.
+   - `DECODED` counts only when the witness balances; otherwise `FLAGGED`. For a decoded
+     stage, the witness spans tile the stage length. For a stored unit, there is one span per
+     claim, and together they tile the claims' concatenated length (B5).
    - `NOT_APPLICABLE` counts only with ADR 0003's reason for that kind.
    - Glyph counts are enforced from 4a.
 3. **ORPHANED is `FLAGGED`** (R3, ADR 0007, decision D by walk), whatever its decoders
@@ -906,7 +936,9 @@ then applies, in order:
    wins, and no label discharges alone. In 3b the drawable side has no decoder, so such a
    body stays `UNEXAMINED`; a test pins that a structural result alone never discharges it.
 6. **Hint streams stay flagged until their decoder lands.** Clearing one takes:
-   - the hint-table decoder: every bit read, checked against the layout;
+   - the hint-table decoder, in 3c: every bit read, checked against the layout, under the six
+     owner-accepted, profile-bound writer rules (spike #180). A file they don't fully account
+     for stays flagged;
    - its registry entry, with the pinned test flipped;
    - an ADR 0003 amendment at that list's bar.
 
@@ -920,7 +952,7 @@ then applies, in order:
     in 3b-1;
   - after a scan with no match, discharged (`DECODED`, with a witness covering the stage);
   - over a truncated stage, `FLAGGED` (`STAGE_TRUNCATED`);
-  - for a stage named but never sent, `UNEXAMINED`.
+  - for an expected stage that never arrives, `UNEXAMINED`.
 - **No exit 1 from a raw match.** In 3b nothing gives the shadow verdict an exit 1. Hard
   findings need decoded evidence, which is 4a's. There is no hard raw tier in 3b (Q13,
   decided); it is to be revisited at 4a/4d if evidence shows a need.
@@ -957,8 +989,13 @@ then applies, in order:
 
 - **Shipped fields are untouched.** `exit_code` and `verdict` are the shipped ones; the shadow
   exit never enters them.
-- **Every field is always present.** On early error exits (target not found, rules invalid, a
-  password) `shadow` is an object with `"status": "not_run"` and every other field null.
+- **Every field is always present.**
+  - When no child was started (the target not found, or not a regular file), `shadow` is an
+    object with `"status": "not_run"` and every other field null.
+  - On an early error exit after the child started (rules invalid, a password, an unreadable
+    PDF), the parent cancels the child. `shadow` then has `"status": "child_failed"` and
+    `"outcome": "cancelled"`, with the counts null.
+  - Either way the shipped exit is legacy's own early-exit code, as today.
 - **No timings, file names, text or rule names.** That keeps the output byte-identical across
   runs and secret-free. Findings are counts here; masked findings appear only if a later phase
   ships them.
@@ -1070,8 +1107,9 @@ fuzz. Results go in RESULTS.md, "Phase 3b".
   - 0 exit drift;
   - 0 child failures;
   - 0 scorecard timeouts;
-  - the CLI's added time after legacy within 3b-5's bound (`post_legacy_wait_s` plus the
-    matcher's pass), with its maximum reported.
+  - the CLI's added time after legacy within 3b-5's bound: `post_legacy_wait_s`, plus the qpdf
+    anchors, the SHA-256, spool validation and the matcher's pass. The maximum of each part is
+    reported.
 - **Runtime:** the added wall clock per case and on the corpus (p50, p95, max), reported to the
   owner (Q2):
   - p95 must stay within REDESIGN §9's 2x;
@@ -1170,8 +1208,8 @@ The matcher needs the secrets, which only the parent holds. No rules value may r
 
 **Q12, decided by the coordinator on 2026-10-15:**
 
-- The caps are the corpus maxima with 10x headroom, measured and reported by 3b-6 (stage bytes)
-  and 3b-9 (everything else).
+- The caps are the corpus maxima with 10x headroom. 3b-9's corpus run measures and sets all of
+  them, stage bytes included: 3b-6 has no corpus run, and only tests the caps' behaviour.
 - Until measured: `max_stage_bytes` 256 MiB, spooled to disk. `max_stage_total` starts at the
   same.
 - An over-cap stage is flagged (fail-closed), never failed (§3, "Content past a budget is
@@ -1181,6 +1219,14 @@ The matcher needs the secrets, which only the parent holds. No rules value may r
 - The structural byte cap and the parent's memory bound are not corpus multiples. They are
   derived by 3b-2 from `sandbox.Limits.memory_bytes`, so a child within its memory backstop
   cannot reach them (§3, B3).
+
+**Hint streams, decided by the owner on 2026-10-15** (spike #180): yes to the six
+profile-bound rules observed for an Adobe writer.
+
+- The hint-table decoder, about 5 PRs, is scheduled in 3c.
+- It discharges the hint streams of files those rules fully account for; any other file's hint
+  stream stays flagged.
+- In 3b, hint streams stay STRUCTURAL and `UNREADABLE` (3b-3, §4 rule 6).
 
 **Q13, decided by the coordinator on 2026-10-15 (owner informed): no hard raw tier in 3b.**
 
