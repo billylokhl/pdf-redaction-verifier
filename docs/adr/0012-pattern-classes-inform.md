@@ -210,6 +210,35 @@ class, or only partly covered by one, are unchanged. (The redactor's YAML
 format has no per-type key, so `--strict-classes` is how a YAML config
 makes them count.)
 
+**Superseded by the owner decision of 2026-10-16 (YAML `entity_types` not
+checked).** The verifier's job is to prove that the secrets the user
+explicitly defined, as exact values and patterns, are gone; it does not
+detect generic categories. So a redactor config's `entity_types` are no
+longer read as classes at all, and the ruling above no longer applies:
+
+- every entity type (`ssn`, `email`, `phone`, `credit_card`, and the
+  LLM-only `person_name`, `address`, `date_of_birth`, `account_number`,
+  `drivers_license`, `passport`), and an omitted key (all ten), produces no
+  rule, no match, no notice and no warning; `SCOPE_UNVERIFIABLE` and
+  `SCOPE_PARTIAL_ENTITY` are retired;
+- the report prints one informational line instead
+  (`ENTITY_TYPES_NOT_CHECKED`, the JSON report's added `info` array;
+  `schema_version` stays 2), which never changes the exit code;
+- `--strict-classes` does nothing to them: they are not classes. It still
+  applies, unchanged, to a JSON rules file's `class` rules, as does the
+  rest of this ADR;
+- `exact_values` and `patterns` are unchanged, warnings included, and an
+  entity type outside the redactor's ten is still an error. A config with
+  neither `exact_values` nor `patterns` is refused (exit 2): nothing the
+  user listed is left to verify.
+
+This is a loosening: a YAML config that exited 2 only for an entity-type
+scope warning, or 1 only for an entity type's class match under
+`--strict-classes`, can now exit 0. Recorded in the CHANGELOG's verdict
+changes. No case-library or scorecard case changes exit: every case uses a
+JSON rules file, and the real-redactor set's config lists
+`entity_types: []`.
+
 ## Coordinator decision (2026-10-15, owner informed)
 
 Strict mode's "today's behaviour exactly" means exit codes, tiers, findings

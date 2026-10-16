@@ -880,17 +880,31 @@ anywhere but the tool's own fixed wording means no map.
 that tells the redactor what to remove tells this tool what to look for.
 That removes a drift risk, and introduces a subtler one worth naming.
 
-Independence of *method* survives: `entity_types` are mapped onto this
-tool's own class regexes and validators, never the redactor's patterns,
-so a flaw in the redactor's detection cannot hide itself from the check,
-and the six layers still look where the redactor may not have.
+Independence of *method* survives: the config's `exact_values` and
+`patterns` are matched by this tool's own normalizer and scanners, never
+the redactor's code, and the six layers still look where the redactor may
+not have.
 
-Independence of *scope* does not. A category the config omits is one this
+Independence of *scope* does not. A value the config omits is one this
 tool never searches for, so verification proves the redactor executed its
-instructions — not that the instructions were sufficient. Six of the ten
-entity types are LLM-detected with no regex equivalent at all. Following
-the fail-closed rule, those are reported as unverifiable and force a `2`:
-the gap is stated rather than implied away.
+instructions — not that the instructions were sufficient.
+
+`entity_types` are **not checked** (owner decision 2026-10-16, superseding
+ADR 0012's YAML ruling). The verifier's job is to prove that the secrets
+the user explicitly defined, as exact values and patterns, are gone; it
+does not detect generic categories. Until then the four types with a
+regex here (`ssn`, `email`, `phone`, `credit_card`) became built-in class
+rules (notices by default, ADR 0012), and the six LLM-only types and
+`phone` raised scope warnings (`SCOPE_UNVERIFIABLE`,
+`SCOPE_PARTIAL_ENTITY`) that forced exit 2 — so a config that omitted the
+key (all ten) could never pass. Now the loader validates the names
+against the redactor's roster (an unknown one is still an error), builds
+no rule from them, and records them only for one informational line
+(`ENTITY_TYPES_NOT_CHECKED`; the JSON report's `info`). That line is
+printed after the verdict, the warnings and the notices, carries no ✖ or
+rule label, and never reaches the exit code. `--strict-classes` does not
+apply to them: they are not classes. A config with no `exact_values` and
+no `patterns` is refused (exit 2) rather than passed with nothing checked.
 
 ## Known limitations
 
@@ -985,7 +999,9 @@ the gap is stated rather than implied away.
   mostly digit runs inside hex or alphanumeric ids
   (eval/spikes/RESULTS.md, "Phase 5 baseline"). So a class is not a
   secret: by default its matches are notices that never change the exit
-  code (`--strict-classes` counts them) ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
+  code (`--strict-classes` counts them; a redactor config's `entity_types`
+  are not classes and are not checked at all, see "Sharing a config with
+  the redactor") ([ADR 0012](docs/adr/0012-pattern-classes-inform.md);
   `redaction_verifier/matching/policy.py` decides which rules are
   informational, and `ScanReport` routes their findings to its notices as
   they are recorded and their review warnings before the verdict).

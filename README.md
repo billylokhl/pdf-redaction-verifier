@@ -67,8 +67,9 @@ could not be written; only exit `0` prints `[PASS]`.
 For scripts, add `--json report.json` to also write a machine-readable
 report: the verdict, each finding (samples masked), and each warning with
 a stable `code` (e.g. `LEFTOVER_IMAGE`) and `kind` — `review` (a possible
-match to judge), `coverage` (something not fully read) or `scope` (the
-rules ask for something the tool cannot check). Both carry structured
+match to judge), `coverage` (something not fully read) or `scope` (a
+problem in the rules file, such as an unrecognized key or an unquoted
+value, that may make it search for something other than what you meant). Both carry structured
 fields: the layer, where the content is stored (`live`, `orphaned`,
 `unreferenced`, `superseded`), the object, revision and page when known,
 and (only on `TOOL_EXIT_NONZERO`) the tool's own `returncode`, so a real
@@ -101,7 +102,17 @@ or `"strict": true` on a class rule): class matches then count like any
 rule, exactly as before ADR 0012
 ([ADR 0012](docs/adr/0012-pattern-classes-inform.md)). A `"strict"` on a
 class rule that is not `true` or `false` is a rules error (exit `2`)
-unless `--strict-classes` is given.
+unless `--strict-classes` is given. A redactor config's `entity_types` are
+not classes and are never checked, under `--strict-classes` too (see
+[Shared YAML config](#shared-yaml-config)).
+
+**Information** about the run that is not a finding, a warning or a notice
+is printed last, under "For your information (does not change the result
+above)", and in the JSON report's `info` array (`code`, `entity_types`,
+`by_default`, `message`; empty when there is none). It never changes the
+exit code. Its one code today is `ENTITY_TYPES_NOT_CHECKED`: a YAML config
+lists `entity_types`, or leaves the key out (which a redaction tool reads
+as all ten). `info` is an added field, so `schema_version` stays 2.
 
 ## Visible map (`--visible-map`)
 
@@ -728,23 +739,36 @@ Each entry has a `name` and exactly one of:
 | --- | --- |
 | `exact_values` | value rules (normalized matching) |
 | `patterns` | pattern rules, compiled `IGNORECASE` — the same flags the redactor uses |
-| `entity_types` | this tool's built-in classes — `ssn`, `email`, `phone`→`us-phone`, `credit_card`→`credit-card`. Like any built-in class, their matches are informational notices by default; `--strict-classes` makes the config's entity types count toward the verdict (a YAML config has no per-type `strict`) |
+| `entity_types` | nothing: **not checked** (owner decision 2026-10-16). One informational line says so; it never changes the exit code |
 | `backend`, `model`, `llm_url`, `ollama_url`, `scrub_metadata` | ignored |
 | any other key | warning (exit `2`) — a typo or a newer redactor key is surfaced, not skipped |
 
-The other entity types — `person_name`, `address`, `date_of_birth`,
-`account_number`, `drivers_license`, `passport` — are found by LLM
-judgement upstream and have no regex equivalent here. They are **not
-silently dropped**: the run warns it cannot verify them and exits `2`, so
-a shared config never implies coverage it lacks. `phone` is only partly
-verifiable (NANP numbers only) and says so; an entity type outside
-the redactor's ten is a hard error, not a coverage gap.
+This tool proves that the values and patterns **you listed** are gone; it
+does not detect generic categories. So the config's `entity_types` —
+`ssn`, `email`, `phone`, `credit_card`, and the ones a redaction tool finds
+by LLM judgement (`person_name`, `address`, `date_of_birth`,
+`account_number`, `drivers_license`, `passport`) — produce no match, no
+notice and no warning, with or without `--strict-classes`. Instead the
+report ends with one line, for example:
 
-Because unverifiable types always raise a warning, a config that lists
-`phone`, any LLM-only type, or omits `entity_types` (which means all ten,
-matching the redactor's default) can never exit `0`. A pattern with a
-capturing group also warns (exit `2`): the redactor removes only the
-captured part, so the rest of the match can survive redaction.
+```
+  ℹ FOR YOUR INFORMATION (does not change the result above)
+    Entity types in your config (person_name, ssn) are not checked; only
+    your listed exact_values and patterns are. List specific names or
+    numbers under exact_values to have them verified.
+```
+
+It is shown when the config lists `entity_types`, and when it leaves the
+key out (a redaction tool then removes all ten, and the line names them);
+an empty list (`entity_types: []`) shows nothing. An entity type outside
+the redactor's ten is still a hard error (exit `2`), usually a value
+pasted under the wrong key. A config with no `exact_values` and no
+`patterns` has nothing to verify and is a rules error (exit `2`), never a
+pass. To check SSN-, card-, email- or phone-shaped values you did not
+list, use a JSON rules file's built-in `class` rules.
+
+A pattern with a capturing group warns (exit `2`): the redactor removes
+only the captured part, so the rest of the match can survive redaction.
 
 **Quote your values and patterns.** YAML reads an unquoted `00123456` in
 `exact_values` as an octal number; the tool keeps the literal text and

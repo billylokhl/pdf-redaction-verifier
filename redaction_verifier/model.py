@@ -162,8 +162,6 @@ WARNING_CODES: dict[str, str] = {
     "RULES_UNQUOTED_VALUE": "scope",
     "RULES_TRUNCATED_PATTERN": "scope",
     "RULES_CAPTURING_GROUP": "scope",
-    "SCOPE_PARTIAL_ENTITY": "scope",
-    "SCOPE_UNVERIFIABLE": "scope",
 }
 
 
@@ -287,6 +285,22 @@ class WarnList(list):
             super().__setitem__(index, *self._check([value]))
 
 
+@dataclass(frozen=True)
+class Info:
+    """A plain statement about the run that is not a finding, a warning or
+    a notice, and never changes the exit code. The one kind today:
+    ENTITY_TYPES_NOT_CHECKED -- a redactor's config names entity_types,
+    which this tool does not check (owner decision 2026-10-16).
+
+    *entity_types* are names from the redactor's fixed roster (the rules
+    loader refuses any other), so they carry no part of any secret."""
+
+    code: str
+    message: str
+    entity_types: tuple[str, ...] = ()
+    by_default: bool = False
+
+
 @dataclass
 class ScanReport:
     """Aggregated results across all layers. Findings are unique."""
@@ -304,6 +318,8 @@ class ScanReport:
     # counts toward the exit code. Empty in strict mode.
     informational: frozenset[str] = frozenset()
     notices: list[Finding | Warn] = field(default_factory=list)
+    # Information that is none of the above and never counts (Info).
+    info: list[Info] = field(default_factory=list)
 
     def warn(self, code: str, layer: str, message: str, **fields: Any) -> None:
         self.warnings.append(Warn(code, layer, message, **fields))
