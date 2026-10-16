@@ -406,20 +406,28 @@ def ssn_strips_joined(path: Path) -> None:
 
 
 @leak_raw(
-    "page.ssn-strips-under-box", "live.pixels.under-box",
-    "K38. The same two strips, drawn stacked, but with a black box painted over both "
-    "afterwards: OCR only ever sees the rendered, composited page — the box, not what is "
-    "under it — the strips version of K12's known gap (K21's own row calls this "
-    "\"K12's strips variant\"; measured: exit 0, no warnings).",
-    # provisional: pending the owner's Phase 4b answer on drawn strips under a box
-    # (docs/adr/0004) — per-image OCR reads nothing from either 90x7 strip alone, so
-    # this is not a finding the tool can actually produce; only FLAGGED is asserted.
-    expected=expect(2),
-    known_gap=KnownGap("live.pixels.under-box", expect(0)),
+    "page.ssn-strips-under-box-no-ocr", "live.pixels.under-box",
+    "K38 without OCR: the box over the two strips is seen (IMAGE_COVERED), so the file is "
+    "never certified, though nothing can read the strips under it.",
+    expected=expect(2, warnings=(("IMAGE_COVERED", "live"),)),
+    requires=("no-ocr",),
     mistake="Drawing a box over the reassembled strips instead of removing or replacing "
             "the underlying images.",
-    recovery="Extract each image object directly (ignoring what is drawn over it), "
-             "reassemble same-width strips, and OCR the result.",
+    recovery="Remove both strips, or replace them with redacted images.",
+)
+@leak_raw(
+    "page.ssn-strips-under-box", "live.pixels.under-box",
+    "K38, closed by the legacy hotfix (owner decision 2026-10-15, docs/adr/0004 \"Strips\"): "
+    "the same two strips, drawn stacked, with a black box painted over both afterwards. OCR "
+    "of the rendered page sees only the box; the page is flagged (IMAGE_COVERED) and rebuilt "
+    "from its images alone, each at its drawn place, so the strips rejoin and OCR reads the "
+    "SSN. Phase 4b's per-image evidence is to subsume this.",
+    expected=expect(1, findings=(("SSN", "live"),), warnings=(("IMAGE_COVERED", "live"),),
+                    layers=(("SSN", "OCR"),)),
+    requires=("ocr",),
+    mistake="Drawing a box over the reassembled strips instead of removing or replacing "
+            "the underlying images.",
+    recovery="Remove both strips, or replace them with redacted images.",
 )
 def ssn_strips_under_box(path: Path) -> None:
     box = b" 0 0 0 rg 72 400 %d 14 re f" % _STRIP_W

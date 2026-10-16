@@ -475,6 +475,15 @@ flattened to images, text converted to vector outlines.
   reads less and less of the smaller print, and then nothing, without an
   error (#128). Otherwise a page Vision reads without error but
   with text missing is not detected; see DESIGN's known limitations.
+- **Images painted over** (K12, K38): OCR reads the rendered page, so an
+  image with an opaque box drawn over it reads as the box. A page with
+  an image that one opaque fill drawn after it covers by a quarter of
+  its area or more gets an `IMAGE_COVERED` warning (exit `2`, with or
+  without OCR), and with OCR the page is rebuilt from its images alone,
+  each at its drawn place with nothing over it, and read again: a listed
+  value there is a finding (exit `1`), so strips of one picture drawn
+  under a box rejoin and are read. A blank image under a box is flagged
+  too. See COVERAGE.md footnote 17 for the limits.
 - **Tier:** same rules as the Text layer, with both readings eligible for
   hard findings — except a line Vision reads vertically that an upright
   re-read does not confirm. On macOS 27, Vision returns a column of
@@ -546,15 +555,14 @@ named, not that you named everything.
 [COVERAGE.md](COVERAGE.md) is the full known map; its ✗ cells are where a
 secret can still be **not detected** (exit `0`). In short:
 
-- **Pixels the tool does not OCR:** under a box drawn over an image
-  (K12), off the page (K14), in XMP thumbnails (K22, K23),
+- **Pixels the tool does not OCR:** off the page (K14), in XMP thumbnails (K22, K23),
   in embedded files other than listed attachments (K27), and in image
   data beyond an image's declared size (rows past its declared height
   are never drawn, K37). One picture cut into thin strips, each too
-  small to read alone, is also missed when a box covers the strips
-  (K38), when they are not drawn next to each other, or when they are
-  never drawn.
-  <!-- gap-cells: live.pixels.under-box off-page.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
+  small to read alone, is also missed when they are not drawn next to
+  each other, or when they are never drawn. (An image under a box is now
+  flagged and read from the images alone; see the OCR layer.)
+  <!-- gap-cells: off-page.pixels metadata.pixels leftover-xmp.pixels embedded-other.pixels live.pixels.extra-rows -->
 - **Content no page shows:** font-coded text (K15), outlines (K6) or
   images in a switched-off optional-content layer, a hidden
   annotation's appearance (K16, K17), or a page resource that is never

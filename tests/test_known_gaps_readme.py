@@ -82,9 +82,9 @@ def _is_fixed(number: str, row: str) -> bool:
 
 def test_the_fixed_row_check_recognises_every_way_the_table_writes_it() -> None:
     rows = _k_rows()
-    for number in ("8", "9", "40", "41"):
+    for number in ("8", "9", "12", "38", "40", "41"):
         assert _is_fixed(number, rows[number]), f"K{number} should read as fixed"
-    for number in ("12", "39", "43", *PARTLY_FIXED):
+    for number in ("14", "39", "43", *PARTLY_FIXED):
         assert not _is_fixed(number, rows[number]), f"K{number} should read as open"
 
 

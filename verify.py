@@ -240,6 +240,9 @@ try:
     from redaction_verifier.views import extract_ocr_text as extract_ocr_text
     from redaction_verifier.views import extract_visual_text as extract_visual_text
     from redaction_verifier.views import ocr_page_too_large as ocr_page_too_large
+    from redaction_verifier.views.covered import COVERED_FRACTION as COVERED_FRACTION
+    from redaction_verifier.views.covered import covered_images as covered_images
+    from redaction_verifier.views.covered import images_only_page as images_only_page
     from redaction_verifier.visible_map.sink import MapSink as MapSink
     from redaction_verifier.visible_map.sink import offer as _offer
 except BaseException as exc:  # pragma: no cover
@@ -328,6 +331,48 @@ CROSS_PAGE_WARNING = (
     "when text is joined across the page break before it — possibly a "
     "coincidental concatenation; manual review recommended"
 )
+
+
+def scan_covered_images(doc: fitz.Document, report: ScanReport) -> set[int]:
+    """K12/K38 (ADR 0004's drawn strips under a box; legacy hotfix, owner
+    decision 2026-10-15): flag every page with an image that one opaque
+    fill drawn after it covers at least COVERED_FRACTION of
+    (IMAGE_COVERED, exit 2): OCR reads the rendered page, the fill, never
+    what is under it. A page the check cannot read is PAGE_FAILED, never
+    a pass. Returns the flagged pages' indices, for images-only OCR
+    (`images_only_ocr`)."""
+    covered: set[int] = set()
+    for page_index in range(doc.page_count):
+        try:
+            fractions = [c.fraction for c in covered_images(doc.load_page(page_index))]
+        except Exception as exc:
+            report.warn(
+                "PAGE_FAILED", "OCR",
+                f"OCR: page {page_index + 1}: could not check for images painted over "
+                f"({exc})",
+                page=page_index + 1, storage="live",
+            )
+            continue
+        worst = max(fractions, default=0.0)
+        if worst >= COVERED_FRACTION:
+            covered.add(page_index)
+            report.warn(
+                "IMAGE_COVERED", "OCR",
+                f"OCR: page {page_index + 1}: an image is {worst:.0%} covered by an opaque "
+                "fill drawn after it; what lies under the fill is read only by images-only OCR",
+                page=page_index + 1, storage="live",
+            )
+    return covered
+
+
+def images_only_ocr(page: fitz.Page) -> list[str]:
+    """OCR's readings (extract_ocr_text) of *page* rebuilt from its images
+    alone (`images_only_page`): what an opaque fill over them hides."""
+    rebuilt = images_only_page(page)
+    try:
+        return extract_ocr_text(rebuilt[0])
+    finally:
+        rebuilt.close()
 
 
 def scan_page_layer(
@@ -4531,6 +4576,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                     except Exception as exc:
                         report.warn(
                             "LAYER_CRASHED", "OCR", f"OCR: layer crashed ({exc}) — NOT fully scanned"
+                        )
+
+                # Images painted over (K12, K38): flagged with or without
+                # OCR; with it, read from the images alone.
+                if not (args.fail_fast and report.leaked):
+                    print("[*] Phase 3b: images painted over (images-only OCR)...")
+                    try:
+                        covered = scan_covered_images(doc, report)
+                        if covered and _OCR_IMPORTS_OK:
+                            scan_page_layer(
+                                doc, matcher, report,
+                                layer="OCR",
+                                extractor=lambda page: (images_only_ocr(page)
+                                                        if page.number in covered else []),
+                                note=f"Apple Vision @ {OCR_DPI} dpi, images only, under a fill",
+                                patterns=patterns,
+                                hard_variants=OCR_GENUINE_READINGS,
+                                cross_page_reading=OCR_GENUINE_READINGS,
+                                fail_fast=args.fail_fast,
+                                incomplete=lambda page: (ocr_page_too_large(page)
+                                                         if page.number in covered else None),
+                            )
+                    except Exception as exc:
+                        report.warn(
+                            "LAYER_CRASHED", "OCR",
+                            f"OCR: images painted over: check crashed ({exc}) — NOT fully scanned",
                         )
             finally:
                 doc.close()
