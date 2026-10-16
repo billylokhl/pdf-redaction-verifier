@@ -356,3 +356,33 @@ from .ledger import (  # noqa: E402
     UnitKind as UnitKind,
     UnitRef as UnitRef,
 )
+
+# Phase 3b-1: obligations, witnesses and labels. The ledger's Finding is
+# re-exported as LedgerFinding: Finding here is the legacy scan's.
+from .ledger import (  # noqa: E402
+    FILE as FILE,
+    Check as Check,
+    CheckRef as CheckRef,
+    DecodeResult as DecodeResult,
+    FailedReason as FailedReason,
+    FileScope as FileScope,
+    Finding as LedgerFinding,  # noqa: F401 -- a re-export under another name
+    Label as Label,
+    LedgerReason as LedgerReason,
+    Obligation as Obligation,
+    ObligationReason as ObligationReason,
+    ObligationRef as ObligationRef,
+    PendingReason as PendingReason,
+    Reading as Reading,
+    RuleScopeRef as RuleScopeRef,
+    Stage as Stage,
+    StageRef as StageRef,
+    StructuralKind as StructuralKind,
+    SynthesizedRef as SynthesizedRef,
+    Tier as Tier,
+    Tool as Tool,
+    ToolRef as ToolRef,
+    UnreadableReason as UnreadableReason,
+    ViewRef as ViewRef,
+    Witness as Witness,
+)

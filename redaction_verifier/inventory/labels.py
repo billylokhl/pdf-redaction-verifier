@@ -85,28 +85,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Final
 
 from ..budget import Budget
+# StructuralKind lives in ledger (3b-1), so the parent's verdict reads it
+# without importing the inventory; re-exported here.
+from ..ledger import StructuralKind as StructuralKind
 from ..ledger import UnitRef
 from .annotations import SPENT, Annotations, acroform_key
 from .drawable import CATALOG, FORM, PAGE, RES_HOLDER, Drawing, Start
 from .graph import ARRAY, Body, Edge
 from .objects import PdfArray, PdfDict, PdfName, PdfRef, PdfValue
 from .pages import Page
-
-
-class StructuralKind(Enum):
-    """ADR 0011 item 5's closed STRUCTURAL list, one member per entry."""
-
-    XREF_STREAM = "xref_stream"
-    OBJECT_STREAM = "object_stream"
-    HINT_STREAM = "hint_stream"
-    XMP = "xmp"
-    EMBEDDED_FILE = "embedded_file"
-    JAVASCRIPT = "javascript"
-    OUTPUT_INTENT = "output_intent"
 
 
 CHAIN: Final = -1  # a record's source when the chain, not a key, makes it structural

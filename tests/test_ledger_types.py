@@ -32,6 +32,35 @@ from redaction_verifier.model import (
     UnitKind,
     UnitRef,
 )
+# 3b-1's types, imported apart so other lanes' edits above rebase cleanly.
+from redaction_verifier import ledger, model
+from redaction_verifier.inventory import labels as inventory_labels
+from redaction_verifier.inventory import tiling as inventory_tiling
+from redaction_verifier.model import (
+    FILE,
+    Check,
+    CheckRef,
+    DecodeResult,
+    FailedReason,
+    FileScope,
+    Label,
+    LedgerFinding,
+    LedgerReason,
+    Obligation,
+    PendingReason,
+    Reading,
+    RuleScopeRef,
+    Stage,
+    StageRef,
+    StructuralKind,
+    SynthesizedRef,
+    Tier,
+    Tool,
+    ToolRef,
+    UnreadableReason,
+    ViewRef,
+    Witness,
+)
 
 
 def test_na_reasons_are_exactly_adr_0003s_four() -> None:
@@ -371,3 +400,240 @@ def _annotated(annotation: bytes) -> bytes:
     table[4] = (1, w.obj(4, annotation), 0)
     w.epilogue(w.table(table, b"/Size 5 /Root 1 0 R"))
     return bytes(w.out)
+
+
+# ── Phase 3b-1: obligations, witnesses and labels ─────────────────────────
+@pytest.mark.parametrize("enum, members", [
+    (StructuralKind, ["XREF_STREAM", "OBJECT_STREAM", "HINT_STREAM", "XMP", "EMBEDDED_FILE",
+                      "JAVASCRIPT", "OUTPUT_INTENT"]),
+    (Label, ["DRAWABLE", "STRUCTURAL", "ORPHANED"]),
+    (PendingReason, ["NO_DECODER", "NOT_IN_PHASE"]),
+    (UnreadableReason, ["HINT_PAYLOAD"]),
+    (FailedReason, ["NOT_REPORTED"]),
+    (LedgerReason, ["REVIEW_MATCH"]),
+    (Reading, ["TEXT", "OCR"]),
+    (Tool, ["QPDF"]),
+    (Stage, ["STORED", "XREF_FIELDS", "OBJSTM_PAYLOAD", "STRING_TAGGED", "STRING_UNTAGGED",
+             "READER_VIEW"]),
+    (FileScope, ["FILE"]),
+    (Check, ["CHILD_COMPLETE", "FILE_IDENTITY", "TILING", "PAGE_COUNT", "OBJECT_SET",
+             "INVENTORY_FILE_FLAGS", "PARSER_AGREEMENT", "RAW_MATCH"]),
+    (Tier, ["HARD", "REVIEW"]),
+])
+def test_3b_enums_are_closed_and_pinned(enum: Any, members: list[str]) -> None:
+    # Closed: a member is added by the PR that first needs it, and this
+    # list moves with it. Values are the lower-cased names (the protocol's).
+    assert [m.name for m in enum] == members
+    assert all(m.value == m.name.lower() for m in enum)
+
+
+def test_moved_names_are_the_same_objects_behind_the_re_exports() -> None:
+    # 3b-1 moved these into ledger so the parent never imports the inventory.
+    assert inventory_labels.StructuralKind is ledger.StructuralKind is StructuralKind
+    assert inventory_tiling.check_tiling is ledger.check_tiling
+    assert inventory_tiling.WHITESPACE is ledger.WHITESPACE == b"\0\t\n\f\r "
+    assert model.LedgerFinding is ledger.Finding
+    assert model.Finding is not ledger.Finding  # the legacy scan's Finding is untouched
+
+
+def test_check_tiling_is_unchanged_behind_the_re_export() -> None:
+    from redaction_verifier.inventory import check_tiling
+    assert check_tiling(0, []) and check_tiling(3, [Span(0, 1), Span(1, 3)])
+    assert not check_tiling(3, [Span(0, 1), Span(2, 3)])        # a gap
+    assert not check_tiling(3, [Span(0, 2), Span(1, 3)])        # an overlap
+    assert not check_tiling(3, [Span(0, 1), Span(1, 1), Span(1, 3)])  # an empty span
+    assert not check_tiling(2, [Span(1, 2), Span(0, 1)])        # out of order
+    assert not check_tiling(True, [Span(0, 1)])                 # type: ignore[arg-type]
+    assert not check_tiling(-1, []) and not check_tiling(1, [(0, 1)])  # type: ignore[list-item]
+
+
+@given(st.binary(max_size=40), st.integers(0, 45), st.integers(0, 45))
+def test_the_whitespace_predicate_is_the_one_tile_uses(raw: bytes, a: int, b: int) -> None:
+    start, end = min(a, b), max(a, b)
+    first = ledger.first_non_whitespace(raw, start, end)
+    expected = next((i for i in range(start, min(end, len(raw)))
+                     if raw[i] not in b"\0\t\n\f\r "), None)
+    assert first == expected
+    assert ledger.is_pdf_whitespace(raw, start, end) == (expected is None)
+    if raw:  # an unclaimed file is one region, WHITESPACE iff the predicate holds
+        (region,) = tile(raw, [])[0].regions
+        assert (region.kind is UnitKind.WHITESPACE) == ledger.is_pdf_whitespace(raw)
+
+
+_STAGE = StageRef(3, Stage.OBJSTM_PAYLOAD)
+_WITNESS = Witness((Span(0, 4),), 4)
+_RECORDS: list[Any] = [
+    SynthesizedRef(UnitRef(UnitKind.OBJECT, 9), 0, 2),
+    ViewRef(0, Reading.OCR),
+    ToolRef(Tool.QPDF),
+    RuleScopeRef(4),
+    StageRef(FILE, Stage.STORED),
+    CheckRef(Check.TILING),
+    CheckRef(Check.RAW_MATCH, _STAGE),
+    _WITNESS,
+    DecodeResult(Status.DECODED, None, _WITNESS),
+    Obligation(CheckRef(Check.CHILD_COMPLETE), Status.FAILED, FailedReason.NOT_REPORTED),
+    LedgerFinding(0, Tier.REVIEW, _STAGE),
+]
+_RECORD_TYPES = (SynthesizedRef, ViewRef, ToolRef, RuleScopeRef, StageRef, CheckRef, Witness,
+                 DecodeResult, Obligation, LedgerFinding)
+
+
+@pytest.mark.parametrize("record", _RECORDS, ids=lambda r: type(r).__name__)
+def test_3b_records_are_frozen(record: Any) -> None:
+    import dataclasses
+    name = dataclasses.fields(record)[0].name
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        setattr(record, name, getattr(record, name))
+    hash(record)  # usable as ledger keys
+
+
+def test_no_3b_record_has_a_bytes_or_text_field() -> None:
+    # Everything crossing the pipe is plain integers or enum members: no
+    # field's annotation may name a type that can carry document bytes.
+    import dataclasses
+    assert {type(r) for r in _RECORDS} == set(_RECORD_TYPES)
+    carriers = re.compile(r"\b(bytes|bytearray|memoryview|str|object|Any|float)\b")
+    for cls in _RECORD_TYPES:
+        for f in dataclasses.fields(cls):
+            assert isinstance(f.type, str) and not carriers.search(f.type), (cls, f.name, f.type)
+
+
+def _leaves(value: Any) -> list[Any]:
+    import dataclasses
+    if dataclasses.is_dataclass(value):
+        return [x for f in dataclasses.fields(value) for x in _leaves(getattr(value, f.name))]
+    if isinstance(value, tuple):
+        return [x for item in value for x in _leaves(item)]
+    return [value]
+
+
+@pytest.mark.parametrize("record", _RECORDS, ids=lambda r: type(r).__name__)
+def test_3b_records_hold_only_plain_ints_enums_and_none(record: Any) -> None:
+    from enum import Enum
+    assert all(leaf is None or type(leaf) is int or isinstance(leaf, Enum)
+               for leaf in _leaves(record))
+
+
+_BAD_COUNTS = [-1, True, 1.0, "1", b"1", _Int(1), None]
+
+
+@pytest.mark.parametrize("bad", _BAD_COUNTS)
+@pytest.mark.parametrize("build", [
+    lambda n: SynthesizedRef(UnitRef(UnitKind.OBJECT, 0), n),
+    lambda n: ViewRef(n, Reading.TEXT),
+    lambda n: RuleScopeRef(n),
+    lambda n: StageRef(n, Stage.XREF_FIELDS),
+    lambda n: Witness((), n),
+    lambda n: LedgerFinding(n, Tier.REVIEW, _STAGE),
+])
+def test_3b_integers_are_plain_non_negative_ints(build: Callable[[Any], Any], bad: Any) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        build(bad)
+    build(0)
+
+
+@pytest.mark.parametrize("build", [
+    lambda: SynthesizedRef(UnitRef(UnitKind.OBJECT, 0), 0, -1),
+    lambda: SynthesizedRef((0, 0), 0),  # type: ignore[arg-type]
+    lambda: ViewRef(0, "text"),  # type: ignore[arg-type]
+    lambda: ToolRef("qpdf"),  # type: ignore[arg-type]
+    lambda: StageRef(0, "stored"),  # type: ignore[arg-type]
+    lambda: StageRef(None, Stage.XREF_FIELDS),  # type: ignore[arg-type]
+    lambda: StageRef(0, Stage.STORED),  # STORED is only ever file-level
+    lambda: CheckRef("tiling"),  # type: ignore[arg-type]
+    lambda: CheckRef(Check.RAW_MATCH),  # RAW_MATCH names its stage
+    lambda: CheckRef(Check.TILING, _STAGE),  # and nothing else does
+    lambda: CheckRef(Check.RAW_MATCH, Stage.STORED),  # type: ignore[arg-type]
+    lambda: LedgerFinding(0, "review", _STAGE),  # type: ignore[arg-type]
+    lambda: LedgerFinding(0, Tier.REVIEW, Stage.STORED),  # type: ignore[arg-type]
+    lambda: Witness([Span(0, 1)], 1),  # type: ignore[arg-type]
+    lambda: Witness(((0, 1),), 1),  # type: ignore[arg-type]
+    lambda: Witness((), 0, code_count=-1),
+    lambda: Witness((), 0, glyph_count=_Int(1)),
+    lambda: Obligation(StageRef(FILE, Stage.STORED), Status.DECODED, None),  # type: ignore[arg-type]
+    lambda: Obligation((0, 1), Status.DECODED, None),  # type: ignore[arg-type]
+    lambda: Obligation(ToolRef(Tool.QPDF), "decoded", None),  # type: ignore[arg-type]
+    lambda: Obligation(ToolRef(Tool.QPDF), Status.DECODED, None, (Span(0, 1),)),  # type: ignore[arg-type]
+])
+def test_3b_records_reject_malformed_fields(build: Callable[[], Any]) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        build()
+
+
+def test_file_level_stages() -> None:
+    assert StageRef(FILE, Stage.STORED) == StageRef(FileScope.FILE, Stage.STORED)
+    assert StageRef(FILE, Stage.READER_VIEW).unit is FILE  # null in a stage frame
+    assert StageRef(0, Stage.XREF_FIELDS) != StageRef(1, Stage.XREF_FIELDS)
+    assert CheckRef(Check.RAW_MATCH, StageRef(FILE, Stage.STORED)) != CheckRef(
+        Check.RAW_MATCH, _STAGE)
+
+
+# One member of each reason enum, and which status takes it.
+_REASON_OF: dict[Any, Status | None] = {
+    None: Status.DECODED,
+    PendingReason.NO_DECODER: Status.UNEXAMINED,
+    NAReason.XREF_STREAM_FIELD_DATA: Status.NOT_APPLICABLE,
+    FlagReason.CONTESTED_SPAN: Status.FLAGGED,
+    LedgerReason.REVIEW_MATCH: Status.FLAGGED,
+    UnreadableReason.HINT_PAYLOAD: Status.UNREADABLE,
+    FailedReason.NOT_REPORTED: Status.FAILED,
+    "flagged": None,  # never a status's reason
+}
+
+
+@pytest.mark.parametrize("status", list(Status))
+@pytest.mark.parametrize("reason", list(_REASON_OF))
+def test_each_status_takes_only_its_own_closed_reasons(status: Status, reason: Any) -> None:
+    # The reason is required unless DECODED, and from the status's own set.
+    for build in (lambda: Obligation(ToolRef(Tool.QPDF), status, reason),
+                  lambda: DecodeResult(status, reason)):
+        if _REASON_OF[reason] is status:
+            assert build().reason is reason
+        else:
+            with pytest.raises(ValueError):
+                build()
+
+
+def test_every_reason_enum_has_a_status() -> None:
+    # A new reason enum must join the status table (and the union).
+    reasons = {type(r) for r in _REASON_OF if r is not None and not isinstance(r, str)}
+    assert reasons == {PendingReason, NAReason, FlagReason, LedgerReason, UnreadableReason,
+                       FailedReason}
+    assert set(ledger._REASONS) == set(Status)
+    assert {kind for kinds in ledger._REASONS.values() for kind in kinds} == reasons
+
+
+def test_an_empty_witness_span_is_invalid() -> None:
+    # 3a-1's note, settled: an empty span is a protocol error, not a no-op.
+    with pytest.raises(ValueError):
+        Witness((Span(0, 2), Span(2, 2), Span(2, 4)), 4)
+    with pytest.raises(ValueError):
+        Witness((Span(0, 0),), 0)
+    assert Witness((), 0).balances()  # an empty stage, nothing to consume
+
+
+@pytest.mark.parametrize("spans, length, balances", [
+    ([(0, 4)], 4, True),
+    ([(0, 1), (1, 4)], 4, True),
+    ([(0, 3)], 4, False),          # short
+    ([(0, 5)], 4, False),          # past the stage
+    ([(1, 4)], 4, False),          # not from 0
+    ([(0, 2), (3, 4)], 4, False),  # a gap
+    ([(0, 3), (2, 4)], 4, False),  # an overlap
+    ([(2, 4), (0, 2)], 4, False),  # out of order
+    ([], 4, False),                # nothing consumed
+])
+def test_a_witness_balances_only_when_its_spans_tile_the_stage(
+        spans: list[tuple[int, int]], length: int, balances: bool) -> None:
+    assert Witness(tuple(Span(a, b) for a, b in spans), length).balances() is balances
+
+
+@given(st.lists(st.tuples(st.integers(0, 12), st.integers(1, 6)), max_size=6),
+       st.integers(0, 40))
+def test_witness_balance_matches_an_oracle(pairs: list[tuple[int, int]], length: int) -> None:
+    spans = tuple(Span(a, a + n) for a, n in pairs)
+    covered = [i for span in spans for i in range(span.start, span.end)]
+    contiguous = all(b.start == a.end for a, b in zip(spans, spans[1:]))
+    expected = covered == list(range(length)) and contiguous
+    assert Witness(spans, length).balances() is expected

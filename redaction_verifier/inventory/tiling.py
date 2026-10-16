@@ -6,23 +6,24 @@ unit, contested by several, or claimed by none. Unclaimed PDF whitespace
 is harmless; any other unclaimed byte, any byte claimed twice, any claim
 past the end of the file and any claim ``tile`` cannot accept is a Flag.
 ``check_tiling`` is the pure geometric check the parent re-runs on what
-the child reports (3b's anchor).
+the child reports (3b's anchor); it and the PDF-whitespace predicate
+live in ``ledger`` (3b-1), so the parent re-runs them without importing
+the inventory, and are re-exported here.
 """
 
 from __future__ import annotations
 
-import re
 from bisect import insort
 from collections.abc import Iterable
 from typing import Final, NoReturn
 
 from ..budget import Limits
-from ..ledger import Flag, FlagReason, Span, UnitKind, UnitRef
+from ..ledger import WHITESPACE as WHITESPACE
+from ..ledger import Flag, FlagReason, Span, UnitKind, UnitRef, first_non_whitespace
+from ..ledger import check_tiling as check_tiling
+from ..ledger import is_pdf_whitespace
 from .types import CONTESTED, Contested, Region, Tiling
 
-# PDF white-space characters (ISO 32000-1 §7.2.2, Table 1).
-WHITESPACE: Final = b"\0\t\n\f\r "
-_NON_WHITESPACE: Final = re.compile(rb"[^\x00\t\n\x0c\r ]")
 _REASON_ORDER: Final = {reason: i for i, reason in enumerate(FlagReason)}
 # Kinds no top-level claim may have: the tiling's own gap kinds, and the
 # kinds that only ever sit inside another unit (their spans are in its
@@ -191,8 +192,8 @@ class _Sweep:
             kind = region_owners[0].kind
         else:
             region_owners = ()
-            found = _NON_WHITESPACE.search(self.raw, start, end) is not None
-            kind = UnitKind.UNINDEXED if found else UnitKind.WHITESPACE
+            blank = is_pdf_whitespace(self.raw, start, end)
+            kind = UnitKind.WHITESPACE if blank else UnitKind.UNINDEXED
         if last is not None and last.kind is kind and last.owners == region_owners:
             start = self.regions.pop().span.start
         self.regions.append(Region(Span(start, end), kind, region_owners, len(region_owners)))
@@ -204,10 +205,10 @@ def _region_flags(raw: bytes, region: Region) -> list[Flag]:
         case Contested.CONTESTED:
             return [Flag(FlagReason.CONTESTED_SPAN, span, (("claimants", region.claimants),))]
         case UnitKind.UNINDEXED if not region.owners:
-            first = _NON_WHITESPACE.search(raw, span.start, span.end)
+            first = first_non_whitespace(raw, span.start, span.end)
             whitespace = sum(raw.count(byte, span.start, span.end) for byte in WHITESPACE)
             return [Flag(FlagReason.UNINDEXED_NON_WHITESPACE, span, (
-                ("first_non_whitespace", first.start() if first else span.start),
+                ("first_non_whitespace", first if first is not None else span.start),
                 ("non_whitespace_bytes", len(span) - whitespace)))]
         case UnitKind():
             return []
@@ -220,19 +221,3 @@ def _flag_key(flag: Flag) -> tuple[int, int, int, tuple[tuple[str, int], ...]]:
     # `is None`, not truthiness: an empty Span has len 0.
     return (span.start if span is not None else -1, span.end if span is not None else -1,
             _REASON_ORDER[flag.reason], flag.params)
-
-
-def check_tiling(size: int, spans: Iterable[Span]) -> bool:
-    """Do *spans*, in order, tile ``[0, size)`` exactly: each non-empty
-    and starting where the previous one ended? Pure; answers False to
-    anything malformed. Geometry only: 3b's parent anchor must also
-    re-check every WHITESPACE/UNINDEXED region against the raw bytes,
-    since a child that mislabels a gap passes this check."""
-    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-        return False
-    pos = 0
-    for span in spans:
-        if not isinstance(span, Span) or span.start != pos or span.end <= span.start:
-            return False
-        pos = span.end
-    return pos == size
