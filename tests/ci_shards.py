@@ -7,10 +7,11 @@ calling `python tests/ci_shards.py <a|b|c|d>` to get its pytest selection:
 - shard "d": everything under tests/ EXCEPT those lists, via --ignore.
 
 So a new test file lands in shard d by default and can never go unrun; only
-the three lists are maintained by hand, to keep the legs balanced. Measured
-2026-10-16 (local macOS, REQUIRE_FULL_ENV=1, -m "not grid", 795 s of test
-time in all): a 201 s, b 198 s, c 189 s, d 207 s. The largest single file,
-test_visible_map_cli.py (172 s), bounds how small a shard can get.
+the three lists are maintained by hand, to keep the legs balanced. The CI
+runner is 3-6x slower than a laptop on the OCR-heavy files, so the lists
+follow CI timings (PR #186, 2026-10-16: case library about 16 min alone,
+which bounds how small a shard can get; pattern baseline, visible-map CLI
+and the bomb cases about 8-10 min each).
 tests/test_ci_shards.py asserts that the shards' collections are disjoint
 and together equal the unsplit collection.
 """
@@ -23,18 +24,14 @@ SHARDS: dict[str, tuple[str, ...]] = {
     "a": (
         "tests/test_visible_map_cli.py",
         "tests/test_inventory_stage.py",
-        "tests/test_pattern_baseline.py",
         "tests/test_inventory_pages.py",
+        "tests/test_inventory_graph.py",
     ),
-    "b": (
-        "tests/test_case_library.py",
-    ),
+    "b": ("tests/test_case_library.py",),
     "c": (
-        "tests/test_visible_map.py",
-        "tests/test_cli.py",
+        "tests/test_pattern_baseline.py",
         "tests/test_bomb_cases.py",
         "tests/test_policy1_cases.py",
-        "tests/test_inventory_graph.py",
     ),
 }
 DEFAULT_SHARD = "d"
