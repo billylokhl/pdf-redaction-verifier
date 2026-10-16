@@ -750,6 +750,15 @@ def start_hidden_tools(
     return procs, scratch
 
 
+def _file_identity(path: Path) -> tuple[int, int, int, int] | None:
+    """(size, mtime_ns, ctime_ns, inode) of the resolved file, or None."""
+    try:
+        st = path.resolve().stat()
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino
+
+
 def kill_hidden_tools(procs: dict[str, subprocess.Popen[bytes] | None]) -> None:
     """Kill whatever of the two tools is still running. Idempotent: safe to
     call more than once, and safe to call when neither ever started."""
@@ -3253,20 +3262,20 @@ def _strip_generated_ids(tail: bytes, input_ids: frozenset[str] | None) -> bytes
 # decide, a cap exceeded -- keeps TOOL_EXIT_NONZERO (fail closed).
 #
 # Nothing qpdf printed is ever echoed: the result is one of the fixed
-# reasons below. Every check is linear in the file's size and bounded by
-# the caps; exceeding one fails closed.
+# reasons below. Every check is bounded: a token budget, a work budget for
+# the header scan (both proportional to the file's size) and a wall-clock
+# deadline; exceeding any cap fails closed.
 QPDF_STDERR_CAP_BYTES: int = 1 << 20
 QPDF_WARNING_LINES_CAP: int = 10_000
 QPDF_CHECK_MAX_FILE_BYTES: int = 512 << 20
 QPDF_CHECK_MAX_TOKENS: int = 5_000_000
+QPDF_HEADER_SCAN_WORK_PER_BYTE: int = 8
+QPDF_CHECK_DEADLINE_S: float = 20.0
 QPDF_CHECK_MAX_DEPTH: int = 64
 QPDF_XREF_DECODE_CAP: int = 64 << 20
 
 _PDF_WS = b"\x00\t\n\x0c\r "
 _PDF_REGULAR = rb"[^\x00\t\n\x0c\r ()<>\[\]{}/%]"
-# Whitespace or comments. A comment must end at its end of line, so a run
-# of '%' has one reading only and the pattern cannot backtrack.
-_PDF_GAP = rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*[\r\n])+"
 # One token at a position. A ')' '>' '{' '}' on its own matches nothing
 # and fails the parse.
 _PDF_TOKEN = re.compile(
@@ -3277,10 +3286,8 @@ _PDF_TOKEN = re.compile(
 )
 _PDF_LITERAL_STOP = re.compile(rb"[()\\]")
 _PDF_UINT = re.compile(rb"\d{1,10}")
-# Any "N G obj", generously: comments allowed between the parts, and a
-# number glued to a non-digit before it still counts. A false header only
-# ever makes a check fail closed.
-_PDF_HEADER = re.compile(rb"(?<![0-9])(\d+)" + _PDF_GAP + rb"(\d+)" + _PDF_GAP + rb"obj")
+_PDF_WS_BYTES = frozenset(_PDF_WS)
+_PDF_DIGIT_BYTES = frozenset(b"0123456789")
 _PDF_ESCAPED_NAME = re.compile(rb"/" + _PDF_REGULAR + rb"*#" + _PDF_REGULAR + rb"*")
 
 # The kinds (stderr line after "WARNING: <target> ").
@@ -3347,9 +3354,10 @@ class _PdfLexer:
     """A minimal PDF tokenizer and value parser over the whole file, with
     a token budget and a nesting limit (both fail closed)."""
 
-    def __init__(self, data: bytes, headers: dict[int, list[int]]) -> None:
+    def __init__(self, data: bytes, headers: "_PdfHeaderScan", deadline: float) -> None:
         self.data = data
         self.headers = headers
+        self.deadline = deadline
         self.budget = QPDF_CHECK_MAX_TOKENS
         self.dup_dicts: dict[int, tuple[frozenset[bytes], bool]] = {}
 
@@ -3361,6 +3369,8 @@ class _PdfLexer:
             self.budget -= 1
             if self.budget < 0:
                 raise _QpdfCheckFailed("token budget")
+            if not self.budget & 0xFFF and time.monotonic() > self.deadline:
+                raise _QpdfCheckFailed("deadline")
             m = _PDF_TOKEN.match(data, pos)
             if m is None:
                 raise _QpdfCheckFailed("unexpected byte")
@@ -3453,10 +3463,13 @@ class _PdfLexer:
         return k3 == "regular" and self.data[s3:e3] == b"obj"
 
     def direct_int(self, v: Any) -> int:
-        """An integer value, resolving an indirect one only when exactly
-        one 'N G obj' for it exists anywhere in the file."""
+        """An integer value, resolving an indirect one only when the file
+        has no object or xref stream (the length object could be packed in
+        one) and exactly one possible 'N G obj' for it exists anywhere."""
         if v[0] == "ref":
-            spots = self.headers.get(v[1], [])
+            if self.headers.has_object_or_xref_streams:
+                raise _QpdfCheckFailed("indirect length")
+            spots = self.headers.spots(v[1])
             if len(spots) != 1:
                 raise _QpdfCheckFailed("indirect length")
             k, s, e = self.token(spots[0])
@@ -3468,20 +3481,130 @@ class _PdfLexer:
         return int(v[1])
 
 
-def _pdf_headers(data: bytes) -> dict[int, list[int]]:
-    """Every 'N G obj' header anywhere in the bytes, by object number."""
-    found: dict[int, list[int]] = {}
-    for m in _PDF_HEADER.finditer(data):
-        found.setdefault(int(m.group(1)), []).append(m.start())
-    return found
+class _PdfHeaderScan:
+    """Where an 'N G obj' header may start, for every N, found generously
+    so that a missed header can only make a check fail closed, never pass:
+
+    - any generation, and either number signed ('6 +0 obj'), the
+      generation even glued to 'obj' ('6 0obj');
+    - comments between the parts, starting at ANY '%' on their line (a
+      '%' inside a string is not a comment, but a backward scan cannot
+      tell, so every reading counts);
+    - the object number read as the whole digit run before the
+      generation even when glued to what precedes it ('x6 0 obj'), and as
+      any suffix of it whose offset the file spells somewhere, since a
+      reader sent to the '6' of '96 0 obj' reads object 6.
+
+    It walks backward from every 'obj' in the bytes (inside streams and
+    comments too) and charges each byte it looks at to a work budget
+    proportional to the file's size, so a crafted file fails closed
+    instead of making the scan quadratic. Built lazily, once per check."""
+
+    def __init__(self, data: bytes, deadline: float) -> None:
+        self.data = data
+        self.deadline = deadline
+        self.work = QPDF_HEADER_SCAN_WORK_PER_BYTE * len(data) + 1_000_000
+        self._by_number: dict[int, set[int]] | None = None
+        self._streams: bool | None = None
+        self._written: set[int] | None = None
+
+    def _spend(self, n: int) -> None:
+        self.work -= n + 1
+        if self.work < 0:
+            raise _QpdfCheckFailed("header scan budget")
+        if not self.work & 0xFFFF and time.monotonic() > self.deadline:
+            raise _QpdfCheckFailed("deadline")
+
+    def _gap_starts(self, end: int) -> set[int]:
+        """Every e < end such that data[e:end] can be a non-empty run of
+        whitespace and comments (a comment runs from '%' to an end of
+        line, the end of line itself being whitespace)."""
+        data = self.data
+        starts: set[int] = set()
+        todo = [end]
+        seen: set[int] = set()
+        while todo:
+            j = todo.pop()
+            if j in seen or j == 0:
+                continue
+            seen.add(j)
+            self._spend(1)
+            c = data[j - 1]
+            if c not in _PDF_WS_BYTES:
+                continue
+            starts.add(j - 1)
+            todo.append(j - 1)
+            if c in (0x0A, 0x0D):
+                line = max(data.rfind(b"\n", 0, j - 1), data.rfind(b"\r", 0, j - 1)) + 1
+                self._spend(j - 1 - line)
+                k = data.find(b"%", line, j - 1)
+                while k != -1:
+                    starts.add(k)
+                    todo.append(k)
+                    k = data.find(b"%", k + 1, j - 1)
+        return starts
+
+    def _digits_ending(self, end: int) -> int:
+        """Start of the digit run ending at *end* (== end when none)."""
+        start = end
+        while start > 0 and self.data[start - 1] in _PDF_DIGIT_BYTES:
+            start -= 1
+        self._spend(end - start)
+        return start
+
+    @property
+    def offsets_written(self) -> set[int]:
+        """Every number the bytes spell as a whole digit run (up to 12
+        digits): the offsets a classic xref table, /Prev or startxref
+        could send a reader to. Offsets inside an xref stream are binary;
+        a file with one fails the offset-0 check before this matters."""
+        if self._written is None:
+            self._spend(len(self.data))
+            self._written = {int(m.group()) for m in re.finditer(rb"\d+", self.data)
+                             if len(m.group()) <= 12}
+        return self._written
+
+    @property
+    def by_number(self) -> dict[int, set[int]]:
+        if self._by_number is None:
+            data = self.data
+            found: dict[int, set[int]] = {}
+            for m in re.finditer(rb"obj", data):
+                # A generation glued to "obj" ("6 0obj") still counts:
+                # MuPDF's lexer ends a number at the first non-digit.
+                for e in self._gap_starts(m.start()) | {m.start()}:
+                    g = self._digits_ending(e)
+                    if g == e:
+                        continue
+                    if g > 0 and data[g - 1] in b"+-":
+                        g -= 1
+                    for e2 in self._gap_starts(g):
+                        n = self._digits_ending(e2)
+                        for k in range(1, min(e2 - n, 12) + 1):
+                            # A start inside the digit run is reachable
+                            # only through an offset written somewhere in
+                            # the file (an xref entry, /Prev, startxref).
+                            if k == e2 - n or e2 - k in self.offsets_written:
+                                found.setdefault(int(data[e2 - k:e2]), set()).add(e2 - k)
+            self._by_number = found
+        return self._by_number
+
+    def spots(self, number: int) -> list[int]:
+        return sorted(self.by_number.get(number, ()))
+
+    @property
+    def has_object_or_xref_streams(self) -> bool:
+        if self._streams is None:
+            self._streams = _has_object_or_xref_streams(self.data)
+        return self._streams
 
 
-def _pdf_tile(data: bytes, headers: dict[int, list[int]]) -> _PdfTiling:
+def _pdf_tile(data: bytes, headers: _PdfHeaderScan, deadline: float) -> _PdfTiling:
     """Walk the file front to back: objects (streams skipped by their
     /Length), xref tables, trailers and startxref, with only whitespace and
     comments between them. Anything else fails the walk, and every check
     that needs it then fails closed."""
-    lex = _PdfLexer(data, headers)
+    lex = _PdfLexer(data, headers, deadline)
     out = _PdfTiling()
     pos = 0
     while True:
@@ -3671,18 +3794,19 @@ def _qpdf_warnings_unverified(stderr: bytes | None, target: str, data: bytes | N
         else:
             return "an unrecognised qpdf warning"
     try:
-        headers = _pdf_headers(data)
+        deadline = time.monotonic() + QPDF_CHECK_DEADLINE_S
+        headers = _PdfHeaderScan(data, deadline)
         tiling: _PdfTiling | None = None
-        lex = _PdfLexer(data, headers)
+        lex = _PdfLexer(data, headers, deadline)
         for kind, m in parsed:
             if kind == "ref00":
                 continue
             if kind == "offset0":
-                if int(m.group(1)) in headers or _has_object_or_xref_streams(data):
+                if headers.has_object_or_xref_streams or headers.spots(int(m.group(1))):
                     return "an offset-0 object whose body may be stored in the file"
                 continue
             if tiling is None:
-                tiling = _pdf_tile(data, headers)
+                tiling = _pdf_tile(data, headers, deadline)
             if kind == "dupkey":
                 obj = (int(m.group(1)), int(m.group(2)))
                 found = tiling.dup_dicts.get(int(m.group(3)))
@@ -4098,6 +4222,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         procs: dict[str, subprocess.Popen[bytes] | None] = {"exiftool": None, "qpdf": None}
         tools_scratch: tempfile.TemporaryDirectory[str] | None = None
         try:
+            # The file as qpdf is about to read it: if it is not the same
+            # when its bytes are read for _qpdf_warnings_unverified, no
+            # qpdf exit 3 is certified.
+            qpdf_stat = _file_identity(pdf_path)
             procs, tools_scratch = start_hidden_tools(pdf_path, report)
 
             try:
@@ -4204,8 +4332,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     pdf_bytes = None    # certify no qpdf exit 3
                     if procs["qpdf"] is not None:
                         try:
-                            pdf_bytes = pdf_path.read_bytes()
-                            input_ids = _input_document_ids(pdf_bytes)
+                            raw = pdf_path.read_bytes()
+                            if (qpdf_stat is not None and _file_identity(pdf_path) == qpdf_stat
+                                    and len(raw) == qpdf_stat[0]):
+                                pdf_bytes = raw
+                            input_ids = _input_document_ids(raw)
                         except Exception:
                             input_ids = None
                     check_hidden_layers(procs, matcher, patterns, report, input_ids, pdf_bytes)

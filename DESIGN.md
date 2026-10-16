@@ -45,7 +45,8 @@ when the values are identical, a missing `endobj` only when nothing but
 whitespace follows the object, a truncated Flate stream only when it is
 not an object stream (an xref stream only when all its rows decode). The
 check is a small front-to-back walk in `verify.py` (the inventory parser
-stays out of the CLI), linear and capped, and anything it cannot place,
+stays out of the CLI), bounded by budgets proportional to the file's
+size and a deadline, and anything it cannot place,
 any other warning, or any cap exceeded keeps the answer at `2`.
 
 The same rule governs the tool's own crashes, not just the document's

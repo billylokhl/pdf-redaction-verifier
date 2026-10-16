@@ -2271,7 +2271,7 @@
     warnings: []
   reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a content stream naming /Filter /FlateDecode twice with identical values (qpdf: duplicated key; values compared token by token). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
 - case: file.missing-endobj-after-stream
   old:
@@ -2290,7 +2290,7 @@
     warnings: []
   reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a stream object with no endobj after endstream, only whitespace before the next object (qpdf: expected endobj). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
 - case: file.offset-zero-entry-no-body
   old:
@@ -2307,10 +2307,11 @@
     error: null
     findings: []
     warnings: []
-  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: an in-use xref entry at offset 0 whose object has no stored body anywhere in the file and no object or xref stream exists (qpdf: object has offset 0). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
+  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: an in-use xref entry at offset 0 whose object has no stored body anywhere in the file and no object or xref stream exists (qpdf: object has offset 0). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2. Scoped to env: ocr because the difference depends on the qpdf version: Linux CI''s scorecard-diff installs Ubuntu''s qpdf 11.9, whose warnings for this layout differ from 12.4''s, and there the two sides give the same key; the weekly macOS+OCR job (Homebrew qpdf 12.4) is where it shows.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
+  env: ocr
 - case: file.qpdf-null-reference
   old:
     exit: 2
@@ -2326,10 +2327,11 @@
     error: null
     findings: []
     warnings: []
-  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a page dictionary value ''0 0 R'' (qpdf: treating bad indirect reference (0 0 R) as null). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
+  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a page dictionary value ''0 0 R'' (qpdf: treating bad indirect reference (0 0 R) as null). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2. Scoped to env: ocr because the difference depends on the qpdf version: Linux CI''s scorecard-diff installs Ubuntu''s qpdf 11.9, whose warnings for this layout differ from 12.4''s, and there the two sides give the same key; the weekly macOS+OCR job (Homebrew qpdf 12.4) is where it shows.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
+  env: ocr
 - case: file.quartz-offset-zero-duplicate-key-endobj
   old:
     exit: 2
@@ -2345,10 +2347,11 @@
     error: null
     findings: []
     warnings: []
-  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: the Quartz combination: an offset-0 entry with no body, a duplicated identical /Filter and a missing endobj after endstream. Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
+  reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: the Quartz combination: an offset-0 entry with no body, a duplicated identical /Filter and a missing endobj after endstream. Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2. Scoped to env: ocr because the difference depends on the qpdf version: Linux CI''s scorecard-diff installs Ubuntu''s qpdf 11.9, whose warnings for this layout differ from 12.4''s, and there the two sides give the same key; the weekly macOS+OCR job (Homebrew qpdf 12.4) is where it shows.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
+  env: ocr
 - case: file.truncated-flate-content
   old:
     exit: 2
@@ -2366,7 +2369,7 @@
     warnings: []
   reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a page content stream whose Flate data stops before the zlib end marker; not an object stream (qpdf: input stream is complete but output may still be valid). Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true
 - case: file.truncated-xref-stream-rows-complete
   old:
@@ -2385,5 +2388,5 @@
     warnings: []
   reason: 'Owner decision 2026-10-15 (qpdf warning kinds, per-file byte check): qpdf exit 3 no longer forces exit 2 when every warning is an accepted kind and its check against the file''s bytes passes. Layout: a Flate xref stream without its end marker and without endobj before startxref, decoding every row its /Size declares. Clean file, so 2 -> 0; the hidden-content layouts (file.offset-zero-entry-*, file.stray-bytes-before-endobj, file.damaged-xref-earlier-body, file.duplicated-filter-first-wins) still exit 2.'
   cell: unindexed.plain.qpdf-warned
-  pr: '#PRNUM'
+  pr: '#167'
   weaker: true

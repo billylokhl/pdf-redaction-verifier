@@ -203,12 +203,15 @@ against the file's own bytes passes:
 
 1. `treating bad indirect reference (0 0 R) as null`: on its wording alone
    (object 0 heads the free list; no reader resolves it).
-2. `object has offset 0` (rule 1 above): no `N G obj` header for that
-   number anywhere in the bytes (any generation, comments allowed between
-   the parts, even inside a comment or stream), **and** no name in the
-   file decodes to `/ObjStm` or `/XRef`. This closes the ObjStm gap the
-   2026-09-27 decision accepted: with no object or xref stream at all, no
-   body can hide in one.
+2. `object has offset 0` (rule 1 above): no possible `N G obj` header
+   for that number anywhere in the bytes, read generously (any
+   generation, either number signed, the generation glued to `obj`,
+   comments between the parts starting at any `%` on their line, headers
+   inside comments or streams, and the number as a suffix of a longer
+   digit run when the file spells that suffix's offset somewhere, as an
+   xref entry could), **and** no name in the file decodes to `/ObjStm` or
+   `/XRef`. This closes the ObjStm gap the 2026-09-27 decision accepted:
+   with no object or xref stream at all, no body can hide in one.
 3. `dictionary has duplicated key` (rule 2 above): every duplicated key
    of that dictionary (found at qpdf's offset, in that object) has values
    identical token for token, references compared whole. This closes the
@@ -226,7 +229,9 @@ against the file's own bytes passes:
 
 Anything else -- xref reconstruction (`file is damaged`, `xref not
 found`, `Attempting to reconstruct`), integer overflow, any other or
-unparseable line, a check that cannot decide, or a cap exceeded -- keeps
+unparseable line, a check that cannot decide, a file that changed between
+qpdf's read and the check's, or a cap exceeded (token and work budgets
+proportional to the file's size, a 20 s deadline) -- keeps
 `TOOL_EXIT_NONZERO` (fail closed). On the corpus, 185 of the 187 exit-3
 entries pass (160 of 162 text-bearing); the case library pins the four
 hidden-content layouts, plus differing duplicated filters, at exit 2

@@ -155,12 +155,33 @@ class TestOffsetZero:
         b"5 %c\n0 obj (x) endobj\n",                      # comment between the parts
         b"% 5 0 obj (x)\n",                               # even inside a comment
         b"x5\x000\x0cobj\n",                              # NUL and form feed are whitespace
+        b"5 +0 obj (x) endobj\n",                         # a signed generation
+        b"5 0obj (x) endobj\n",                           # generation glued to obj
+        b"+5 -0 obj (x) endobj\n",
+        b"(a%b) 5 %c\n0 obj (x)\n",                       # a '%' in a string first
+        b"5\r\n%c1\r%c2\n0\n%c3\nobj (x)\n",              # several comments
     ])
     def test_a_stored_body_fails(self, body: bytes) -> None:
         assert check(offset0(), base(body).data) is not None
 
-    def test_a_larger_number_ending_in_n_is_not_a_body(self) -> None:
-        assert check(offset0(), base((15, b"(x)")).data) is None
+    def test_a_number_ending_in_n_counts_when_its_offset_is_written(self) -> None:
+        # A reader sent to the '5' of '15 0 obj' reads object 5, but only
+        # an offset written in the file (an xref entry) can send it there.
+        pdf = base((15, b"(x)"))
+        assert check(offset0(), pdf.data) is None
+        five = pdf.at(b"15 0 obj") + 1
+        pdf = base((15, b"(x)"), b"%% %010d\n" % five)
+        assert check(offset0(), pdf.data) is not None
+
+    def test_a_commented_header_reached_by_a_written_offset(self) -> None:
+        pdf = base(b"%95 0 obj (x) endobj\n")
+        assert check(offset0(), pdf.data) is None
+        five = pdf.at(b"%95 0 obj") + 2
+        pdf = base(b"%95 0 obj (x) endobj\n", b"%% xref entry %010d 00000 n\n" % five)
+        assert check(offset0(), pdf.data) is not None
+
+    def test_a_number_merely_containing_n_is_not_a_body(self) -> None:
+        assert check(offset0(), base((51, b"(x)")).data) is None
 
     @pytest.mark.parametrize("name", [b"/ObjStm", b"/Obj#53tm", b"/XRef", b"/XR#65f"])
     def test_object_or_xref_streams_fail(self, name: bytes) -> None:
@@ -170,6 +191,38 @@ class TestOffsetZero:
     def test_one_failing_instance_fails_the_file(self) -> None:
         pdf = base(b"9 0 obj\n(x)\nendobj\n")
         assert check(offset0(5)[:-len(TAIL)] + offset0(9), pdf.data) is not None
+
+
+class TestBounded:
+    """Crafted bytes make a check fail closed, never run for long."""
+
+    @pytest.mark.parametrize("filler", [
+        b"1 %" * 70_000,                 # a '%' per digit, no end of line
+        b"1 " * 100_000 + b"obj ",
+        b"9" * 200_000 + b" 0 obj",
+        (b"%" * 50 + b"\n") * 4_000 + b"obj",
+        b"/a#41" * 40_000,
+    ])
+    @pytest.mark.parametrize("stderr", [warn(TestParser.REF), offset0()])
+    def test_adversarial_bytes(self, filler: bytes, stderr: bytes) -> None:
+        import time
+        pdf = base((7, stream(b"", filler)))
+        start = time.monotonic()
+        check(stderr, pdf.data)
+        assert time.monotonic() - start < 10
+
+    def test_many_offset_zero_lines_scan_once(self) -> None:
+        import time
+        pdf = base((7, stream(b"", b"/a#41 " * 100_000)))
+        lines = b"".join(offset0(n)[:-len(TAIL)] for n in range(100, 2100)) + TAIL
+        start = time.monotonic()
+        assert check(lines, pdf.data) is None
+        assert time.monotonic() - start < 10
+
+    def test_the_work_budget_fails_closed(self, monkeypatch) -> None:
+        monkeypatch.setattr(verify, "QPDF_HEADER_SCAN_WORK_PER_BYTE", 0)
+        pdf = base((7, stream(b"", b"1 0 obj\n" * 200_000)))
+        assert check(offset0(), pdf.data) is not None
 
 
 # ── 3. duplicated keys ─────────────────────────────────────────────────
@@ -369,8 +422,11 @@ class TestCollector:
 
     def _run(self, stderr: bytes, data: bytes | None, tmp_path, code: int = 3) -> ScanReport:
         target = str(tmp_path / "doc.pdf")
+        err = tmp_path / "stderr.bin"
+        err.write_bytes(stderr)
         script = ("import sys; sys.stdout.buffer.write(b'%PDF-1.7 x' * 8); "
-                  f"sys.stderr.buffer.write({stderr!r}.replace(b'@T', sys.argv[1].encode())); "
+                  f"sys.stderr.buffer.write(open({str(err)!r}, 'rb').read()"
+                  ".replace(b'@T', sys.argv[1].encode())); "
                   f"sys.exit({code})")
         proc = subprocess.Popen([sys.executable, "-c", script, target, "-"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -403,6 +459,17 @@ class TestCollector:
         monkeypatch.setattr(verify, "QPDF_STDERR_CAP_BYTES", 64)
         report = self._run(self._stderr(*[TestParser.REF] * 50), base().data, tmp_path)
         assert [w for w in report.warnings if w.code == "TOOL_EXIT_NONZERO"]
+
+    def test_stdout_closed_and_stderr_left_open_times_out(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(verify, "SUBPROCESS_TIMEOUT_S", 2)
+        target = str(tmp_path / "doc.pdf")
+        script = ("import os, sys, time; sys.stdout.buffer.write(b'%PDF x' * 8); "
+                  "sys.stdout.flush(); os.close(1); time.sleep(30)")
+        proc = subprocess.Popen([sys.executable, "-c", script, target, "-"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        report = ScanReport()
+        verify._collect_qpdf(proc, SecretMatcher([]), report, None, base().data)
+        assert [w for w in report.warnings if w.code == "TOOL_TIMEOUT"]
 
     def test_a_large_stderr_does_not_stall_qpdf(self, tmp_path) -> None:
         # 1 MB of stderr would fill a pipe nobody reads and hang the tool.

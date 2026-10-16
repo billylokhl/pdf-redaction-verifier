@@ -160,8 +160,8 @@ layer's `TOOL_EXIT_NONZERO` flags the file (exit `2`). Since the owner
 decision of 2026-10-15 (ADR 0002's note), exit 3 flags only when some
 qpdf warning is not one of five kinds or fails its check against the
 file's own bytes: a `(0 0 R)` reference; offset 0 with no stored body of
-that object anywhere (no `N G obj` header, no object or xref stream in
-the file); a duplicated key whose values are identical; a missing
+that object anywhere (no possible `N G obj` header, read generously, and
+no object or xref stream in the file); a duplicated key whose values are identical; a missing
 `endobj` followed by nothing but whitespace and then the next object,
 `xref` or `startxref`; and a Flate stream without its end marker that is
 not an object stream (an xref stream only when every declared row
