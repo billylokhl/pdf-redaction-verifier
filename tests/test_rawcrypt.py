@@ -7,17 +7,17 @@ filter they read differently."""
 from __future__ import annotations
 
 import io
-import os
 
 import pikepdf
 import pymupdf as fitz
 import pytest
 
 from caselib import rawpdf
-from caselib.rawcrypt import Handler, flip_last_block, rc4, replace_stream_data
+from caselib.rawcrypt import Handler, flip_last_block, rc4, replace_stream_data, stream_span
 
 CONTENT = b"BT /F1 12 Tf 72 700 Td (SSN 123-45-6789) Tj ET"
 FILE_ID = bytes(range(16))
+MOVED = "pikepdf's or MuPDF's decryption moved: re-probe 3a-9's cross-check (crypt.py)"
 
 
 def _file(h: Handler, stream_dict: bytes = b"", data: bytes | None = None) -> bytes:
@@ -52,6 +52,20 @@ def test_both_readers_decrypt_a_hand_built_file_alike(handler: Handler) -> None:
     assert pdf.get_warnings() == [] and not doc.is_repaired
 
 
+def test_plain_metadata_is_read_as_stored_by_pikepdf() -> None:
+    # /EncryptMetadata false: the catalog's /Metadata is written plain
+    # (MuPDF decrypts it anyway: ADR 0001's amendment pins that).
+    h = Handler(4, b"owner", FILE_ID, encrypt_metadata=False)
+    xmp = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'/>"
+    objects = {1: b"<< /Type /Catalog /Pages 2 0 R /Metadata 8 0 R >>", 2: rawpdf.PAGES,
+               3: rawpdf.page(), 4: rawpdf.stream(b"", h.stream_data(4, CONTENT)),
+               6: rawpdf.HELVETICA, 7: h.encrypt_dict(),
+               8: rawpdf.stream(b"/Type /Metadata /Subtype /XML", xmp)}
+    _, pdf = _readers(rawpdf.build(objects, trailer=h.trailer(7)))
+    assert pdf.get_object(8, 0).read_raw_bytes() == xmp
+    assert pdf.get_object(4, 0).read_raw_bytes() == CONTENT
+
+
 def test_handler_refuses_what_it_cannot_write() -> None:
     with pytest.raises(ValueError):
         Handler(6, b"owner", FILE_ID)
@@ -64,8 +78,8 @@ def test_a_stream_crypt_filter_named_alone_splits_the_readers() -> None:
     # reads the stored plaintext; pikepdf applies /StmF to it.
     h = Handler(4, b"owner", FILE_ID)
     doc, pdf = _readers(_file(h, b"/Filter /Crypt", CONTENT))
-    assert doc.xref_stream_raw(4) == CONTENT
-    assert pdf.get_object(4, 0).read_raw_bytes() != CONTENT
+    assert doc.xref_stream_raw(4) == CONTENT, MOVED
+    assert pdf.get_object(4, 0).read_raw_bytes() != CONTENT, MOVED
     assert pdf.get_warnings() == []
 
 
@@ -84,23 +98,30 @@ def test_an_inconsistent_aes_padding_splits_the_readers(tmp_path) -> None:
     raw = _stored(data, number)
     flipped = replace_stream_data(data, number, flip_last_block(raw, 14, 0x02 ^ 0x07))
     doc, pdf = _readers(flipped)
-    assert pdf.get_object(number, 0).read_raw_bytes() == content + b"\x07\x02"
-    assert doc.xref_stream_raw(number) == content
+    assert pdf.get_object(number, 0).read_raw_bytes() == content + b"\x07\x02", MOVED
+    assert doc.xref_stream_raw(number) == content, MOVED
     assert pdf.get_warnings() == [] and not doc.is_repaired
 
 
 def _stored(pdf: bytes, number: int) -> bytes:
-    start = pdf.index(b"stream", pdf.index(b"\n%d 0 obj" % number)) + len(b"stream")
-    start += 2 if pdf[start:start + 2] == b"\r\n" else 1
-    end = pdf.index(b"endstream", start)
-    return pdf[start:end].rstrip(b"\r\n")
+    start, end = stream_span(pdf, number)
+    return pdf[start:end]
 
 
 def test_replace_stream_data_keeps_every_offset() -> None:
     h = Handler(3, b"owner", FILE_ID)
     pdf = _file(h)
-    other = os.urandom(len(CONTENT))
+    # Ending in an end-of-line byte: the data is sliced by /Length.
+    other = b"\r" + b"x" * (len(CONTENT) - 2) + b"\n"
     out = replace_stream_data(pdf, 4, other)
     assert len(out) == len(pdf) and _stored(out, 4) == other
     with pytest.raises(ValueError):
         replace_stream_data(pdf, 4, other + b"x")
+
+
+def test_the_word_stream_inside_a_dictionary_is_not_its_data() -> None:
+    pdf = rawpdf.build({1: rawpdf.CATALOG, 4: b"<< /Length 5 /Title (mystream!) >>\nstream\n"
+                        b"abcde\nendstream"})
+    start, end = stream_span(pdf, 4)
+    assert pdf[start:end] == b"abcde"
+    assert b"mystream!" in replace_stream_data(pdf, 4, b"vwxyz")

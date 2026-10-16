@@ -49,15 +49,15 @@ class Handler:
     *revision* 2 is 40-bit RC4, 3 is 128-bit, 4 is 128-bit through a
     crypt filter named StdCF (*stm_f* and *str_f* name the defaults for
     streams and strings: "StdCF" or "Identity"; *encrypt_metadata*
-    False leaves the catalog's /Metadata stream unencrypted, which also
-    changes the file key); *owner* is the owner password; the user
+    False changes the file key, and the caller then writes the catalog's
+    /Metadata stream unencrypted); *owner* is the owner password; the user
     password is empty. *permissions* is /P.
     """
 
     revision: int
     owner: bytes
     file_id: bytes
-    permissions: int = -3904        # print and copy allowed; the usual
+    permissions: int = -3904        # every permission withheld (bits 3-6, 9-12 clear)
     stm_f: str = "StdCF"
     str_f: str = "StdCF"
     encrypt_metadata: bool = True
@@ -158,17 +158,29 @@ def flip_last_block(data: bytes, position: int, xor: int) -> bytes:
     return data[:at] + bytes([data[at] ^ xor]) + data[at + 1:]
 
 
-def replace_stream_data(pdf: bytes, number: int, data: bytes) -> bytes:
-    """*pdf* with object *number*'s stream data replaced by *data* of
-    the same length (so every offset still holds): the object must be
-    written ``N 0 obj`` once, its data between ``stream`` + EOL and
-    ``endstream``."""
+def stream_span(pdf: bytes, number: int) -> tuple[int, int]:
+    """Where object *number*'s stream data lies in *pdf*: the object must
+    be written ``N 0 obj`` once (generation 0), its dictionary closed by
+    ``>>`` right before ``stream`` and its end of line, with a direct
+    /Length -- the first /Length in the object, so a nested one
+    (/DecodeParms) must not come first."""
     head = b"\n%d 0 obj" % number
     if pdf.count(head) != 1:
-        raise ValueError(f"object {number} is not written exactly once")
-    start = pdf.index(b"stream", pdf.index(head))
-    length = re.search(rb"/Length (\d+)\s*(?:/|>>)", pdf[pdf.index(head):start])
-    start += len(b"stream") + (2 if pdf[start + 6:start + 8] == b"\r\n" else 1)
-    if length is None or int(length.group(1)) != len(data):
-        raise ValueError("the new data is not the stream's direct /Length")
-    return pdf[:start] + data + pdf[start + len(data):]
+        raise ValueError(f"object {number} is not written once as `{number} 0 obj`")
+    at = pdf.index(head)
+    opening = re.compile(rb">>\s*stream(\r\n|\n)").search(pdf, at)
+    if opening is None:
+        raise ValueError(f"object {number} is not a stream")
+    length = re.search(rb"/Length (\d+)\s*(?:/|>>)", pdf[at:opening.start() + 2])
+    if length is None:
+        raise ValueError(f"object {number} has no direct /Length")
+    return opening.end(), opening.end() + int(length.group(1))
+
+
+def replace_stream_data(pdf: bytes, number: int, data: bytes) -> bytes:
+    """*pdf* with object *number*'s stream data (``stream_span``) replaced
+    by *data* of the same length, so every offset still holds."""
+    start, end = stream_span(pdf, number)
+    if end - start != len(data):
+        raise ValueError("the new data is not the stream's /Length")
+    return pdf[:start] + data + pdf[end:]
