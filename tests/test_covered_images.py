@@ -85,6 +85,8 @@ BOX = b"0 0 0 rg 72 582 300 60 re f "
     (b"0 0 0 rg 10 10 m f 10 10 m f 10 10 m f " + DRAW + BOX, 1.0),
     # A box over the whole visible window of a clipped image.
     (b"q 72 582 60 60 re W n " + DRAW + b"Q 0 0 0 rg 72 582 60 60 re f ", 1.0),
+    # A box whose path also reaches far off the page (review B3).
+    (DRAW + b"0 0 0 rg 72 582 300 60 re 2000000000 0 m 2000000001 1 l f ", 1.0),
     # A wide stroke is not a cover (a documented limit).
     (DRAW + b"0 0 0 RG 60 w 72 612 m 372 612 l S ", 0.0),
 ])

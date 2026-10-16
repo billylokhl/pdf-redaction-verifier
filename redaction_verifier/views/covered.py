@@ -68,10 +68,11 @@ def unrotated_rect(page: fitz.Page) -> fitz.Rect:
 
 
 def _finite(rect: fitz.Rect) -> bool:
-    """A real painted area: not empty, not MuPDF's infinite bbox of a
-    degenerate path (`10 10 m f` paints nothing)."""
-    return (not rect.is_empty and not rect.is_infinite
-            and all(abs(v) < 1e9 for v in (rect.x0, rect.y0, rect.x1, rect.y1)))
+    """A painted area: not empty and not inverted. MuPDF's box for a
+    degenerate path (`10 10 m f`, which paints nothing) is inverted. A
+    box that reaches far off the page still counts: only its part on the
+    page is measured, and a path's box can only over-count its paint."""
+    return not rect.is_empty
 
 
 def _covers(page: fitz.Page) -> list[tuple[int, fitz.Rect]]:
